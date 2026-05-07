@@ -9,10 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
-from ..models import Scenario, ScrapPost, User
+from ..models import Battle, BattleEvent, BattleParticipant, Scenario, ScrapPost, User
 from ..schemas import ScenarioOut
 from ..security import require_admin
-from ..services import scenario_jobs
+from ..services import auto_monitor, battle_service as bs, scenario_jobs
 from ..services.dry_run import review_scenario
 from ..services.scrap_crawler import fetch_hn_top, seed_demo
 
@@ -244,3 +244,290 @@ async def list_drafts(
         select(Scenario).where(Scenario.status == "draft").order_by(Scenario.id.desc())
     )).all()
     return [ScenarioOut.model_validate(r) for r in rows]
+
+
+# ── Phase 7: 관리자 대시보드 ──────────────────────
+class StatsOut(BaseModel):
+    user_count: int
+    student_count: int
+    admin_count: int
+    scenario_total: int
+    scenario_validated: int
+    scenario_draft: int
+    scrap_pending: int
+    battles_total: int
+    battles_active: int
+    battles_completed: int
+    events_total: int
+    top_scorers: list[dict]
+
+
+@router.get("/stats", response_model=StatsOut)
+async def admin_stats(
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> StatsOut:
+    from sqlalchemy import func
+    user_count = int((await session.execute(select(func.count(User.id)))).scalar_one())
+    student_count = int((await session.execute(
+        select(func.count(User.id)).where(User.role == "student")
+    )).scalar_one())
+    admin_count = int((await session.execute(
+        select(func.count(User.id)).where(User.role == "admin")
+    )).scalar_one())
+
+    scn_total = int((await session.execute(select(func.count(Scenario.id)))).scalar_one())
+    scn_val = int((await session.execute(
+        select(func.count(Scenario.id)).where(Scenario.status == "validated")
+    )).scalar_one())
+    scn_draft = int((await session.execute(
+        select(func.count(Scenario.id)).where(Scenario.status == "draft")
+    )).scalar_one())
+
+    scrap_pending = int((await session.execute(
+        select(func.count(ScrapPost.id)).where(ScrapPost.status == "pending")
+    )).scalar_one())
+
+    btl_total = int((await session.execute(select(func.count(Battle.id)))).scalar_one())
+    btl_active = int((await session.execute(
+        select(func.count(Battle.id)).where(Battle.status == "active")
+    )).scalar_one())
+    btl_completed = int((await session.execute(
+        select(func.count(Battle.id)).where(Battle.status == "completed")
+    )).scalar_one())
+
+    ev_total = int((await session.execute(select(func.count(BattleEvent.id)))).scalar_one())
+
+    # top scorers — User × sum(BattleParticipant.score)
+    top_q = (
+        select(
+            User.id, User.name,
+            func.coalesce(func.sum(BattleParticipant.score), 0).label("total"),
+        )
+        .join(BattleParticipant, BattleParticipant.user_id == User.id, isouter=True)
+        .group_by(User.id, User.name)
+        .order_by(func.coalesce(func.sum(BattleParticipant.score), 0).desc())
+        .limit(5)
+    )
+    top_rows = (await session.execute(top_q)).all()
+
+    return StatsOut(
+        user_count=user_count, student_count=student_count, admin_count=admin_count,
+        scenario_total=scn_total, scenario_validated=scn_val, scenario_draft=scn_draft,
+        scrap_pending=scrap_pending,
+        battles_total=btl_total, battles_active=btl_active, battles_completed=btl_completed,
+        events_total=ev_total,
+        top_scorers=[
+            {"user_id": r.id, "name": r.name, "total_score": int(r.total or 0)}
+            for r in top_rows
+        ],
+    )
+
+
+class AdminBattleOut(BaseModel):
+    id: int
+    scenario_id: int | None
+    scenario_title: str | None
+    mode: str
+    status: str
+    monitor: str
+    started_at: str | None
+    ended_at: str | None
+    time_limit_sec: int
+    elapsed_sec: float
+    participant_count: int
+    event_count: int
+    monitor_running: bool
+    created_at: str
+
+
+@router.get("/battles", response_model=list[AdminBattleOut])
+async def admin_list_battles(
+    status_filter: str | None = None,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[AdminBattleOut]:
+    from sqlalchemy import func
+    q = select(Battle).order_by(Battle.id.desc()).limit(200)
+    if status_filter:
+        q = q.where(Battle.status == status_filter)
+    battles = (await session.scalars(q)).all()
+
+    out: list[AdminBattleOut] = []
+    for b in battles:
+        title = None
+        if b.scenario_id:
+            s = await session.get(Scenario, b.scenario_id)
+            title = s.title if s else None
+        pcount = int((await session.execute(
+            select(func.count(BattleParticipant.id)).where(BattleParticipant.battle_id == b.id)
+        )).scalar_one())
+        ecount = int((await session.execute(
+            select(func.count(BattleEvent.id)).where(BattleEvent.battle_id == b.id)
+        )).scalar_one())
+        elapsed, _ = bs.battle_elapsed(b)
+        out.append(AdminBattleOut(
+            id=b.id, scenario_id=b.scenario_id, scenario_title=title,
+            mode=b.mode, status=b.status, monitor=b.monitor,
+            started_at=b.started_at.isoformat() if b.started_at else None,
+            ended_at=b.ended_at.isoformat() if b.ended_at else None,
+            time_limit_sec=b.time_limit_sec,
+            elapsed_sec=round(elapsed, 1),
+            participant_count=pcount, event_count=ecount,
+            monitor_running=auto_monitor.is_running(b.id),
+            created_at=b.created_at.isoformat() if b.created_at else "",
+        ))
+    return out
+
+
+@router.post("/battles/{battle_id}/force-end", response_model=AdminBattleOut)
+async def force_end_battle(
+    battle_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> AdminBattleOut:
+    try:
+        b = await bs.cancel_battle(session, battle_id, actor_user_id=admin.id)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    auto_monitor.stop(battle_id)
+    return await _admin_battle_view(session, b)
+
+
+@router.delete("/battles/{battle_id}", status_code=204)
+async def admin_delete_battle(
+    battle_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    b = await session.get(Battle, battle_id)
+    if not b:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "battle not found")
+    auto_monitor.stop(battle_id)
+    await session.delete(b)
+    await session.commit()
+
+
+async def _admin_battle_view(session: AsyncSession, b: Battle) -> AdminBattleOut:
+    from sqlalchemy import func
+    title = None
+    if b.scenario_id:
+        s = await session.get(Scenario, b.scenario_id)
+        title = s.title if s else None
+    pcount = int((await session.execute(
+        select(func.count(BattleParticipant.id)).where(BattleParticipant.battle_id == b.id)
+    )).scalar_one())
+    ecount = int((await session.execute(
+        select(func.count(BattleEvent.id)).where(BattleEvent.battle_id == b.id)
+    )).scalar_one())
+    elapsed, _ = bs.battle_elapsed(b)
+    return AdminBattleOut(
+        id=b.id, scenario_id=b.scenario_id, scenario_title=title,
+        mode=b.mode, status=b.status, monitor=b.monitor,
+        started_at=b.started_at.isoformat() if b.started_at else None,
+        ended_at=b.ended_at.isoformat() if b.ended_at else None,
+        time_limit_sec=b.time_limit_sec,
+        elapsed_sec=round(elapsed, 1),
+        participant_count=pcount, event_count=ecount,
+        monitor_running=auto_monitor.is_running(b.id),
+        created_at=b.created_at.isoformat() if b.created_at else "",
+    )
+
+
+# ── 사용자 관리 ─────────────────────────────────────
+class AdminUserOut(BaseModel):
+    id: int
+    email: str
+    name: str
+    role: str
+    is_active: bool
+    created_at: str
+
+
+class UserPatchIn(BaseModel):
+    role: str | None = Field(default=None, pattern=r"^(student|admin)$")
+    is_active: bool | None = None
+
+
+@router.get("/users", response_model=list[AdminUserOut])
+async def admin_list_users(
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[AdminUserOut]:
+    rows = (await session.scalars(select(User).order_by(User.id.asc()))).all()
+    return [
+        AdminUserOut(
+            id=u.id, email=u.email, name=u.name, role=u.role, is_active=u.is_active,
+            created_at=u.created_at.isoformat() if u.created_at else "",
+        )
+        for u in rows
+    ]
+
+
+@router.patch("/users/{user_id}", response_model=AdminUserOut)
+async def admin_patch_user(
+    user_id: int,
+    body: UserPatchIn,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> AdminUserOut:
+    u = await session.get(User, user_id)
+    if not u:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+    if u.id == admin.id and (body.role == "student" or body.is_active is False):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "cannot demote / deactivate yourself")
+    if body.role is not None:
+        u.role = body.role
+    if body.is_active is not None:
+        u.is_active = body.is_active
+    await session.commit()
+    await session.refresh(u)
+    return AdminUserOut(
+        id=u.id, email=u.email, name=u.name, role=u.role, is_active=u.is_active,
+        created_at=u.created_at.isoformat() if u.created_at else "",
+    )
+
+
+# ── 시나리오 archive / delete ───────────────────────
+class ScenarioPatchIn(BaseModel):
+    title: str | None = Field(default=None, min_length=4, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    time_limit_sec: int | None = Field(default=None, ge=300, le=7200)
+    status: str | None = Field(default=None, pattern=r"^(draft|validated|active|archived)$")
+
+
+@router.patch("/scenarios/{scenario_id}", response_model=ScenarioOut)
+async def admin_patch_scenario(
+    scenario_id: int,
+    body: ScenarioPatchIn,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ScenarioOut:
+    s = await session.get(Scenario, scenario_id)
+    if not s:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "scenario not found")
+    if body.title is not None:
+        s.title = body.title
+    if body.description is not None:
+        s.description = body.description
+    if body.time_limit_sec is not None:
+        s.time_limit_sec = body.time_limit_sec
+    if body.status is not None:
+        s.status = body.status
+    await session.commit()
+    await session.refresh(s)
+    return ScenarioOut.model_validate(s)
+
+
+@router.delete("/scenarios/{scenario_id}", status_code=204)
+async def admin_delete_scenario(
+    scenario_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    s = await session.get(Scenario, scenario_id)
+    if not s:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "scenario not found")
+    await session.delete(s)
+    await session.commit()

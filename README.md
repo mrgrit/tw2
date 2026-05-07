@@ -69,6 +69,28 @@ bash scripts/dev.sh ui       # http://127.0.0.1:5173
 - [x] 회원가입/로그인 (JWT) + 6v6 인프라 등록 + smoke 테스트
 - [x] CCC battle_engine / battle_factory / 17 scenarios 이식
 
+## Phase 7 — 관리자 대시보드 (완료, 2026-05-08)
+
+- [x] 통계 / 진행중 공방전 강제 종료 / 사용자 role 토글 / 시나리오 archive
+- [x] UI Admin 6 탭, 권한 체크 (self-demote 거부 등) tests/test_admin.py 통과
+
+## Phase 6 — 모니터링 + 채점 detail + 리더보드 (완료, 2026-05-08)
+
+- [x] BattleEvent.detail JSONB scoring evidence + UI "채점 근거 ▼" 펼치기
+- [x] `/leaderboard/users` (총점/승/평균) + `/leaderboard/battles/{id}` (rank+이벤트 카운트)
+- [x] UI Leaderboard 페이지
+
+## Phase 5 — Bastion 스크랩 게시판 (완료, 2026-05-08)
+
+- [x] seed_demo (3 데모) + fetch_hn_top + 보안 키워드 정규식 매칭
+- [x] 관리자 승인 → kg_match 에서 course/weeks 추출 → 자동 generate → spawned_scenario_id 링크
+
+## Phase 4 — Claude 미션 검증 + auto-monitor (완료, 2026-05-08)
+
+- [x] LLM 기반 dry-run 4축 평가 (is_plausible / refined_expect / confidence / notes)
+- [x] pass_rate ≥ 0.7 → validated 자동 승격, 미만은 draft 보존
+- [x] battle auto-monitor 60s heartbeat + refined_expect probe 매칭 시 자동 BLUE 점수
+
 ## Phase 3 — Claude Code 시나리오 생성 (완료, 2026-05-08)
 
 - [x] `services/scenario_gen.py` — `claude -p --output-format json` subprocess

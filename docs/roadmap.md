@@ -87,9 +87,16 @@ DoD: `bash scripts/setup.sh && bash scripts/dev.sh api/ui` 후 회원가입 → 
 
 ---
 
-## Phase 7 — 관리자 대시보드 풀
+## Phase 7 — 관리자 대시보드 (완료)
 
-- [ ] 진행중 공방전: 강제 종료 / 삭제
-- [ ] 히스토리 + 사용자별 점수 통계
-- [ ] 시나리오 카탈로그 관리 (활성/비활성/archive)
-- [ ] 사용자 관리 (role 변경, 비활성화)
+- [x] `routers/admin.py` — `/admin/stats` (사용자/시나리오/battle/이벤트/top scorer
+      집계), `/admin/battles` (필터링 + 메타 + monitor_running),
+      `/admin/battles/{id}/force-end`, `/admin/battles/{id}` DELETE,
+      `/admin/users` + PATCH (role / is_active 토글, self-demote 거부),
+      `/admin/scenarios/{id}` PATCH (archive 등) + DELETE
+- [x] UI Admin 6 탭: 통계 / 시나리오 생성 / Bastion 스크랩 / 공방전 관리 /
+      사용자 관리 / 시나리오 관리
+- [x] tests/test_admin.py 3 cases (stats + battle 관리 권한, self-demote 거부,
+      archive 후 학생 노출 차단)
+- [x] e2e 검증: 활성 battle 생성 → 강제 종료 → cancelled + monitor 정지 →
+      scenario archive → 학생 목록에서 사라짐 → battle delete → 204
