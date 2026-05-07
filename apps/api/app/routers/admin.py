@@ -9,11 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
-from ..models import Scenario, User
+from ..models import Scenario, ScrapPost, User
 from ..schemas import ScenarioOut
 from ..security import require_admin
 from ..services import scenario_jobs
 from ..services.dry_run import review_scenario
+from ..services.scrap_crawler import fetch_hn_top, seed_demo
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -112,6 +113,126 @@ async def activate_scenario(
     await session.commit()
     await session.refresh(s)
     return ScenarioOut.model_validate(s)
+
+
+class ScrapOut(BaseModel):
+    id: int
+    source: str
+    source_url: str
+    title: str
+    summary: str
+    relevance: dict
+    status: str
+    decided_at: str | None = None
+    spawned_scenario_id: int | None = None
+    created_at: str
+
+    @classmethod
+    def from_row(cls, r: ScrapPost) -> "ScrapOut":
+        return cls(
+            id=r.id, source=r.source, source_url=r.source_url,
+            title=r.title, summary=r.summary, relevance=r.relevance or {},
+            status=r.status,
+            decided_at=r.decided_at.isoformat() if r.decided_at else None,
+            spawned_scenario_id=r.spawned_scenario_id,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        )
+
+
+@router.get("/scrap", response_model=list[ScrapOut])
+async def list_scrap(
+    status_filter: str | None = None,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[ScrapOut]:
+    q = select(ScrapPost).order_by(ScrapPost.id.desc()).limit(100)
+    if status_filter:
+        q = q.where(ScrapPost.status == status_filter)
+    rows = (await session.scalars(q)).all()
+    return [ScrapOut.from_row(r) for r in rows]
+
+
+@router.post("/scrap/seed")
+async def scrap_seed(
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """데모 데이터 + (네트워크 가능 시) HN top 매칭 게시글 삽입."""
+    n_demo = await seed_demo(session)
+    n_hn = await fetch_hn_top(session, n=5)
+    return {"inserted_demo": n_demo, "inserted_hn": n_hn}
+
+
+class ScrapDecisionOut(BaseModel):
+    scrap: ScrapOut
+    job_id: str | None = None
+
+
+@router.post("/scrap/{scrap_id}/approve", response_model=ScrapDecisionOut)
+async def approve_scrap(
+    scrap_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ScrapDecisionOut:
+    import datetime as _dt
+    sp = await session.get(ScrapPost, scrap_id)
+    if not sp:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "scrap not found")
+    if sp.status != "pending":
+        return ScrapDecisionOut(scrap=ScrapOut.from_row(sp), job_id=None)
+
+    sp.status = "approved"
+    sp.decided_by = admin.id
+    sp.decided_at = _dt.datetime.now(_dt.timezone.utc)
+
+    # KG match 가 있으면 첫 번째 항목을 course/weeks 로 분해
+    course_ref: str | None = None
+    weeks_spec: str | None = None
+    matches = (sp.relevance or {}).get("kg_match") or []
+    if matches:
+        first = matches[0]
+        # "course3-web-vuln/week04" 형태
+        parts = first.split("/")
+        if parts:
+            course_ref = parts[0].split("-")[0]
+        if len(parts) > 1:
+            week_str = parts[1].replace("week", "").lstrip("0") or "1"
+            weeks_spec = week_str
+
+    request = (
+        f"외부 위협 스크랩 기반 공방전: {sp.title}\n"
+        f"요약: {sp.summary}\n"
+        "이 위협을 6v6 인프라에서 재현·탐지·차단하는 Red/Blue 미션을 만들어줘."
+    )
+    job_id = scenario_jobs.start_job(
+        request=request, course_ref=course_ref, weeks_spec=weeks_spec,
+        created_by=admin.id, scrap_id=sp.id,
+    )
+    # job 완료 시 spawned_scenario_id 채우기는 background — 여기서는 일단 job_id 만 기록
+    rel = dict(sp.relevance or {})
+    rel["spawned_job_id"] = job_id
+    sp.relevance = rel
+    await session.commit()
+    await session.refresh(sp)
+    return ScrapDecisionOut(scrap=ScrapOut.from_row(sp), job_id=job_id)
+
+
+@router.post("/scrap/{scrap_id}/reject", response_model=ScrapOut)
+async def reject_scrap(
+    scrap_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ScrapOut:
+    import datetime as _dt
+    sp = await session.get(ScrapPost, scrap_id)
+    if not sp:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "scrap not found")
+    sp.status = "rejected"
+    sp.decided_by = admin.id
+    sp.decided_at = _dt.datetime.now(_dt.timezone.utc)
+    await session.commit()
+    await session.refresh(sp)
+    return ScrapOut.from_row(sp)
 
 
 @router.get("/scenarios/drafts", response_model=list[ScenarioOut])

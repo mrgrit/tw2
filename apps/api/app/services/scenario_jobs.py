@@ -32,7 +32,7 @@ def _utcnow() -> dt.datetime:
 
 
 async def _run_job(job_id: str, *, request: str, course_ref: str | None, weeks_spec: str | None,
-                   created_by: int) -> None:
+                   created_by: int, scrap_id: int | None = None) -> None:
     job = _jobs[job_id]
     job["status"] = "running"
     job["started_at"] = _utcnow().isoformat()
@@ -82,6 +82,14 @@ async def _run_job(job_id: str, *, request: str, course_ref: str | None, weeks_s
             await s.refresh(row)
             job["scenario_id"] = row.id
 
+            # 연결된 ScrapPost 가 있으면 spawned_scenario_id 갱신
+            if scrap_id is not None:
+                from ..models import ScrapPost
+                sp = await s.get(ScrapPost, scrap_id)
+                if sp:
+                    sp.spawned_scenario_id = row.id
+                    await s.commit()
+
         job["status"] = "completed"
         job["finished_at"] = _utcnow().isoformat()
         job["preview"] = {
@@ -112,7 +120,7 @@ async def _run_job(job_id: str, *, request: str, course_ref: str | None, weeks_s
 
 
 def start_job(*, request: str, course_ref: str | None, weeks_spec: str | None,
-              created_by: int) -> str:
+              created_by: int, scrap_id: int | None = None) -> str:
     jid = _new_job_id()
     _jobs[jid] = {
         "id": jid,
@@ -122,9 +130,11 @@ def start_job(*, request: str, course_ref: str | None, weeks_spec: str | None,
         "weeks_spec": weeks_spec,
         "created_by": created_by,
         "queued_at": _utcnow().isoformat(),
+        "scrap_id": scrap_id,
     }
     asyncio.create_task(_run_job(jid, request=request, course_ref=course_ref,
-                                  weeks_spec=weeks_spec, created_by=created_by))
+                                  weeks_spec=weeks_spec, created_by=created_by,
+                                  scrap_id=scrap_id))
     return jid
 
 

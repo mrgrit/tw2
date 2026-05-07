@@ -25,24 +25,53 @@ interface Draft {
   time_limit_sec: number
 }
 
+interface ScrapPost {
+  id: number
+  source: string
+  source_url: string
+  title: string
+  summary: string
+  relevance: any
+  status: 'pending' | 'approved' | 'rejected'
+  decided_at: string | null
+  spawned_scenario_id: number | null
+  created_at: string
+}
+
 export default function Admin() {
   const [request, setRequest] = useState('')
   const [courseRef, setCourseRef] = useState('course3')
   const [weeksSpec, setWeeksSpec] = useState('1-3')
   const [jobs, setJobs] = useState<Job[]>([])
   const [drafts, setDrafts] = useState<Draft[]>([])
+  const [scrap, setScrap] = useState<ScrapPost[]>([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   async function refresh() {
     try {
-      const [j, d] = await Promise.all([
+      const [j, d, s] = await Promise.all([
         api<Job[]>('/admin/scenarios/jobs'),
         api<Draft[]>('/admin/scenarios/drafts'),
+        api<ScrapPost[]>('/admin/scrap'),
       ])
       setJobs(j)
       setDrafts(d)
+      setScrap(s)
     } catch (e: any) { setErr(e.message) }
+  }
+
+  async function seedScrap() {
+    await api('/admin/scrap/seed', { method: 'POST' })
+    await refresh()
+  }
+  async function approveScrap(id: number) {
+    await api(`/admin/scrap/${id}/approve`, { method: 'POST' })
+    await refresh()
+  }
+  async function rejectScrap(id: number) {
+    await api(`/admin/scrap/${id}/reject`, { method: 'POST' })
+    await refresh()
   }
 
   useEffect(() => { refresh() }, [])
@@ -161,9 +190,51 @@ export default function Admin() {
         </div>
       ))}
 
+      <div className="row" style={{ alignItems: 'center', marginTop: 32 }}>
+        <h3 style={{ margin: 0 }}>Bastion 스크랩 게시판</h3>
+        <div style={{ flex: 1 }} />
+        <button className="ghost" onClick={seedScrap}>스크랩 새로고침 (HN + demo)</button>
+      </div>
+      {scrap.length === 0 && (
+        <div className="card" style={{ color: 'var(--fg-dim)' }}>
+          아직 없음 — "스크랩 새로고침" 으로 데모 + HackerNews top 가져오기.
+        </div>
+      )}
+      {scrap.map(s => (
+        <div key={s.id} className="card">
+          <div className="row" style={{ alignItems: 'center' }}>
+            <span className={`badge ${
+              s.status === 'pending' ? 'yellow'
+              : s.status === 'approved' ? 'green' : 'red'
+            }`}>{s.status}</span>
+            <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{s.source}</span>
+            <a href={s.source_url} target="_blank" style={{ fontSize: 12 }}>↗</a>
+            <div style={{ flex: 1 }} />
+            {s.status === 'pending' && (
+              <>
+                <button onClick={() => approveScrap(s.id)}>승인 → 시나리오 생성</button>
+                <button className="danger" onClick={() => rejectScrap(s.id)}>반려</button>
+              </>
+            )}
+            {s.spawned_scenario_id && (
+              <span className="badge blue">scenario #{s.spawned_scenario_id}</span>
+            )}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 14 }}><b>{s.title}</b></div>
+          <div style={{ marginTop: 4, color: 'var(--fg-dim)', fontSize: 13 }}>
+            {s.summary.length > 280 ? s.summary.slice(0, 280) + '…' : s.summary}
+          </div>
+          {s.relevance?.kg_match && (
+            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--fg-dim)' }}>
+              KG 매치: {(s.relevance.kg_match as string[]).join(', ')}
+              {s.relevance.education_score != null && ` · 교육가치 ${s.relevance.education_score}`}
+            </div>
+          )}
+        </div>
+      ))}
+
       <div className="card" style={{ marginTop: 32, background: 'rgba(88,166,255,0.05)' }}>
-        <b>다음 Phase:</b> ScrapPost 게시판 (Bastion 자동 스크랩 → 관리자 승인 → 시나리오 자동 생성)
-        은 Phase 5. 진행중 공방전 강제 종료/통계는 Phase 7.
+        <b>다음 Phase:</b> 진행중 공방전 강제 종료/통계는 Phase 7.
       </div>
     </>
   )

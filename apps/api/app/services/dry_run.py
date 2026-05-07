@@ -45,10 +45,22 @@ class ScenarioReview(BaseModel):
 
 # ── 프롬프트 ────────────────────────────────────────
 _REVIEW_SYSTEM = """\
-You are tubewar's mission auditor. Given a battle scenario built for the 6v6
-lab (single-VM docker-compose with juiceshop:10.20.30.81, dvwa:10.20.30.82,
-web:10.20.30.80 with ModSecurity, siem:10.20.30.100 running Wazuh, attacker
-container on 10.20.30.202), evaluate every red and blue mission.
+You are tubewar's mission auditor. The 6v6 lab baseline (single-VM
+docker-compose) is:
+  - secu        10.20.30.1     nftables + Suricata + Wazuh agent
+  - web         10.20.30.80    Apache + ModSecurity reverse proxy
+  - juiceshop   10.20.30.81    OWASP Juice Shop
+  - dvwa        10.20.30.82
+  - neobank     10.20.30.83    Flask, 30 vulnerabilities
+  - govportal   10.20.30.84    Flask, 25 vulnerabilities
+  - mediforum   10.20.30.85    Flask
+  - adminconsole 10.20.30.86   Flask (RCE / XXE / SSRF / pickle)
+  - aicompanion 10.20.30.87    OWASP LLM Top 10 targets (mock LLM ok)
+  - siem        10.20.30.100   Wazuh manager
+  - bastion     10.20.30.201   SSH jump + Bastion API :9100
+  - attacker    10.20.30.202   nmap / hydra / sqlmap / nikto
+
+Evaluate every red and blue mission against this baseline.
 
 For each mission produce:
 - order: int (mission order)
