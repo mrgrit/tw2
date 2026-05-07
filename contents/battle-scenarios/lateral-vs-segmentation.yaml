@@ -1,0 +1,278 @@
+id: "lateral-vs-segmentation"
+title: "측면 이동 vs 네트워크 분리"
+description: "내부 웹 서버가 침해된 것으로 의심되는 상황이다. Red Team은 탈취한 거점에서 내부 네트워크의 다른 시스템으로 측면 이동을 시도해야 한다. Blue Team은 네트워크 세그멘테이션을 강화하고 내부 트래픽을 모니터링하여 측면 이동을 차단해야 한다."
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+
+red_missions:
+  - order: 1
+    instruction: "내부 네트워크(10.20.30.0/24)의 활성 호스트를 ARP 스캔으로 탐색하라."
+    hint: "nmap -sn -PR 10.20.30.0/24 --max-retries 1 --host-timeout 15s -T4"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "Host is up"
+      semantic:
+        intent: "MITRE T1018 (Remote System Discovery) — ARP 스캔으로 L2 alive host 식별. ICMP 차단 환경에서도 동작. 측면 이동 1단계."
+        success_criteria:
+          - "nmap -sn -PR (ARP ping) + CIDR 대역"
+          - "응답에 Host is up + IP list"
+          - "동일 L2 broadcast 도메인 가정"
+        acceptable_methods:
+          - "nmap -sn -PR 10.20.30.0/24"
+          - "arp-scan -l (전용 도구)"
+          - "arping (단일 host)"
+          - "ip neigh show (cached ARP)"
+        negative_signs:
+          - "ICMP only (-PE) 사용 → 일부 host 누락"
+          - "nmap -sn 만 + -PR 누락 (ARP 안 씀)"
+
+  - order: 2
+    instruction: "SIEM 서버(10.20.30.100)의 열린 포트와 서비스를 스캔하라."
+    hint: "nmap -sV -p 1-10000 10.20.30.100 --max-retries 1 --host-timeout 15s -T4"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "open"
+      semantic:
+        intent: "MITRE T1046 — Wazuh manager (1514/1515/9200/55000) + SSH (22) port 식별. 측면 이동 entry point."
+        success_criteria:
+          - "nmap -sV + 포트 범위 또는 명시"
+          - "응답에 open port + service version"
+          - "Wazuh 표준 port 1개 이상 식별"
+        acceptable_methods:
+          - "nmap -sV -p 1-10000"
+          - "nmap -sV --top-ports 1000 (빠른 옵션)"
+          - "nmap -sV -p 22,1514,1515,9200,55000 (focused)"
+        negative_signs:
+          - "전체 -p- (1-65535) 너무 느림"
+          - "-sV 누락 → service version 정보 없음"
+
+  - order: 3
+    instruction: "보안 장비(10.20.30.1)의 서비스를 스캔하여 접근 가능한 포트를 확인하라."
+    hint: "nmap -sV -p 1-10000 10.20.30.1 --max-retries 1 --host-timeout 15s -T4"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "10.20.30.1"
+      semantic:
+        intent: "Security GW (secu) 의 expose 된 service 식별 — 보통 firewall/IDS 라 minimal. 발견된 service 가 측면 이동 또는 firewall 우회 표적."
+        success_criteria:
+          - "nmap -sV -p 1-10000 10.20.30.1"
+          - "응답에 IP + open port (보통 22 만)"
+          - "minimal 한 attack surface 확인 (firewall best practice)"
+        acceptable_methods:
+          - "nmap -sV -p 1-10000"
+          - "nmap -sS (SYN stealth)"
+          - "masscan + nmap -sV"
+        negative_signs:
+          - "scan timeout 만 + 차단됐다 결론 (실제 IDS 가 silent drop 일 수 있음)"
+          - "fragment scan 등 우회 안 시도"
+
+  - order: 4
+    instruction: "웹 서버에서 SSH 키 파일이 노출되어 있는지 확인하라."
+    hint: "curl -s http://10.20.30.80/.ssh/id_rsa 2>/dev/null; curl -s http://10.20.30.80:8080/.ssh/authorized_keys 2>/dev/null; echo 'SSH key enumeration complete'"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "SSH key enumeration complete"
+      semantic:
+        intent: "MITRE T1552.004 (Private Keys) — 웹 서버의 directory traversal 또는 misconfiguration 으로 .ssh 디렉토리 노출. 발견 시 즉시 측면 이동 가능."
+        success_criteria:
+          - "curl GET /.ssh/id_rsa + /.ssh/authorized_keys (multiple paths)"
+          - "응답 status 분석 (200 노출 vs 404 정상)"
+          - "complete 메시지로 enumeration 종료 확인"
+        acceptable_methods:
+          - "curl + multiple paths"
+          - "ffuf -u URL/.ssh/FUZZ -w wordlist"
+          - "nikto (자동 노출 검사)"
+        negative_signs:
+          - "단일 path 만 시도"
+          - "응답 status 분석 없이 dump"
+
+  - order: 5
+    instruction: "nmap 스크립트로 내부 호스트 간 SMB/NFS 공유 자원을 탐색하라."
+    hint: "nmap --script smb-enum-shares,nfs-showmount -p 139,445,2049 10.20.30.80 10.20.30.100 --max-retries 1 --host-timeout 15s -T4"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "nmap"
+      semantic:
+        intent: "MITRE T1135 (Network Share Discovery) — SMB/NFS share 식별. 잘못 구성된 anonymous share = data exfil + 추가 측면 이동."
+        success_criteria:
+          - "nmap --script smb-enum-shares + nfs-showmount"
+          - "ports 139/445/2049 명시"
+          - "응답에 share list 또는 닫힘 확인"
+        acceptable_methods:
+          - "nmap --script smb-enum-shares,nfs-showmount"
+          - "smbclient -L //<host>"
+          - "showmount -e <host>"
+          - "enum4linux (자동화)"
+        negative_signs:
+          - "단일 host 만 + 다른 host 누락"
+          - "anonymous binding (-N) 안 시도"
+
+  - order: 6
+    instruction: "각 내부 호스트의 SSH 배너를 수집하여 OS 정보를 파악하라."
+    hint: "nmap --script ssh2-enum-algos -p 22 10.20.30.1 10.20.30.80 10.20.30.100 --max-retries 1 --host-timeout 15s -T4"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "ssh2-enum-algos"
+      semantic:
+        intent: "MITRE T1592.002 — SSH banner + algorithm 으로 OS/ssh-version 식별. 약한 알고리즘 (diffie-hellman-group1-sha1) 활성 시 MITM 가능성."
+        success_criteria:
+          - "nmap --script ssh2-enum-algos + 22 port"
+          - "응답에 kex/host_key/encryption_algorithms list"
+          - "약한 알고리즘 식별 또는 강한 set 확인"
+        acceptable_methods:
+          - "nmap --script ssh2-enum-algos"
+          - "ssh -vv <host> (수동)"
+          - "ssh-audit <host> (전용 도구)"
+        negative_signs:
+          - "단일 host 만"
+          - "algorithm list dump 만 + 약점 분석 없음"
+
+blue_missions:
+  - order: 1
+    instruction: "현재 nftables 룰셋을 확인하여 내부 네트워크 세그멘테이션 상태를 점검하라."
+    hint: "nft list ruleset"
+    points: 10
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "table"
+      semantic:
+        intent: "현재 적용된 nftables 정책 audit — table/chain/rule 구조 + counter 확인. 측면 이동 차단 baseline."
+        success_criteria:
+          - "nft list ruleset (또는 list table inet filter)"
+          - "응답에 table + chain + 1개 이상 rule"
+          - "(보너스) packet/byte counter 분석"
+        acceptable_methods:
+          - "nft list ruleset"
+          - "nft list table inet filter"
+          - "nft monitor (실시간)"
+          - "iptables-save (legacy)"
+        negative_signs:
+          - "list 만 + rule 분석 없음"
+          - "table 비어있음 → segmentation 미적용"
+
+  - order: 2
+    instruction: "공격자(10.20.30.201)에서 SIEM(10.20.30.100)으로의 직접 접근을 차단하는 룰을 추가하라."
+    hint: "nft add rule inet filter forward ip saddr 10.20.30.201 ip daddr 10.20.30.100 drop"
+    points: 20
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "Targeted segmentation — attacker → SIEM 직접 차단. zero-trust micro-segmentation 의 가장 단순 패턴."
+        success_criteria:
+          - "nft add rule inet filter forward (또는 input)"
+          - "ip saddr <attacker> + ip daddr <siem> + drop"
+          - "rule 적용 후 nft list 로 확인"
+        acceptable_methods:
+          - "nft add rule + saddr+daddr"
+          - "iptables -I FORWARD (legacy)"
+          - "Cilium NetworkPolicy"
+        negative_signs:
+          - "input chain 만 + forward 누락 (gateway 통과 시 안 막힘)"
+          - "단방향 만 (response 도 차단해야 ESTABLISHED 깨짐)"
+
+  - order: 3
+    instruction: "suricata에서 내부 네트워크 스캔 활동을 탐지한 로그를 확인하라."
+    hint: "grep -i 'scan\\|portscan' /var/log/suricata/fast.log | tail -20"
+    points: 15
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "10.20.30"
+      semantic:
+        intent: "Red #1-3 의 nmap scan 탐지 — Suricata ET sid 2010935/2008716 등. 내부 traffic 모니터링 = lateral movement detection 의 핵심."
+        success_criteria:
+          - "fast.log grep scan/portscan"
+          - "source IP 10.20.30.X (내부) 식별"
+          - "scan 타입 (host/port/script) 분류"
+        acceptable_methods:
+          - "grep + tail fast.log"
+          - "jq '.event_type==\"alert\" and .alert.signature | contains(\"scan\")' eve.json"
+          - "Wazuh suricata decoder"
+          - "Zeek 의 scan.log"
+        negative_signs:
+          - "scan rule 매칭 0 + 다른 alert (예: ICMP) 안 봄"
+          - "source IP 분석 없음"
+
+  - order: 4
+    instruction: "내부 호스트 간 SSH 연결 시도 로그를 분석하라."
+    hint: "grep -i 'ssh\\|sshd' /var/log/auth.log | grep -v 'session opened\\|session closed' | tail -20"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "ssh"
+      semantic:
+        intent: "auth.log 분석 — Red 의 SSH key 노출 시도 (#4) + key 사용 시도 후속. Failed/Accepted password/publickey 로그."
+        success_criteria:
+          - "/var/log/auth.log grep ssh/sshd"
+          - "session 로그 제외 + Failed/Accepted 만 (signal 강화)"
+          - "source IP + user + 실패 횟수 분석"
+        acceptable_methods:
+          - "grep + tail auth.log"
+          - "lastb (실패 list)"
+          - "journalctl -u sshd"
+          - "fail2ban filter (자동 차단)"
+        negative_signs:
+          - "session 로그 (정상) 까지 dump"
+          - "source IP 분석 없음"
+
+  - order: 5
+    instruction: "Wazuh에서 내부 네트워크 이상 트래픽 알림을 확인하라."
+    hint: "grep -i 'lateral\\|internal\\|scan' /var/ossec/logs/alerts/alerts.json | tail -20"
+    points: 15
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "alert"
+      semantic:
+        intent: "Wazuh의 lateral movement 카테고리 룰 (group lateral_movement) 매칭. SIEM 차원 통합 detection."
+        success_criteria:
+          - "alerts.json grep lateral/internal/scan"
+          - "최소 1개 alert 의 rule.id + groups + agent.name"
+          - "rule level (10+ critical) 분류"
+        acceptable_methods:
+          - "grep + tail alerts.json"
+          - "jq '.rule.groups[] | contains(\"lateral_movement\")' alerts.json"
+          - "Wazuh API: GET /security/agents/<id>/alerts?q=group:lateral_movement"
+        negative_signs:
+          - "alerts.json 비어있음 — Wazuh lateral 룰 미적용"
+          - "raw alert dump 만"
+
+  - order: 6
+    instruction: "nftables에 내부 호스트 간 허용된 포트만 통신 가능하도록 화이트리스트 룰을 추가하라."
+    hint: "nft add rule inet filter forward ip saddr 10.20.30.0/24 ip daddr 10.20.30.0/24 tcp dport != { 22, 80, 443, 1514, 1515 } drop"
+    points: 15
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "Default-deny micro-segmentation — 내부 traffic 도 allowlist port (22/80/443/Wazuh 1514-1515) 만 허용. zero-trust 핵심."
+        success_criteria:
+          - "nft add rule + ip saddr/daddr 동일 subnet (10.20.30.0/24)"
+          - "tcp dport != { allowlist } drop (또는 reverse: == drop, != accept)"
+          - "Wazuh + SSH + HTTP/HTTPS 만 허용"
+        acceptable_methods:
+          - "nft + multi-port set"
+          - "iptables -m multiport"
+          - "Cilium NetworkPolicy (L4)"
+          - "Calico GlobalNetworkPolicy"
+        negative_signs:
+          - "필요 포트 (1514 wazuh) 누락 → service down"
+          - "default accept 후 일부 만 drop (allowlist 의 반대 → 우회 쉬움)"

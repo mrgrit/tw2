@@ -1,0 +1,294 @@
+id: "xss-vs-filter"
+title: "XSS 공격 vs 입력 필터링"
+description: "고객 포털 사이트에서 사용자 입력값이 제대로 검증되지 않는다는 제보가 접수되었다. Red Team은 다양한 XSS 벡터를 시도하여 스크립트 실행을 증명해야 한다. Blue Team은 WAF 룰과 CSP 헤더를 점검하고 강화하여 XSS 공격을 원천 차단해야 한다."
+difficulty: "easy"
+time_limit: 1800
+battle_type: "1v1"
+
+red_missions:
+  - order: 1
+    instruction: "JuiceShop(http://10.20.30.80:3000)의 검색 기능에 Reflected XSS 페이로드를 삽입하라."
+    hint: "curl -s 'http://10.20.30.80:3000/#/search?q=<script>alert(1)</script>'"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "script"
+      semantic:
+        intent: "JuiceShop SPA(Angular) 의 검색 hash route(#/search?q=) 에 reflected XSS 페이로드 주입 — 클라이언트사이드 sink 에서 스크립트 실행 가능 여부 확인. OWASP A03 (Injection) 입문."
+        success_criteria:
+          - "GET /#/search?q= 에 <script> 또는 동등 페이로드"
+          - "URL 인코딩 정확 (필요 시 %3C %3E)"
+          - "응답 HTML 또는 SPA 렌더 결과에 페이로드 echo 또는 alert 트리거 증거"
+        acceptable_methods:
+          - "curl -s '/#/search?q=...' (단순 reflect 확인)"
+          - "browser DevTools 로 alert 발생 직접 확인"
+          - "headless chrome (puppeteer) 자동 검증"
+          - "XSStrike 자동 페이로드 변형"
+        negative_signs:
+          - "응답에 페이로드 escape (&lt;script&gt;) 만 보임"
+          - "Angular sanitizer 가 자동 차단 (DomSanitizationService)"
+          - "단순 page load 만 확인하고 reflect 증명 없음"
+
+  - order: 2
+    instruction: "DVWA(http://10.20.30.80:8080)의 XSS(Reflected) 페이지에서 스크립트 삽입을 시도하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/xss_r/?name=<script>alert(document.cookie)</script>' -b 'security=low; PHPSESSID=test'"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "<script>"
+      semantic:
+        intent: "DVWA Reflected XSS — name 파라미터가 escape 없이 HTML 본문에 echo. document.cookie 페이로드로 세션 탈취 가능성 입증. XSS 의 가장 기본 패턴."
+        success_criteria:
+          - "GET /vulnerabilities/xss_r/?name=<script>... 형태"
+          - "PHPSESSID + security=low 쿠키 (인증 + 보안레벨)"
+          - "응답 HTML 에 <script> 태그 그대로 echo (escape 안 됨)"
+        acceptable_methods:
+          - "curl GET 직접"
+          - "Burp Repeater 로 reproduce + DOM 변화 확인"
+          - "XSS Hunter / blind-xss receiver 로 cookie 수집"
+        negative_signs:
+          - "쿠키 누락 → 로그인 redirect (응답에 페이로드 미포함)"
+          - "응답에 &lt;script&gt; escape (취약 안 됨)"
+          - "200 만 받고 reflect 증명 없음"
+
+  - order: 3
+    instruction: "DVWA의 XSS(Stored) 페이지에 Stored XSS 페이로드를 저장하라."
+    hint: "curl -s -X POST 'http://10.20.30.80:8080/vulnerabilities/xss_s/' -b 'security=low; PHPSESSID=test' -d 'txtName=hacker&mtxMessage=<script>alert(1)</script>&btnSign=Sign+Guestbook'"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "Guestbook"
+      semantic:
+        intent: "DVWA Stored XSS — mtxMessage 가 DB 저장 후 다른 방문자에게 영구 노출. Reflected 보다 임팩트 큼 (1회 저장 → 다수 victim). OWASP A03 + 영속성 측면."
+        success_criteria:
+          - "POST /vulnerabilities/xss_s/ + form-urlencoded body"
+          - "mtxMessage 파라미터에 XSS 페이로드"
+          - "응답에 Guestbook 또는 저장 성공 페이지 (방명록 페이지 재로드)"
+        acceptable_methods:
+          - "curl -X POST -d ..."
+          - "Burp Repeater 로 reproduce 후 GET /vulnerabilities/xss_s/ 로 저장 확인"
+          - "headless browser 로 form submit 자동화"
+        negative_signs:
+          - "POST 안 보내고 GET 만 (저장 안 됨)"
+          - "btnSign 누락 → submit 처리 안 됨"
+          - "max length 제한으로 페이로드 잘림"
+
+  - order: 4
+    instruction: "img 태그의 onerror 이벤트를 이용한 XSS 우회를 시도하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/xss_r/?name=<img src=x onerror=alert(1)>' -b 'security=low; PHPSESSID=test'"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "onerror"
+      semantic:
+        intent: "<script> 태그 차단 우회 — <img onerror=...> 는 이벤트 핸들러 기반 우회. WAF 의 단순 <script> 패턴 매칭 회피. OWASP XSS Cheat Sheet 의 대표 변형."
+        success_criteria:
+          - "GET /xss_r/?name=<img src=x onerror=...>"
+          - "응답 HTML 에 <img ...> 또는 onerror= 그대로 echo"
+          - "src=x (의도적 broken) 로 onerror 트리거 보장"
+        acceptable_methods:
+          - "<img onerror=...>"
+          - "<svg onload=...> (다음 #5)"
+          - "<body onload=...>"
+          - "<iframe src=javascript:...> (CSP 약하면)"
+        negative_signs:
+          - "<img> 만 echo + onerror 제거 (Sanitizer 부분 차단)"
+          - "src 누락으로 onerror 발동 안 함"
+          - "단순 string echo 만 + DOM 트리거 증거 없음"
+
+  - order: 5
+    instruction: "SVG 태그를 이용한 XSS 페이로드로 필터 우회를 시도하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/xss_r/?name=<svg onload=alert(1)>' -b 'security=low; PHPSESSID=test'"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "svg"
+      semantic:
+        intent: "<svg> 태그 + onload 이벤트 — DOMPurify 같은 sanitizer 가 SVG 컨텐츠 처리 미흡한 경우 우회. XSS 우회 벡터 다양성 학습."
+        success_criteria:
+          - "GET /xss_r/?name=<svg onload=...>"
+          - "응답 HTML 에 <svg> + onload 그대로 echo"
+          - "URL 인코딩 정확 (%3Csvg%20onload%3D... 가능)"
+        acceptable_methods:
+          - "<svg onload=...>"
+          - "<svg><script>...</script></svg>"
+          - "data URI 로 SVG inline (CSP 우회용)"
+          - "filter chain (uppercase/encoding/comment) 추가 변형"
+        negative_signs:
+          - "Sanitizer 가 onload= 만 제거"
+          - "응답에 <svg> 태그 자체가 escape"
+          - "단순 reflect 증명만 + 트리거 evidence 없음"
+
+  - order: 6
+    instruction: "whatweb으로 JuiceShop의 보안 헤더 설정 상태를 확인하라."
+    hint: "whatweb http://10.20.30.80:3000 -v"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "http://10.20.30.80:3000"
+      semantic:
+        intent: "whatweb 으로 대상 사이트의 기술 스택 + 보안 헤더 (CSP/X-Frame-Options/HSTS/X-XSS-Protection) 식별 — XSS 가능성 사전 평가. PTES Discovery 단계."
+        success_criteria:
+          - "whatweb URL 명령 실행"
+          - "출력에 대상 URL + technology fingerprint (Express/Angular/Node 등)"
+          - "보안 헤더 누락 또는 설정 정보 보고"
+        acceptable_methods:
+          - "whatweb -v 또는 -a 1~4 (aggression level)"
+          - "curl -I + grep -E 'Content-Security|X-XSS|X-Frame' (수동)"
+          - "wappalyzer-cli (대안)"
+          - "nmap http-headers script"
+        negative_signs:
+          - "whatweb 미설치 → 대안 도구 안 씀"
+          - "URL 만 echo + 보안 분석 없음"
+          - "단순 page download (curl GET) 으로 끝"
+
+blue_missions:
+  - order: 1
+    instruction: "ModSecurity 로그에서 XSS 공격 탐지 이벤트를 확인하라."
+    hint: "grep -i 'xss\\|cross-site' /var/log/apache2/modsec_audit.log | tail -20"
+    points: 10
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "XSS"
+      semantic:
+        intent: "ModSecurity audit log 에서 OWASP CRS rule 941xxx (XSS 카테고리) 트리거 확인 — Red 의 페이로드 (script/onerror/svg) 가 WAF 에 detected 됐는지."
+        success_criteria:
+          - "modsec_audit.log 읽기 + grep XSS/cross-site/941"
+          - "최소 1개 이벤트의 rule id + msg + matched data 확인"
+          - "단순 grep count 가 아닌 분석 (어떤 페이로드/url)"
+        acceptable_methods:
+          - "cat + grep -iE 'xss|941|<script' modsec_audit.log"
+          - "tail -f 로 실시간"
+          - "jq (modsec3 JSON)"
+          - "logwatch / OWASP CRS report 통합"
+        negative_signs:
+          - "audit log 비어있음 → SecAuditEngine 미적용"
+          - "rule 941xxx 안 보이고 942xxx (SQLi) 만 — XSS 룰 미적용"
+          - "raw 덤프만 + rule 분석 없음"
+
+  - order: 2
+    instruction: "현재 적용된 ModSecurity XSS 관련 룰을 확인하라."
+    hint: "grep -r 'xss\\|cross-site' /etc/modsecurity/ | head -20"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "xss"
+      semantic:
+        intent: "/etc/modsecurity/ 디렉토리에서 OWASP CRS REQUEST-941-APPLICATION-ATTACK-XSS.conf 같은 XSS rule set 적용 여부 확인. paranoia level + tx.detection_paranoia_level 도 점검 대상."
+        success_criteria:
+          - "grep -r xss/cross-site 또는 941 in /etc/modsecurity/"
+          - "REQUEST-941-* 또는 모듈명 노출"
+          - "rule id (941xxx 영역) 또는 detection action 확인"
+        acceptable_methods:
+          - "grep -rni 'xss\\|941' /etc/modsecurity/"
+          - "find + xargs grep"
+          - "modsecurity-cli rules-list (있으면)"
+          - "ls /usr/share/modsecurity-crs/rules/ 로 카테고리 직접 확인"
+        negative_signs:
+          - "/etc/modsecurity/ 비어있음 → CRS 미설치"
+          - "grep 결과 0 — XSS rule set 미포함 (custom only)"
+          - "config 파일 path 잘못 (apache2 vs httpd vs nginx)"
+
+  - order: 3
+    instruction: "ModSecurity에 이벤트 핸들러 기반 XSS를 차단하는 커스텀 룰을 추가하라."
+    hint: "echo 'SecRule ARGS \"on(error|load|click|mouseover)\\s*=\" \"id:100002,phase:2,deny,status:403,msg:XSS Event Handler Block\"' >> /etc/modsecurity/custom-rules.conf"
+    points: 20
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "Red #4/#5 의 onerror/onload 이벤트 핸들러 우회를 차단하는 SecRule. PCRE 패턴으로 on[a-z]+\\s*= 매칭. CRS 941 보강."
+        success_criteria:
+          - "SecRule ARGS 에 on(error|load|click|...)= 정규식 매칭"
+          - "rule id 가 reserved (1~99999)"
+          - "phase:2 (request body 포함) + deny + status 403 + 의미있는 msg"
+        acceptable_methods:
+          - "echo 'SecRule ...' >> custom-rules.conf"
+          - "vim/sed 직접 편집"
+          - "Ansible/Salt 로 template 배포"
+          - "OWASP CRS exclusions 문법으로 paranoia level 올리기 (대안)"
+        negative_signs:
+          - "rule id 충돌 (CRS 941xxx 영역 사용)"
+          - "phase:1 (header only) — body XSS 못 잡음"
+          - "deny 대신 pass — 효과 0"
+          - "정규식이 너무 엄격 → benign 입력도 차단 (false positive)"
+
+  - order: 4
+    instruction: "웹 서버의 응답 헤더에 Content-Security-Policy가 설정되어 있는지 확인하라."
+    hint: "curl -sI http://10.20.30.80:3000 | grep -i 'content-security-policy'"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "Content-Security-Policy"
+      semantic:
+        intent: "CSP 응답 헤더로 XSS 방어 — script-src/style-src/default-src 등 정책으로 inline script 차단. 헤더 누락 시 XSS 페이로드 실행 가능성 큼."
+        success_criteria:
+          - "curl -I (HEAD) 로 응답 헤더 추출"
+          - "Content-Security-Policy 헤더 존재 + 값 노출"
+          - "(보너스) script-src 정책의 'self'/'nonce-...'/'strict-dynamic' 분석"
+        acceptable_methods:
+          - "curl -sI"
+          - "curl -sv (verbose)"
+          - "wget --server-response"
+          - "browser DevTools Network tab"
+          - "securityheaders.com (외부 단, 격리 환경 무관)"
+        negative_signs:
+          - "헤더 누락 — CSP 미설정 (XSS 방어 약함)"
+          - "Content-Security-Policy-Report-Only — 차단 안 함, 보고만"
+          - "헤더 있는데 unsafe-inline/unsafe-eval 포함 (정책 약함)"
+
+  - order: 5
+    instruction: "Apache 설정에 X-XSS-Protection 헤더를 추가하라."
+    hint: "echo 'Header set X-XSS-Protection \"1; mode=block\"' >> /etc/apache2/conf-enabled/security.conf"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "X-XSS-Protection: 1; mode=block — 구형 브라우저(Edge legacy/IE) reflected XSS auditor 활성. 현대 브라우저 (Chrome/Firefox 최신) 는 deprecated 지만 lab 환경 호환성 위해 추가."
+        success_criteria:
+          - "Header set X-XSS-Protection 라인 추가"
+          - "/etc/apache2/conf-enabled/security.conf 또는 vhost 설정"
+          - "value: 1; mode=block (block 우선, sanitize 보다 안전)"
+        acceptable_methods:
+          - "echo >> security.conf"
+          - "Header always set ... (graceful merge)"
+          - "Apache mod_headers 활성 후 vhost 설정"
+        negative_signs:
+          - "mod_headers 미활성 → 헤더 적용 안 됨"
+          - "value: 0 (비활성)"
+          - "reload 누락 → 변경 적용 안 됨"
+
+  - order: 6
+    instruction: "suricata 로그에서 XSS 패턴 탐지 기록을 확인하라."
+    hint: "grep -i 'xss\\|script' /var/log/suricata/fast.log | tail -10"
+    points: 10
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "script"
+      semantic:
+        intent: "Suricata IDS 의 ET (Emerging Threats) HTTP/XSS 시그니처 매칭 — 네트워크 레벨 탐지. WAF (HTTP layer) 와 별개의 방어막."
+        success_criteria:
+          - "/var/log/suricata/fast.log 또는 eve.json 읽기"
+          - "grep -i 'xss\\|script' 매칭"
+          - "최소 1개 alert 의 sid + msg + classification 노출"
+        acceptable_methods:
+          - "grep + tail fast.log"
+          - "jq '.event_type==\"alert\"' eve.json | grep -i xss"
+          - "suricatasc 로 stat 확인"
+        negative_signs:
+          - "Suricata 미실행"
+          - "fast.log 비어있음 — Red traffic 이 secu 미경유"
+          - "alert 보이지만 sid/msg 분석 없이 raw"

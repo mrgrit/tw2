@@ -1,0 +1,284 @@
+id: "recon-vs-detect"
+title: "네트워크 정찰 vs IDS 탐지"
+description: "공격자가 내부 네트워크에 침입한 흔적이 발견되었다. Red Team은 타겟 인프라의 네트워크 구조와 서비스 정보를 최대한 수집해야 한다. Blue Team은 IDS 알림을 모니터링하고, 공격자를 식별하여 실시간으로 차단해야 한다. 최초 탐지부터 차단까지의 속도가 승부를 가른다."
+difficulty: "easy"
+time_limit: 1800
+battle_type: "1v1"
+
+red_missions:
+  - order: 1
+    instruction: "nmap을 사용하여 10.20.30.0/24 대역의 활성 호스트를 탐색하라."
+    hint: "nmap -sn 10.20.30.0/24 --max-retries 1 --host-timeout 15s -T4"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "Host is up"
+      semantic:
+        intent: "MITRE T1018 (Remote System Discovery) — 가장 기본적 정찰. ICMP/ARP ping sweep 으로 alive host enumerate. 후속 port scan + service enum 의 baseline."
+        success_criteria:
+          - "nmap -sn (no port scan, ping only) + CIDR 대역"
+          - "응답에 'Host is up' 라인 1개 이상 (alive host 확인)"
+          - "alive host list 추출 (다음 step 의 target)"
+        acceptable_methods:
+          - "nmap -sn 10.20.30.0/24"
+          - "nmap -sP (legacy alias of -sn)"
+          - "fping -a -g 10.20.30.0/24 (alternate)"
+          - "for h in $(seq 1 254); do ping -c1 -W1 10.20.30.$h; done (slow fallback)"
+        negative_signs:
+          - "단일 host 만 ping + sweep 없음"
+          - "-T4 timing 누락 → 너무 느림"
+          - "ICMP 차단 환경 — TCP ping (-PS) 으로 fallback 안 함"
+
+  - order: 2
+    instruction: "웹 서버(10.20.30.80)의 열린 포트와 서비스 버전을 스캔하라."
+    hint: "nmap -sV -p 1-10000 10.20.30.80 --max-retries 1 --host-timeout 15s -T4"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "Apache"
+      semantic:
+        intent: "MITRE T1046 (Network Service Discovery) + T1592 (Gather Victim Host Info) — port + service version. attack vector 의 1차 식별 (Apache vs nginx vs Express 등)."
+        success_criteria:
+          - "nmap -sV (service version) + 적절한 port 범위"
+          - "응답에 80/tcp open + Apache 시그니처"
+          - "다른 open port (8080 DVWA, 3000 JuiceShop) 식별"
+        acceptable_methods:
+          - "nmap -sV -p- (전체 포트 — 시간 김)"
+          - "nmap -sV --top-ports 1000 (빠른 옵션)"
+          - "masscan + nmap -sV (속도 + 정확도)"
+          - "scan_ports skill"
+        negative_signs:
+          - "-sV 누락 — version 정보 없음"
+          - "단일 포트 (80) 만 + 다른 service 누락"
+
+  - order: 3
+    instruction: "whatweb을 사용하여 웹 서버(http://10.20.30.80)의 기술 스택을 식별하라."
+    hint: "whatweb http://10.20.30.80"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "HTTPServer"
+      semantic:
+        intent: "MITRE T1592.002 (Gather Victim Host Info: Software) — application layer fingerprint. nmap -sV 가 못 잡는 framework (Angular/Express/PHP 버전 등) 식별."
+        success_criteria:
+          - "whatweb URL 명령 (또는 -v aggressive)"
+          - "응답에 HTTPServer + 추가 fingerprint (Apache/2.4.X / Express / WordPress)"
+          - "탐지된 plugin / cookie / meta tag list"
+        acceptable_methods:
+          - "whatweb -v http://10.20.30.80"
+          - "wappalyzer-cli (alternate)"
+          - "curl -I + 헤더 분석 (수동)"
+          - "BuiltWith / Wappalyzer browser extension"
+        negative_signs:
+          - "whatweb 미설치 → fallback 안 씀"
+          - "응답에 단순 URL echo 만 + fingerprint 없음"
+
+  - order: 4
+    instruction: "nmap 스크립트를 사용하여 웹 서버의 HTTP 헤더와 배너 정보를 수집하라."
+    hint: "nmap -sV --script=http-headers 10.20.30.80 -p 80 --max-retries 1 --host-timeout 15s -T4"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "http-headers"
+      semantic:
+        intent: "MITRE T1190 prep — HTTP response 헤더 (Server / X-Powered-By / Set-Cookie) 정보. 보안 헤더 누락 (CSP/HSTS/X-Frame-Options) 식별 → 후속 공격 표면."
+        success_criteria:
+          - "nmap --script=http-headers (NSE script)"
+          - "응답에 http-headers section + Server: 헤더"
+          - "보안 헤더 (CSP/X-Frame/HSTS) 부재 또는 약함 분석"
+        acceptable_methods:
+          - "nmap --script=http-headers"
+          - "nmap --script=http-* -p 80,443 (전체 http NSE)"
+          - "curl -I -s URL"
+          - "wget --server-response --spider"
+        negative_signs:
+          - "script 옵션 잘못 (http-header vs http-headers)"
+          - "응답에 raw http response 만 + 헤더 분석 없음"
+
+  - order: 5
+    instruction: "nikto를 사용하여 웹 서버(http://10.20.30.80)의 취약점을 스캔하라."
+    hint: "nikto -h http://10.20.30.80 -maxtime 60s"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "Server:"
+      semantic:
+        intent: "Web vuln scanner — 6700+ alert (default file/dir/CGI/version) 자동 검사. PTES Vulnerability Analysis 단계 표준 도구."
+        success_criteria:
+          - "nikto -h URL + -maxtime 또는 -timeout 옵션"
+          - "응답에 Server: + 발견 항목 (OSVDB-N / Allowed methods / sensitive files)"
+          - "최소 1개 finding (X-Frame-Options / cookies / outdated server 등)"
+        acceptable_methods:
+          - "nikto -h URL -maxtime 60s"
+          - "nikto -h URL -port 80,8080,3000 (multi)"
+          - "wapiti / arachni (alternate scanner)"
+          - "OWASP ZAP automated scan"
+        negative_signs:
+          - "nikto 미설치"
+          - "-maxtime 누락 → 너무 길게 실행"
+          - "응답에 Server header 만 + finding 분석 없음"
+
+  - order: 6
+    instruction: "JuiceShop(10.20.30.80:3000)에 대해 디렉토리 브루트포싱을 수행하라."
+    hint: "nmap --script http-enum -p 3000 10.20.30.80 --max-retries 1 --host-timeout 15s -T4"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "http-enum"
+      semantic:
+        intent: "MITRE T1083 (File and Directory Discovery) — 숨겨진 endpoint 식별 (/admin /api /backup 등). 후속 BAC/IDOR/info disclosure 의 prerequisite."
+        success_criteria:
+          - "nmap --script http-enum (또는 ffuf/dirb/gobuster)"
+          - "JuiceShop port 3000 명시"
+          - "응답에 발견 path 1개 이상 (/api / /rest / /assets 등)"
+        acceptable_methods:
+          - "nmap --script http-enum -p 3000"
+          - "ffuf -u http://10.20.30.80:3000/FUZZ -w common.txt"
+          - "gobuster dir -u URL -w wordlist"
+          - "dirb URL"
+        negative_signs:
+          - "wordlist 너무 작음 → 발견 0 (common path 누락)"
+          - "단순 root 만 GET + brute 없음"
+
+blue_missions:
+  - order: 1
+    instruction: "suricata의 실시간 알림 로그에서 스캔 탐지 이벤트를 확인하라."
+    hint: "tail -20 /var/log/suricata/fast.log"
+    points: 10
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "10.20.30.201"
+      semantic:
+        intent: "Red 의 nmap/whatweb/nikto 가 ET (Emerging Threats) scan 카테고리 시그니처 (sid 2010935 nmap, 2008716 nikto 등) 매칭. 1차 탐지 신호."
+        success_criteria:
+          - "/var/log/suricata/fast.log 읽기"
+          - "최근 alert 라인 + source IP 10.20.30.201 (attacker) 식별"
+          - "alert classification (scan/web-attack) 분류"
+        acceptable_methods:
+          - "tail /var/log/suricata/fast.log"
+          - "tail -f (실시간)"
+          - "jq '.event_type==\"alert\"' eve.json | tail"
+          - "Wazuh suricata decoder"
+        negative_signs:
+          - "fast.log path 잘못 또는 비어있음"
+          - "alert 보이지만 attacker IP 안 추출"
+
+  - order: 2
+    instruction: "suricata 알림에서 탐지된 공격 유형(SID)을 식별하라."
+    hint: "cat /var/log/suricata/fast.log | grep -oP '\\[\\d+:\\d+:\\d+\\]' | sort -u"
+    points: 15
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "["
+      semantic:
+        intent: "alert 별 SID (signature ID) 식별 — 어떤 공격 유형 (scan/exploit/policy violation) 인지 분류. 후속 차단 룰 설계의 기초."
+        success_criteria:
+          - "fast.log 또는 eve.json 의 [gid:sid:rev] 추출"
+          - "SID 별 분포 — sort | uniq -c"
+          - "최소 1개 unique SID 식별"
+        acceptable_methods:
+          - "grep -oP '\\[\\d+:\\d+:\\d+\\]' fast.log | sort -u"
+          - "jq '.alert.signature_id' eve.json | sort -u"
+          - "suricata-update list-sources (signature 카테고리)"
+        negative_signs:
+          - "regex 잘못 → SID 매칭 0"
+          - "SID 만 + 의미 (signature description) 안 봄"
+
+  - order: 3
+    instruction: "nftables를 사용하여 공격자 IP(10.20.30.201)에서 오는 모든 트래픽을 차단하라."
+    hint: "nft add rule inet filter input ip saddr 10.20.30.201 drop"
+    points: 20
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "1차 containment — attacker IP 전체 차단. 정찰 단계에서 차단해야 후속 exploit 차단. MTTC (Mean Time to Contain) 의 핵심 지표."
+        success_criteria:
+          - "nft add rule inet filter input ip saddr <attacker> drop"
+          - "log prefix 추가 (감사 추적)"
+          - "rule 적용 직후 nft list 로 확인"
+        acceptable_methods:
+          - "nft add rule + log prefix + drop"
+          - "iptables -I INPUT -s <ip> -j DROP (legacy)"
+          - "fail2ban (자동화)"
+          - "configure_nftables skill"
+        negative_signs:
+          - "drop 만 + log 누락 → 차단 추적 불가"
+          - "input chain 만 + forward/output 누락"
+
+  - order: 4
+    instruction: "nftables 룰셋을 확인하여 차단 룰이 정상 적용되었는지 검증하라."
+    hint: "nft list ruleset | grep 10.20.30.201"
+    points: 10
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "10.20.30.201"
+      semantic:
+        intent: "차단 룰 적용 후 verification — production 운영 표준. 적용 안 됐을 가능성 (syntax error, table 미존재) 차단."
+        success_criteria:
+          - "nft list ruleset (또는 list table)"
+          - "grep 으로 attacker IP 매칭 확인"
+          - "rule 의 chain + handle + counter 확인"
+        acceptable_methods:
+          - "nft list ruleset | grep <ip>"
+          - "nft list table inet filter"
+          - "iptables -L -n -v (legacy)"
+          - "diff <(이전 ruleset) <(새 ruleset)"
+        negative_signs:
+          - "list 안 함 — 적용 여부 unverified"
+          - "rule 보이지만 counter (packets) 안 봄"
+
+  - order: 5
+    instruction: "Wazuh에서 네트워크 스캔 관련 알림을 확인하라."
+    hint: "cat /var/ossec/logs/alerts/alerts.json | tail -50 | grep -i scan"
+    points: 15
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "alert"
+      semantic:
+        intent: "Wazuh decoder 가 suricata alerts 를 수집해 SIEM 차원 alert 생성. 다른 source (Apache log + Wazuh agent) 와 결합 가능."
+        success_criteria:
+          - "/var/ossec/logs/alerts/alerts.json 읽기"
+          - "grep -i 'scan|recon' 매칭"
+          - "최소 1개 alert 의 rule.id + agent.name + decoder 확인"
+        acceptable_methods:
+          - "cat + tail + grep alerts.json"
+          - "jq '.rule.groups[]==\"scan\"' alerts.json"
+          - "Wazuh API: GET /security/agents/<id>/alerts?q=group:scan"
+          - "Kibana scan dashboard"
+        negative_signs:
+          - "alerts.json 비어있음 — Wazuh-suricata 통합 미설정"
+          - "raw dump 만 + rule 분석 없음"
+
+  - order: 6
+    instruction: "suricata의 eve.json 로그에서 공격자의 스캔 패턴을 분석하라."
+    hint: "cat /var/log/suricata/eve.json | grep 10.20.30.201 | tail -10"
+    points: 15
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "10.20.30.201"
+      semantic:
+        intent: "eve.json 의 detail event (flow / http / dns / alert) 시간순 분석 — attacker 의 scan 패턴 (서비스 enum 순서, 시간 간격) 식별. 행동 분석 보고서."
+        success_criteria:
+          - "eve.json 읽기 + attacker IP grep"
+          - "event_type 별 분포 (flow/alert/http)"
+          - "시간순 정렬 + 패턴 (port enum order, dwell time) 분석"
+        acceptable_methods:
+          - "grep + tail eve.json"
+          - "jq 'select(.src_ip==\"<ip>\") | {timestamp, event_type, ...}' eve.json"
+          - "ELK/Loki query"
+        negative_signs:
+          - "단순 grep dump 만 + 시간순 분석 없음"
+          - "event_type 별 분류 누락"

