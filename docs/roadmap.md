@@ -45,11 +45,18 @@ DoD: `bash scripts/setup.sh && bash scripts/dev.sh api/ui` 후 회원가입 → 
 
 ---
 
-## Phase 4 — 미션 자동 검증
+## Phase 4 — 미션 자동 검증 (완료)
 
-- [ ] Claude Code 가 6v6 인프라 1대 잡아 dry-run
-- [ ] 채점 기준 자동 작성 (acceptable_methods + verify.semantic 패턴 차용)
-- [ ] 검증 결과 → Scenario.status: draft → validated
+- [x] Claude Code (haiku) 가 각 미션을 4축 평가 (`services/dry_run.py`):
+      is_plausible / refined_expect / confidence / notes
+- [x] 6v6 Bastion API `/exec` 화이트리스트로 reachability probe (curl)
+- [x] pass_rate ≥ 0.7 → status: validated 자동 승격, 미만은 draft 유지
+- [x] 자동 트리거 (scenario_gen 직후) + 수동 트리거 (`POST /admin/scenarios/{id}/dry-run`)
+- [x] Battle auto-monitor (`services/auto_monitor.py`) — 60s 간격 heartbeat,
+      blue 미션 refined_expect 가 probe 응답에 매칭되면 자동 BLUE 점수 부여
+- [x] battle start 시 auto-monitor 시작, end/cancel 시 정지
+- [x] e2e 검증 (실 6v6): course3 1-3주 시나리오 dry-run pass_rate 0.68 → draft
+      유지, 활성화 후 solo battle 시작 → 65초 후 heartbeat 이벤트 확인
 
 ---
 

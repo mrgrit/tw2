@@ -20,7 +20,7 @@ from ..schemas import (
     BattleOut, BattleParticipantOut,
 )
 from ..security import get_current_user, require_admin
-from ..services import battle_service as bs
+from ..services import auto_monitor, battle_service as bs
 
 router = APIRouter(prefix="/battles", tags=["battles"])
 
@@ -111,6 +111,9 @@ async def start_battle(
         b = await bs.start_battle(session, battle_id, actor_user_id=user.id)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    # Phase 4 — auto-monitor 활성화
+    if b.monitor == "bastion":
+        auto_monitor.start(battle_id)
     s = await session.get(Scenario, b.scenario_id) if b.scenario_id else None
     return _serialize(b, s.title if s else None)
 
@@ -152,6 +155,7 @@ async def end_battle(
         b = await bs.end_battle(session, battle_id, actor_user_id=user.id)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    auto_monitor.stop(battle_id)
     s = await session.get(Scenario, b.scenario_id) if b.scenario_id else None
     return _serialize(b, s.title if s else None)
 
@@ -179,6 +183,7 @@ async def cancel_battle(
         b = await bs.cancel_battle(session, battle_id, actor_user_id=admin.id)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    auto_monitor.stop(battle_id)
     s = await session.get(Scenario, b.scenario_id) if b.scenario_id else None
     return _serialize(b, s.title if s else None)
 

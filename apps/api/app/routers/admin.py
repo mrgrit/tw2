@@ -13,6 +13,7 @@ from ..models import Scenario, User
 from ..schemas import ScenarioOut
 from ..security import require_admin
 from ..services import scenario_jobs
+from ..services.dry_run import review_scenario
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -69,6 +70,32 @@ async def get_job(job_id: str, admin: User = Depends(require_admin)) -> JobOut:
     if not j:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "job not found")
     return JobOut(**j)
+
+
+@router.post("/scenarios/{scenario_id}/dry-run")
+async def trigger_dry_run(
+    scenario_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """수동 dry-run 트리거 — 자동 dry-run 이 실패했거나 시나리오 수정 후 재검증할 때."""
+    s = await session.get(Scenario, scenario_id)
+    if not s:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "scenario not found")
+    from ..models import Infra
+    infra = (await session.scalars(select(Infra).limit(1))).first()
+    scenario_dict = {
+        "title": s.title, "description": s.description,
+        "mission_red": s.mission_red, "mission_blue": s.mission_blue,
+    }
+    result = await review_scenario(scenario_dict, infra=infra)
+    scoring = dict(s.scoring or {})
+    scoring["dry_run"] = result
+    s.scoring = scoring
+    if result.get("passed"):
+        s.status = "validated"
+    await session.commit()
+    return result
 
 
 @router.post("/scenarios/{scenario_id}/activate", response_model=ScenarioOut)

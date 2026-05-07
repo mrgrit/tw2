@@ -13,8 +13,9 @@ from typing import Any
 from .scenario_gen import (
     GeneratedScenario, ScenarioGenerationError, generate_scenario,
 )
+from .dry_run import review_scenario
 from ..db import SessionLocal
-from ..models import Scenario
+from ..models import Infra, Scenario
 
 log = logging.getLogger(__name__)
 
@@ -40,19 +41,25 @@ async def _run_job(job_id: str, *, request: str, course_ref: str | None, weeks_s
             request=request, course_ref=course_ref, weeks_spec=weeks_spec,
         )
         # DB 에 draft 로 저장
+        scenario_dict = {
+            "title": scenario.title,
+            "description": scenario.description,
+            "mission_red": {
+                "missions": [m.model_dump() for m in scenario.red_missions],
+                "battle_type": scenario.battle_type_hint,
+            },
+            "mission_blue": {
+                "missions": [m.model_dump() for m in scenario.blue_missions],
+            },
+        }
         async with SessionLocal() as s:
             row = Scenario(
                 title=scenario.title,
                 description=scenario.description,
                 source="claude",
                 course_ref=(course_ref or "claude-generated"),
-                mission_red={
-                    "missions": [m.model_dump() for m in scenario.red_missions],
-                    "battle_type": scenario.battle_type_hint,
-                },
-                mission_blue={
-                    "missions": [m.model_dump() for m in scenario.blue_missions],
-                },
+                mission_red=scenario_dict["mission_red"],
+                mission_blue=scenario_dict["mission_blue"],
                 scoring={
                     "red": {
                         "count": len(scenario.red_missions),
@@ -86,6 +93,12 @@ async def _run_job(job_id: str, *, request: str, course_ref: str | None, weeks_s
         }
         job["meta"] = meta
         log.info("scenario job %s ok scenario_id=%s", job_id, job.get("scenario_id"))
+
+        # Phase 4 — 자동 dry-run (백그라운드, fire-and-forget)
+        try:
+            asyncio.create_task(_run_dry_run(job_id, job["scenario_id"], scenario_dict))
+        except Exception:
+            log.exception("could not schedule dry-run")
     except ScenarioGenerationError as e:
         job["status"] = "failed"
         job["finished_at"] = _utcnow().isoformat()
@@ -113,6 +126,39 @@ def start_job(*, request: str, course_ref: str | None, weeks_spec: str | None,
     asyncio.create_task(_run_job(jid, request=request, course_ref=course_ref,
                                   weeks_spec=weeks_spec, created_by=created_by))
     return jid
+
+
+async def _run_dry_run(job_id: str, scenario_id: int, scenario_dict: dict) -> None:
+    """LLM 기반 미션 정합성 검토. infra 가 등록돼 있으면 reachability probe 도."""
+    job = _jobs.get(job_id, {})
+    job["dry_run_status"] = "running"
+    try:
+        async with SessionLocal() as s:
+            from sqlalchemy import select
+            infra = (await s.scalars(select(Infra).limit(1))).first()
+            result = await review_scenario(scenario_dict, infra=infra)
+
+            row = await s.get(Scenario, scenario_id)
+            if row:
+                scoring = dict(row.scoring or {})
+                scoring["dry_run"] = result
+                row.scoring = scoring
+                if result.get("passed"):
+                    row.status = "validated"
+                await s.commit()
+
+        job["dry_run_status"] = "completed" if result.get("passed") else "failed"
+        job["dry_run"] = {
+            "passed": result.get("passed"),
+            "pass_rate": result.get("pass_rate"),
+            "summary": result.get("summary"),
+        }
+        log.info("dry-run for scenario %s: passed=%s rate=%s",
+                 scenario_id, result.get("passed"), result.get("pass_rate"))
+    except Exception as e:
+        log.exception("dry-run task crashed")
+        job["dry_run_status"] = "error"
+        job["dry_run"] = {"error": f"{type(e).__name__}: {e}"}
 
 
 def get_job(job_id: str) -> dict[str, Any] | None:
