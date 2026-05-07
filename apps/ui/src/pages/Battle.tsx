@@ -205,6 +205,46 @@ export default function Battle() {
   )
 }
 
+function EventRow({ e }: { e: BattleEvent }) {
+  const [open, setOpen] = useState(false)
+  const hasDetail = e.detail && Object.keys(e.detail).length > 0
+  return (
+    <div className="card" style={{ padding: 12 }}>
+      <div className="row" style={{ alignItems: 'center', fontSize: 13 }}>
+        <span className={`badge ${eventTypePalette[e.event_type] || 'yellow'}`}>{e.event_type}</span>
+        <span style={{ color: 'var(--fg-dim)' }}>{new Date(e.ts).toLocaleTimeString()}</span>
+        {e.target && <span style={{ color: 'var(--fg-dim)' }}>target: <code>{e.target}</code></span>}
+        {e.actor_user_id && <span style={{ color: 'var(--fg-dim)' }}>by user #{e.actor_user_id}</span>}
+        {e.points !== 0 && <span className={`badge ${e.points > 0 ? 'green' : 'red'}`}>
+          {e.points > 0 ? '+' : ''}{e.points}
+        </span>}
+        <div style={{ flex: 1 }} />
+        {hasDetail && (
+          <button className="ghost" style={{ padding: '2px 8px', fontSize: 12 }}
+            onClick={() => setOpen(o => !o)}>
+            {open ? '채점 근거 ▲' : '채점 근거 ▼'}
+          </button>
+        )}
+      </div>
+      {e.description && <div style={{ marginTop: 4 }}>{e.description}</div>}
+      {open && hasDetail && (
+        <div style={{ marginTop: 8, padding: 8, background: 'rgba(255,255,255,0.04)',
+                      borderRadius: 6, fontSize: 12 }}>
+          {(e.detail.source === 'auto_monitor') && (
+            <div style={{ color: 'var(--green)', marginBottom: 6 }}>
+              자동 모니터: probe 응답이 blue 미션 #{e.detail.blue_mission_order} 의
+              expect <code>{String(e.detail.matched_expect)}</code> 와 일치
+            </div>
+          )}
+          <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            {JSON.stringify(e.detail, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function BattleView({
   b, onClose, onStart, onEnd, onRefresh,
 }: {
@@ -308,21 +348,7 @@ function BattleView({
       )}
 
       <h3>이벤트 타임라인</h3>
-      {b.events.slice().reverse().map(e => (
-        <div key={e.id} className="card" style={{ padding: 12 }}>
-          <div className="row" style={{ alignItems: 'center', fontSize: 13 }}>
-            <span className={`badge ${eventTypePalette[e.event_type] || 'yellow'}`}>{e.event_type}</span>
-            <span style={{ color: 'var(--fg-dim)' }}>{new Date(e.ts).toLocaleTimeString()}</span>
-            {e.target && <span style={{ color: 'var(--fg-dim)' }}>target: <code>{e.target}</code></span>}
-            {e.actor_user_id && <span style={{ color: 'var(--fg-dim)' }}>by user #{e.actor_user_id}</span>}
-            {e.points !== 0 && <span className={`badge ${e.points > 0 ? 'green' : 'red'}`}>
-              {e.points > 0 ? '+' : ''}{e.points}
-            </span>}
-            <div style={{ flex: 1 }} />
-          </div>
-          {e.description && <div style={{ marginTop: 4 }}>{e.description}</div>}
-        </div>
-      ))}
+      {b.events.slice().reverse().map(e => <EventRow key={e.id} e={e} />)}
     </>
   )
 }

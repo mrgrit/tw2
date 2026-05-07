@@ -5,6 +5,7 @@ import Signup from './pages/Signup.tsx'
 import Dashboard from './pages/Dashboard.tsx'
 import MyInfra from './pages/MyInfra.tsx'
 import Battle from './pages/Battle.tsx'
+import Leaderboard from './pages/Leaderboard.tsx'
 import Admin from './pages/Admin.tsx'
 import { getUser, isAdmin, isAuthed, logout } from './auth.ts'
 
@@ -22,6 +23,7 @@ function NavBar() {
       <Link to="/dashboard">대시보드</Link>
       <Link to="/myinfra">내 인프라</Link>
       <Link to="/battle">공방전</Link>
+      <Link to="/leaderboard">리더보드</Link>
       {isAdmin() && <Link to="/admin">관리자</Link>}
       <div style={{ flex: 1 }} />
       <span style={{ color: 'var(--fg-dim)', fontSize: 13 }}>{user.name} ({user.role})</span>
@@ -53,8 +55,9 @@ export default function App() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
           <Route path="/myinfra"   element={<RequireAuth><MyInfra /></RequireAuth>} />
-          <Route path="/battle"    element={<RequireAuth><Battle /></RequireAuth>} />
-          <Route path="/admin"     element={<RequireAdmin><Admin /></RequireAdmin>} />
+          <Route path="/battle"      element={<RequireAuth><Battle /></RequireAuth>} />
+          <Route path="/leaderboard" element={<RequireAuth><Leaderboard /></RequireAuth>} />
+          <Route path="/admin"       element={<RequireAdmin><Admin /></RequireAdmin>} />
         </Routes>
       </main>
     </>

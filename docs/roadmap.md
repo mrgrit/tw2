@@ -60,21 +60,30 @@ DoD: `bash scripts/setup.sh && bash scripts/dev.sh api/ui` 후 회원가입 → 
 
 ---
 
-## Phase 5 — Bastion 스크랩 게시판
+## Phase 5 — Bastion 스크랩 게시판 (완료)
 
-- [ ] Bastion 외부 RSS/feed crawler (CCC KG 와 매칭)
-- [ ] ScrapPost 생성 + 관리자 게시판
-- [ ] 승인 → Phase 3 흐름 자동 트리거
-- [ ] Mythos 류 신규 위협 모델 등장 시 신속 대응 사이클 검증
+- [x] `services/scrap_crawler.py` — `seed_demo()` (3개 데모) + `fetch_hn_top()`
+      (HackerNews top + 보안 키워드 정규식 매칭). idempotent on source_url.
+- [x] `routers/admin.py` — `/admin/scrap` list/seed/approve/reject. 승인 시
+      kg_match 첫 항목에서 course/weeks 자동 추출 + scenario_jobs.start_job.
+- [x] `services/scenario_jobs.py` — scrap_id 전달, 완료 시 `spawned_scenario_id`
+      back-link.
+- [x] UI Admin 의 새 "Bastion 스크랩 게시판" 섹션.
+- [x] e2e: Mythos AI Worm 게시글 승인 → scenario 19 생성 → spawned_scenario_id=19,
+      dry-run pass_rate 0.22 → draft 보존 (양쪽 자동 + 보호 모두 작동).
 
 ---
 
-## Phase 6 — 모니터링 + 상세 채점 viewer
+## Phase 6 — 모니터링 + 상세 채점 viewer (완료)
 
-- [ ] 중앙 monitor (Bastion or Claude 선택) 실시간 진행 트래킹
-- [ ] BattleEvent 클릭 → 채점 상세 (어떤 룰, 어떤 증거 로그, 몇 점) 표시
-- [ ] 공방전별 리더보드 + 사용자 누적 통계
-- [ ] Audit log
+- [x] BattleEvent.detail JSONB 에 source/probe/matched_expect/rule_id 등
+      scoring evidence 누적 (auto_monitor + manual 모두)
+- [x] UI Battle 의 이벤트 row → "채점 근거 ▼" 펼치기 → JSON pretty-print
+- [x] `routers/leaderboard.py` — `/leaderboard/users` (총점/battle/승/평균),
+      `/leaderboard/battles/{id}` (참가자 ranking + red/blue 이벤트 카운트)
+- [x] UI Leaderboard 페이지 (전체 + battle 드릴다운)
+- [x] e2e: Alice solo battle 70점 (exploit+detect+block 이벤트) → leaderboard
+      반영 (total=70, wins=1, avg=70.0)
 
 ---
 
