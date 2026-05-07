@@ -85,6 +85,8 @@ class BattleOut(BaseModel):
     mode: str
     status: str
     monitor: str
+    target_apps: list[str] = Field(default_factory=list)
+    hint_enabled: bool = False
     started_at: dt.datetime | None
     ended_at: dt.datetime | None
     time_limit_sec: int
@@ -113,6 +115,9 @@ class BattleCreateIn(BaseModel):
     scenario_id: int
     mode: str = Field(pattern=r"^(solo|duel|ffa)$")
     monitor: str = Field(default="bastion", pattern=r"^(bastion|claude)$")
+    # 6v6 8개 취약 웹 중 1~5 또는 ['random']. 빈 리스트면 시나리오 default 사용.
+    target_apps: list[str] = Field(default_factory=list, max_length=8)
+    hint_enabled: bool = Field(default=False)
     participants: list[BattleParticipantIn] = Field(min_length=1, max_length=16)
 
 
@@ -131,6 +136,7 @@ class BattleEventOut(BaseModel):
     target: str
     description: str
     detail: dict[str, Any]
+    reasoning: str | None = None
     points: int
     ts: dt.datetime
 

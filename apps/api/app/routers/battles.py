@@ -20,7 +20,7 @@ from ..schemas import (
     BattleOut, BattleParticipantOut,
 )
 from ..security import get_current_user, require_admin
-from ..services import auto_monitor, battle_service as bs
+from ..services import auto_monitor, battle_service as bs, hints as hint_svc
 
 router = APIRouter(prefix="/battles", tags=["battles"])
 
@@ -91,6 +91,8 @@ async def create_battle(
             monitor=body.monitor,
             participants=parts,
             created_by=user.id,
+            target_apps=body.target_apps,
+            hint_enabled=body.hint_enabled,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -111,8 +113,8 @@ async def start_battle(
         b = await bs.start_battle(session, battle_id, actor_user_id=user.id)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-    # Phase 4 — auto-monitor 활성화
-    if b.monitor == "bastion":
+    # Phase 4 + 9 — auto-monitor 활성화 (bastion / claude 모두)
+    if b.monitor in ("bastion", "claude"):
         auto_monitor.start(battle_id)
     s = await session.get(Scenario, b.scenario_id) if b.scenario_id else None
     return _serialize(b, s.title if s else None)
@@ -188,6 +190,53 @@ async def cancel_battle(
     return _serialize(b, s.title if s else None)
 
 
+# ── 힌트 ────────────────────────────────────────────
+from pydantic import BaseModel, Field
+
+
+class HintIn(BaseModel):
+    mission_side: str = Field(default="any", pattern=r"^(red|blue|any)$")
+    note: str = Field(default="", max_length=500)
+
+
+class HintOut(BaseModel):
+    text: str
+    model: str
+    cache_hit: bool
+    cost_usd: float
+    cooldown_remaining_sec: float
+
+
+@router.post("/{battle_id}/hint", response_model=HintOut)
+async def request_hint(
+    battle_id: int,
+    body: HintIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> HintOut:
+    b = await session.get(Battle, battle_id)
+    if not b:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "battle not found")
+    if user.role != "admin" and not await bs.is_participant(session, battle_id, user.id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "only participants or admin can request hints")
+    try:
+        hr = await hint_svc.request_hint(
+            session, battle=b, user_id=user.id,
+            mission_side=body.mission_side, note=body.note,
+        )
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("cooldown"):
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, msg,
+                                headers={"Retry-After": "60"})
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, msg)
+    return HintOut(
+        text=hr.text, model=hr.model, cache_hit=hr.cache_hit,
+        cost_usd=hr.cost_usd,
+        cooldown_remaining_sec=hint_svc.cooldown_remaining(battle_id, user.id),
+    )
+
+
 # ── SSE 라이브 스트림 ───────────────────────────────
 @router.get("/{battle_id}/stream")
 async def stream_events(
@@ -200,10 +249,11 @@ async def stream_events(
 
     구현 단순화 — DB 폴링 (poll_interval 초). Phase 6 에서 redis pubsub 등으로 대체.
     """
-    # 권한 — 참가자 또는 admin (관전자 역할 추가는 Phase 7)
+    # Phase 9: 인증된 사용자는 누구나 read-only 관전 가능. 이벤트 push 는 별도 endpoint.
     async with SessionLocal() as s0:
-        if user.role != "admin" and not await bs.is_participant(s0, battle_id, user.id):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "not a participant")
+        b0 = await s0.get(Battle, battle_id)
+        if not b0:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "battle not found")
 
     async def gen() -> AsyncIterator[bytes]:
         last_event_id = 0
@@ -267,5 +317,6 @@ def _event_payload(e: BattleEvent) -> dict:
         "event_type": e.event_type,
         "target": e.target, "description": e.description,
         "detail": e.detail or {},
+        "reasoning": e.reasoning,
         "points": e.points,
     }

@@ -57,6 +57,12 @@ def validate_participants(mode: str, participants: list[dict]) -> None:
 
 
 # ── 생성 / 조회 / 시작 / 종료 ─────────────────────────
+VALID_TARGET_APPS = {
+    "juiceshop", "dvwa", "neobank", "mediforum",
+    "govportal", "aicompanion", "adminconsole", "web",
+}
+
+
 async def create_battle(
     session: AsyncSession,
     *,
@@ -65,6 +71,8 @@ async def create_battle(
     monitor: str,
     participants: list[dict],
     created_by: int,
+    target_apps: list[str] | None = None,
+    hint_enabled: bool = False,
 ) -> Battle:
     validate_participants(mode, participants)
 
@@ -84,10 +92,23 @@ async def create_battle(
             if not inf or inf.owner_id != p["user_id"]:
                 raise ValueError(f"infra {p['infra_id']} not owned by user {p['user_id']}")
 
+    apps = [a.lower() for a in (target_apps or [])]
+    if apps == ["random"]:
+        import random
+        apps = random.sample(sorted(VALID_TARGET_APPS), k=random.randint(2, 4))
+    else:
+        bad = [a for a in apps if a not in VALID_TARGET_APPS]
+        if bad:
+            raise ValueError(f"unknown target_apps: {bad}. valid: {sorted(VALID_TARGET_APPS)}")
+        if len(apps) > 5:
+            raise ValueError("max 5 target_apps (or ['random'])")
+
     battle = Battle(
         scenario_id=scenario_id,
         mode=mode,
         monitor=monitor,
+        target_apps=apps,
+        hint_enabled=bool(hint_enabled),
         time_limit_sec=int(scenario.time_limit_sec),
         status="pending",
         created_by=created_by,
@@ -162,12 +183,13 @@ async def add_event(
     session: AsyncSession,
     *,
     battle_id: int,
-    actor_user_id: int,
+    actor_user_id: int | None,
     event_type: str,
     target: str,
     description: str,
     points: int,
     detail: dict,
+    reasoning: str | None = None,
 ) -> BattleEvent:
     """이벤트 추가 + actor 점수 반영 + 시간 만료 시 자동 종료."""
     b = await session.get(Battle, battle_id)
@@ -183,6 +205,7 @@ async def add_event(
         target=target,
         description=description,
         detail=detail or {},
+        reasoning=reasoning,
         points=points,
     )
     session.add(ev)

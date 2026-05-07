@@ -86,6 +86,9 @@ class Battle(Base):
     mode: Mapped[str] = mapped_column(String(16), nullable=False)         # solo | duel | ffa
     status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)  # pending | active | completed | cancelled
     monitor: Mapped[str] = mapped_column(String(16), default="bastion", nullable=False)  # bastion | claude
+    # Phase 9: 공방전 옵션
+    target_apps: Mapped[list] = mapped_column(JSON, default=list, nullable=False)   # ['juiceshop', 'dvwa', ...] 또는 ['random']
+    hint_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     time_limit_sec: Mapped[int] = mapped_column(Integer, default=1800, nullable=False)
@@ -125,12 +128,32 @@ class BattleEvent(Base):
     target: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     detail: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # Phase 9: LLM 자연어 채점 근거 보고서 (markdown 가능)
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     ts: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     battle: Mapped["Battle"] = relationship(back_populates="events")
+
+
+class BattleHint(Base):
+    """학생이 명시 요청 시 LLM 이 생성한 힌트. 동일 (battle, mission) 캐시 + cooldown 추적."""
+    __tablename__ = "battle_hints"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    battle_id: Mapped[int] = mapped_column(ForeignKey("battles.id", ondelete="CASCADE"), index=True)
+    requested_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    mission_side: Mapped[str] = mapped_column(String(8), default="any", nullable=False)  # red | blue | any
+    mission_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    probe_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)  # 동일 상태 캐시
+    text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    model: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    cost_usd: Mapped[float] = mapped_column(Integer, default=0, nullable=False)  # int 로 충분 (cents)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class AuditLog(Base):
