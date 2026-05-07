@@ -7,6 +7,7 @@ import MyInfra from './pages/MyInfra.tsx'
 import Battle from './pages/Battle.tsx'
 import Leaderboard from './pages/Leaderboard.tsx'
 import Admin from './pages/Admin.tsx'
+import Profile from './pages/Profile.tsx'
 import { getUser, isAdmin, isAuthed, logout } from './auth.ts'
 
 function NavBar() {
@@ -26,7 +27,9 @@ function NavBar() {
       <Link to="/leaderboard">리더보드</Link>
       {isAdmin() && <Link to="/admin">관리자</Link>}
       <div style={{ flex: 1 }} />
-      <span style={{ color: 'var(--fg-dim)', fontSize: 13 }}>{user.name} ({user.role})</span>
+      <Link to="/profile" style={{ color: 'var(--fg-dim)', fontSize: 13 }}>
+        {user.name} ({user.role})
+      </Link>
       <button className="ghost" onClick={() => { logout(); nav('/login') }}>로그아웃</button>
     </nav>
   )
@@ -55,6 +58,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
           <Route path="/myinfra"   element={<RequireAuth><MyInfra /></RequireAuth>} />
+          <Route path="/profile"   element={<RequireAuth><Profile /></RequireAuth>} />
           <Route path="/battle"      element={<RequireAuth><Battle /></RequireAuth>} />
           <Route path="/leaderboard" element={<RequireAuth><Leaderboard /></RequireAuth>} />
           <Route path="/admin"       element={<RequireAdmin><Admin /></RequireAdmin>} />
