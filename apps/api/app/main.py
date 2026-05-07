@@ -14,8 +14,9 @@ from sqlalchemy import select
 from .config import get_settings
 from .db import Base, SessionLocal, engine
 from .models import User
-from .routers import auth, infras, battles
+from .routers import auth, infras, battles, scenarios
 from .security import hash_password
+from .services.scenario_loader import import_scenarios
 
 log = logging.getLogger("tubewar")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -38,6 +39,9 @@ async def lifespan(app: FastAPI):
             s.add(admin)
             await s.commit()
             log.info("bootstrapped admin user: %s", settings.admin_email)
+        n = await import_scenarios(s)
+        if n:
+            log.info("imported %d scenarios from contents/battle-scenarios/", n)
     log.info("tubewar API ready on %s:%s", settings.api_host, settings.api_port)
     yield
 
@@ -65,4 +69,5 @@ async def health() -> dict:
 
 app.include_router(auth.router)
 app.include_router(infras.router)
+app.include_router(scenarios.router)
 app.include_router(battles.router)

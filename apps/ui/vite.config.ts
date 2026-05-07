@@ -7,10 +7,11 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     proxy: {
-      '/auth':    'http://127.0.0.1:9200',
-      '/infras':  'http://127.0.0.1:9200',
-      '/battles': 'http://127.0.0.1:9200',
-      '/health':  'http://127.0.0.1:9200',
+      '/auth':      'http://127.0.0.1:9200',
+      '/infras':    'http://127.0.0.1:9200',
+      '/scenarios': 'http://127.0.0.1:9200',
+      '/battles':   { target: 'http://127.0.0.1:9200', changeOrigin: false, ws: false },
+      '/health':    'http://127.0.0.1:9200',
     },
   },
 })

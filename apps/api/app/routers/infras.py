@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..crypto import encrypt
 from ..db import get_session
 from ..models import Infra, User
 from ..schemas import InfraIn, InfraOut, SmokeResult
@@ -37,7 +38,7 @@ async def create(body: InfraIn, user: User = Depends(get_current_user), session:
         name=body.name,
         vm_ip=body.vm_ip,
         ssh_user=body.ssh_user,
-        ssh_password_enc=body.ssh_password,  # TODO Phase 2 암호화
+        ssh_password_enc=encrypt(body.ssh_password),
         bastion_api_key=body.bastion_api_key,
         status="registered",
     )

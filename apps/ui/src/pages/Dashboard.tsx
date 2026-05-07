@@ -7,10 +7,12 @@ export default function Dashboard() {
   const user = getUser()!
   const [infraCount, setInfraCount] = useState<number | null>(null)
   const [battleCount, setBattleCount] = useState<number | null>(null)
+  const [scenarioCount, setScenarioCount] = useState<number | null>(null)
 
   useEffect(() => {
     api<any[]>('/infras').then(d => setInfraCount(d.length)).catch(() => setInfraCount(0))
     api<any[]>('/battles').then(d => setBattleCount(d.length)).catch(() => setBattleCount(0))
+    api<any[]>('/scenarios').then(d => setScenarioCount(d.length)).catch(() => setScenarioCount(0))
   }, [])
 
   return (
@@ -29,11 +31,18 @@ export default function Dashboard() {
           <Link to="/myinfra">관리하기 →</Link>
         </div>
         <div className="card" style={{ flex: 1 }}>
-          <div style={{ color: 'var(--fg-dim)', fontSize: 13 }}>참여 가능 공방전</div>
+          <div style={{ color: 'var(--fg-dim)', fontSize: 13 }}>활성 시나리오</div>
+          <div style={{ fontSize: 32, fontWeight: 700, marginTop: 6 }}>
+            {scenarioCount ?? '...'}
+          </div>
+          <Link to="/battle">시작하기 →</Link>
+        </div>
+        <div className="card" style={{ flex: 1 }}>
+          <div style={{ color: 'var(--fg-dim)', fontSize: 13 }}>최근 공방전</div>
           <div style={{ fontSize: 32, fontWeight: 700, marginTop: 6 }}>
             {battleCount ?? '...'}
           </div>
-          <Link to="/battle">참가하기 →</Link>
+          <Link to="/battle">목록 보기 →</Link>
         </div>
       </div>
 

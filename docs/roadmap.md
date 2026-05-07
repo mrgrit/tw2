@@ -17,16 +17,20 @@ DoD: `bash scripts/setup.sh && bash scripts/dev.sh api/ui` 후 회원가입 → 
 
 ---
 
-## Phase 2 — 공방전 MVP
+## Phase 2 — 공방전 MVP (현재)
 
-- [ ] battle_engine 의 in-memory dict → DB persistence
-- [ ] solo / duel / ffa 모드 백엔드 로직
-- [ ] Bastion API 연동: 미션 spec push, run-history pull
-- [ ] 점수 evaluator (시나리오 scoring rule → BattleEvent + score)
-- [ ] SSE 이벤트 스트림 → Battle 상황판
-- [ ] 학생 SSH 자격 암호화 (Fernet, key in env)
-- [ ] 시나리오 17 종 (CCC 카탈로그) DB import
-- [ ] e2e: 시나리오 선택 → battle 생성 → solo 모드 1회 완료까지
+- [x] battle_engine 의 in-memory dict → DB persistence (`services/battle_service.py`)
+- [x] solo / duel / ffa 모드 백엔드 로직 (validate_participants + 권한 체크)
+- [x] 점수 evaluator (BattleEvent.points → BattleParticipant.score 즉시 반영)
+- [x] SSE 이벤트 스트림 (`/battles/{id}/stream`, 폴링 기반 — Phase 6 에서 redis pubsub 으로 대체)
+- [x] 학생 SSH 자격 Fernet 암호화 (`crypto.py`, env `TUBEWAR_FERNET_KEY`)
+- [x] 시나리오 17 종 DB import (lifespan 부트스트랩)
+- [x] UI Battle 페이지: 시나리오 선택 → solo 시작 → 이벤트 push → 스코어보드
+- [x] 6v6 Bastion API 클라이언트 stub (`services/six_client.py`)
+- [x] e2e: signup → infra 등록 → 시나리오 선택 → solo battle 생성/시작/이벤트/종료
+- [ ] **Phase 2 잔여** — Bastion API push (미션 spec), pull (run-history) 자동화. 자동
+      monitor 폴링 task. (Phase 4 의 Claude monitor 와 합쳐서 진행 예정.)
+- [ ] **Phase 2 잔여** — duel/ffa 모드 UI (현재는 solo 만 UI 구현. duel/ffa 는 API 만)
 
 ---
 

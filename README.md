@@ -63,15 +63,20 @@ bash scripts/dev.sh api      # http://127.0.0.1:9200
 bash scripts/dev.sh ui       # http://127.0.0.1:5173
 ```
 
-## Phase 1 (현재) 완료 기준
+## Phase 1 — 골격 (완료, 2026-05-07)
 
-- [x] repo 골격 + git
-- [ ] FastAPI: 회원가입 / 로그인 / JWT
-- [ ] FastAPI: 6v6 인프라 등록 + smoke 테스트
-- [ ] React: Login / Signup / Dashboard / MyInfra / Battle(placeholder) / Admin(placeholder)
-- [ ] PostgreSQL (docker compose) + 모델 + 마이그레이션
-- [ ] CCC battle_engine / battle_factory / battle-scenarios 이식
-- [ ] dev.sh, setup.sh, CLAUDE.md, docs/architecture.md, docs/roadmap.md
+- [x] repo 골격 + git, FastAPI 백엔드, React UI, PostgreSQL docker-compose
+- [x] 회원가입/로그인 (JWT) + 6v6 인프라 등록 + smoke 테스트
+- [x] CCC battle_engine / battle_factory / 17 scenarios 이식
+
+## Phase 2 — 공방전 MVP (완료, 2026-05-07)
+
+- [x] battle DB persistence (`services/battle_service.py`) + solo/duel/ffa 모드
+- [x] 시나리오 17 종 자동 import (lifespan)
+- [x] SSH 자격 Fernet 암호화 (`crypto.py`)
+- [x] SSE 이벤트 스트림 + UI Battle 페이지 (시나리오 선택 → solo → 이벤트 → 스코어보드)
+- [x] 6v6 Bastion API client stub
+- [x] 테스트 7/7 PASS, 실제 postgres + uvicorn + UI 빌드 e2e 검증
 
 ## 후속 Phase 로드맵
 

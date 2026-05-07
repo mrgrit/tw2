@@ -90,4 +90,57 @@ class BattleOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class BattleParticipantIn(BaseModel):
+    user_id: int
+    role: str = Field(pattern=r"^(red|blue|solo|free|observer)$")
+    infra_id: int | None = None
+
+
+class BattleParticipantOut(BaseModel):
+    id: int
+    user_id: int
+    infra_id: int | None
+    role: str
+    score: int
+
+    model_config = {"from_attributes": True}
+
+
+class BattleCreateIn(BaseModel):
+    scenario_id: int
+    mode: str = Field(pattern=r"^(solo|duel|ffa)$")
+    monitor: str = Field(default="bastion", pattern=r"^(bastion|claude)$")
+    participants: list[BattleParticipantIn] = Field(min_length=1, max_length=16)
+
+
+class BattleEventIn(BaseModel):
+    event_type: str = Field(min_length=1, max_length=24)
+    target: str = Field(default="", max_length=120)
+    description: str = Field(default="", max_length=2000)
+    points: int = Field(default=0, ge=-100, le=200)
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class BattleEventOut(BaseModel):
+    id: int
+    actor_user_id: int | None
+    event_type: str
+    target: str
+    description: str
+    detail: dict[str, Any]
+    points: int
+    ts: dt.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BattleDetail(BaseModel):
+    battle: BattleOut
+    scenario_title: str | None
+    participants: list[BattleParticipantOut]
+    events: list[BattleEventOut]
+    elapsed_sec: float
+    remaining_sec: float
+
+
 TokenOut.model_rebuild()
