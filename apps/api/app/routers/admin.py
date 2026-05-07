@@ -3,16 +3,16 @@
 권한: 모든 엔드포인트 require_admin. Phase 5 에서 ScrapPost 승인 path 도 여기에 추가.
 """
 from __future__ import annotations
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
-from ..models import Battle, BattleEvent, BattleParticipant, Scenario, ScrapPost, User
+from ..models import AuditLog, Battle, BattleEvent, BattleParticipant, Scenario, ScrapPost, User
 from ..schemas import ScenarioOut
 from ..security import require_admin
-from ..services import auto_monitor, battle_service as bs, scenario_jobs
+from ..services import audit, auto_monitor, battle_service as bs, scenario_jobs
 from ..services.dry_run import review_scenario
 from ..services.scrap_crawler import fetch_hn_top, seed_demo
 
@@ -50,12 +50,24 @@ class ActivateIn(BaseModel):
 
 
 @router.post("/scenarios/generate", response_model=GenerateOut, status_code=202)
-async def generate(body: GenerateIn, admin: User = Depends(require_admin)) -> GenerateOut:
+async def generate(
+    body: GenerateIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> GenerateOut:
     jid = scenario_jobs.start_job(
         request=body.request,
         course_ref=body.course_ref,
         weeks_spec=body.weeks_spec,
         created_by=admin.id,
+    )
+    await audit.record(
+        session, actor=admin, action="scenario.generate",
+        target_type="job", target_id=jid,
+        detail={"course_ref": body.course_ref, "weeks_spec": body.weeks_spec,
+                "request_preview": body.request[:200]},
+        request=request,
     )
     return GenerateOut(job_id=jid, status="queued")
 
@@ -76,6 +88,7 @@ async def get_job(job_id: str, admin: User = Depends(require_admin)) -> JobOut:
 @router.post("/scenarios/{scenario_id}/dry-run")
 async def trigger_dry_run(
     scenario_id: int,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -96,6 +109,14 @@ async def trigger_dry_run(
     if result.get("passed"):
         s.status = "validated"
     await session.commit()
+    await audit.record(
+        session, actor=admin, action="scenario.dry_run",
+        target_type="scenario", target_id=scenario_id,
+        detail={"passed": bool(result.get("passed")),
+                "pass_rate": result.get("pass_rate"),
+                "promoted_to_validated": result.get("passed")},
+        request=request,
+    )
     return result
 
 
@@ -103,15 +124,24 @@ async def trigger_dry_run(
 async def activate_scenario(
     scenario_id: int,
     body: ActivateIn,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ScenarioOut:
     s = await session.get(Scenario, scenario_id)
     if not s:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "scenario not found")
+    prev = s.status
     s.status = "validated" if body.activate else "draft"
     await session.commit()
     await session.refresh(s)
+    await audit.record(
+        session, actor=admin,
+        action="scenario.activate" if body.activate else "scenario.deactivate",
+        target_type="scenario", target_id=scenario_id,
+        detail={"prev_status": prev, "new_status": s.status},
+        request=request,
+    )
     return ScenarioOut.model_validate(s)
 
 
@@ -171,6 +201,7 @@ class ScrapDecisionOut(BaseModel):
 @router.post("/scrap/{scrap_id}/approve", response_model=ScrapDecisionOut)
 async def approve_scrap(
     scrap_id: int,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ScrapDecisionOut:
@@ -214,12 +245,20 @@ async def approve_scrap(
     sp.relevance = rel
     await session.commit()
     await session.refresh(sp)
+    await audit.record(
+        session, actor=admin, action="scrap.approve",
+        target_type="scrap", target_id=scrap_id,
+        detail={"job_id": job_id, "course_ref": course_ref, "weeks_spec": weeks_spec,
+                "title": sp.title[:160]},
+        request=request,
+    )
     return ScrapDecisionOut(scrap=ScrapOut.from_row(sp), job_id=job_id)
 
 
 @router.post("/scrap/{scrap_id}/reject", response_model=ScrapOut)
 async def reject_scrap(
     scrap_id: int,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ScrapOut:
@@ -232,6 +271,12 @@ async def reject_scrap(
     sp.decided_at = _dt.datetime.now(_dt.timezone.utc)
     await session.commit()
     await session.refresh(sp)
+    await audit.record(
+        session, actor=admin, action="scrap.reject",
+        target_type="scrap", target_id=scrap_id,
+        detail={"title": sp.title[:160]},
+        request=request,
+    )
     return ScrapOut.from_row(sp)
 
 
@@ -383,6 +428,7 @@ async def admin_list_battles(
 @router.post("/battles/{battle_id}/force-end", response_model=AdminBattleOut)
 async def force_end_battle(
     battle_id: int,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> AdminBattleOut:
@@ -391,12 +437,19 @@ async def force_end_battle(
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     auto_monitor.stop(battle_id)
+    await audit.record(
+        session, actor=admin, action="battle.force_end",
+        target_type="battle", target_id=battle_id,
+        detail={"final_status": b.status, "mode": b.mode},
+        request=request,
+    )
     return await _admin_battle_view(session, b)
 
 
 @router.delete("/battles/{battle_id}", status_code=204)
 async def admin_delete_battle(
     battle_id: int,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> None:
@@ -406,6 +459,12 @@ async def admin_delete_battle(
     auto_monitor.stop(battle_id)
     await session.delete(b)
     await session.commit()
+    await audit.record(
+        session, actor=admin, action="battle.delete",
+        target_type="battle", target_id=battle_id,
+        detail={"mode": b.mode, "prev_status": b.status},
+        request=request,
+    )
 
 
 async def _admin_battle_view(session: AsyncSession, b: Battle) -> AdminBattleOut:
@@ -468,6 +527,7 @@ async def admin_list_users(
 async def admin_patch_user(
     user_id: int,
     body: UserPatchIn,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> AdminUserOut:
@@ -477,12 +537,20 @@ async def admin_patch_user(
     if u.id == admin.id and (body.role == "student" or body.is_active is False):
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "cannot demote / deactivate yourself")
+    prev = {"role": u.role, "is_active": u.is_active}
     if body.role is not None:
         u.role = body.role
     if body.is_active is not None:
         u.is_active = body.is_active
     await session.commit()
     await session.refresh(u)
+    await audit.record(
+        session, actor=admin, action="user.patch",
+        target_type="user", target_id=user_id,
+        detail={"prev": prev, "next": {"role": u.role, "is_active": u.is_active},
+                "target_email": u.email},
+        request=request,
+    )
     return AdminUserOut(
         id=u.id, email=u.email, name=u.name, role=u.role, is_active=u.is_active,
         created_at=u.created_at.isoformat() if u.created_at else "",
@@ -501,12 +569,14 @@ class ScenarioPatchIn(BaseModel):
 async def admin_patch_scenario(
     scenario_id: int,
     body: ScenarioPatchIn,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> ScenarioOut:
     s = await session.get(Scenario, scenario_id)
     if not s:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "scenario not found")
+    prev = {"title": s.title, "status": s.status, "time_limit_sec": s.time_limit_sec}
     if body.title is not None:
         s.title = body.title
     if body.description is not None:
@@ -517,17 +587,75 @@ async def admin_patch_scenario(
         s.status = body.status
     await session.commit()
     await session.refresh(s)
+    await audit.record(
+        session, actor=admin, action="scenario.patch",
+        target_type="scenario", target_id=scenario_id,
+        detail={"prev": prev,
+                "next": {"title": s.title, "status": s.status,
+                         "time_limit_sec": s.time_limit_sec}},
+        request=request,
+    )
     return ScenarioOut.model_validate(s)
+
+
+# ── 감사 로그 ───────────────────────────────────────
+class AuditOut(BaseModel):
+    id: int
+    actor_user_id: int | None
+    actor_email: str | None
+    action: str
+    target_type: str | None
+    target_id: str | None
+    ip: str | None
+    user_agent: str | None
+    detail: dict
+    ts: str
+
+
+@router.get("/audit", response_model=list[AuditOut])
+async def admin_list_audit(
+    action_prefix: str | None = None,
+    actor_user_id: int | None = None,
+    target_type: str | None = None,
+    limit: int = 100,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[AuditOut]:
+    q = select(AuditLog).order_by(AuditLog.id.desc()).limit(min(max(limit, 1), 500))
+    if action_prefix:
+        q = q.where(AuditLog.action.like(f"{action_prefix}%"))
+    if actor_user_id is not None:
+        q = q.where(AuditLog.actor_user_id == actor_user_id)
+    if target_type:
+        q = q.where(AuditLog.target_type == target_type)
+    rows = (await session.scalars(q)).all()
+    return [
+        AuditOut(
+            id=r.id, actor_user_id=r.actor_user_id, actor_email=r.actor_email,
+            action=r.action, target_type=r.target_type, target_id=r.target_id,
+            ip=r.ip, user_agent=r.user_agent, detail=r.detail or {},
+            ts=r.ts.isoformat() if r.ts else "",
+        )
+        for r in rows
+    ]
 
 
 @router.delete("/scenarios/{scenario_id}", status_code=204)
 async def admin_delete_scenario(
     scenario_id: int,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> None:
     s = await session.get(Scenario, scenario_id)
     if not s:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "scenario not found")
+    title = s.title
     await session.delete(s)
     await session.commit()
+    await audit.record(
+        session, actor=admin, action="scenario.delete",
+        target_type="scenario", target_id=scenario_id,
+        detail={"title": title},
+        request=request,
+    )

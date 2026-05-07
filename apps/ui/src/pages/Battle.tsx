@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { api } from '../api.ts'
-import { getToken, getUser } from '../auth.ts'
+import { getUser } from '../auth.ts'
 
 interface Scenario {
   id: number
@@ -51,10 +51,31 @@ interface BattleDetail {
   remaining_sec: number
 }
 
+interface UserLookup {
+  id: number
+  email: string
+  name: string
+  role: string
+}
+
+interface Infra {
+  id: number
+  name: string
+  vm_ip: string
+}
+
 const eventTypePalette: Record<string, string> = {
   attack: 'red', exploit: 'red',
   defend: 'green', detect: 'green', block: 'green',
   alert: 'yellow', score: 'blue', system: 'blue',
+}
+
+type Mode = 'solo' | 'duel' | 'ffa'
+
+interface InvitedPlayer {
+  user: UserLookup
+  role: 'red' | 'blue' | 'free'
+  infra_id: number | null
 }
 
 export default function Battle() {
@@ -62,21 +83,24 @@ export default function Battle() {
   const [scenarios, setScenarios] = useState<Scenario[]>([])
   const [battles, setBattles] = useState<BattleSummary[]>([])
   const [activeBattle, setActiveBattle] = useState<BattleDetail | null>(null)
-  const [myInfraId, setMyInfraId] = useState<number | null>(null)
+  const [myInfras, setMyInfras] = useState<Infra[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
 
-  // 시나리오/배틀 목록 + 내 인프라 ID 로드
+  // 모드 시작 다이얼로그 상태
+  const [pendingScenario, setPendingScenario] = useState<Scenario | null>(null)
+  const [pendingMode, setPendingMode] = useState<Mode>('solo')
+
   async function refresh() {
     try {
       const [scns, bts, infras] = await Promise.all([
         api<Scenario[]>('/scenarios'),
         api<BattleSummary[]>('/battles'),
-        api<any[]>('/infras'),
+        api<Infra[]>('/infras'),
       ])
       setScenarios(scns)
       setBattles(bts)
-      setMyInfraId(infras[0]?.id ?? null)
+      setMyInfras(infras)
     } finally {
       setLoading(false)
     }
@@ -91,24 +115,30 @@ export default function Battle() {
     } catch (e: any) { setErr(e.message) }
   }
 
-  async function createSolo(scenarioId: number) {
-    if (!myInfraId) {
-      setErr('먼저 /myinfra 에서 6v6 인프라를 등록하세요.')
+  async function startCreate(s: Scenario, mode: Mode) {
+    setErr(null)
+    if (mode === 'solo') {
+      // solo 는 즉시 생성
+      if (myInfras.length === 0) {
+        setErr('먼저 /myinfra 에서 6v6 인프라를 등록하세요.')
+        return
+      }
+      try {
+        const b = await api<BattleDetail>('/battles', {
+          method: 'POST',
+          json: {
+            scenario_id: s.id, mode: 'solo', monitor: 'bastion',
+            participants: [{ user_id: user.id, role: 'solo', infra_id: myInfras[0].id }],
+          },
+        })
+        setActiveBattle(b)
+        await refresh()
+      } catch (e: any) { setErr(e.message) }
       return
     }
-    try {
-      const b = await api<BattleDetail>('/battles', {
-        method: 'POST',
-        json: {
-          scenario_id: scenarioId,
-          mode: 'solo',
-          monitor: 'bastion',
-          participants: [{ user_id: user.id, role: 'solo', infra_id: myInfraId }],
-        },
-      })
-      setActiveBattle(b)
-      await refresh()
-    } catch (e: any) { setErr(e.message) }
+    // duel / ffa 는 다이얼로그 띄움
+    setPendingScenario(s)
+    setPendingMode(mode)
   }
 
   async function startBattle() {
@@ -127,11 +157,10 @@ export default function Battle() {
     } catch (e: any) { setErr(e.message) }
   }
 
-  // SSE 라이브 스트림
+  // 라이브 스트림 (폴링)
   useEffect(() => {
     if (!activeBattle || activeBattle.battle.status !== 'active') return
     const id = activeBattle.battle.id
-    // EventSource 는 헤더 못 붙이므로 token query string. 백엔드에서 query token 지원은 별도 — 일단 폴링 fallback.
     let cancelled = false
     const tick = async () => {
       while (!cancelled) {
@@ -153,7 +182,23 @@ export default function Battle() {
       <h1 style={{ color: 'var(--primary)' }}>공방전</h1>
       {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
 
-      {!activeBattle && (
+      {pendingScenario && (
+        <CreateMultiBattleDialog
+          scenario={pendingScenario}
+          mode={pendingMode}
+          me={user}
+          myInfras={myInfras}
+          onCancel={() => setPendingScenario(null)}
+          onCreated={async (b) => {
+            setPendingScenario(null)
+            setActiveBattle(b)
+            await refresh()
+          }}
+          onErr={setErr}
+        />
+      )}
+
+      {!activeBattle && !pendingScenario && (
         <>
           <h3>시나리오 카탈로그</h3>
           {loading && <div className="card">로딩 중...</div>}
@@ -174,8 +219,14 @@ export default function Battle() {
                     제한 {Math.round(s.time_limit_sec / 60)}분 · status: {s.status}
                   </div>
                 </div>
-                <button onClick={() => createSolo(s.id)} disabled={!myInfraId}>
-                  solo 시작
+                <button onClick={() => startCreate(s, 'solo')} disabled={myInfras.length === 0}>
+                  solo
+                </button>
+                <button onClick={() => startCreate(s, 'duel')} disabled={myInfras.length === 0}>
+                  duel (1v1)
+                </button>
+                <button onClick={() => startCreate(s, 'ffa')} disabled={myInfras.length === 0}>
+                  ffa (n인)
                 </button>
               </div>
             </div>
@@ -187,7 +238,7 @@ export default function Battle() {
             <div key={b.id} className="card">
               <div className="row">
                 <div style={{ flex: 1 }}>
-                  <b>#{b.id}</b> · {b.mode} · monitor: {b.monitor}
+                  <b>#{b.id}</b> · <span className="badge blue">{b.mode}</span> · monitor: {b.monitor}
                 </div>
                 <span className={`badge ${b.status === 'active' ? 'green' : b.status === 'completed' ? 'blue' : 'yellow'}`}>
                   {b.status}
@@ -202,6 +253,203 @@ export default function Battle() {
       {activeBattle && <BattleView b={activeBattle} onClose={() => { setActiveBattle(null); refresh() }}
         onStart={startBattle} onEnd={endBattle} onRefresh={() => loadBattle(activeBattle.battle.id)} />}
     </>
+  )
+}
+
+// ──────────────────────────────────────────────────────
+// duel / ffa 생성 다이얼로그
+// ──────────────────────────────────────────────────────
+function CreateMultiBattleDialog({
+  scenario, mode, me, myInfras, onCancel, onCreated, onErr,
+}: {
+  scenario: Scenario
+  mode: Mode
+  me: { id: number; email: string }
+  myInfras: Infra[]
+  onCancel: () => void
+  onCreated: (b: BattleDetail) => void
+  onErr: (m: string) => void
+}) {
+  const myDefaultRole: 'red' | 'blue' | 'free' = mode === 'duel' ? 'red' : 'free'
+  const [meRole, setMeRole] = useState<'red' | 'blue' | 'free'>(myDefaultRole)
+  const [meInfraId, setMeInfraId] = useState<number | null>(myInfras[0]?.id ?? null)
+
+  const [invited, setInvited] = useState<InvitedPlayer[]>([])
+  const [lookupEmail, setLookupEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function lookupAndAdd() {
+    if (!lookupEmail.trim()) return
+    if (lookupEmail.trim().toLowerCase() === me.email.toLowerCase()) {
+      onErr('자기 자신은 자동 포함됩니다.')
+      return
+    }
+    if (invited.some(i => i.user.email.toLowerCase() === lookupEmail.trim().toLowerCase())) {
+      onErr('이미 추가된 사용자입니다.')
+      return
+    }
+    if (mode === 'duel' && invited.length >= 1) {
+      onErr('duel 모드는 상대 1명만 가능합니다.')
+      return
+    }
+    if (mode === 'ffa' && invited.length >= 7) {
+      onErr('ffa 모드 최대 8명 (본인 포함).')
+      return
+    }
+    try {
+      const u = await api<UserLookup>(`/users/lookup?email=${encodeURIComponent(lookupEmail.trim())}`)
+      const otherRole: 'red' | 'blue' | 'free' =
+        mode === 'duel' ? (meRole === 'red' ? 'blue' : 'red') : 'free'
+      setInvited([...invited, { user: u, role: otherRole, infra_id: null }])
+      setLookupEmail('')
+    } catch (e: any) {
+      onErr(`사용자 찾을 수 없음: ${e.message}`)
+    }
+  }
+
+  function setInvitedInfra(idx: number, infraId: number | null) {
+    const next = [...invited]
+    next[idx] = { ...next[idx], infra_id: infraId }
+    setInvited(next)
+  }
+
+  async function submit() {
+    if (mode === 'duel' && invited.length !== 1) {
+      onErr('duel 은 상대 1명을 추가하세요.')
+      return
+    }
+    if (mode === 'ffa' && invited.length < 1) {
+      onErr('ffa 는 본인 외 최소 1명 추가하세요.')
+      return
+    }
+    if (!meInfraId) {
+      onErr('본인 인프라를 선택하세요.')
+      return
+    }
+    // 상대는 자기 인프라가 아직 미등록일 수 있음 → infra_id null 허용
+    const participants = [
+      { user_id: me.id, role: meRole, infra_id: meInfraId },
+      ...invited.map(i => ({ user_id: i.user.id, role: i.role, infra_id: i.infra_id })),
+    ]
+    setBusy(true)
+    try {
+      const b = await api<BattleDetail>('/battles', {
+        method: 'POST',
+        json: {
+          scenario_id: scenario.id, mode, monitor: 'bastion', participants,
+        },
+      })
+      onCreated(b)
+    } catch (e: any) {
+      onErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card" style={{ borderColor: 'var(--primary)' }}>
+      <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
+        <h2 style={{ margin: 0, flex: 1 }}>
+          {mode === 'duel' ? '1v1 duel' : 'FFA n인전'} 생성
+        </h2>
+        <button className="ghost" onClick={onCancel}>닫기</button>
+      </div>
+
+      <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginBottom: 12 }}>
+        시나리오: <b>{scenario.title}</b> · 제한 {Math.round(scenario.time_limit_sec / 60)}분
+      </div>
+
+      <h3>본인 ({me.email})</h3>
+      <div className="row">
+        {mode === 'duel' && (
+          <select value={meRole} onChange={e => {
+            const r = e.target.value as 'red' | 'blue'
+            setMeRole(r)
+            // duel 일 때 자동으로 상대 역할 swap
+            setInvited(invited.map(i => ({ ...i, role: r === 'red' ? 'blue' : 'red' })))
+          }}>
+            <option value="red">red (공격)</option>
+            <option value="blue">blue (방어)</option>
+          </select>
+        )}
+        {mode === 'ffa' && (
+          <select value={meRole} onChange={e => setMeRole(e.target.value as any)}>
+            <option value="free">free</option>
+            <option value="red">red</option>
+            <option value="blue">blue</option>
+          </select>
+        )}
+        <select value={meInfraId ?? ''} onChange={e => setMeInfraId(e.target.value ? parseInt(e.target.value) : null)}>
+          <option value="">— 인프라 선택 —</option>
+          {myInfras.map(i => (
+            <option key={i.id} value={i.id}>{i.name} ({i.vm_ip})</option>
+          ))}
+        </select>
+      </div>
+
+      <h3 style={{ marginTop: 20 }}>참가자 추가</h3>
+      <div className="row">
+        <input
+          style={{ flex: 1 }}
+          placeholder="상대방 이메일"
+          value={lookupEmail}
+          onChange={e => setLookupEmail(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') lookupAndAdd() }}
+        />
+        <button onClick={lookupAndAdd} disabled={busy}>+ 추가</button>
+      </div>
+
+      {invited.length === 0 && (
+        <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 8 }}>
+          {mode === 'duel'
+            ? '상대 1명을 추가하세요. 이메일로 검색.'
+            : '본인 외 추가할 참가자를 이메일로 검색해 추가하세요. (최대 7명 추가)'}
+        </div>
+      )}
+
+      {invited.map((p, idx) => (
+        <div key={p.user.id} className="card" style={{ padding: 10, margin: '8px 0' }}>
+          <div className="row" style={{ alignItems: 'center' }}>
+            <div style={{ flex: 1 }}>
+              <b>{p.user.name}</b> · <span style={{ color: 'var(--fg-dim)' }}>{p.user.email}</span>
+              <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
+                role: <span className={`badge ${p.role === 'red' ? 'red' : p.role === 'blue' ? 'blue' : 'yellow'}`}>{p.role}</span>
+              </div>
+            </div>
+            {mode === 'ffa' && (
+              <select value={p.role} onChange={e => {
+                const next = [...invited]
+                next[idx] = { ...next[idx], role: e.target.value as any }
+                setInvited(next)
+              }}>
+                <option value="free">free</option>
+                <option value="red">red</option>
+                <option value="blue">blue</option>
+              </select>
+            )}
+            <input
+              style={{ width: 90 }}
+              placeholder="infra_id"
+              type="number"
+              value={p.infra_id ?? ''}
+              onChange={e => setInvitedInfra(idx, e.target.value ? parseInt(e.target.value) : null)}
+            />
+            <button className="ghost" onClick={() => setInvited(invited.filter((_, i) => i !== idx))}>×</button>
+          </div>
+        </div>
+      ))}
+
+      <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 8 }}>
+        💡 상대의 infra_id 가 모르면 비워두세요 — 본인이 admin 이거나 상대가 직접 자기 infra 로 join 하는 흐름은 추후 보강.
+        지금은 일단 빈칸 또는 상대가 알려준 ID 를 입력합니다.
+      </div>
+
+      <div className="row" style={{ marginTop: 16 }}>
+        <button onClick={submit} disabled={busy}>공방전 생성</button>
+        <button className="ghost" onClick={onCancel} disabled={busy}>취소</button>
+      </div>
+    </div>
   )
 }
 
@@ -265,7 +513,16 @@ function BattleView({
     onRefresh()
   }
 
-  const sortedParts = [...b.participants].sort((a, b) => b.score - a.score)
+  // 모드별 정렬: duel 은 red→blue 그룹별, ffa 는 점수 내림차순, solo 는 단일
+  const sortedParts = b.battle.mode === 'duel'
+    ? [...b.participants].sort((a, b) => (a.role === 'red' ? -1 : 1) - (b.role === 'red' ? -1 : 1) || b.score - a.score)
+    : [...b.participants].sort((a, b) => b.score - a.score)
+
+  // ffa 합계 / duel red·blue 합계
+  const teamSums: Record<string, number> = {}
+  for (const p of b.participants) {
+    teamSums[p.role] = (teamSums[p.role] || 0) + p.score
+  }
 
   return (
     <>
@@ -274,6 +531,7 @@ function BattleView({
         <h2 style={{ margin: 0, flex: 1 }}>
           #{b.battle.id} · {b.scenario_title || '(no scenario)'}
         </h2>
+        <span className="badge blue">{b.battle.mode}</span>
         <span className={`badge ${b.battle.status === 'active' ? 'green' : 'blue'}`}>{b.battle.status}</span>
       </div>
 
@@ -281,6 +539,9 @@ function BattleView({
         <div className="card" style={{ flex: 1 }}>
           <div style={{ color: 'var(--fg-dim)', fontSize: 13 }}>모드</div>
           <div style={{ fontSize: 24, fontWeight: 700 }}>{b.battle.mode}</div>
+          <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
+            참가자 {b.participants.length}명
+          </div>
         </div>
         <div className="card" style={{ flex: 1 }}>
           <div style={{ color: 'var(--fg-dim)', fontSize: 13 }}>경과</div>
@@ -291,6 +552,19 @@ function BattleView({
           <div style={{ fontSize: 24, fontWeight: 700 }}>{Math.round(b.remaining_sec)}s</div>
         </div>
       </div>
+
+      {(b.battle.mode === 'duel') && (
+        <div className="row">
+          <div className="card" style={{ flex: 1, borderColor: 'var(--red)' }}>
+            <div style={{ color: 'var(--red)', fontSize: 13 }}>RED 팀 합계</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--red)' }}>{teamSums.red ?? 0}</div>
+          </div>
+          <div className="card" style={{ flex: 1, borderColor: 'var(--blue)' }}>
+            <div style={{ color: 'var(--blue)', fontSize: 13 }}>BLUE 팀 합계</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--blue)' }}>{teamSums.blue ?? 0}</div>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>스코어보드</h3>

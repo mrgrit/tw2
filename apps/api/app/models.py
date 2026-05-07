@@ -133,6 +133,26 @@ class BattleEvent(Base):
     battle: Mapped["Battle"] = relationship(back_populates="events")
 
 
+class AuditLog(Base):
+    """관리자 행동 + 보안 이벤트 감사 로그 (Phase 8)."""
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    actor_email: Mapped[str | None] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
+    target_type: Mapped[str | None] = mapped_column(String(40))
+    target_id: Mapped[str | None] = mapped_column(String(80))
+    ip: Mapped[str | None] = mapped_column(String(64))
+    user_agent: Mapped[str | None] = mapped_column(String(255))
+    detail: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    ts: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+
 class ScrapPost(Base):
     """Bastion 이 외부 커뮤니티/뉴스에서 스크랩한 침해사고/AI 위협 게시글 (Phase 5)."""
     __tablename__ = "scrap_posts"
