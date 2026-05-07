@@ -1,15 +1,8 @@
 """6v6 인프라 헬스 검증 — TCP probe + Bastion API + Portal API.
 
-`/home/opsclaw/6v6/README.md` 의 외부 노출 포트 표 그대로:
-  80   HTTP
-  443  HTTPS
-  2204 bastion SSH
-  2202 attacker SSH
-  8000 portal
-  5601 siem-lite
-  9100 bastion API  (X-API-Key header 검증)
-
-Phase 1 은 *연결성* 만 확인. 실제 SSH 로그인/명령 실행은 Phase 2.
+각 학생의 6v6 는 docker-compose `.env` 로 호스트 포트를 override 가능하다
+(예: PORT_HTTP=18080, PORT_BASTION_API=19100). 등록 시 port_map 을 받고,
+미지정 항목은 README default 사용.
 """
 from __future__ import annotations
 import asyncio
@@ -19,14 +12,27 @@ import httpx
 
 from ..schemas import SmokeResult
 
-PORTS = [
-    ("http", 80, False),
-    ("https", 443, False),
-    ("bastion-ssh", 2204, True),
-    ("attacker-ssh", 2202, True),
-    ("portal", 8000, False),
-    ("siem-lite", 5601, False),
-    ("bastion-api", 9100, True),
+DEFAULT_PORTS: dict[str, int] = {
+    "http": 80,
+    "https": 443,
+    "bastion_ssh": 2204,
+    "attacker_ssh": 2202,
+    "portal": 8000,
+    "siem_lite": 5601,
+    "bastion_api": 9100,
+}
+
+# (label, key, required) — required = battle 진행에 *반드시* 필요한 표면.
+#  attacker SSH (Red 발사대) + bastion API (orchestration) 두 개로 충분.
+#  나머지는 학습용 viewer 라 옵셔널 — 6v6 시작 직후 일부 컨테이너가 늦게 뜨는 점도 고려.
+PORT_SPEC: list[tuple[str, str, bool]] = [
+    ("http", "http", False),
+    ("https", "https", False),
+    ("bastion-ssh", "bastion_ssh", False),
+    ("attacker-ssh", "attacker_ssh", True),
+    ("portal", "portal", False),
+    ("siem-lite", "siem_lite", False),
+    ("bastion-api", "bastion_api", True),
 ]
 
 
@@ -45,9 +51,9 @@ async def _tcp_probe(ip: str, port: int, timeout: float = 3.0) -> bool:
         return False
 
 
-async def _bastion_health(ip: str, api_key: str, timeout: float = 5.0) -> dict[str, Any]:
+async def _bastion_health(ip: str, port: int, api_key: str, timeout: float = 5.0) -> dict[str, Any]:
     """6v6 bastion API health 호출."""
-    url = f"http://{ip}:9100/health"
+    url = f"http://{ip}:{port}/health"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.get(url, headers={"X-API-Key": api_key})
@@ -60,17 +66,30 @@ async def _bastion_health(ip: str, api_key: str, timeout: float = 5.0) -> dict[s
         return {"url": url, "error": f"{type(e).__name__}: {e}"}
 
 
-async def run_smoke(ip: str, bastion_api_key: str) -> SmokeResult:
-    checks: list[dict[str, Any]] = []
+def resolve_ports(port_map: dict[str, int] | None) -> dict[str, int]:
+    out = dict(DEFAULT_PORTS)
+    if port_map:
+        for k, v in port_map.items():
+            if k in DEFAULT_PORTS and isinstance(v, int) and 1 <= v <= 65535:
+                out[k] = v
+    return out
 
-    probes = await asyncio.gather(*[_tcp_probe(ip, p) for _, p, _ in PORTS])
+
+async def run_smoke(ip: str, bastion_api_key: str, port_map: dict[str, int] | None = None) -> SmokeResult:
+    checks: list[dict[str, Any]] = []
+    ports = resolve_ports(port_map)
+
+    probes = await asyncio.gather(*[_tcp_probe(ip, ports[k]) for _, k, _ in PORT_SPEC])
     required_ok = True
-    for (label, port, required), ok in zip(PORTS, probes):
-        checks.append({"check": "tcp", "label": label, "port": port, "required": required, "ok": ok})
+    for (label, key, required), ok in zip(PORT_SPEC, probes):
+        checks.append({
+            "check": "tcp", "label": label, "port": ports[key],
+            "required": required, "ok": ok,
+        })
         if required and not ok:
             required_ok = False
 
-    bastion = await _bastion_health(ip, bastion_api_key)
+    bastion = await _bastion_health(ip, ports["bastion_api"], bastion_api_key)
     bastion["check"] = "bastion-api"
     checks.append(bastion)
     if bastion.get("status_code") != 200:

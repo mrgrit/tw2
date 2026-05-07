@@ -34,12 +34,14 @@ DoD: `bash scripts/setup.sh && bash scripts/dev.sh api/ui` 후 회원가입 → 
 
 ---
 
-## Phase 3 — Claude Code 시나리오 생성
+## Phase 3 — Claude Code 시나리오 생성 (완료)
 
-- [ ] Claude Code SDK 통합 (anthropic-sdk-python or CLI 자동화)
-- [ ] 관리자 콘솔: 자연어 → Scenario draft
-- [ ] 컨텍스트 attach: CCC `contents/education/courseN/weekM/lecture.md` 자동 주입
-- [ ] 생성된 mission_red/blue 의 schema validation
+- [x] Claude CLI subprocess 통합 (`services/scenario_gen.py`, `claude -p --output-format json`)
+- [x] 관리자 콘솔: 자연어 → Scenario draft (background job, 폴링)
+- [x] 컨텍스트 attach: CCC `contents/education/courseN/weekM/lecture.md` 자동 주입
+- [x] 생성된 mission_red/blue 의 pydantic schema validation
+- [x] Infra port_map 확장 (학생별 .env override 수용)
+- [x] e2e 검증 (실 6v6 위에서): SQLi+WAF+Wazuh 시나리오 생성 → solo battle 통과
 
 ---
 

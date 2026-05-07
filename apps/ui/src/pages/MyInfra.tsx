@@ -31,10 +31,15 @@ export default function MyInfra() {
   const [infras, setInfras] = useState<Infra[]>([])
   const [loading, setLoading] = useState(true)
   const [smokingId, setSmokingId] = useState<number | null>(null)
-  const [form, setForm] = useState({
+  const [showPorts, setShowPorts] = useState(false)
+  const [form, setForm] = useState<{
+    name: string; vm_ip: string; ssh_user: string; ssh_password: string;
+    bastion_api_key: string; port_map: Record<string, number>;
+  }>({
     name: '', vm_ip: '',
     ssh_user: 'ccc', ssh_password: 'ccc',
     bastion_api_key: 'ccc-api-key-2026',
+    port_map: {},
   })
   const [err, setErr] = useState<string | null>(null)
 
@@ -117,6 +122,38 @@ export default function MyInfra() {
             <input value={form.bastion_api_key}
               onChange={e => setForm({...form, bastion_api_key: e.target.value})} />
           </label>
+
+          <label style={{ fontSize: 13, cursor: 'pointer' }}>
+            <input type="checkbox" checked={showPorts}
+              onChange={e => setShowPorts(e.target.checked)} style={{ width: 'auto', marginRight: 6 }} />
+            6v6 의 <code>.env</code> 로 포트를 override 했음
+          </label>
+
+          {showPorts && (
+            <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+              {[
+                ['http', 80], ['https', 443],
+                ['bastion_ssh', 2204], ['attacker_ssh', 2202],
+                ['portal', 8000], ['siem_lite', 5601], ['bastion_api', 9100],
+              ].map(([key, def]) => (
+                <label key={key as string} style={{ flex: '1 0 30%', fontSize: 12 }}>
+                  {key}
+                  <input type="number" placeholder={String(def)}
+                    value={form.port_map[key as string] ?? ''}
+                    onChange={e => {
+                      const v = e.target.value
+                      setForm(f => {
+                        const pm = { ...f.port_map }
+                        if (v === '') delete pm[key as string]
+                        else pm[key as string] = parseInt(v, 10)
+                        return { ...f, port_map: pm }
+                      })}}
+                    style={{ fontSize: 13 }} />
+                </label>
+              ))}
+            </div>
+          )}
+
           <details style={{ color: 'var(--fg-dim)', fontSize: 13 }}>
             <summary>등록 시 검증되는 항목</summary>
             <ul>

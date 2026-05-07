@@ -41,6 +41,8 @@ class InfraIn(BaseModel):
     ssh_user: str = Field(default="ccc", max_length=40)
     ssh_password: str = Field(min_length=1, max_length=255)
     bastion_api_key: str = Field(default="ccc-api-key-2026", max_length=120)
+    # 학생 6v6 의 .env (PORT_HTTP, PORT_BASTION_API 등) 가 default 와 다를 때만 채움.
+    port_map: dict[str, int] = Field(default_factory=dict)
 
 
 class InfraOut(BaseModel):
@@ -49,6 +51,7 @@ class InfraOut(BaseModel):
     vm_ip: str
     ssh_user: str
     bastion_api_key: str
+    port_map: dict[str, int]
     status: str
     last_smoke_at: dt.datetime | None
     last_smoke_result: dict[str, Any] | None

@@ -10,6 +10,7 @@ export default defineConfig({
       '/auth':      'http://127.0.0.1:9200',
       '/infras':    'http://127.0.0.1:9200',
       '/scenarios': 'http://127.0.0.1:9200',
+      '/admin':     'http://127.0.0.1:9200',
       '/battles':   { target: 'http://127.0.0.1:9200', changeOrigin: false, ws: false },
       '/health':    'http://127.0.0.1:9200',
     },

@@ -44,6 +44,9 @@ class Infra(Base):
     ssh_user: Mapped[str] = mapped_column(String(40), default="ccc", nullable=False)
     ssh_password_enc: Mapped[str] = mapped_column(String(255), nullable=False)  # TODO Phase 2 암호화
     bastion_api_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    # 학생이 6v6 docker-compose 의 .env 로 외부 포트를 override 한 경우를 위한 매핑.
+    # 키: http, https, bastion_ssh, attacker_ssh, portal, siem_lite, bastion_api
+    port_map: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="registered", nullable=False)
     last_smoke_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_smoke_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)

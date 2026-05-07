@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     llm_base_url: str = Field("http://127.0.0.1:11434", alias="LLM_BASE_URL")
     llm_model: str = Field("gemma3:4b", alias="LLM_MODEL")
 
-    admin_email: str = Field("admin@tubewar.local", alias="ADMIN_EMAIL")
+    admin_email: str = Field("admin@tubewar.app", alias="ADMIN_EMAIL")
     admin_password: str = Field("change-me-on-first-login", alias="ADMIN_PASSWORD")
     admin_name: str = Field("admin", alias="ADMIN_NAME")
 

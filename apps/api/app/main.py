@@ -14,7 +14,7 @@ from sqlalchemy import select
 from .config import get_settings
 from .db import Base, SessionLocal, engine
 from .models import User
-from .routers import auth, infras, battles, scenarios
+from .routers import admin, auth, infras, battles, scenarios
 from .security import hash_password
 from .services.scenario_loader import import_scenarios
 
@@ -71,3 +71,4 @@ app.include_router(auth.router)
 app.include_router(infras.router)
 app.include_router(scenarios.router)
 app.include_router(battles.router)
+app.include_router(admin.router)

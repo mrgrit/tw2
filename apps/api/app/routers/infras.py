@@ -40,6 +40,7 @@ async def create(body: InfraIn, user: User = Depends(get_current_user), session:
         ssh_user=body.ssh_user,
         ssh_password_enc=encrypt(body.ssh_password),
         bastion_api_key=body.bastion_api_key,
+        port_map=body.port_map or {},
         status="registered",
     )
     session.add(infra)
@@ -66,6 +67,7 @@ async def smoke(infra_id: int, user: User = Depends(get_current_user), session: 
     result = await run_smoke(
         ip=infra.vm_ip,
         bastion_api_key=infra.bastion_api_key,
+        port_map=infra.port_map or None,
     )
 
     import datetime as dt

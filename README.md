@@ -69,6 +69,14 @@ bash scripts/dev.sh ui       # http://127.0.0.1:5173
 - [x] 회원가입/로그인 (JWT) + 6v6 인프라 등록 + smoke 테스트
 - [x] CCC battle_engine / battle_factory / 17 scenarios 이식
 
+## Phase 3 — Claude Code 시나리오 생성 (완료, 2026-05-08)
+
+- [x] `services/scenario_gen.py` — `claude -p --output-format json` subprocess
+- [x] `services/lecture_context.py` — CCC lecture.md 자동 주입 (env CCC_CONTENT_ROOT)
+- [x] `routers/admin.py` + Admin UI — 자연어 입력 → background job → preview / 활성화
+- [x] **실 6v6 위에서 풀 e2e**: SQLi+WAF+Wazuh 시나리오 (4 red+4 blue mission) 생성 →
+      활성화 → solo battle exploit +20 / detect +15 → 종료 (~$0.07 / 42초)
+
 ## Phase 2 — 공방전 MVP (완료, 2026-05-07)
 
 - [x] battle DB persistence (`services/battle_service.py`) + solo/duel/ffa 모드
