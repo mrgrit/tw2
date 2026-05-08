@@ -1,15 +1,17 @@
-"""Phase 9 — 채점 모델 추상화 (bastion vs claude).
+"""Phase 9 + 9.3 — 채점 모델 추상화 (bastion vs claude).
 
-목표: auto_monitor 와 hint endpoint 가 동일한 인터페이스로 두 모드를 호출.
+목표: auto_monitor 가 probe → mission 매칭 시 자연어 분석 reasoning 생성.
 
-토큰 절약 설계:
-- `judge(probe_text, mission)` → 자연어 reasoning 만 LLM 호출.
-  · probe_text 가 비어있으면 LLM 호출 X.
-  · probe_text 의 SHA256 hash 가 동일 미션에 대해 마지막 호출과 같으면 cached reasoning 재사용.
-- bastion 모드: 6v6 Bastion API 의 `/exec` 결과를 그대로 사용 (heuristic 매칭만, LLM 호출 X)
-- claude 모드: probe diff 발생 시에만 Claude CLI subprocess 1회 호출.
+Phase 9.3 변경: `judge` 가 더 이상 자체적으로 reasoning 을 만들지 않고,
+event_analyzer.analyze_event 를 호출해서 "어디를 어떻게 했기 때문에 정답/오답"
+형태의 진짜 분석 reasoning 을 받음. probe command → what_i_did,
+probe response → what_happened 로 매핑.
 
-cache 는 in-process dict — 서버 재시작 시 휘발 (의도적 — battle 종료 시 정리).
+토큰 절약 설계 (유지):
+- probe_text 가 비어있으면 LLM 호출 X
+- probe_text 의 SHA256 hash 가 동일하면 cached reasoning 재사용
+- bastion 모드: heuristic + analyzer (LLM 0)
+- claude  모드: analyzer 가 LLM 호출 (probe diff 발생 시에만)
 """
 from __future__ import annotations
 import asyncio
@@ -137,30 +139,69 @@ async def _claude_judge(mission: dict, expect: str, probe_text: str) -> tuple[bo
 # ──────────────────────────────────────────────────────
 async def judge(
     *, monitor: str, battle_id: int, mission: dict, expect: str, probe_text: str,
+    probe_command: str = "", scenario_title: str = "", course_ref: str | None = None,
+    auto_actor_label: str = "auto-monitor (Bastion API probe)",
 ) -> JudgeResult:
+    """auto_monitor 의 probe 결과를 event_analyzer 로 분석.
+
+    매칭 여부 (matched) 는 heuristic 으로 결정. reasoning 은 analyzer 에 위임 →
+    "어디를 어떻게 해서 정답/오답 + 학습 권장" 형태의 진짜 분석.
+    """
+    from . import event_analyzer as ea  # 순환 import 방지 위해 함수 안에서
+
     order = int(mission.get("order") or 0)
     h = _hash(probe_text or "")
     key = (battle_id, order, h)
-    if key in _judge_cache:
-        cached = _judge_cache[key]
-        # cached 가 matched 였는지 reconstruct — 캐시는 reasoning 만 저장하니
-        # heuristic 으로 재계산 (cheap)
-        matched = _heuristic_match(probe_text, expect)
-        return JudgeResult(matched=matched, reasoning=cached, model=monitor + ":cache",
-                           cache_hit=True, cost_usd=0.0)
-
-    if monitor == "claude":
-        matched, reasoning, cost = await _claude_judge(mission, expect, probe_text)
-        _judge_cache[key] = reasoning
-        return JudgeResult(matched=matched, reasoning=reasoning, model=_CLAUDE_MODEL,
-                           cache_hit=False, cost_usd=cost)
-
-    # bastion (default) — LLM 안 씀, heuristic + short report
     matched = _heuristic_match(probe_text, expect)
-    reasoning = _bastion_reasoning(matched, mission, expect, probe_text)
-    _judge_cache[key] = reasoning
-    return JudgeResult(matched=matched, reasoning=reasoning, model="bastion-heuristic",
-                       cache_hit=False, cost_usd=0.0)
+
+    if key in _judge_cache:
+        return JudgeResult(matched=matched, reasoning=_judge_cache[key],
+                           model=monitor + ":cache", cache_hit=True, cost_usd=0.0)
+
+    if not matched:
+        # 매칭 안 됐으면 점수 부여 안 됨 — analyzer 호출도 불필요. 짧은 noted 만.
+        reasoning = (
+            f"_auto-monitor probe `{probe_command or '(unknown)'}` 가 mission #{order} "
+            f"의 expect 패턴 `{expect}` 와 매칭되지 않음. 점수 미부여._"
+        )
+        _judge_cache[key] = reasoning
+        return JudgeResult(matched=False, reasoning=reasoning,
+                           model="bastion-heuristic", cache_hit=False, cost_usd=0.0)
+
+    # 매칭 — analyzer 로 진짜 분석
+    verify = mission.get("verify") or {}
+    sem = verify.get("semantic") or {}
+    mission_ctx = ea.MissionContext(
+        side="blue", order=order,
+        instruction=str(mission.get("instruction") or ""),
+        target_vm=mission.get("target_vm"),
+        points=int(mission.get("points") or 0),
+        hint=mission.get("hint"),
+        verify_expect=expect,
+        semantic_intent=sem.get("intent"),
+        success_criteria=list(sem.get("success_criteria") or []),
+        acceptable_methods=list(sem.get("acceptable_methods") or []),
+        negative_signs=list(sem.get("negative_signs") or []),
+    )
+    scenario_ctx = ea.ScenarioContext(
+        title=scenario_title, description="", course_ref=course_ref,
+    )
+    auto_report = ea.StudentReport(
+        user_name=auto_actor_label,
+        event_type="detect",
+        target=mission.get("target_vm") or "",
+        points_claimed=int(mission.get("points") or 0),
+        description=f"auto-monitor matched mission #{order} expect '{expect[:80]}'",
+        what_i_did=probe_command or "(probe command 미기록)",
+        what_happened=(probe_text or "")[:1500],
+    )
+    result = await ea.analyze_event(
+        monitor=monitor, report=auto_report,
+        mission=mission_ctx, scenario=scenario_ctx,
+    )
+    _judge_cache[key] = result.reasoning
+    return JudgeResult(matched=True, reasoning=result.reasoning,
+                       model=result.model, cache_hit=False, cost_usd=result.cost_usd)
 
 
 def clear_cache(battle_id: int) -> None:

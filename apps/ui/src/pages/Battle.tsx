@@ -647,8 +647,19 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
   const canPostEvent = isParticipant
   const isLobby = b.battle.status === 'pending'
 
-  const [eventForm, setEventForm] = useState({
+  const [eventForm, setEventForm] = useState<{
+    event_type: string
+    target: string
+    description: string
+    points: number
+    mission_order: number | null
+    mission_side: 'red' | 'blue' | null
+    what_i_did: string
+    what_happened: string
+  }>({
     event_type: 'attack', target: '', description: '', points: 0,
+    mission_order: null, mission_side: null,
+    what_i_did: '', what_happened: '',
   })
   const [hint, setHint] = useState<HintOut | null>(null)
   const [hintBusy, setHintBusy] = useState(false)
@@ -668,8 +679,21 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
 
   async function submitEvent(e: React.FormEvent) {
     e.preventDefault()
-    await api(`/battles/${b.battle.id}/events`, { method: 'POST', json: eventForm })
-    setEventForm({ ...eventForm, description: '' })
+    // 백엔드 schema 와 일치하는 payload 만 전달 (mission_side null 이면 백엔드가 event_type 으로 추정)
+    const payload: any = {
+      event_type: eventForm.event_type,
+      target: eventForm.target,
+      description: eventForm.description,
+      points: eventForm.points,
+      what_i_did: eventForm.what_i_did,
+      what_happened: eventForm.what_happened,
+    }
+    if (eventForm.mission_order) payload.mission_order = eventForm.mission_order
+    if (eventForm.mission_side)  payload.mission_side  = eventForm.mission_side
+    await api(`/battles/${b.battle.id}/events`, { method: 'POST', json: payload })
+    setEventForm({
+      ...eventForm, description: '', what_i_did: '', what_happened: '',
+    })
     onRefresh()
   }
 
@@ -888,28 +912,92 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
 
       {canPostEvent && b.battle.status === 'active' && (
         <form onSubmit={submitEvent} className="card col" style={{ marginTop: 16 }}>
-          <h3 style={{ marginTop: 0 }}>📝 내가 한 일 보고 (이벤트 추가)</h3>
+          <h3 style={{ marginTop: 0 }}>📝 내가 한 일 보고</h3>
           <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
-            위 미션 중 하나를 시도/완료한 결과를 기록. 자동 모니터가 잡지 못한 행동을 직접 보고.
+            ① 어느 미션? ② 어떤 명령/페이로드를 썼는가? ③ 결과/응답은 무엇이었는가?
+            → 채점 모델이 이 보고를 success_criteria 기준으로 분석해 reasoning 작성.
           </div>
-          <div className="row">
+
+          {/* ① 미션 선택 — my_missions 에서 골라 자동 채움 */}
+          <label style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>
+            ① 미션 선택
+          </label>
+          <select
+            value={eventForm.mission_order ? `${eventForm.mission_side}-${eventForm.mission_order}` : ''}
+            onChange={e => {
+              const v = e.target.value
+              if (!v) {
+                setEventForm({ ...eventForm, mission_order: null, mission_side: null })
+                return
+              }
+              const [side, orderStr] = v.split('-')
+              const order = parseInt(orderStr, 10)
+              const m = b.my_missions.find(x => x.side === side && x.order === order)
+              if (!m) return
+              setEventForm({
+                ...eventForm,
+                mission_order: order,
+                mission_side: side as 'red' | 'blue',
+                event_type: side === 'red' ? 'exploit' : 'detect',
+                target: m.target_vm || eventForm.target,
+                points: m.points,
+                description: eventForm.description ||
+                  `미션 #${m.order} — ${m.instruction.slice(0, 80)}`,
+              })
+            }}>
+            <option value="">— 일반 보고 (미션 무관) —</option>
+            {b.my_missions.map(m => (
+              <option key={`${m.side}-${m.order}`} value={`${m.side}-${m.order}`}>
+                {m.side === 'red' ? '🔴' : '🔵'} #{m.order} (+{m.points}점, {m.target_vm || '-'})
+                {m.solved ? ' ✓' : ''} — {m.instruction.slice(0, 60)}
+              </option>
+            ))}
+          </select>
+
+          <div className="row" style={{ marginTop: 8 }}>
             <select value={eventForm.event_type}
               onChange={e => setEventForm({ ...eventForm, event_type: e.target.value })}
               style={{ flex: 1 }}>
-              {['attack', 'defend', 'detect', 'block', 'exploit', 'alert', 'score'].map(t => (
+              {['attack', 'exploit', 'defend', 'detect', 'block', 'alert', 'score'].map(t => (
                 <option key={t} value={t}>{t}</option>
               ))}
             </select>
             <input style={{ flex: 1 }} placeholder="target (예: juiceshop)" value={eventForm.target}
               onChange={e => setEventForm({ ...eventForm, target: e.target.value })} />
-            <input type="number" style={{ width: 120 }} placeholder="points"
+            <input type="number" style={{ width: 100 }} placeholder="점수"
               value={eventForm.points}
               onChange={e => setEventForm({ ...eventForm, points: parseInt(e.target.value || '0', 10) })} />
           </div>
-          <input placeholder="설명 (예: 미션 #1 — DVWA cron persistence 등록 완료)"
+
+          <input placeholder="한 줄 설명 (요약)"
             value={eventForm.description}
             onChange={e => setEventForm({ ...eventForm, description: e.target.value })} required />
-          <button type="submit">이벤트 push</button>
+
+          {/* ② 학생이 한 행위 — 분석의 핵심 입력 */}
+          <label style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>
+            ② 사용한 명령 / 페이로드 (분석의 핵심 — 비워두면 채점 정확도 낮음)
+          </label>
+          <textarea
+            rows={4}
+            placeholder="예) hydra -l admin -P rockyou.txt 10.20.30.80 http-get-form '...:H=Cookie: security=low; PHPSESSID=...'"
+            value={eventForm.what_i_did}
+            onChange={e => setEventForm({ ...eventForm, what_i_did: e.target.value })}
+            style={{ fontFamily: 'monospace', fontSize: 12 }}
+          />
+
+          {/* ③ 결과/응답 */}
+          <label style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>
+            ③ 결과 / 응답 발췌 (출력, 로그 라인, 에러 메시지 등)
+          </label>
+          <textarea
+            rows={3}
+            placeholder="예) [80][http-get-form] host: 10.20.30.80   login: admin   password: password"
+            value={eventForm.what_happened}
+            onChange={e => setEventForm({ ...eventForm, what_happened: e.target.value })}
+            style={{ fontFamily: 'monospace', fontSize: 12 }}
+          />
+
+          <button type="submit">이벤트 push (채점 분석 자동 생성)</button>
         </form>
       )}
 

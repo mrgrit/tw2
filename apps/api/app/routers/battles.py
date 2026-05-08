@@ -21,6 +21,7 @@ from ..schemas import (
 )
 from ..security import get_current_user, require_admin
 from ..services import auto_monitor, battle_service as bs, hints as hint_svc
+from ..services import event_analyzer as ea
 
 router = APIRouter(prefix="/battles", tags=["battles"])
 
@@ -249,24 +250,43 @@ async def leave_battle(
     return await _serialize_with_missions(session, b, viewer_user_id=user.id)
 
 
-def _manual_reasoning(*, user_name: str, ev_type: str, target: str,
-                      points: int, description: str) -> str:
-    """수동 이벤트의 자연어 채점 근거 (LLM 호출 없이 휴리스틱)."""
-    side = "공격(Red)" if ev_type in ("attack", "exploit") else \
-           "방어(Blue)" if ev_type in ("defend", "detect", "block", "alert") else "기타"
-    sign = "+" if points > 0 else ""
-    head = f"**수동 이벤트 — {side}**"
-    if points == 0:
-        head = f"**수동 이벤트 — {side} (정보성)**"
-    body = (
-        f"- 행위자: `{user_name}`\n"
-        f"- 행동: `{ev_type}` on `{target or '(미지정)'}`\n"
-        f"- 보고 점수: **{sign}{points}**\n"
-        f"- 행위자 설명: {description or '(없음)'}\n\n"
-        "_이 이벤트는 학생/관리자가 직접 보고한 내용입니다. 자동 검증은 수행되지 않았으며, "
-        "관전자/심판은 행위자 설명과 점수의 적절성을 직접 판단해야 합니다._"
+def _build_mission_context(scenario: Scenario | None, side: str | None,
+                           order: int | None) -> ea.MissionContext | None:
+    """시나리오 + (side, order) → MissionContext. 없으면 None."""
+    if not scenario or not side or not order:
+        return None
+    container = (scenario.mission_red if side == "red" else scenario.mission_blue) or {}
+    items = container.get("missions") or []
+    raw = next((m for m in items if int(m.get("order") or 0) == order), None)
+    if not raw:
+        return None
+    verify = raw.get("verify") or {}
+    sem = verify.get("semantic") or {}
+    expect = verify.get("expect")
+    if isinstance(expect, list):
+        expect = ", ".join(str(x) for x in expect) if expect else None
+    return ea.MissionContext(
+        side=side, order=order,
+        instruction=str(raw.get("instruction") or ""),
+        target_vm=raw.get("target_vm"),
+        points=int(raw.get("points") or 0),
+        hint=raw.get("hint"),
+        verify_expect=str(expect) if expect else None,
+        semantic_intent=sem.get("intent"),
+        success_criteria=list(sem.get("success_criteria") or []),
+        acceptable_methods=list(sem.get("acceptable_methods") or []),
+        negative_signs=list(sem.get("negative_signs") or []),
     )
-    return f"{head}\n\n{body}"
+
+
+def _build_scenario_context(scenario: Scenario | None) -> ea.ScenarioContext | None:
+    if not scenario:
+        return None
+    return ea.ScenarioContext(
+        title=scenario.title or "",
+        description=scenario.description or "",
+        course_ref=scenario.course_ref,
+    )
 
 
 @router.post("/{battle_id}/events", response_model=BattleEventOut, status_code=201)
@@ -278,10 +298,56 @@ async def post_event(
 ) -> BattleEventOut:
     if user.role != "admin" and not await bs.is_participant(session, battle_id, user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "only participants or admin can post events")
-    reasoning = _manual_reasoning(
-        user_name=user.name, ev_type=body.event_type, target=body.target,
-        points=body.points, description=body.description,
+
+    # battle + scenario 로드 — analyzer 컨텍스트
+    battle = await session.get(Battle, battle_id)
+    if not battle:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "battle not found")
+    scenario = await session.get(Scenario, battle.scenario_id) if battle.scenario_id else None
+
+    # mission_side 추론: 명시 안 됐으면 event_type 으로 추정 (red/blue 배타)
+    side = body.mission_side
+    if side is None:
+        if body.event_type in ("attack", "exploit"):
+            side = "red"
+        elif body.event_type in ("defend", "detect", "block", "alert"):
+            side = "blue"
+
+    mission_ctx = _build_mission_context(scenario, side, body.mission_order)
+    scenario_ctx = _build_scenario_context(scenario)
+
+    report = ea.StudentReport(
+        user_name=user.name,
+        event_type=body.event_type,
+        target=body.target,
+        points_claimed=body.points,
+        description=body.description,
+        what_i_did=body.what_i_did,
+        what_happened=body.what_happened,
     )
+    analysis = await ea.analyze_event(
+        monitor=battle.monitor or "bastion",
+        report=report,
+        mission=mission_ctx,
+        scenario=scenario_ctx,
+    )
+
+    # detail 에 학생 입력 + 분석 메타 모두 보존 (raw detail 도 진짜 데이터)
+    detail = dict(body.detail or {})
+    detail["report"] = {
+        "what_i_did": body.what_i_did,
+        "what_happened": body.what_happened,
+        "mission_order": body.mission_order,
+        "mission_side": side,
+    }
+    detail["analysis"] = {
+        "model": analysis.model,
+        "cost_usd": analysis.cost_usd,
+        "criteria_met": analysis.criteria_met,
+        "criteria_missing": analysis.criteria_missing,
+        "negative_signs_hit": analysis.negative_signs_hit,
+    }
+
     try:
         ev = await bs.add_event(
             session,
@@ -291,8 +357,8 @@ async def post_event(
             target=body.target,
             description=body.description,
             points=body.points,
-            detail=body.detail,
-            reasoning=reasoning,
+            detail=detail,
+            reasoning=analysis.reasoning,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))

@@ -123,10 +123,23 @@ class BattleCreateIn(BaseModel):
 
 
 class BattleEventIn(BaseModel):
+    """학생/관리자가 보고하는 이벤트.
+
+    Phase 9.3: analyzer 가 채점 근거를 LLM 분석으로 만들 수 있도록 학생 보고 정보를 풍부화.
+    `mission_order` 가 있으면 해당 미션의 success_criteria 기준으로 분석. 없으면 일반 평가.
+    """
     event_type: str = Field(min_length=1, max_length=24)
     target: str = Field(default="", max_length=120)
     description: str = Field(default="", max_length=2000)
     points: int = Field(default=0, ge=-100, le=200)
+    # 어느 미션에 대한 보고인가 (있으면 해당 미션 기준 분석)
+    mission_order: int | None = Field(default=None, ge=1, le=99)
+    mission_side: str | None = Field(default=None, pattern=r"^(red|blue)$")
+    # 학생이 실제로 사용한 명령/페이로드 (시도 내역)
+    what_i_did: str = Field(default="", max_length=4000)
+    # 결과/응답 (출력 발췌)
+    what_happened: str = Field(default="", max_length=4000)
+    # legacy / 자유 detail (자동 모니터가 사용)
     detail: dict[str, Any] = Field(default_factory=dict)
 
 

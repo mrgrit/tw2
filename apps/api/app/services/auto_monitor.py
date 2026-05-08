@@ -187,6 +187,9 @@ async def _tick(battle_id: int, tick_idx: int) -> None:
             verdict = await grader.judge(
                 monitor=effective_monitor, battle_id=battle_id,
                 mission=mission, expect=expect, probe_text=body_text,
+                probe_command=probe["command"],
+                scenario_title=scenario.title or "",
+                course_ref=scenario.course_ref,
             )
             if not verdict.matched:
                 continue
