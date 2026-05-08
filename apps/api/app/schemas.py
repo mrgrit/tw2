@@ -118,7 +118,8 @@ class BattleCreateIn(BaseModel):
     # 6v6 8개 취약 웹 중 1~5 또는 ['random']. 빈 리스트면 시나리오 default 사용.
     target_apps: list[str] = Field(default_factory=list, max_length=8)
     hint_enabled: bool = Field(default=False)
-    participants: list[BattleParticipantIn] = Field(min_length=1, max_length=16)
+    # admin 이 lobby (참가자 0명) 로 만들 수 있도록 min_length=0. 런타임에서 mode 별 검증.
+    participants: list[BattleParticipantIn] = Field(default_factory=list, max_length=16)
 
 
 class BattleEventIn(BaseModel):
@@ -143,6 +144,21 @@ class BattleEventOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class MissionOut(BaseModel):
+    """학생/관전자에게 노출되는 미션 카드."""
+    side: str                                     # red | blue
+    order: int
+    title: str | None = None
+    instruction: str
+    target_vm: str | None = None
+    points: int = 0
+    hint: str | None = None
+    verify_expect: str | None = None              # mission.verify.expect (refined 우선)
+    semantic_intent: str | None = None            # mission.verify.semantic.intent
+    success_criteria: list[str] = Field(default_factory=list)
+    solved: bool = False                          # auto-monitor 가 매칭한 적 있나
+
+
 class BattleDetail(BaseModel):
     battle: BattleOut
     scenario_title: str | None
@@ -150,6 +166,14 @@ class BattleDetail(BaseModel):
     events: list[BattleEventOut]
     elapsed_sec: float
     remaining_sec: float
+    my_role: str | None = None                    # 본인의 role (참가자) / None (관전)
+    my_missions: list[MissionOut] = Field(default_factory=list)         # 내 역할 미션
+    opponent_missions: list[MissionOut] = Field(default_factory=list)   # 상대편 (관전자=양쪽)
+
+
+class BattleJoinIn(BaseModel):
+    role: str = Field(pattern=r"^(red|blue|free)$")
+    infra_id: int | None = None
 
 
 TokenOut.model_rebuild()

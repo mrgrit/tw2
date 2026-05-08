@@ -16,8 +16,8 @@ from sqlalchemy.orm import selectinload
 from ..db import SessionLocal, get_session
 from ..models import Battle, BattleEvent, BattleParticipant, Scenario, User
 from ..schemas import (
-    BattleCreateIn, BattleDetail, BattleEventIn, BattleEventOut,
-    BattleOut, BattleParticipantOut,
+    BattleCreateIn, BattleDetail, BattleEventIn, BattleEventOut, BattleJoinIn,
+    BattleOut, BattleParticipantOut, MissionOut,
 )
 from ..security import get_current_user, require_admin
 from ..services import auto_monitor, battle_service as bs, hints as hint_svc
@@ -25,7 +25,105 @@ from ..services import auto_monitor, battle_service as bs, hints as hint_svc
 router = APIRouter(prefix="/battles", tags=["battles"])
 
 
+def _solved_orders(events: list, side_marker: str) -> set[int]:
+    """auto-monitor 가 매칭한 (auto detect) blue 미션의 order 집합. red 는 수동 이벤트의
+    target_vm 과 매칭되는 score 이벤트가 있으면 solved 로 본다."""
+    out: set[int] = set()
+    for e in events:
+        d = e.detail or {}
+        if side_marker == "blue":
+            if d.get("source") == "auto_monitor" and d.get("blue_mission_order"):
+                out.add(int(d["blue_mission_order"]))
+        # red 는 일단 자동 검증이 없으므로 비워둠 (학생이 수동 보고)
+    return out
+
+
+def _missions_for_side(scenario, side: str, solved: set[int]) -> list[MissionOut]:
+    if not scenario:
+        return []
+    container = (scenario.mission_red if side == "red" else scenario.mission_blue) or {}
+    items = container.get("missions") or []
+    # dry_run refined_expect 가 있으면 우선
+    dry = (scenario.scoring or {}).get("dry_run", {}) or {}
+    review_key = "red_review" if side == "red" else "blue_review"
+    refined: dict[int, str] = {}
+    for r in (dry.get("review", {}) or {}).get(review_key, []) or []:
+        if r.get("order") is not None and r.get("refined_expect"):
+            refined[int(r["order"])] = r["refined_expect"]
+
+    out: list[MissionOut] = []
+    for m in items:
+        order = int(m.get("order") or 0)
+        verify = m.get("verify") or {}
+        sem = verify.get("semantic") or {}
+        # expect 가 list 인 시나리오도 있음 → join
+        raw_expect = refined.get(order) or verify.get("expect")
+        if isinstance(raw_expect, list):
+            expect_str = ", ".join(str(x) for x in raw_expect) if raw_expect else None
+        else:
+            expect_str = str(raw_expect) if raw_expect else None
+        out.append(MissionOut(
+            side=side, order=order,
+            title=m.get("title"),
+            instruction=str(m.get("instruction") or ""),
+            target_vm=m.get("target_vm"),
+            points=int(m.get("points") or 0),
+            hint=m.get("hint"),
+            verify_expect=expect_str,
+            semantic_intent=sem.get("intent"),
+            success_criteria=list(sem.get("success_criteria") or []),
+            solved=order in solved,
+        ))
+    return sorted(out, key=lambda m: m.order)
+
+
+async def _serialize_with_missions(
+    session: AsyncSession, b: Battle, viewer_user_id: int,
+) -> BattleDetail:
+    elapsed, remaining = bs.battle_elapsed(b)
+    title = None
+    scenario = None
+    if b.scenario_id:
+        scenario = await session.get(Scenario, b.scenario_id)
+        title = scenario.title if scenario else None
+
+    my_role: str | None = None
+    for p in b.participants:
+        if p.user_id == viewer_user_id:
+            my_role = p.role
+            break
+
+    blue_solved = _solved_orders(b.events, "blue")
+    red_solved = _solved_orders(b.events, "red")
+    red_missions = _missions_for_side(scenario, "red", red_solved)
+    blue_missions = _missions_for_side(scenario, "blue", blue_solved)
+
+    if my_role == "red":
+        my_m, opp_m = red_missions, blue_missions
+    elif my_role == "blue":
+        my_m, opp_m = blue_missions, red_missions
+    elif my_role in ("solo", "free"):
+        # 혼자 / FFA — 양쪽 모두 본인 미션
+        my_m, opp_m = red_missions + blue_missions, []
+    else:
+        # 관전자 (또는 admin) — 양쪽 모두 노출
+        my_m, opp_m = [], red_missions + blue_missions
+
+    return BattleDetail(
+        battle=BattleOut.model_validate(b),
+        scenario_title=title,
+        participants=[BattleParticipantOut.model_validate(p) for p in b.participants],
+        events=[BattleEventOut.model_validate(e) for e in b.events],
+        elapsed_sec=round(elapsed, 1),
+        remaining_sec=round(remaining, 1),
+        my_role=my_role,
+        my_missions=my_m,
+        opponent_missions=opp_m,
+    )
+
+
 def _serialize(b: Battle, scenario_title: str | None) -> BattleDetail:
+    """legacy — 빈 mission. 새 코드는 _serialize_with_missions 를 쓰도록."""
     elapsed, remaining = bs.battle_elapsed(b)
     return BattleDetail(
         battle=BattleOut.model_validate(b),
@@ -59,11 +157,7 @@ async def get_battle(
         b = await bs.load_battle(session, battle_id)
     except ValueError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "battle not found")
-    title = None
-    if b.scenario_id:
-        s = await session.get(Scenario, b.scenario_id)
-        title = s.title if s else None
-    return _serialize(b, title)
+    return await _serialize_with_missions(session, b, viewer_user_id=user.id)
 
 
 # ── Create / start / end ────────────────────────────
@@ -74,13 +168,19 @@ async def create_battle(
     session: AsyncSession = Depends(get_session),
 ) -> BattleDetail:
     parts = [p.model_dump() for p in body.participants]
-    # solo 모드는 본인만 참가 강제 (관리자 제외)
-    if body.mode == "solo" and user.role != "admin":
-        if parts[0]["user_id"] != user.id:
+    # admin 은 lobby (참가자 0명) 로 만들 수 있음
+    is_admin = user.role == "admin"
+    allow_lobby = is_admin and len(parts) == 0
+
+    # solo 는 lobby 불가 (혼자 모드라 의미 없음). 본인 강제.
+    if body.mode == "solo":
+        if not parts:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "solo battle requires self as participant")
+        if not is_admin and parts[0]["user_id"] != user.id:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "solo battle must include yourself only")
-    # duel/ffa: 비-admin 은 자기 자신을 포함해야
-    if body.mode in ("duel", "ffa") and user.role != "admin":
-        if user.id not in {p["user_id"] for p in parts}:
+    # duel/ffa 비-admin: 자기 자신 포함 필수
+    if body.mode in ("duel", "ffa") and not is_admin:
+        if not parts or user.id not in {p["user_id"] for p in parts}:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "you must include yourself as a participant")
 
     try:
@@ -93,12 +193,12 @@ async def create_battle(
             created_by=user.id,
             target_apps=body.target_apps,
             hint_enabled=body.hint_enabled,
+            allow_lobby=allow_lobby,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
-    s = await session.get(Scenario, b.scenario_id) if b.scenario_id else None
-    return _serialize(b, s.title if s else None)
+    return await _serialize_with_missions(session, b, viewer_user_id=user.id)
 
 
 @router.post("/{battle_id}/start", response_model=BattleDetail)
@@ -113,11 +213,40 @@ async def start_battle(
         b = await bs.start_battle(session, battle_id, actor_user_id=user.id)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
-    # Phase 4 + 9 — auto-monitor 활성화 (bastion / claude 모두)
     if b.monitor in ("bastion", "claude"):
         auto_monitor.start(battle_id)
-    s = await session.get(Scenario, b.scenario_id) if b.scenario_id else None
-    return _serialize(b, s.title if s else None)
+    return await _serialize_with_missions(session, b, viewer_user_id=user.id)
+
+
+# ── 로비 join / leave ───────────────────────────────
+@router.post("/{battle_id}/join", response_model=BattleDetail)
+async def join_battle(
+    battle_id: int,
+    body: BattleJoinIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> BattleDetail:
+    try:
+        b = await bs.join_battle(
+            session, battle_id=battle_id, user_id=user.id,
+            role=body.role, infra_id=body.infra_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return await _serialize_with_missions(session, b, viewer_user_id=user.id)
+
+
+@router.post("/{battle_id}/leave", response_model=BattleDetail)
+async def leave_battle(
+    battle_id: int,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> BattleDetail:
+    try:
+        b = await bs.leave_battle(session, battle_id=battle_id, user_id=user.id)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return await _serialize_with_missions(session, b, viewer_user_id=user.id)
 
 
 def _manual_reasoning(*, user_name: str, ev_type: str, target: str,
@@ -183,8 +312,7 @@ async def end_battle(
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     auto_monitor.stop(battle_id)
-    s = await session.get(Scenario, b.scenario_id) if b.scenario_id else None
-    return _serialize(b, s.title if s else None)
+    return await _serialize_with_missions(session, b, viewer_user_id=user.id)
 
 
 @router.delete("/{battle_id}", status_code=204)
@@ -211,8 +339,7 @@ async def cancel_battle(
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     auto_monitor.stop(battle_id)
-    s = await session.get(Scenario, b.scenario_id) if b.scenario_id else None
-    return _serialize(b, s.title if s else None)
+    return await _serialize_with_missions(session, b, viewer_user_id=admin.id)
 
 
 # ── 힌트 ────────────────────────────────────────────

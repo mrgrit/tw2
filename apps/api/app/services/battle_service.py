@@ -28,9 +28,13 @@ def _aware(d: dt.datetime | None) -> dt.datetime | None:
 
 
 # ── 모드 검증 ────────────────────────────────────────
-def validate_participants(mode: str, participants: list[dict]) -> None:
+def validate_participants(mode: str, participants: list[dict],
+                          *, allow_lobby: bool = False) -> None:
+    """admin 이 lobby (참가자 0명) 로 만들 수 있도록 allow_lobby 추가."""
     if not participants:
-        raise ValueError("at least one participant required")
+        if allow_lobby:
+            return  # 로비 — 학생이 join 으로 채움
+        raise ValueError("at least one participant required (or use lobby mode for admin)")
     roles = [p["role"] for p in participants]
     user_ids = [p["user_id"] for p in participants]
 
@@ -43,17 +47,30 @@ def validate_participants(mode: str, participants: list[dict]) -> None:
         if roles[0] != "solo":
             raise ValueError("solo mode participant must have role='solo'")
     elif mode == "duel":
-        if len(participants) != 2:
-            raise ValueError("duel mode requires exactly 2 participants")
-        if sorted(roles) != ["blue", "red"]:
-            raise ValueError("duel mode requires one 'red' and one 'blue'")
+        if len(participants) > 2:
+            raise ValueError("duel mode allows max 2 participants")
+        for r in roles:
+            if r not in ("red", "blue"):
+                raise ValueError("duel mode roles must be 'red' or 'blue'")
+        if len(roles) != len(set(roles)):
+            raise ValueError("duel mode: each role (red/blue) only once")
     elif mode == "ffa":
-        if len(participants) < 2:
-            raise ValueError("ffa mode requires at least 2 participants")
         if any(r not in ("free", "red", "blue") for r in roles):
             raise ValueError("ffa mode roles must be 'free' (or red/blue if mixed)")
     else:
         raise ValueError(f"unknown mode: {mode}")
+
+
+def validate_can_start(mode: str, participants: list[dict]) -> None:
+    """start 시점에 mode 별 최소 인원 충족 검증."""
+    if not participants:
+        raise ValueError("battle has no participants — cannot start")
+    if mode == "solo" and len(participants) != 1:
+        raise ValueError("solo mode requires exactly 1 participant to start")
+    if mode == "duel" and len(participants) != 2:
+        raise ValueError("duel mode requires 2 participants (red+blue) to start")
+    if mode == "ffa" and len(participants) < 2:
+        raise ValueError("ffa mode requires at least 2 participants to start")
 
 
 # ── 생성 / 조회 / 시작 / 종료 ─────────────────────────
@@ -73,8 +90,9 @@ async def create_battle(
     created_by: int,
     target_apps: list[str] | None = None,
     hint_enabled: bool = False,
+    allow_lobby: bool = False,
 ) -> Battle:
-    validate_participants(mode, participants)
+    validate_participants(mode, participants, allow_lobby=allow_lobby)
 
     scenario = await session.get(Scenario, scenario_id)
     if not scenario:
@@ -149,6 +167,87 @@ async def load_battle(session: AsyncSession, battle_id: int) -> Battle:
     return b
 
 
+async def join_battle(
+    session: AsyncSession, *, battle_id: int, user_id: int,
+    role: str, infra_id: int | None,
+) -> Battle:
+    b = await session.get(Battle, battle_id)
+    if not b:
+        raise ValueError(f"battle {battle_id} not found")
+    if b.status not in ("pending",):
+        raise ValueError(f"battle {battle_id} already {b.status} — join 불가")
+
+    # 참가자 목록 + 역할 검증
+    existing = (await session.scalars(
+        select(BattleParticipant).where(BattleParticipant.battle_id == battle_id)
+    )).all()
+    if any(p.user_id == user_id for p in existing):
+        raise ValueError("already joined this battle")
+
+    # mode 별 join 규칙
+    roles_now = [p.role for p in existing]
+    if b.mode == "solo":
+        raise ValueError("solo battle has no lobby — only the creator can play")
+    if b.mode == "duel":
+        if len(existing) >= 2:
+            raise ValueError("duel battle full")
+        if role not in ("red", "blue"):
+            raise ValueError("duel role must be red or blue")
+        if role in roles_now:
+            raise ValueError(f"duel role '{role}' already taken — choose the other side")
+    elif b.mode == "ffa":
+        if role not in ("free", "red", "blue"):
+            raise ValueError("ffa role must be free/red/blue")
+        if len(existing) >= 16:
+            raise ValueError("ffa battle full (16 max)")
+
+    # infra 검증 — owner 일치
+    if infra_id is not None:
+        inf = await session.get(Infra, infra_id)
+        if not inf or inf.owner_id != user_id:
+            raise ValueError(f"infra {infra_id} not owned by user {user_id}")
+
+    session.add(BattleParticipant(
+        battle_id=battle_id, user_id=user_id, infra_id=infra_id, role=role, score=0,
+    ))
+    session.add(BattleEvent(
+        battle_id=battle_id, actor_user_id=user_id,
+        event_type="system", target="lobby",
+        description=f"user #{user_id} joined as {role}",
+        points=0,
+    ))
+    await session.commit()
+    return await load_battle(session, battle_id)
+
+
+async def leave_battle(
+    session: AsyncSession, *, battle_id: int, user_id: int,
+) -> Battle:
+    b = await session.get(Battle, battle_id)
+    if not b:
+        raise ValueError(f"battle {battle_id} not found")
+    if b.status != "pending":
+        raise ValueError("only pending lobby battles can be left")
+    p = await session.scalar(
+        select(BattleParticipant).where(
+            BattleParticipant.battle_id == battle_id,
+            BattleParticipant.user_id == user_id,
+        )
+    )
+    if not p:
+        raise ValueError("not a participant")
+    role = p.role
+    await session.delete(p)
+    session.add(BattleEvent(
+        battle_id=battle_id, actor_user_id=user_id,
+        event_type="system", target="lobby",
+        description=f"user #{user_id} left ({role})",
+        points=0,
+    ))
+    await session.commit()
+    return await load_battle(session, battle_id)
+
+
 async def is_participant(session: AsyncSession, battle_id: int, user_id: int) -> bool:
     row = await session.scalar(
         select(BattleParticipant.id).where(
@@ -165,6 +264,10 @@ async def start_battle(session: AsyncSession, battle_id: int, actor_user_id: int
         raise ValueError(f"battle {battle_id} not found")
     if b.status != "pending":
         raise ValueError(f"battle {battle_id} already {b.status}")
+    parts = (await session.scalars(
+        select(BattleParticipant).where(BattleParticipant.battle_id == battle_id)
+    )).all()
+    validate_can_start(b.mode, [{"role": p.role, "user_id": p.user_id} for p in parts])
     b.status = "active"
     b.started_at = _now()
 

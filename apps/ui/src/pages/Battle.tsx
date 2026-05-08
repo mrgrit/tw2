@@ -45,6 +45,20 @@ interface BattleSummary {
   created_at: string
 }
 
+interface Mission {
+  side: 'red' | 'blue'
+  order: number
+  title: string | null
+  instruction: string
+  target_vm: string | null
+  points: number
+  hint: string | null
+  verify_expect: string | null
+  semantic_intent: string | null
+  success_criteria: string[]
+  solved: boolean
+}
+
 interface BattleDetail {
   battle: BattleSummary
   scenario_title: string | null
@@ -52,28 +66,14 @@ interface BattleDetail {
   events: BattleEvent[]
   elapsed_sec: number
   remaining_sec: number
+  my_role: string | null
+  my_missions: Mission[]
+  opponent_missions: Mission[]
 }
 
-interface UserLookup {
-  id: number
-  email: string
-  name: string
-  role: string
-}
-
-interface Infra {
-  id: number
-  name: string
-  vm_ip: string
-}
-
-interface HintOut {
-  text: string
-  model: string
-  cache_hit: boolean
-  cost_usd: number
-  cooldown_remaining_sec: number
-}
+interface UserLookup { id: number; email: string; name: string; role: string }
+interface Infra { id: number; name: string; vm_ip: string }
+interface HintOut { text: string; model: string; cache_hit: boolean; cost_usd: number; cooldown_remaining_sec: number }
 
 const eventTypePalette: Record<string, string> = {
   attack: 'red', exploit: 'red',
@@ -82,37 +82,32 @@ const eventTypePalette: Record<string, string> = {
 }
 
 const TARGET_APPS_CATALOG = [
-  { id: 'juiceshop',    label: 'Juice Shop (web vuln 메인)' },
-  { id: 'dvwa',         label: 'DVWA (legacy web vuln)' },
-  { id: 'neobank',      label: 'NeoBank (FinTech)' },
-  { id: 'mediforum',    label: 'MediForum (의료 포럼)' },
-  { id: 'govportal',    label: 'GovPortal (정부 포털)' },
-  { id: 'aicompanion',  label: 'AICompanion (AI 챗)' },
-  { id: 'adminconsole', label: 'AdminConsole (관리)' },
-  { id: 'web',          label: 'Web 랜딩 / Reverse Proxy' },
+  { id: 'juiceshop',    label: 'Juice Shop' },
+  { id: 'dvwa',         label: 'DVWA' },
+  { id: 'neobank',      label: 'NeoBank' },
+  { id: 'mediforum',    label: 'MediForum' },
+  { id: 'govportal',    label: 'GovPortal' },
+  { id: 'aicompanion',  label: 'AICompanion' },
+  { id: 'adminconsole', label: 'AdminConsole' },
+  { id: 'web',          label: 'Web 랜딩' },
 ] as const
 
 type Mode = 'solo' | 'duel' | 'ffa'
 
-interface InvitedPlayer {
-  user: UserLookup
-  role: 'red' | 'blue' | 'free'
-  infra_id: number | null
-}
-
 interface BattleOptions {
   monitor: 'bastion' | 'claude'
   hint_enabled: boolean
-  target_apps: string[]   // [] | ['random'] | ['juiceshop', ...]
+  target_apps: string[]
   use_random: boolean
+  mode: Mode
 }
 
 const defaultOpts: BattleOptions = {
-  monitor: 'bastion',
-  hint_enabled: false,
-  target_apps: [],
-  use_random: false,
+  monitor: 'bastion', hint_enabled: false,
+  target_apps: [], use_random: false, mode: 'duel',
 }
+
+function isAdmin() { return getUser()?.role === 'admin' }
 
 export default function Battle() {
   const user = getUser()!
@@ -123,10 +118,8 @@ export default function Battle() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState<string | null>(null)
 
-  // 시나리오에서 모드 시작하기 전 옵션
-  const [pendingScenario, setPendingScenario] = useState<Scenario | null>(null)
-  const [pendingMode, setPendingMode] = useState<Mode>('solo')
-  const [pendingOpts, setPendingOpts] = useState<BattleOptions>(defaultOpts)
+  // admin: lobby 개설 다이얼로그 상태
+  const [lobbyOpen, setLobbyOpen] = useState(false)
 
   async function refresh() {
     try {
@@ -144,12 +137,12 @@ export default function Battle() {
   }
   useEffect(() => { refresh() }, [])
 
-  // 상단 nav 의 "공방전" 링크 클릭 시: 이미 같은 path 라 router 가 unmount 안 함 →
-  // 커스텀 이벤트로 BattleView/dialog state 를 강제로 리셋.
+  // 상단 nav 의 "공방전" 링크 클릭 시: 같은 path 라 router 가 unmount 안 함 →
+  // 커스텀 이벤트로 강제 리셋
   useEffect(() => {
     const reset = () => {
       setActiveBattle(null)
-      setPendingScenario(null)
+      setLobbyOpen(false)
       setErr(null)
       refresh()
     }
@@ -162,37 +155,6 @@ export default function Battle() {
     try {
       const b = await api<BattleDetail>(`/battles/${id}`)
       setActiveBattle(b)
-    } catch (e: any) { setErr(e.message) }
-  }
-
-  function startCreate(s: Scenario, mode: Mode) {
-    setErr(null)
-    if (myInfras.length === 0) {
-      setErr('먼저 /myinfra 에서 6v6 인프라를 등록하세요.')
-      return
-    }
-    setPendingScenario(s)
-    setPendingMode(mode)
-    setPendingOpts({ ...defaultOpts })
-  }
-
-  async function createSolo() {
-    if (!pendingScenario) return
-    const apps = pendingOpts.use_random ? ['random'] : pendingOpts.target_apps
-    try {
-      const b = await api<BattleDetail>('/battles', {
-        method: 'POST',
-        json: {
-          scenario_id: pendingScenario.id, mode: 'solo',
-          monitor: pendingOpts.monitor,
-          hint_enabled: pendingOpts.hint_enabled,
-          target_apps: apps,
-          participants: [{ user_id: user.id, role: 'solo', infra_id: myInfras[0].id }],
-        },
-      })
-      setPendingScenario(null)
-      setActiveBattle(b)
-      await refresh()
     } catch (e: any) { setErr(e.message) }
   }
 
@@ -212,7 +174,7 @@ export default function Battle() {
     } catch (e: any) { setErr(e.message) }
   }
 
-  // 라이브 스트림 (폴링)
+  // 라이브 폴링
   useEffect(() => {
     if (!activeBattle || activeBattle.battle.status !== 'active') return
     const id = activeBattle.battle.id
@@ -232,30 +194,25 @@ export default function Battle() {
     return () => { cancelled = true }
   }, [activeBattle?.battle.id, activeBattle?.battle.status])
 
+  // 로비 = pending + 본인이 참가자 아닌 + (mode duel/ffa)
+  const lobbyBattles = battles.filter(b =>
+    b.status === 'pending' && b.mode !== 'solo'
+  )
+  const myActiveBattles = battles.filter(b =>
+    b.status === 'active' || b.status === 'completed'
+  )
+
   return (
     <>
       <h1 style={{ color: 'var(--primary)' }}>공방전</h1>
       {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
 
-      {pendingScenario && pendingMode === 'solo' && (
-        <SoloOptionsDialog
-          scenario={pendingScenario}
-          opts={pendingOpts} setOpts={setPendingOpts}
-          onCancel={() => setPendingScenario(null)}
-          onConfirm={createSolo}
-        />
-      )}
-
-      {pendingScenario && pendingMode !== 'solo' && (
-        <CreateMultiBattleDialog
-          scenario={pendingScenario}
-          mode={pendingMode}
-          me={user}
-          myInfras={myInfras}
-          opts={pendingOpts} setOpts={setPendingOpts}
-          onCancel={() => setPendingScenario(null)}
+      {lobbyOpen && (
+        <LobbyCreateDialog
+          scenarios={scenarios}
+          onCancel={() => setLobbyOpen(false)}
           onCreated={async (b) => {
-            setPendingScenario(null)
+            setLobbyOpen(false)
             setActiveBattle(b)
             await refresh()
           }}
@@ -263,48 +220,50 @@ export default function Battle() {
         />
       )}
 
-      {!activeBattle && !pendingScenario && (
+      {!activeBattle && !lobbyOpen && (
         <>
-          <h3>시나리오 카탈로그</h3>
+          {/* 1. 로비 — 학생이 참여하는 곳, admin 이 만드는 곳 */}
+          <div className="row" style={{ alignItems: 'center', marginTop: 12 }}>
+            <h3 style={{ margin: 0, flex: 1 }}>🎮 로비 (참여 가능한 공방전)</h3>
+            {isAdmin() && (
+              <button onClick={() => setLobbyOpen(true)}>+ 새 로비 공방전 개설</button>
+            )}
+          </div>
+          {lobbyBattles.length === 0 ? (
+            <div className="card" style={{ color: 'var(--fg-dim)' }}>
+              현재 모집 중인 공방전 없음.
+              {isAdmin() && ' 위 버튼으로 새 로비를 개설하세요.'}
+              {!isAdmin() && ' 관리자가 공방전을 개설할 때까지 기다리세요. (또는 직접 solo 시작)'}
+            </div>
+          ) : (
+            lobbyBattles.map(b => (
+              <LobbyCard key={b.id} b={b} myInfras={myInfras}
+                onJoined={(d) => { setActiveBattle(d); refresh() }}
+                onView={() => loadBattle(b.id)}
+                onErr={setErr} />
+            ))
+          )}
+
+          {/* 2. 학생 — solo (혼자 연습) */}
+          <h3 style={{ marginTop: 32 }}>📚 시나리오 카탈로그 — solo 연습</h3>
           {loading && <div className="card">로딩 중...</div>}
           {!loading && scenarios.length === 0 && (
-            <div className="card" style={{ color: 'var(--fg-dim)' }}>
-              아직 시나리오 없음. API 가 처음 시작될 때 contents/battle-scenarios/ 를 자동 import 합니다.
-            </div>
+            <div className="card" style={{ color: 'var(--fg-dim)' }}>아직 시나리오 없음.</div>
           )}
           {scenarios.map(s => (
-            <div key={s.id} className="card">
-              <div className="row">
-                <div style={{ flex: 1 }}>
-                  <b>{s.title}</b> <span className="badge blue">{s.source}</span>
-                  <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 4 }}>
-                    {s.description.length > 200 ? s.description.slice(0, 200) + '…' : s.description}
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>
-                    제한 {Math.round(s.time_limit_sec / 60)}분 · status: {s.status}
-                  </div>
-                </div>
-                <button onClick={() => startCreate(s, 'solo')} disabled={myInfras.length === 0}>
-                  solo
-                </button>
-                <button onClick={() => startCreate(s, 'duel')} disabled={myInfras.length === 0}>
-                  duel (1v1)
-                </button>
-                <button onClick={() => startCreate(s, 'ffa')} disabled={myInfras.length === 0}>
-                  ffa (n인)
-                </button>
-              </div>
-            </div>
+            <SoloRow key={s.id} s={s} myInfras={myInfras}
+              onCreated={(b) => { setActiveBattle(b); refresh() }}
+              onErr={setErr} />
           ))}
 
-          <h3 style={{ marginTop: 32 }}>내 최근 + 진행 중인 공방전 (관전 가능)</h3>
-          {battles.length === 0 && <div className="card" style={{ color: 'var(--fg-dim)' }}>없음.</div>}
-          {battles.map(b => (
+          {/* 3. 진행 중·완료 공방전 (관전·이력) */}
+          <h3 style={{ marginTop: 32 }}>📺 진행 중 / 완료된 공방전</h3>
+          {myActiveBattles.length === 0 && <div className="card" style={{ color: 'var(--fg-dim)' }}>없음.</div>}
+          {myActiveBattles.map(b => (
             <div key={b.id} className="card">
               <div className="row">
                 <div style={{ flex: 1 }}>
-                  <b>#{b.id}</b> · <span className="badge blue">{b.mode}</span> ·
-                  monitor: <span className={`badge ${b.monitor === 'claude' ? 'red' : 'green'}`}>{b.monitor}</span>
+                  <b>#{b.id}</b> · <span className="badge blue">{b.mode}</span> · monitor: <span className={`badge ${b.monitor === 'claude' ? 'red' : 'green'}`}>{b.monitor}</span>
                   {b.hint_enabled && <span className="badge yellow" style={{ marginLeft: 6 }}>hint</span>}
                   {b.target_apps?.length > 0 && (
                     <span style={{ marginLeft: 8, color: 'var(--fg-dim)', fontSize: 12 }}>
@@ -312,7 +271,7 @@ export default function Battle() {
                     </span>
                   )}
                 </div>
-                <span className={`badge ${b.status === 'active' ? 'green' : b.status === 'completed' ? 'blue' : 'yellow'}`}>
+                <span className={`badge ${b.status === 'active' ? 'green' : 'blue'}`}>
                   {b.status}
                 </span>
                 <button className="ghost" onClick={() => loadBattle(b.id)}>
@@ -324,20 +283,79 @@ export default function Battle() {
         </>
       )}
 
-      {activeBattle && <BattleView b={activeBattle}
-        meId={user.id}
-        onClose={() => { setActiveBattle(null); refresh() }}
-        onStart={startBattle} onEnd={endBattle}
-        onRefresh={() => loadBattle(activeBattle.battle.id)}
-        onErr={setErr} />}
+      {activeBattle && (
+        <BattleView b={activeBattle} meId={user.id}
+          onClose={() => { setActiveBattle(null); refresh() }}
+          onStart={startBattle} onEnd={endBattle}
+          onRefresh={() => loadBattle(activeBattle.battle.id)}
+          onErr={setErr}
+          myInfras={myInfras} />
+      )}
     </>
   )
 }
 
 // ──────────────────────────────────────────────────────
-// 공통 옵션 패널
+// solo 시작 (간단 row, 옵션 없음 — 빠른 연습용)
 // ──────────────────────────────────────────────────────
-function OptionsPanel({ opts, setOpts }: { opts: BattleOptions; setOpts: (o: BattleOptions) => void }) {
+function SoloRow({ s, myInfras, onCreated, onErr }: {
+  s: Scenario
+  myInfras: Infra[]
+  onCreated: (b: BattleDetail) => void
+  onErr: (m: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  async function start() {
+    if (myInfras.length === 0) { onErr('먼저 /myinfra 등록.'); return }
+    setBusy(true)
+    try {
+      const me = getUser()!
+      const b = await api<BattleDetail>('/battles', {
+        method: 'POST',
+        json: {
+          scenario_id: s.id, mode: 'solo', monitor: 'bastion',
+          hint_enabled: true, target_apps: [],
+          participants: [{ user_id: me.id, role: 'solo', infra_id: myInfras[0].id }],
+        },
+      })
+      // 자동 시작
+      const started = await api<BattleDetail>(`/battles/${b.battle.id}/start`, { method: 'POST' })
+      onCreated(started)
+    } catch (e: any) { onErr(e.message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="card">
+      <div className="row">
+        <div style={{ flex: 1 }}>
+          <b>{s.title}</b> <span className="badge blue">{s.source}</span>
+          <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginTop: 4 }}>
+            {s.description.slice(0, 200)}{s.description.length > 200 ? '…' : ''}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>
+            제한 {Math.round(s.time_limit_sec / 60)}분 · status: {s.status}
+          </div>
+        </div>
+        <button onClick={start} disabled={busy || myInfras.length === 0}>
+          solo 즉시 시작
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────
+// admin: 로비 공방전 개설 다이얼로그 (참가자 0명)
+// ──────────────────────────────────────────────────────
+function LobbyCreateDialog({ scenarios, onCancel, onCreated, onErr }: {
+  scenarios: Scenario[]
+  onCancel: () => void
+  onCreated: (b: BattleDetail) => void
+  onErr: (m: string) => void
+}) {
+  const [scenarioId, setScenarioId] = useState<number | null>(scenarios[0]?.id ?? null)
+  const [opts, setOpts] = useState<BattleOptions>({ ...defaultOpts })
+  const [busy, setBusy] = useState(false)
+
   function toggleApp(app: string) {
     if (opts.use_random) return
     if (opts.target_apps.includes(app)) {
@@ -346,276 +364,94 @@ function OptionsPanel({ opts, setOpts }: { opts: BattleOptions; setOpts: (o: Bat
       setOpts({ ...opts, target_apps: [...opts.target_apps, app] })
     }
   }
-  return (
-    <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16, marginTop: 16 }}>
-      <h3 style={{ marginTop: 0 }}>채점 / 힌트 / 타겟 옵션</h3>
-
-      <div className="row" style={{ alignItems: 'center', gap: 24, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>채점 모델</div>
-          <label style={{ marginRight: 12 }}>
-            <input type="radio" checked={opts.monitor === 'bastion'}
-              onChange={() => setOpts({ ...opts, monitor: 'bastion' })} />
-            CCC Bastion (heuristic, 무료)
-          </label>
-          <label>
-            <input type="radio" checked={opts.monitor === 'claude'}
-              onChange={() => setOpts({ ...opts, monitor: 'claude' })} />
-            Claude Code (LLM, 자연어 보고)
-          </label>
-        </div>
-
-        <label>
-          <input type="checkbox" checked={opts.hint_enabled}
-            onChange={e => setOpts({ ...opts, hint_enabled: e.target.checked })} />
-          힌트 허용 (학생이 명시 요청 시, 60초 cooldown)
-        </label>
-      </div>
-
-      <div style={{ marginTop: 16 }}>
-        <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
-          취약 웹 타겟 — 1~5개 선택 또는 랜덤. 비워두면 default 4 종 (web/juiceshop/siem).
-        </div>
-        <label style={{ marginTop: 4, display: 'block' }}>
-          <input type="checkbox" checked={opts.use_random}
-            onChange={e => setOpts({
-              ...opts, use_random: e.target.checked,
-              target_apps: e.target.checked ? [] : opts.target_apps,
-            })} />
-          🎲 랜덤 (서버가 2~4개 자동 선택)
-        </label>
-        <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-          {TARGET_APPS_CATALOG.map(a => {
-            const on = opts.target_apps.includes(a.id)
-            return (
-              <button key={a.id} type="button"
-                className={on ? '' : 'ghost'}
-                style={{
-                  fontSize: 12, padding: '4px 10px',
-                  opacity: opts.use_random ? 0.4 : 1,
-                  cursor: opts.use_random ? 'not-allowed' : 'pointer',
-                }}
-                disabled={opts.use_random || (!on && opts.target_apps.length >= 5)}
-                onClick={() => toggleApp(a.id)}>
-                {on ? '✓ ' : ''}{a.label}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// ──────────────────────────────────────────────────────
-// solo 옵션 다이얼로그
-// ──────────────────────────────────────────────────────
-function SoloOptionsDialog({ scenario, opts, setOpts, onCancel, onConfirm }: {
-  scenario: Scenario
-  opts: BattleOptions
-  setOpts: (o: BattleOptions) => void
-  onCancel: () => void
-  onConfirm: () => void
-}) {
-  return (
-    <div className="card" style={{ borderColor: 'var(--primary)' }}>
-      <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
-        <h2 style={{ margin: 0, flex: 1 }}>solo 공방전 옵션</h2>
-        <button className="ghost" onClick={onCancel}>닫기</button>
-      </div>
-      <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginBottom: 12 }}>
-        시나리오: <b>{scenario.title}</b> · 제한 {Math.round(scenario.time_limit_sec / 60)}분
-      </div>
-      <OptionsPanel opts={opts} setOpts={setOpts} />
-      <div className="row" style={{ marginTop: 16 }}>
-        <button onClick={onConfirm}>solo 시작</button>
-        <button className="ghost" onClick={onCancel}>취소</button>
-      </div>
-    </div>
-  )
-}
-
-// ──────────────────────────────────────────────────────
-// duel / ffa 다이얼로그
-// ──────────────────────────────────────────────────────
-function CreateMultiBattleDialog({
-  scenario, mode, me, myInfras, opts, setOpts, onCancel, onCreated, onErr,
-}: {
-  scenario: Scenario
-  mode: Mode
-  me: { id: number; email: string }
-  myInfras: Infra[]
-  opts: BattleOptions
-  setOpts: (o: BattleOptions) => void
-  onCancel: () => void
-  onCreated: (b: BattleDetail) => void
-  onErr: (m: string) => void
-}) {
-  const myDefaultRole: 'red' | 'blue' | 'free' = mode === 'duel' ? 'red' : 'free'
-  const [meRole, setMeRole] = useState<'red' | 'blue' | 'free'>(myDefaultRole)
-  const [meInfraId, setMeInfraId] = useState<number | null>(myInfras[0]?.id ?? null)
-
-  const [invited, setInvited] = useState<InvitedPlayer[]>([])
-  const [lookupEmail, setLookupEmail] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  async function lookupAndAdd() {
-    if (!lookupEmail.trim()) return
-    if (lookupEmail.trim().toLowerCase() === me.email.toLowerCase()) {
-      onErr('자기 자신은 자동 포함됩니다.')
-      return
-    }
-    if (invited.some(i => i.user.email.toLowerCase() === lookupEmail.trim().toLowerCase())) {
-      onErr('이미 추가된 사용자입니다.')
-      return
-    }
-    if (mode === 'duel' && invited.length >= 1) {
-      onErr('duel 모드는 상대 1명만 가능합니다.')
-      return
-    }
-    if (mode === 'ffa' && invited.length >= 7) {
-      onErr('ffa 모드 최대 8명 (본인 포함).')
-      return
-    }
-    try {
-      const u = await api<UserLookup>(`/users/lookup?email=${encodeURIComponent(lookupEmail.trim())}`)
-      const otherRole: 'red' | 'blue' | 'free' =
-        mode === 'duel' ? (meRole === 'red' ? 'blue' : 'red') : 'free'
-      setInvited([...invited, { user: u, role: otherRole, infra_id: null }])
-      setLookupEmail('')
-    } catch (e: any) {
-      onErr(`사용자 찾을 수 없음: ${e.message}`)
-    }
-  }
 
   async function submit() {
-    if (mode === 'duel' && invited.length !== 1) {
-      onErr('duel 은 상대 1명을 추가하세요.')
-      return
-    }
-    if (mode === 'ffa' && invited.length < 1) {
-      onErr('ffa 는 본인 외 최소 1명 추가하세요.')
-      return
-    }
-    if (!meInfraId) {
-      onErr('본인 인프라를 선택하세요.')
-      return
-    }
-    const participants = [
-      { user_id: me.id, role: meRole, infra_id: meInfraId },
-      ...invited.map(i => ({ user_id: i.user.id, role: i.role, infra_id: i.infra_id })),
-    ]
+    if (!scenarioId) { onErr('시나리오 선택'); return }
     setBusy(true)
     try {
       const b = await api<BattleDetail>('/battles', {
         method: 'POST',
         json: {
-          scenario_id: scenario.id, mode,
-          monitor: opts.monitor,
+          scenario_id: scenarioId, mode: opts.mode, monitor: opts.monitor,
           hint_enabled: opts.hint_enabled,
           target_apps: opts.use_random ? ['random'] : opts.target_apps,
-          participants,
+          participants: [],   // 로비 — 학생이 join 함
         },
       })
       onCreated(b)
-    } catch (e: any) {
-      onErr(e.message)
-    } finally {
-      setBusy(false)
-    }
+    } catch (e: any) { onErr(e.message) } finally { setBusy(false) }
   }
 
   return (
     <div className="card" style={{ borderColor: 'var(--primary)' }}>
       <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
-        <h2 style={{ margin: 0, flex: 1 }}>
-          {mode === 'duel' ? '1v1 duel' : 'FFA n인전'} 생성
-        </h2>
+        <h2 style={{ margin: 0, flex: 1 }}>🎮 로비 공방전 개설 (admin)</h2>
         <button className="ghost" onClick={onCancel}>닫기</button>
       </div>
-
       <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginBottom: 12 }}>
-        시나리오: <b>{scenario.title}</b> · 제한 {Math.round(scenario.time_limit_sec / 60)}분
+        참가자 없이 로비를 만들어두면 학생들이 직접 "참여" 버튼으로 들어옵니다.
+        모드별 최소 인원이 차면 누구든 시작 가능.
       </div>
 
-      <h3>본인 ({me.email})</h3>
+      <h3 style={{ marginTop: 12 }}>시나리오</h3>
+      <select value={scenarioId ?? ''}
+        onChange={e => setScenarioId(e.target.value ? parseInt(e.target.value) : null)}
+        style={{ width: '100%' }}>
+        {scenarios.map(s => (
+          <option key={s.id} value={s.id}>
+            {s.title} · {Math.round(s.time_limit_sec / 60)}분
+          </option>
+        ))}
+      </select>
+
+      <h3 style={{ marginTop: 16 }}>모드</h3>
       <div className="row">
-        {mode === 'duel' && (
-          <select value={meRole} onChange={e => {
-            const r = e.target.value as 'red' | 'blue'
-            setMeRole(r)
-            setInvited(invited.map(i => ({ ...i, role: r === 'red' ? 'blue' : 'red' })))
-          }}>
-            <option value="red">red (공격)</option>
-            <option value="blue">blue (방어)</option>
-          </select>
-        )}
-        {mode === 'ffa' && (
-          <select value={meRole} onChange={e => setMeRole(e.target.value as any)}>
-            <option value="free">free</option>
-            <option value="red">red</option>
-            <option value="blue">blue</option>
-          </select>
-        )}
-        <select value={meInfraId ?? ''} onChange={e => setMeInfraId(e.target.value ? parseInt(e.target.value) : null)}>
-          <option value="">— 인프라 선택 —</option>
-          {myInfras.map(i => (
-            <option key={i.id} value={i.id}>{i.name} ({i.vm_ip})</option>
-          ))}
-        </select>
+        {(['duel', 'ffa'] as Mode[]).map(m => (
+          <label key={m} style={{ marginRight: 16 }}>
+            <input type="radio" checked={opts.mode === m}
+              onChange={() => setOpts({ ...opts, mode: m })} />
+            {m === 'duel' ? '1v1 duel (red vs blue)' : 'FFA n인전'}
+          </label>
+        ))}
       </div>
 
-      <h3 style={{ marginTop: 20 }}>참가자 추가</h3>
-      <div className="row">
-        <input
-          style={{ flex: 1 }}
-          placeholder="상대방 이메일"
-          value={lookupEmail}
-          onChange={e => setLookupEmail(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') lookupAndAdd() }}
-        />
-        <button onClick={lookupAndAdd} disabled={busy}>+ 추가</button>
+      <h3 style={{ marginTop: 16 }}>채점 모델 / 힌트</h3>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 16 }}>
+        <label><input type="radio" checked={opts.monitor === 'bastion'}
+          onChange={() => setOpts({ ...opts, monitor: 'bastion' })} />
+          CCC Bastion (heuristic, 무료)</label>
+        <label><input type="radio" checked={opts.monitor === 'claude'}
+          onChange={() => setOpts({ ...opts, monitor: 'claude' })} />
+          Claude Code (LLM, 자연어 보고)</label>
+        <label><input type="checkbox" checked={opts.hint_enabled}
+          onChange={e => setOpts({ ...opts, hint_enabled: e.target.checked })} />
+          힌트 허용 (60초 cooldown)</label>
       </div>
-      {invited.map((p, idx) => (
-        <div key={p.user.id} className="card" style={{ padding: 10, margin: '8px 0' }}>
-          <div className="row" style={{ alignItems: 'center' }}>
-            <div style={{ flex: 1 }}>
-              <b>{p.user.name}</b> · <span style={{ color: 'var(--fg-dim)' }}>{p.user.email}</span>
-              <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
-                role: <span className={`badge ${p.role === 'red' ? 'red' : p.role === 'blue' ? 'blue' : 'yellow'}`}>{p.role}</span>
-              </div>
-            </div>
-            {mode === 'ffa' && (
-              <select value={p.role} onChange={e => {
-                const next = [...invited]
-                next[idx] = { ...next[idx], role: e.target.value as any }
-                setInvited(next)
-              }}>
-                <option value="free">free</option>
-                <option value="red">red</option>
-                <option value="blue">blue</option>
-              </select>
-            )}
-            <input
-              style={{ width: 90 }}
-              placeholder="infra_id"
-              type="number"
-              value={p.infra_id ?? ''}
-              onChange={e => {
-                const next = [...invited]
-                next[idx] = { ...next[idx], infra_id: e.target.value ? parseInt(e.target.value) : null }
-                setInvited(next)
-              }}
-            />
-            <button className="ghost" onClick={() => setInvited(invited.filter((_, i) => i !== idx))}>×</button>
-          </div>
-        </div>
-      ))}
 
-      <OptionsPanel opts={opts} setOpts={setOpts} />
+      <h3 style={{ marginTop: 16 }}>취약 웹 타겟 (1~5 또는 랜덤)</h3>
+      <label>
+        <input type="checkbox" checked={opts.use_random}
+          onChange={e => setOpts({ ...opts, use_random: e.target.checked, target_apps: e.target.checked ? [] : opts.target_apps })} />
+        🎲 랜덤
+      </label>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+        {TARGET_APPS_CATALOG.map(a => {
+          const on = opts.target_apps.includes(a.id)
+          return (
+            <button key={a.id} type="button"
+              className={on ? '' : 'ghost'}
+              style={{ fontSize: 12, padding: '4px 10px',
+                       opacity: opts.use_random ? 0.4 : 1 }}
+              disabled={opts.use_random || (!on && opts.target_apps.length >= 5)}
+              onClick={() => toggleApp(a.id)}>
+              {on ? '✓ ' : ''}{a.label}
+            </button>
+          )
+        })}
+      </div>
 
       <div className="row" style={{ marginTop: 16 }}>
-        <button onClick={submit} disabled={busy}>공방전 생성</button>
+        <button onClick={submit} disabled={busy}>로비 개설</button>
         <button className="ghost" onClick={onCancel} disabled={busy}>취소</button>
       </div>
     </div>
@@ -623,11 +459,134 @@ function CreateMultiBattleDialog({
 }
 
 // ──────────────────────────────────────────────────────
-// 이벤트 row — reasoning + detail JSON 함께 보기
+// 로비 카드 — 학생 "참여" 또는 관전
+// ──────────────────────────────────────────────────────
+function LobbyCard({ b, myInfras, onJoined, onView, onErr }: {
+  b: BattleSummary
+  myInfras: Infra[]
+  onJoined: (d: BattleDetail) => void
+  onView: () => void
+  onErr: (m: string) => void
+}) {
+  const [joining, setJoining] = useState(false)
+  const [role, setRole] = useState<'red' | 'blue' | 'free'>(b.mode === 'duel' ? 'red' : 'free')
+  const [infraId, setInfraId] = useState<number | null>(myInfras[0]?.id ?? null)
+  const me = getUser()!
+
+  async function join() {
+    setJoining(true)
+    try {
+      const d = await api<BattleDetail>(`/battles/${b.id}/join`, {
+        method: 'POST',
+        json: { role, infra_id: infraId },
+      })
+      onJoined(d)
+    } catch (e: any) { onErr(e.message) } finally { setJoining(false) }
+  }
+
+  return (
+    <div className="card">
+      <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 300 }}>
+          <b>#{b.id}</b> ·
+          <span className="badge blue">{b.mode}</span>
+          <span className={`badge ${b.monitor === 'claude' ? 'red' : 'green'}`}>{b.monitor}</span>
+          {b.hint_enabled && <span className="badge yellow">hint</span>}
+          <div style={{ color: 'var(--fg-dim)', fontSize: 12, marginTop: 4 }}>
+            제한 {Math.round(b.time_limit_sec / 60)}분 · targets: {b.target_apps?.join(', ') || '(default)'}
+          </div>
+        </div>
+        <select value={role} onChange={e => setRole(e.target.value as any)}>
+          {b.mode === 'duel' && <>
+            <option value="red">red (공격)</option>
+            <option value="blue">blue (방어)</option>
+          </>}
+          {b.mode === 'ffa' && <>
+            <option value="free">free</option>
+            <option value="red">red</option>
+            <option value="blue">blue</option>
+          </>}
+        </select>
+        <select value={infraId ?? ''} onChange={e => setInfraId(e.target.value ? parseInt(e.target.value) : null)}>
+          <option value="">— 인프라 선택 —</option>
+          {myInfras.map(i => (
+            <option key={i.id} value={i.id}>{i.name} ({i.vm_ip})</option>
+          ))}
+        </select>
+        <button onClick={join} disabled={joining || !infraId}>참여</button>
+        <button className="ghost" onClick={onView}>관전</button>
+      </div>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────
+// 미션 카드 — 학생이 보는 핵심 UI
+// ──────────────────────────────────────────────────────
+function MissionCard({ m }: { m: Mission }) {
+  const [open, setOpen] = useState(false)
+  const sideColor = m.side === 'red' ? 'red' : 'blue'
+  return (
+    <div className="card" style={{ padding: 12,
+      borderLeft: `4px solid var(--${sideColor})`,
+      opacity: m.solved ? 0.7 : 1,
+    }}>
+      <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+        <span className={`badge ${sideColor}`}>{m.side === 'red' ? '🔴 RED' : '🔵 BLUE'} #{m.order}</span>
+        {m.target_vm && <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>target: <code>{m.target_vm}</code></span>}
+        {m.points > 0 && <span className="badge green">+{m.points}점</span>}
+        {m.solved && <span className="badge green">✓ 자동 검증 통과</span>}
+        <div style={{ flex: 1 }} />
+        {(m.hint || m.semantic_intent || m.success_criteria.length > 0 || m.verify_expect) && (
+          <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }}
+            onClick={() => setOpen(o => !o)}>
+            {open ? '상세 ▲' : '상세 ▼'}
+          </button>
+        )}
+      </div>
+      <div style={{ marginTop: 6, fontSize: 14 }}>
+        <b>할 일:</b> {m.instruction}
+      </div>
+      {open && (
+        <div style={{ marginTop: 8, padding: 10, background: 'rgba(255,255,255,0.04)',
+                      borderRadius: 6, fontSize: 13 }}>
+          {m.semantic_intent && (
+            <div style={{ marginBottom: 8 }}>
+              <b>의도/배경:</b> {m.semantic_intent}
+            </div>
+          )}
+          {m.success_criteria.length > 0 && (
+            <div style={{ marginBottom: 8 }}>
+              <b>성공 조건:</b>
+              <ul style={{ margin: '4px 0 0 20px', padding: 0 }}>
+                {m.success_criteria.map((c, i) => <li key={i}>{c}</li>)}
+              </ul>
+            </div>
+          )}
+          {m.verify_expect && (
+            <div style={{ marginBottom: 8, fontSize: 12 }}>
+              <b>검증 패턴:</b> <code>{m.verify_expect}</code>
+            </div>
+          )}
+          {m.hint && (
+            <details>
+              <summary style={{ cursor: 'pointer', color: 'var(--yellow)' }}>💡 힌트 (스포일러)</summary>
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                            fontSize: 12, margin: '6px 0 0' }}>{m.hint}</pre>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────
+// 이벤트 row — reasoning 자연어 + raw detail
 // ──────────────────────────────────────────────────────
 function EventRow({ e }: { e: BattleEvent }) {
   const [open, setOpen] = useState(false)
-  const hasDetail = (e.detail && Object.keys(e.detail).length > 0) || !!e.reasoning
+  const hasContent = !!e.reasoning || (e.detail && Object.keys(e.detail).length > 0)
   return (
     <div className="card" style={{ padding: 12 }}>
       <div className="row" style={{ alignItems: 'center', fontSize: 13 }}>
@@ -639,7 +598,7 @@ function EventRow({ e }: { e: BattleEvent }) {
           {e.points > 0 ? '+' : ''}{e.points}
         </span>}
         <div style={{ flex: 1 }} />
-        {hasDetail && (
+        {hasContent && (
           <button className="ghost" style={{ padding: '2px 8px', fontSize: 12 }}
             onClick={() => setOpen(o => !o)}>
             {open ? '채점 근거 ▲' : '채점 근거 ▼'}
@@ -651,11 +610,9 @@ function EventRow({ e }: { e: BattleEvent }) {
         <div style={{ marginTop: 8, padding: 10, background: 'rgba(255,255,255,0.04)',
                       borderRadius: 6, fontSize: 13 }}>
           {e.reasoning && (
-            <div style={{ marginBottom: 8, whiteSpace: 'pre-wrap' }}>
-              {e.reasoning}
-            </div>
+            <div style={{ marginBottom: 8, whiteSpace: 'pre-wrap' }}>{e.reasoning}</div>
           )}
-          {hasDetail && Object.keys(e.detail || {}).length > 0 && (
+          {e.detail && Object.keys(e.detail).length > 0 && (
             <details>
               <summary style={{ cursor: 'pointer', color: 'var(--fg-dim)', fontSize: 12 }}>
                 raw detail (JSON)
@@ -672,11 +629,9 @@ function EventRow({ e }: { e: BattleEvent }) {
 }
 
 // ──────────────────────────────────────────────────────
-// BattleView — 참가자 모드 + 관전 모드 통합
+// BattleView — 미션 패널 + 점수판 + 이벤트 + 힌트
 // ──────────────────────────────────────────────────────
-function BattleView({
-  b, meId, onClose, onStart, onEnd, onRefresh, onErr,
-}: {
+function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfras }: {
   b: BattleDetail
   meId: number
   onClose: () => void
@@ -684,10 +639,13 @@ function BattleView({
   onEnd: () => void
   onRefresh: () => void
   onErr: (m: string) => void
+  myInfras: Infra[]
 }) {
   const isParticipant = b.participants.some(p => p.user_id === meId)
-  const isAdmin = getUser()?.role === 'admin'
-  const canControl = isParticipant || isAdmin
+  const admin = isAdmin()
+  const canControl = isParticipant || admin
+  const canPostEvent = isParticipant
+  const isLobby = b.battle.status === 'pending'
 
   const [eventForm, setEventForm] = useState({
     event_type: 'attack', target: '', description: '', points: 0,
@@ -698,7 +656,10 @@ function BattleView({
   const [hintSide, setHintSide] = useState<'red' | 'blue' | 'any'>('any')
   const [hintNote, setHintNote] = useState('')
 
-  // hint cooldown 카운트다운
+  // join 다이얼로그 — 로비에서 BattleView 직접 열린 경우
+  const [joinRole, setJoinRole] = useState<'red' | 'blue' | 'free'>(b.battle.mode === 'duel' ? 'red' : 'free')
+  const [joinInfra, setJoinInfra] = useState<number | null>(myInfras[0]?.id ?? null)
+
   useEffect(() => {
     if (hintCool <= 0) return
     const t = setTimeout(() => setHintCool(c => Math.max(0, c - 1)), 1000)
@@ -712,23 +673,34 @@ function BattleView({
     onRefresh()
   }
 
+  async function joinHere() {
+    try {
+      await api<BattleDetail>(`/battles/${b.battle.id}/join`, {
+        method: 'POST', json: { role: joinRole, infra_id: joinInfra },
+      })
+      onRefresh()
+    } catch (e: any) { onErr(e.message) }
+  }
+
+  async function leaveHere() {
+    try {
+      await api<BattleDetail>(`/battles/${b.battle.id}/leave`, { method: 'POST' })
+      onRefresh()
+    } catch (e: any) { onErr(e.message) }
+  }
+
   async function requestHint() {
     setHintBusy(true)
     try {
       const r = await api<HintOut>(`/battles/${b.battle.id}/hint`, {
-        method: 'POST',
-        json: { mission_side: hintSide, note: hintNote },
+        method: 'POST', json: { mission_side: hintSide, note: hintNote },
       })
       setHint(r)
       setHintCool(60)
-    } catch (e: any) {
-      onErr(`힌트 요청 실패: ${e.message}`)
-    } finally {
-      setHintBusy(false)
-    }
+    } catch (e: any) { onErr(`힌트 요청 실패: ${e.message}`) }
+    finally { setHintBusy(false) }
   }
 
-  // 모드별 정렬: duel = red→blue 그룹별, ffa/solo = 점수 내림차순
   const sortedParts = b.battle.mode === 'duel'
     ? [...b.participants].sort((a, b) => (a.role === 'red' ? -1 : 1) - (b.role === 'red' ? -1 : 1) || b.score - a.score)
     : [...b.participants].sort((a, b) => b.score - a.score)
@@ -744,8 +716,47 @@ function BattleView({
         </h2>
         <span className="badge blue">{b.battle.mode}</span>
         {!isParticipant && <span className="badge yellow">관전</span>}
+        {isParticipant && b.my_role &&
+          <span className={`badge ${b.my_role === 'red' ? 'red' : b.my_role === 'blue' ? 'blue' : 'green'}`}>나: {b.my_role}</span>}
         <span className={`badge ${b.battle.status === 'active' ? 'green' : 'blue'}`}>{b.battle.status}</span>
       </div>
+
+      {/* 로비 join/leave 패널 */}
+      {isLobby && b.battle.mode !== 'solo' && (
+        <div className="card" style={{ borderColor: 'var(--yellow)' }}>
+          <h3 style={{ marginTop: 0 }}>🎮 로비 — 시작 대기 중</h3>
+          {!isParticipant ? (
+            <div className="row">
+              <div style={{ flex: 1, color: 'var(--fg-dim)' }}>
+                참여하려면 역할 + 인프라 선택 후 "참여" 클릭.
+              </div>
+              <select value={joinRole} onChange={e => setJoinRole(e.target.value as any)}>
+                {b.battle.mode === 'duel' && <>
+                  <option value="red">red (공격)</option>
+                  <option value="blue">blue (방어)</option>
+                </>}
+                {b.battle.mode === 'ffa' && <>
+                  <option value="free">free</option>
+                  <option value="red">red</option>
+                  <option value="blue">blue</option>
+                </>}
+              </select>
+              <select value={joinInfra ?? ''} onChange={e => setJoinInfra(e.target.value ? parseInt(e.target.value) : null)}>
+                <option value="">— 인프라 선택 —</option>
+                {myInfras.map(i => <option key={i.id} value={i.id}>{i.name} ({i.vm_ip})</option>)}
+              </select>
+              <button onClick={joinHere} disabled={!joinInfra}>참여</button>
+            </div>
+          ) : (
+            <div className="row">
+              <div style={{ flex: 1 }}>
+                ✓ 당신은 <b>{b.my_role}</b> 역할로 참여 중. 다른 참가자 대기.
+              </div>
+              <button className="ghost" onClick={leaveHere}>나가기</button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="row">
         <div className="card" style={{ flex: 1 }}>
@@ -786,6 +797,24 @@ function BattleView({
         </div>
       )}
 
+      {/* 🎯 미션 패널 — 핵심 신규 UI */}
+      {b.my_missions.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <h3>🎯 내 미션 ({b.my_role})</h3>
+          {b.my_missions.map(m => <MissionCard key={`${m.side}-${m.order}`} m={m} />)}
+        </div>
+      )}
+      {b.opponent_missions.length > 0 && (
+        <details style={{ marginTop: 16 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 16, fontWeight: 600 }}>
+            👀 상대편 미션 ({b.opponent_missions.length}개) — {isParticipant ? '관전 시야 (공격 정보)' : '관전 모드'}
+          </summary>
+          <div style={{ marginTop: 8 }}>
+            {b.opponent_missions.map(m => <MissionCard key={`${m.side}-${m.order}`} m={m} />)}
+          </div>
+        </details>
+      )}
+
       <div className="card">
         <h3 style={{ marginTop: 0 }}>스코어보드</h3>
         <table style={{ width: '100%', fontSize: 14, borderCollapse: 'collapse' }}>
@@ -822,16 +851,16 @@ function BattleView({
       )}
       {!canControl && (
         <div className="card" style={{ color: 'var(--fg-dim)', fontSize: 13 }}>
-          🔍 관전 모드 — 이 공방전의 참가자가 아니므로 read-only 입니다. 이벤트 / 강제종료 / 힌트 요청 불가.
+          🔍 관전 모드 — read-only.
         </div>
       )}
 
-      {/* 힌트 패널 — 참가자 + hint_enabled + active */}
+      {/* 힌트 패널 */}
       {b.battle.hint_enabled && isParticipant && b.battle.status === 'active' && (
         <div className="card col" style={{ marginTop: 16 }}>
           <h3 style={{ marginTop: 0 }}>💡 힌트 요청</h3>
           <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
-            토큰 절약을 위해 동일 상태에선 동일 힌트가 캐시됩니다. 60초 cooldown.
+            토큰 절약을 위해 동일 상태에선 동일 힌트가 캐시. 60초 cooldown.
           </div>
           <div className="row">
             <select value={hintSide} onChange={e => setHintSide(e.target.value as any)}>
@@ -839,7 +868,7 @@ function BattleView({
               <option value="red">red (공격)</option>
               <option value="blue">blue (방어)</option>
             </select>
-            <input style={{ flex: 1 }} placeholder="막힌 곳 (선택, 짧게)"
+            <input style={{ flex: 1 }} placeholder="막힌 곳 (선택)"
               value={hintNote} onChange={e => setHintNote(e.target.value)} />
             <button onClick={requestHint} disabled={hintBusy || hintCool > 0}>
               {hintCool > 0 ? `${hintCool}s 대기` : (hintBusy ? '요청 중...' : '힌트 받기')}
@@ -857,9 +886,12 @@ function BattleView({
         </div>
       )}
 
-      {canControl && b.battle.status === 'active' && (
+      {canPostEvent && b.battle.status === 'active' && (
         <form onSubmit={submitEvent} className="card col" style={{ marginTop: 16 }}>
-          <h3 style={{ marginTop: 0 }}>이벤트 추가</h3>
+          <h3 style={{ marginTop: 0 }}>📝 내가 한 일 보고 (이벤트 추가)</h3>
+          <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
+            위 미션 중 하나를 시도/완료한 결과를 기록. 자동 모니터가 잡지 못한 행동을 직접 보고.
+          </div>
           <div className="row">
             <select value={eventForm.event_type}
               onChange={e => setEventForm({ ...eventForm, event_type: e.target.value })}
@@ -868,19 +900,20 @@ function BattleView({
                 <option key={t} value={t}>{t}</option>
               ))}
             </select>
-            <input style={{ flex: 1 }} placeholder="target (예: web)" value={eventForm.target}
+            <input style={{ flex: 1 }} placeholder="target (예: juiceshop)" value={eventForm.target}
               onChange={e => setEventForm({ ...eventForm, target: e.target.value })} />
             <input type="number" style={{ width: 120 }} placeholder="points"
               value={eventForm.points}
               onChange={e => setEventForm({ ...eventForm, points: parseInt(e.target.value || '0', 10) })} />
           </div>
-          <input placeholder="설명" value={eventForm.description}
+          <input placeholder="설명 (예: 미션 #1 — DVWA cron persistence 등록 완료)"
+            value={eventForm.description}
             onChange={e => setEventForm({ ...eventForm, description: e.target.value })} required />
           <button type="submit">이벤트 push</button>
         </form>
       )}
 
-      <h3>이벤트 타임라인</h3>
+      <h3 style={{ marginTop: 16 }}>이벤트 타임라인</h3>
       {b.events.slice().reverse().map(e => <EventRow key={e.id} e={e} />)}
     </>
   )
