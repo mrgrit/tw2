@@ -1,4 +1,4 @@
-"""Phase 4 + 9 — battle 활성화 시 background 자동 모니터.
+"""Phase 4 + 9 + 9.1 — battle 활성화 시 background 자동 모니터.
 
 목표: 학생이 6v6 에서 공격/방어를 진행하면 tubewar 가 그 효과를 자동으로 관측해
 BattleEvent 로 변환·점수 적용. 6v6 Bastion API `/exec` 의 안전 화이트리스트
@@ -19,10 +19,11 @@ import logging
 from typing import Any
 import httpx
 
+import datetime as dt
 from sqlalchemy import select
 
 from ..db import SessionLocal
-from ..models import Battle, BattleParticipant, Infra, Scenario
+from ..models import Battle, BattleEvent, BattleParticipant, Infra, Scenario
 from . import battle_service as bs, grader
 
 log = logging.getLogger(__name__)
@@ -126,17 +127,13 @@ async def _tick(battle_id: int, tick_idx: int) -> None:
         target_apps = list(battle.target_apps or [])
         monitor_mode = battle.monitor or "bastion"
 
-    # heartbeat — 60s 마다
+    # heartbeat — 60s 마다. 변화 없으면 직전 heartbeat row 를 UPDATE 해서 시간 범위만 늘림
     if tick_idx % HEARTBEAT_EVERY_N_TICKS == 0:
         async with SessionLocal() as s:
             try:
-                await bs.add_event(
-                    s, battle_id=battle_id, actor_user_id=None,
-                    event_type="system", target="monitor",
-                    description=f"auto-monitor heartbeat ({monitor_mode})",
-                    points=0,
-                    detail={"tick": tick_idx, "infras": len(infras),
-                            "target_apps": target_apps, "monitor": monitor_mode},
+                await _emit_heartbeat(
+                    s, battle_id=battle_id, monitor_mode=monitor_mode,
+                    infras_count=len(infras), target_apps=target_apps, tick_idx=tick_idx,
                 )
             except ValueError:
                 raise StopAsyncIteration
@@ -222,6 +219,106 @@ async def _tick(battle_id: int, tick_idx: int) -> None:
                     )
                 except ValueError:
                     raise StopAsyncIteration
+
+
+def _fmt_korean_time(d: dt.datetime) -> str:
+    """오전/오후 H시 MM분 — heartbeat 표시용 (서버 KST 가정. 환경별로 다르면 그냥 24시간)."""
+    try:
+        local = d.astimezone()  # 서버 로컬 타임존
+    except Exception:
+        local = d
+    h = local.hour
+    am = "오전" if h < 12 else "오후"
+    h12 = h % 12 or 12
+    return f"{am} {h12}시 {local.minute:02d}분"
+
+
+async def _emit_heartbeat(
+    session, *, battle_id: int, monitor_mode: str,
+    infras_count: int, target_apps: list[str], tick_idx: int,
+) -> None:
+    """heartbeat 이벤트 — 직전 이벤트가 같은 종류 heartbeat 이면 in-place UPDATE.
+
+    시간 범위 (start ~ end) 와 tick 수만 갱신 → DB row 1개로 collapse.
+    점수 이벤트가 끼면 다음 heartbeat 부터 새로 시작 (이전 heartbeat row 는 그대로 보존).
+    """
+    now = dt.datetime.now(dt.timezone.utc)
+    last = await session.scalar(
+        select(BattleEvent).where(BattleEvent.battle_id == battle_id)
+        .order_by(BattleEvent.id.desc()).limit(1)
+    )
+    targets_label = ",".join(target_apps) if target_apps else "(default)"
+
+    is_collapsible_predecessor = (
+        last is not None
+        and last.event_type == "system"
+        and last.target == "monitor"
+        and (last.detail or {}).get("kind") == "heartbeat_range"
+        and (last.points or 0) == 0
+    )
+
+    if is_collapsible_predecessor:
+        d = dict(last.detail or {})
+        ticks = int(d.get("ticks") or 1) + 1
+        # start_ts 보존
+        start_iso = d.get("start_ts") or (last.ts.isoformat() if last.ts else now.isoformat())
+        try:
+            start_dt = dt.datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        except Exception:
+            start_dt = last.ts or now
+        d.update({
+            "kind": "heartbeat_range",
+            "start_ts": start_iso,
+            "end_ts": now.isoformat(),
+            "ticks": ticks,
+            "monitor": monitor_mode,
+            "target_apps": target_apps,
+            "infras": infras_count,
+            "last_tick_idx": tick_idx,
+        })
+        last.detail = d
+        last.description = (
+            f"auto-monitor heartbeat {_fmt_korean_time(start_dt)} ~ {_fmt_korean_time(now)} "
+            f"({ticks}회, 변화 없음, monitor={monitor_mode})"
+        )
+        last.reasoning = (
+            f"**자동 모니터 무변화 구간** ({_fmt_korean_time(start_dt)} ~ {_fmt_korean_time(now)})\n\n"
+            f"이 시간 동안 자동 모니터가 **{ticks}회 점검**했고, 모든 probe 응답이 직전과 동일했습니다.\n\n"
+            f"- 채점 모델: `{monitor_mode}`\n"
+            f"- 점검 타겟: `{targets_label}`\n"
+            f"- 인프라 수: {infras_count}\n\n"
+            "_LLM 호출 없음 (변화가 없으면 token 소비 0). 새 점수 이벤트가 발생하면 다음 heartbeat 부터 새로 시작합니다._"
+        )
+        # ts 는 갱신하지 않음 (시간 정렬은 start_ts 유지) — UI 에선 description 의 범위가 우선
+        await session.commit()
+        return
+
+    # 새 heartbeat row — bs.add_event 의 commit+refresh 사이클을 거치지 않고 바로 add+commit
+    # (heartbeat 은 점수 0 이라 participant 점수 갱신/시간만료 체크 불필요)
+    new_event = BattleEvent(
+        battle_id=battle_id,
+        actor_user_id=None,
+        event_type="system",
+        target="monitor",
+        description=f"auto-monitor heartbeat {_fmt_korean_time(now)} (1회, monitor={monitor_mode})",
+        points=0,
+        detail={
+            "kind": "heartbeat_range",
+            "start_ts": now.isoformat(),
+            "end_ts": now.isoformat(),
+            "ticks": 1,
+            "monitor": monitor_mode,
+            "target_apps": target_apps,
+            "infras": infras_count,
+            "last_tick_idx": tick_idx,
+        },
+        reasoning=(
+            f"**자동 모니터 시작** ({_fmt_korean_time(now)})\n\n"
+            f"채점 모델 `{monitor_mode}` 로 타겟 `{targets_label}` 점검 시작."
+        ),
+    )
+    session.add(new_event)
+    await session.commit()
 
 
 async def _loop(battle_id: int) -> None:

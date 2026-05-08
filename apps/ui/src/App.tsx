@@ -23,7 +23,10 @@ function NavBar() {
       <Link to="/" style={{ fontWeight: 700, color: 'var(--primary)', fontSize: 18 }}>tubewar</Link>
       <Link to="/dashboard">대시보드</Link>
       <Link to="/myinfra">내 인프라</Link>
-      <Link to="/battle">공방전</Link>
+      <Link to="/battle"
+        onClick={() => window.dispatchEvent(new Event('tubewar:battle:reset'))}>
+        공방전
+      </Link>
       <Link to="/leaderboard">리더보드</Link>
       {isAdmin() && <Link to="/admin">관리자</Link>}
       <div style={{ flex: 1 }} />

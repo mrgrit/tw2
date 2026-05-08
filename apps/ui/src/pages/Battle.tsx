@@ -144,6 +144,19 @@ export default function Battle() {
   }
   useEffect(() => { refresh() }, [])
 
+  // 상단 nav 의 "공방전" 링크 클릭 시: 이미 같은 path 라 router 가 unmount 안 함 →
+  // 커스텀 이벤트로 BattleView/dialog state 를 강제로 리셋.
+  useEffect(() => {
+    const reset = () => {
+      setActiveBattle(null)
+      setPendingScenario(null)
+      setErr(null)
+      refresh()
+    }
+    window.addEventListener('tubewar:battle:reset', reset)
+    return () => window.removeEventListener('tubewar:battle:reset', reset)
+  }, [])
+
   async function loadBattle(id: number) {
     setErr(null)
     try {

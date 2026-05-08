@@ -120,6 +120,26 @@ async def start_battle(
     return _serialize(b, s.title if s else None)
 
 
+def _manual_reasoning(*, user_name: str, ev_type: str, target: str,
+                      points: int, description: str) -> str:
+    """수동 이벤트의 자연어 채점 근거 (LLM 호출 없이 휴리스틱)."""
+    side = "공격(Red)" if ev_type in ("attack", "exploit") else \
+           "방어(Blue)" if ev_type in ("defend", "detect", "block", "alert") else "기타"
+    sign = "+" if points > 0 else ""
+    head = f"**수동 이벤트 — {side}**"
+    if points == 0:
+        head = f"**수동 이벤트 — {side} (정보성)**"
+    body = (
+        f"- 행위자: `{user_name}`\n"
+        f"- 행동: `{ev_type}` on `{target or '(미지정)'}`\n"
+        f"- 보고 점수: **{sign}{points}**\n"
+        f"- 행위자 설명: {description or '(없음)'}\n\n"
+        "_이 이벤트는 학생/관리자가 직접 보고한 내용입니다. 자동 검증은 수행되지 않았으며, "
+        "관전자/심판은 행위자 설명과 점수의 적절성을 직접 판단해야 합니다._"
+    )
+    return f"{head}\n\n{body}"
+
+
 @router.post("/{battle_id}/events", response_model=BattleEventOut, status_code=201)
 async def post_event(
     battle_id: int,
@@ -129,6 +149,10 @@ async def post_event(
 ) -> BattleEventOut:
     if user.role != "admin" and not await bs.is_participant(session, battle_id, user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "only participants or admin can post events")
+    reasoning = _manual_reasoning(
+        user_name=user.name, ev_type=body.event_type, target=body.target,
+        points=body.points, description=body.description,
+    )
     try:
         ev = await bs.add_event(
             session,
@@ -139,6 +163,7 @@ async def post_event(
             description=body.description,
             points=body.points,
             detail=body.detail,
+            reasoning=reasoning,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))

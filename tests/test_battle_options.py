@@ -171,8 +171,59 @@ async def test_spectator_can_view_but_cannot_post_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_collapse_in_place() -> None:
+    """auto_monitor 의 heartbeat 가 변화 없을 때 1 row 로 collapse 되는지."""
+    from app.services.auto_monitor import _emit_heartbeat
+    async with await _new() as client:
+        tok, uid, inf = await _signup(client, "hb@example.com", "hb")
+        h = {"authorization": f"Bearer {tok}"}
+        sc = (await client.get("/scenarios", headers=h)).json()[0]["id"]
+        bid = (await client.post("/battles", headers=h, json={
+            "scenario_id": sc, "mode": "solo", "monitor": "bastion",
+            "participants": [{"user_id": uid, "role": "solo", "infra_id": inf}],
+        })).json()["battle"]["id"]
+        await client.post(f"/battles/{bid}/start", headers=h)
+
+        # 3번 heartbeat 직접 호출 — collapse 되어야
+        async with SessionLocal() as s:
+            await _emit_heartbeat(s, battle_id=bid, monitor_mode="bastion",
+                                  infras_count=1, target_apps=["juiceshop"], tick_idx=4)
+        async with SessionLocal() as s:
+            await _emit_heartbeat(s, battle_id=bid, monitor_mode="bastion",
+                                  infras_count=1, target_apps=["juiceshop"], tick_idx=8)
+        async with SessionLocal() as s:
+            await _emit_heartbeat(s, battle_id=bid, monitor_mode="bastion",
+                                  infras_count=1, target_apps=["juiceshop"], tick_idx=12)
+
+        body = (await client.get(f"/battles/{bid}", headers=h)).json()
+        hb = [e for e in body["events"]
+              if e["event_type"] == "system" and e["target"] == "monitor"
+              and (e.get("detail") or {}).get("kind") == "heartbeat_range"]
+        # collapse → row 1개만, ticks=3
+        assert len(hb) == 1
+        assert hb[0]["detail"]["ticks"] == 3
+        assert hb[0]["reasoning"] and "무변화 구간" in hb[0]["reasoning"]
+        assert "~" in hb[0]["description"]
+
+        # 점수 이벤트 끼면 다음 heartbeat 부터 새 row
+        await client.post(f"/battles/{bid}/events", headers=h, json={
+            "event_type": "exploit", "target": "juiceshop", "description": "x",
+            "points": 5, "detail": {},
+        })
+        async with SessionLocal() as s:
+            await _emit_heartbeat(s, battle_id=bid, monitor_mode="bastion",
+                                  infras_count=1, target_apps=["juiceshop"], tick_idx=16)
+        body = (await client.get(f"/battles/{bid}", headers=h)).json()
+        hb2 = [e for e in body["events"]
+               if e["event_type"] == "system" and e["target"] == "monitor"
+               and (e.get("detail") or {}).get("kind") == "heartbeat_range"]
+        assert len(hb2) == 2  # 점수 이벤트 후 새 heartbeat row
+        assert hb2[1]["detail"]["ticks"] == 1
+
+
+@pytest.mark.asyncio
 async def test_event_reasoning_field_roundtrip() -> None:
-    """배틀 이벤트에 reasoning 이 직렬화되어 나오는지 (manual event 는 None)."""
+    """수동 이벤트에도 자연어 reasoning 자동 생성 (Phase 9.1)."""
     async with await _new() as client:
         tok, uid, inf = await _signup(client, "u@example.com", "u")
         h = {"authorization": f"Bearer {tok}"}
@@ -184,10 +235,13 @@ async def test_event_reasoning_field_roundtrip() -> None:
         })).json()["battle"]["id"]
         await client.post(f"/battles/{bid}/start", headers=h)
         await client.post(f"/battles/{bid}/events", headers=h, json={
-            "event_type": "attack", "target": "x", "description": "manual",
-            "points": 10, "detail": {},
+            "event_type": "exploit", "target": "juiceshop", "description": "SQLi 시도",
+            "points": 20, "detail": {},
         })
         body = (await client.get(f"/battles/{bid}", headers=h)).json()
-        attack_events = [e for e in body["events"] if e["event_type"] == "attack"]
-        assert attack_events
-        assert attack_events[0]["reasoning"] is None  # 수동 이벤트는 reasoning 없음
+        scored = [e for e in body["events"] if e["event_type"] == "exploit"]
+        assert scored
+        rs = scored[0]["reasoning"]
+        assert rs and "수동 이벤트" in rs
+        assert "공격(Red)" in rs
+        assert "+20" in rs
