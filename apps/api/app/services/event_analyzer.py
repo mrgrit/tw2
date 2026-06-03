@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 _CLAUDE_CMD = shutil.which("claude") or "/usr/local/bin/claude"
 _CLAUDE_MODEL = os.getenv("TUBEWAR_ANALYZER_MODEL", "claude-haiku-4-5")
 _CLAUDE_TIMEOUT = float(os.getenv("TUBEWAR_ANALYZER_TIMEOUT", "40"))
+# 채점(grade)은 claude -p 1회가 ~30-40s 걸리고 멀티라운드(직접 점검)면 더 길어 → 넉넉히.
+_GRADE_TIMEOUT = float(os.getenv("TUBEWAR_GRADE_TIMEOUT", "150"))
 
 
 @dataclass
@@ -518,7 +520,7 @@ async def _claude_grade(payload: dict, model: str | None = None) -> tuple[str | 
             "--append-system-prompt", _CLAUDE_GRADE_SYSTEM, user,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        out, _err = await asyncio.wait_for(proc.communicate(), timeout=_CLAUDE_TIMEOUT)
+        out, _err = await asyncio.wait_for(proc.communicate(), timeout=_GRADE_TIMEOUT)
         if proc.returncode != 0:
             return None, 0.0
         wrap = json.loads(out.decode("utf-8", "replace"))
@@ -539,7 +541,7 @@ async def _bastion_grade(payload: dict, base_url: str, model: str,
     headers = {"X-API-Key": api_key or "", "content-type": "application/json"}
     body = {"model": model, "prompt": prompt, "stream": False, "format": "json"}
     try:
-        async with httpx.AsyncClient(timeout=_CLAUDE_TIMEOUT, verify=False) as c:
+        async with httpx.AsyncClient(timeout=_GRADE_TIMEOUT, verify=False) as c:
             r = await c.post(url, headers=headers, json=body)
             if r.status_code >= 300:
                 return None, 0.0
@@ -571,7 +573,7 @@ async def grade(
     evidence_text: str = "",
     max_points: int = 0,
     inspector=None,          # async callable(list[check-spec]) -> list[result]  (참여자 infra 직접 점검)
-    max_rounds: int = 3,
+    max_rounds: int = 2,     # 1회 직접 점검 + 1회 최종 판정 (지연 한도). claude -p 가 호출당 ~30-40s.
     grader: dict | None = None,   # {provider:cc|bastion, model, base_url, api_key} — 시나리오별 채점기
 ) -> AnalysisResult:
     """학생 제출 1건을 AI 가 **참여자 인프라를 직접 점검**하며 시맨틱 채점. 점수는 AI 가 결정.
@@ -625,25 +627,38 @@ async def grade(
     }
 
     total_cost = 0.0
-    inspections: list[dict] = []
     for _round in range(max_rounds):
-        text, cost = await _call(payload)
+        final = (_round == max_rounds - 1)
+        # 마지막 라운드는 '추가 점검 금지, 지금 최종 verdict' 강제 → CC 의 분석을 점수로 확정.
+        p = dict(payload)
+        if final:
+            p["finalize"] = ("추가 inspect 금지. 지금까지의 증거(직접 점검 포함)만으로 최종 verdict "
+                             "JSON 하나만 출력하라.")
+        text, cost = await _call(p)
         total_cost += cost
+        if text is None and final:        # 마지막 결정 호출 실패 → 1회 재시도(CC 작업 유실 방지)
+            text, cost = await _call(p)
+            total_cost += cost
         if text is None:
-            return AnalysisResult(
-                reasoning="_AI 채점기를 호출할 수 없어 자동 채점을 보류합니다. 강사 검토 대기 "
-                          "(불공정 방지: 자동 점수 부여 안 함)._",
-                model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
+            if final:
+                return AnalysisResult(
+                    reasoning="_AI 채점기 호출 실패(타임아웃/오류) — 자동 점수 보류, 강사 검토 대기 "
+                              "(불공정 방지)._",
+                    model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
+            continue   # 비-최종 라운드 실패 → 다음 라운드(증거 유지) 재시도
+
         try:
             v = _extract_json_obj(text)
         except Exception:
-            return AnalysisResult(
-                reasoning=f"_AI 응답 파싱 실패 — 강사 검토 필요._\n\n```\n{text[:400]}\n```",
-                model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
+            if final:
+                return AnalysisResult(
+                    reasoning=f"_AI 응답 파싱 실패 — 강사 검토 필요._\n\n```\n{text[:400]}\n```",
+                    model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
+            continue
 
-        # AI 가 인프라 직접 점검을 요청한 경우 (마지막 라운드 전까지)
+        # AI 가 인프라 직접 점검을 요청 (마지막 라운드 전까지만)
         req = v.get("inspect")
-        if req and inspector is not None and _round < max_rounds - 1:
+        if req and inspector is not None and not final:
             checks = []
             for n, c in enumerate(req[:8], start=1):
                 if isinstance(c, dict) and c.get("type") in _ALLOWED_INSPECT:
@@ -651,7 +666,6 @@ async def grade(
                                    "target": c.get("target") or mission.target_vm,
                                    "params": c.get("params") or {}})
             results = await inspector(checks) if checks else []
-            inspections.append({"requested": checks, "results": results})
             payload["read_only_evidence"] += (
                 f"\n[AI 가 직접 요청한 점검 결과 round {_round + 1}]\n" + json.dumps(results, ensure_ascii=False)
             )
@@ -668,7 +682,6 @@ async def grade(
             verdict=verdict, awarded_points=pts,
         )
 
-    # 라운드 소진 — 판정 미도출 → 보류
     return AnalysisResult(
         reasoning="_AI 가 점검을 반복했으나 최종 판정에 이르지 못함 — 강사 검토 필요._",
         model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
