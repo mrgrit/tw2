@@ -1,0 +1,221 @@
+id: "secuops-w01"
+category: "secuops"
+title: "[보안운영 W1] 다중벡터 침투 vs 4-tier 방어스택 통합 점검·탐지"
+difficulty: "medium"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  보안운영 1주차 — 6v6 의 4-tier(ext→pipe→dmz→int) 방어 스택 전체가 살아서 협력하는지 확인하고,
+  외부 공격자의 다중벡터 침투(스캔 + 웹 공격)를 각 방어층이 어떻게 잡는지 통합 점검한다. 단일
+  장비가 아니라 **방화벽 → IPS → WAF → SIEM** 이 한 흐름으로 동작함을 증명하는 주차다.
+
+  ▸ 모드
+    • solo : 외부 공격자(다중벡터) → 운영자(스택 점검·층별 탐지)를 한 학생이 차례로 수행. 대상=본인 인프라.
+    • duel : Red 가 상대 스택을 다중벡터로 공격, Blue 는 본인 스택에서 층별로 탐지. 대상=상대 인프라.
+
+  ▸ 공격자 위치(중요): Red 는 **망 외부 공격자(attacker-ext, SSH 2203)**. 외부 명령 미수집 →
+    Red 채점은 대상 각 방어층(Suricata/ModSecurity)·SIEM 에 남은 탐지 흔적으로 한다.
+
+  ▸ 이 주차의 공격은 모두 6v6 에 이미 로딩된 IPS/WAF/SIEM 룰을 trigger 하여 SIEM(Wazuh)으로
+    경보가 모인다(별도 룰 무장 불필요 — 동적 경보).
+
+# ───────────────────────── RED (외부 다중벡터 공격) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🎯 RED-1 — 외부 포트/서비스 스캔 (1차 정찰)
+
+      망 외부 공격자(attacker-ext)로 대상 공개 표면 전체를 포트·서비스 스캔한다. 4-tier 방어의
+      가장 바깥에서 IPS(Suricata)가 이 스캔을 가장 먼저 탐지한다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      nmap -sV -p 1-10000 <대상_공개IP> --max-retries 1 --host-timeout 15s -T4
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → 대상 IPS(Suricata)의 스캔 탐지 흔적으로 채점.
+
+      ### ✅ 합격 기준
+      대상 IPS 에 포트 스캔 탐지 경보가 남는다.
+    hint: "attacker-ext 에서 nmap -sV 전체 스캔. 채점: 대상 Suricata 의 스캔 탐지."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1046 — 다중벡터의 1차 정찰. 외부 공격자 모델 → 대상 Suricata 스캔 탐지로 판정."
+        success_criteria:
+          - "대상 IPS 에 포트 스캔 탐지 흔적"
+          - "(설명) 식별한 공개 서비스(웹/SSH 등)와 다음 공격 벡터 서술"
+        acceptable_methods: ["attacker-ext 에서 nmap -sV / masscan"]
+        negative_signs: ["대상 미도달(흔적 없음)", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 웹 공격 벡터 (SQLi/스캐너) → WAF 충돌
+
+      식별한 웹 서비스에 자동화 웹 공격(sqlmap/SQLi)을 보낸다. dmz 의 WAF(ModSecurity)가 이를
+      탐지·차단(403)하며, 이는 4-tier 방어의 '내용 검사' 층이 동작함을 보여준다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      sqlmap -u "http://<대상_공개IP>:8080/vulnerabilities/sqli/?id=1&Submit=Submit" \
+             --cookie="security=low; PHPSESSID=test" --batch --technique=U
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → 대상 WAF(ModSecurity) audit 의 SQLi/스캐너 탐지로 채점.
+
+      ### ✅ 합격 기준
+      대상 WAF audit 에 SQLi/스캐너 공격 탐지 흔적이 남는다.
+    hint: "attacker-ext 에서 sqlmap/SQLi. 채점: 대상 ModSecurity audit 의 SQLi 탐지."
+    verify:
+      type: "log_contains"
+      expect: "SQL"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "SQL", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1190 — 웹 공격 벡터. 외부 공격자 모델 → 대상 ModSecurity audit 의 SQLi/scanner 탐지로 판정(외부 명령 불신뢰)."
+        success_criteria:
+          - "대상 ModSecurity audit 에 SQLi/스캐너 탐지(최근)"
+          - "공격이 WAF 에 의해 탐지/차단됨"
+          - "(설명) 어떤 기법을 썼고 WAF 가 어떻게 반응했는지 서술"
+        acceptable_methods: ["attacker-ext 에서 sqlmap/nikto/수동 SQLi"]
+        negative_signs: ["대상 WAF audit 흔적 없음", "command_ran(attacker-ext) 의존"]
+
+# ───────────────────────── BLUE (방어 스택 점검 + 층별 탐지: self) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 — IPS 층 가동 확인
+
+      4-tier 방어의 '내용 검사' 층인 IPS(Suricata)가 가동 중인지 확인한다(스캔을 잡는 토대).
+
+      ### ✅ 합격 기준
+      IPS 의 Suricata 가 프로세스로 가동 중이다.
+    hint: "본인 IPS 의 suricata 프로세스 확인."
+    verify:
+      type: "process_running"
+      expect: "suricata"
+      checks:
+        - { id: "blue-1-1", type: "process_running", target: "ips", params: { name: "suricata" } }
+      semantic:
+        intent: "방어 스택 가용성 — IPS 층 가동."
+        success_criteria: ["ips 에서 suricata running", "(설명) IPS 가 4-tier 의 어느 위치인지 서술"]
+        acceptable_methods: ["process_running suricata / ips-gui"]
+        negative_signs: ["미가동"]
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-2 — WAF 층 차단 태세 확인
+
+      웹 앞단의 WAF(ModSecurity)가 SecRuleEngine On(차단)인지 확인한다(RED-2 의 웹 공격을 막는 층).
+
+      ### ✅ 합격 기준
+      웹 서버의 ModSecurity 가 SecRuleEngine On 이다.
+    hint: "본인 web 의 modsecurity.conf 에 SecRuleEngine On 확인."
+    verify:
+      type: "file_contains"
+      expect: "SecRuleEngine On"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "web",
+            params: { path: "/etc/modsecurity/modsecurity.conf", pattern: "SecRuleEngine On" } }
+      semantic:
+        intent: "WAF 층 태세 — On 이라야 웹 공격을 실제 차단."
+        success_criteria: ["modsecurity.conf SecRuleEngine On", "(설명) WAF 가 막는 공격 유형 서술"]
+        acceptable_methods: ["file_contains modsecurity.conf / waf-gui"]
+        negative_signs: ["DetectionOnly 오해"]
+
+  - order: 3
+    assess_target: self
+    target_vm: ips
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 — IPS 층에서 외부 스캔 탐지·식별
+
+      RED-1 의 포트 스캔을 본인 IPS(Suricata) 로그(eve.json)에서 찾아, 출발지 IP·시그니처·시각을
+      식별한다. 보고에 **구체적 값**(출발지/시그니처/시각)을 명시해야 인정된다.
+
+      ### ✅ 합격 기준
+      본인 IPS 에 스캔 탐지 경보가 있고, 그 구체값(출발지·시그니처)을 정확히 식별했다.
+    hint: "본인 Suricata eve.json 에서 스캔 경보 + 출발지/시그니처/시각 식별."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "blue-3-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE D3FEND D3-NTA — IPS 층 탐지. 관측/분석 미션: 경보 실존 + 학생이 본 구체값(출발지/시그니처/시각) 일치로 채점."
+        success_criteria:
+          - "본인 Suricata 에 스캔 탐지 경보(최근)"
+          - "출발지 IP·시그니처·시각 등 구체값을 정확히 보고(증거와 일치)"
+        acceptable_methods: ["ips-gui 이벤트", "log_contains suricata scan"]
+        negative_signs: ["구체값 없는 막연한 보고", "구체값이 실제 증거와 불일치"]
+
+  - order: 4
+    assess_target: self
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 — WAF 층에서 웹 공격 탐지·식별
+
+      RED-2 의 웹 공격(SQLi/스캐너)을 본인 WAF(ModSecurity) audit 로그에서 찾아, 어떤 룰이
+      탐지/차단했는지, 어떤 페이로드였는지 식별한다.
+
+      ### ✅ 합격 기준
+      본인 WAF audit 에 웹 공격 탐지 흔적이 있고, 그 구체값(룰/페이로드)을 식별했다.
+    hint: "본인 ModSecurity audit 에서 SQLi/스캐너 탐지 + 룰/페이로드 식별."
+    verify:
+      type: "log_contains"
+      expect: "SQL"
+      checks:
+        - { id: "blue-4-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "SQL", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE D3FEND D3-WAF — WAF 층 탐지. 관측/분석 미션: audit 실존 + 학생이 본 구체값(룰 id/페이로드) 일치로 채점."
+        success_criteria:
+          - "본인 ModSecurity audit 에 웹 공격 탐지(최근)"
+          - "탐지 룰 id 또는 페이로드 등 구체값을 정확히 보고"
+        acceptable_methods: ["waf-gui audit", "log_contains modsec SQL"]
+        negative_signs: ["구체값 없는 막연한 보고", "구체값 불일치"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-5 — SIEM 통합: 모든 층의 경보가 한곳에 모였는가 (Purple 관점)
+
+      4-tier 방어의 마지막 — IPS·WAF 의 탐지가 SIEM(Wazuh)으로 모두 모여, 한 화면에서 다중벡터
+      공격의 전체 그림을 볼 수 있는지 확인한다. 이것이 통합 관제(Purple)의 핵심이다.
+
+      ### ✅ 합격 기준
+      본인 SIEM 에 이번 다중벡터 공격(스캔/웹공격) 관련 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에 스캔/웹공격 경보 수집 확인(중앙 SIEM 탭에서도 보임)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { groups: "ids", since_sec: 1800 } }
+      semantic:
+        intent: "통합 가시성(Purple) — 층별 탐지가 Wazuh 로 수렴해 다중벡터 전모를 관제."
+        success_criteria:
+          - "본인 Wazuh 에 ids/web 관련 경보 수집(최근)"
+          - "(설명) 스캔→웹공격으로 이어지는 공격 흐름을 SIEM 근거로 요약"
+        acceptable_methods: ["siem 에서 wazuh_alert", "중앙 SIEM 탭"]
+        negative_signs: ["수집 비어있음", "층 연결 없이 단편 보고"]

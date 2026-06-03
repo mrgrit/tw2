@@ -1,0 +1,214 @@
+id: "secuops-w02"
+category: "secuops"
+title: "[보안운영 W2] 침투 시도 vs 방화벽 운영 사이클(차단·완화·화이트리스트·CTI)"
+difficulty: "medium"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  보안운영 2주차 — 방화벽(nftables) 운영의 전체 사이클을 실전 적용한다. 외부 공격자의 스캔·무차별
+  대입에 맞서, 운영자는 ① 악성 IP 즉시 차단(감사 추적) ② 무차별 대입의 가용성 보존형 완화
+  (rate limit) ③ 관리 포트 화이트리스트 ④ CTI 기반 다중 차단(객체/blocklist) 을 적용한다.
+
+  ▸ 모드
+    • solo : 외부 공격자(스캔·brute) → 방화벽 운영자(차단·완화·화이트리스트·CTI)를 한 학생이 수행. 대상=본인 인프라.
+    • duel : Red 가 상대를 공격, Blue 는 본인 방화벽으로 대응. 대상=상대 인프라.
+
+  ▸ Red 는 **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은 대상 IPS/SIEM 흔적으로.
+
+  ▸ 모든 방화벽 룰은 **/etc/nftables.conf 영속 반영** + 식별용 log prefix/표식을 붙인다:
+    차단=`BLOCKED-APT:` · 완화=`SSH-RATELIMIT:` · 화이트리스트=`MGMT-WHITELIST:` · CTI=`CTI-BLOCKLIST:`.
+
+# ───────────────────────── RED (외부 공격자) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🎯 RED-1 — 외부 포트 스캔 (공격면 식별)
+
+      망 외부 공격자(attacker-ext)로 대상의 열린 포트(웹/SSH/관리 포트 후보)를 스캔한다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      nmap -sV -p 22,80,443,2204,8000,9100 <대상_공개IP> -T4 --max-retries 1
+      ```
+      ### 📌 채점: 외부 명령 미수집 → 대상 Suricata 스캔 탐지 흔적.
+      ### ✅ 합격: 대상 IPS 에 스캔 탐지 경보가 남는다.
+    hint: "attacker-ext 에서 포트 스캔. 채점: 대상 Suricata 스캔 탐지."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1046 — 공격면 식별 정찰. 외부 공격자 모델 → 대상 Suricata 흔적으로 판정."
+        success_criteria: ["대상 IPS 스캔 탐지", "(설명) 식별 포트와 다음 공격 서술"]
+        acceptable_methods: ["attacker-ext nmap"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — SSH 무차별 대입
+
+      식별한 SSH 포트(2204 등)에 무차별 대입을 시도한다. 운영자가 차단·완화해야 할 핵심 위협이다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      hydra -l root -P /usr/share/wordlists/small.txt ssh://<대상_공개IP>:2204 -t 4 -f
+      ```
+      ### 📌 채점: 외부 명령 미수집 → 대상 Wazuh 인증 실패/무차별 대입 경보.
+      ### ✅ 합격: 대상 SIEM 에 SSH 인증 실패 경보가 남는다.
+    hint: "attacker-ext 에서 SSH 무차별 대입. 채점: 대상 Wazuh 인증 실패 경보."
+    verify:
+      type: "wazuh_alert"
+      expect: "authentication"
+      checks:
+        - { id: "red-2-1", type: "wazuh_alert", target: "siem",
+            params: { groups: "authentication_failed", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1110 — SSH 무차별 대입. 외부 공격자 모델 → 대상 Wazuh 인증 실패 경보로 판정."
+        success_criteria: ["대상 Wazuh 에 다수 sshd 인증 실패(최근)", "(설명) 표적 계정/포트 서술"]
+        acceptable_methods: ["attacker-ext hydra/medusa"]
+        negative_signs: ["대상 경보 없음", "command_ran(attacker-ext) 의존"]
+
+# ───────────────────────── BLUE (방화벽 운영: self) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 — 위협 식별(차단 근거 확보)
+
+      본인 SIEM(Wazuh)에서 스캔/무차별 대입 경보를 찾아 공격자 출발지 IP 와 노린 포트/계정을
+      식별한다. 차단·완화의 근거다. 보고에 구체값(출발지 IP/포트)을 명시한다.
+
+      ### ✅ 합격: 본인 SIEM 에 공격 경보가 있고 출발지를 정확히 식별했다.
+    hint: "본인 Wazuh 에서 스캔/인증실패 경보 + 출발지 IP 식별."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "관측/분석 — 경보 실존 + 학생이 본 구체값(출발지/포트) 일치로 채점. 차단 근거 확보."
+        success_criteria: ["본인 Wazuh 경보(최근)", "출발지 IP·노린 포트 구체 식별(증거 일치)"]
+        acceptable_methods: ["siem wazuh_alert / log_contains auth"]
+        negative_signs: ["구체값 없는 막연한 보고", "구체값 불일치"]
+
+  - order: 2
+    assess_target: self
+    target_vm: fw
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-2 — 악성 IP 즉시 차단 (감사 추적)
+
+      식별한 공격자 IP 를 nftables 로 즉시 차단하고, `/etc/nftables.conf` 에 영속 반영한다. 차단
+      룰에 `log prefix "BLOCKED-APT:"` 를 붙여 차단된 트래픽이 로그로 남게 한다(감사 추적).
+
+      ### 권장 형태 (참고)
+      ```
+      nft add rule inet six_filter input ip saddr <공격자IP> log prefix "BLOCKED-APT: " drop
+      ```
+      ### 📌 채점: /etc/nftables.conf 에 `BLOCKED-APT` 표식 차단 룰이 영속 반영됐는지.
+      ### ✅ 합격: /etc/nftables.conf 에 BLOCKED-APT 차단 룰이 있다.
+    hint: "공격자 IP drop + log prefix BLOCKED-APT 를 /etc/nftables.conf 에 영속 반영."
+    verify:
+      type: "file_contains"
+      expect: "BLOCKED-APT"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "fw",
+            params: { path: "/etc/nftables.conf", pattern: "BLOCKED-APT" } }
+      semantic:
+        intent: "MITRE D3FEND D3-NTF — 악성 IP 차단 + 감사 추적. /etc/nftables.conf 영속 반영을 file_contains 로 확인."
+        success_criteria: ["nftables.conf 에 공격자 IP drop", "BLOCKED-APT log prefix", "(설명) BLUE-1 식별 IP 와 일치"]
+        acceptable_methods: ["nft ... log prefix BLOCKED-APT drop 영속화"]
+        negative_signs: ["런타임만(영속화 누락)", "log prefix 누락"]
+
+  - order: 3
+    assess_target: self
+    target_vm: fw
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 — 무차별 대입 가용성 보존형 완화 (rate limit)
+
+      IP 차단은 우회되기 쉽다. SSH 신규 연결에 **rate limit** 을 걸어 정상 사용자 영향 없이 자동화
+      대입만 억제한다. `/etc/nftables.conf` 에 영속 반영 + `log prefix "SSH-RATELIMIT:"`.
+
+      ### 권장 형태 (참고)
+      ```
+      nft add rule inet six_filter input tcp dport {22,2204} ct state new \
+        limit rate over 10/minute log prefix "SSH-RATELIMIT: " drop
+      ```
+      ### 📌 채점: /etc/nftables.conf 에 SSH-RATELIMIT 표식 limit rate 룰.
+      ### ✅ 합격: /etc/nftables.conf 에 SSH rate limit 완화 룰이 있다.
+    hint: "SSH dport limit rate over + SSH-RATELIMIT prefix 영속 반영."
+    verify:
+      type: "file_contains"
+      expect: "SSH-RATELIMIT"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "fw",
+            params: { path: "/etc/nftables.conf", pattern: "SSH-RATELIMIT" } }
+      semantic:
+        intent: "가용성 보존형 완화 — rate limit 으로 자동화 대입만 억제(정상 사용자 보존)."
+        success_criteria: ["nftables.conf 에 SSH limit rate", "SSH-RATELIMIT 표식", "(설명) 차단 대비 완화의 장점"]
+        acceptable_methods: ["nft ... limit rate over N/minute 영속화"]
+        negative_signs: ["limit 없이 전체 차단", "영속화 누락"]
+
+  - order: 4
+    assess_target: self
+    target_vm: fw
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 — 관리 포트 화이트리스트 (관리망에서만)
+
+      관리 포트(예: Bastion API 9100, SSH 2204)는 **관리망 대역에서만** 접근하도록 화이트리스트
+      한다. 그 외 출발지는 차단한다. `/etc/nftables.conf` 영속 + `log prefix "MGMT-WHITELIST:"`.
+
+      ### 권장 형태 (참고)
+      ```
+      # 관리망(예: 10.20.40.0/24)만 허용, 그 외 관리포트 접근은 거부
+      nft add rule inet six_filter input tcp dport {2204,9100} ip saddr != 10.20.40.0/24 \
+        log prefix "MGMT-WHITELIST: " drop
+      ```
+      ### 📌 채점: /etc/nftables.conf 에 MGMT-WHITELIST 표식 룰.
+      ### ✅ 합격: /etc/nftables.conf 에 관리 포트 화이트리스트 룰이 있다.
+    hint: "관리포트 saddr != 관리망 drop + MGMT-WHITELIST prefix 영속 반영."
+    verify:
+      type: "file_contains"
+      expect: "MGMT-WHITELIST"
+      checks:
+        - { id: "blue-4-1", type: "file_contains", target: "fw",
+            params: { path: "/etc/nftables.conf", pattern: "MGMT-WHITELIST" } }
+      semantic:
+        intent: "최소 노출 — 관리 인터페이스를 관리망으로 한정(공격면 축소)."
+        success_criteria: ["nftables.conf 에 관리포트 화이트리스트", "MGMT-WHITELIST 표식", "(설명) 화이트리스트 vs 블랙리스트 차이"]
+        acceptable_methods: ["nft ... saddr != <관리망> drop / 허용 후 기본 drop"]
+        negative_signs: ["전체 허용 유지", "영속화 누락"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 10
+    instruction: |
+      ## 🛡️ BLUE-5 — 조치 후 SIEM 가시성 확인
+
+      차단·완화·화이트리스트 조치 후, 공격 흔적과 효과가 SIEM(Wazuh)에 모여 보이는지 확인한다.
+
+      ### ✅ 합격: 본인 SIEM 에 이번 사건 관련 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 이번 사건 경보 수집 확인."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "통합 가시성 — 방화벽 운영 전후 흔적이 Wazuh 로 수렴."
+        success_criteria: ["본인 Wazuh 경보(최근)", "(설명) 식별→차단→완화→화이트리스트 흐름 요약"]
+        acceptable_methods: ["siem wazuh_alert / 중앙 SIEM 탭"]
+        negative_signs: ["수집 비어있음"]
