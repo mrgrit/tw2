@@ -86,6 +86,19 @@ class OpenSearchHttpClient:
             log.warning("ensure_role %s failed: %s", name, e)
             return False
 
+    async def search(self, index: str, body: dict) -> list[dict]:
+        """index(또는 패턴)에 _search → _source 목록. 없거나 오류면 빈 리스트."""
+        try:
+            async with self._os() as c:
+                r = await c.post(f"{self.os_url}/{index}/_search", json=body)
+                if r.status_code >= 300:
+                    return []
+                hits = (r.json().get("hits") or {}).get("hits") or []
+                return [h.get("_source") or {} for h in hits]
+        except Exception as e:
+            log.warning("search %s failed: %s", index, e)
+            return []
+
     async def ensure_role_mapping(self, role: str, users: list[str]) -> bool:
         body = {"users": users or [], "backend_roles": [f"instructor-{role}"]}
         try:

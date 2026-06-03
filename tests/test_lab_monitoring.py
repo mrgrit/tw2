@@ -138,6 +138,49 @@ async def test_no_bottleneck_no_feedback(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_lab_tick_exports_activity_to_siem(monkeypatch):
+    """pull 한 활동이 중앙 SIEM(export_events)으로 코호트 stamp 되어 적재되도록 배선됐는지."""
+    from app.services import siem_export
+    bid, uid, cid = await _make_battle(cohort=True)
+    payload = {"commands": [{"cmd": "nmap target", "rc": 0}],
+               "alerts": [{"rule_id": 5710}]}
+    monkeypatch.setattr(assessor_client, "activity", build_fake_activity(payload))
+
+    calls = {}
+    monkeypatch.setattr(siem_export, "is_enabled", lambda: True)
+    monkeypatch.setattr(siem_export, "default_client", lambda: object())
+
+    async def fake_export(client, events, chain):
+        calls["events"] = events
+        calls["chain_ids"] = [c.id for c in chain]
+        return {"indexed": len(events), "index": "tubewar-activity-x"}
+
+    async def fake_ensure(client, chain):
+        calls["ensured"] = True
+        return {"created": []}
+
+    monkeypatch.setattr(siem_export, "export_events", fake_export)
+    monkeypatch.setattr(siem_export, "ensure_cohort_objects", fake_ensure)
+
+    res = await lab_monitor.run_lab_tick(bid)
+    assert res["siem_exported"] == 2            # command + alert
+    assert len(calls["events"]) == 2
+    assert calls["chain_ids"] == [cid]          # 코호트 stamp (서브트리 체인)
+    assert calls.get("ensured") is True
+
+
+@pytest.mark.asyncio
+async def test_lab_tick_siem_noop_when_disabled(monkeypatch):
+    from app.services import siem_export
+    bid, uid, cid = await _make_battle(cohort=True)
+    monkeypatch.setattr(assessor_client, "activity",
+                        build_fake_activity({"commands": [{"cmd": "ls"}]}))
+    monkeypatch.setattr(siem_export, "is_enabled", lambda: False)   # 미설정 → no-op
+    res = await lab_monitor.run_lab_tick(bid)
+    assert res["siem_exported"] == 0
+
+
+@pytest.mark.asyncio
 async def test_identity_only_lab_monitor(monkeypatch):
     bid, uid, cid = await _make_battle(cohort=False)
     assert cid is None

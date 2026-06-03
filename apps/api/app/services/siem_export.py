@@ -119,6 +119,28 @@ async def ensure_cohort_objects(client, chain: list) -> dict:
     return {"created": created, "index": index, "cohort_path": path, "role": role}
 
 
+async def search_events(client, chain: list | None = None, *, limit: int = 100,
+                        q: str | None = None) -> dict:
+    """중앙 SIEM(OpenSearch)에서 활동 문서 조회 — tubewar UI 에 임베드해 강사가 보게 한다.
+
+    chain 주면 해당 코호트(서브트리) 로 필터, 없으면 전체(tubewar-activity-*). 비활성 시 disabled.
+    """
+    if client is None:
+        return {"enabled": False, "docs": [], "index": None}
+    index = physical_index_for(chain) if chain else f"{INDEX_PREFIX}-*"
+    must: list[dict] = []
+    if chain:
+        must.append({"term": {"cohort_id": chain[-1].id}})
+    if q:
+        must.append({"query_string": {"query": q}})
+    body = {"size": max(1, min(limit, 500)),
+            "query": {"bool": {"must": must}} if must else {"match_all": {}}}
+    docs = await client.search(index, body)
+    # 최근순 정렬(ts ISO 문자열) — 클라이언트 측에서.
+    docs.sort(key=lambda d: str(d.get("ts") or ""), reverse=True)
+    return {"enabled": True, "index": index, "docs": docs}
+
+
 def dashboard_deeplink(chain: list) -> str | None:
     """tubewar UI 에서 강사가 자기 코호트 대시보드로 가는 딥링크 (RBAC 스코프)."""
     base = os.getenv("OPENSEARCH_DASHBOARDS_URL")

@@ -83,7 +83,7 @@ interface AdminInfra {
   last_smoke_at: string | null; last_smoke_ok: boolean | null; created_at: string
 }
 
-const TABS = ['stats', 'cohorts', 'infras', 'monitoring', 'feedback', 'generate', 'scrap', 'battles', 'users', 'scenarios', 'graders'] as const
+const TABS = ['stats', 'cohorts', 'infras', 'monitoring', 'siem', 'feedback', 'generate', 'scrap', 'battles', 'users', 'scenarios', 'graders'] as const
 type Tab = typeof TABS[number]
 
 export default function Admin() {
@@ -111,6 +111,7 @@ export default function Admin() {
              : t === 'cohorts' ? '코호트'
              : t === 'infras' ? '인프라 관리'
              : t === 'monitoring' ? '실습 모니터링'
+             : t === 'siem' ? '중앙 SIEM'
              : t === 'feedback' ? '피드백'
              : t === 'generate' ? '시나리오 생성'
              : t === 'scrap' ? 'Bastion 스크랩'
@@ -126,6 +127,7 @@ export default function Admin() {
       {tab === 'cohorts' && <CohortsTab />}
       {tab === 'infras' && <InfrasTab />}
       {tab === 'monitoring' && <MonitoringTab />}
+      {tab === 'siem' && <SiemTab />}
       {tab === 'feedback' && <FeedbackTab />}
       {tab === 'generate' && <GenerateTab onChange={refreshStats} />}
       {tab === 'scrap' && <ScrapTab onChange={refreshStats} />}
@@ -1018,6 +1020,93 @@ function GradersTab() {
           </div>
         </div>
       ))}
+    </>
+  )
+}
+
+interface SiemDoc {
+  student: number | null; infra: number | null; ts: string | null; kind: string | null;
+  cohort_path: string | null; cohort_id: number | null; payload: any; battle_id: number | null
+}
+interface SiemSearch {
+  enabled: boolean; index: string | null; cohort_path: string | null;
+  dashboards_deeplink: string | null; docs: SiemDoc[]; note: string | null
+}
+
+function SiemTab() {
+  const [cohorts, setCohorts] = useState<Cohort[]>([])
+  const [cohortId, setCohortId] = useState('')
+  const [data, setData] = useState<SiemSearch | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => { api<Cohort[]>('/cohorts').then(setCohorts).catch(() => {}) }, [])
+  async function load() {
+    setBusy(true); setErr(null)
+    try {
+      const qs = cohortId ? `?cohort_id=${cohortId}&limit=200` : '?limit=200'
+      setData(await api<SiemSearch>(`/monitoring/siem/search${qs}`))
+    } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
+  }
+  useEffect(() => { load() }, [cohortId])
+
+  return (
+    <>
+      <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>중앙 SIEM (학생 활동 lake)</h3>
+        <div style={{ flex: 1 }} />
+        <select value={cohortId} onChange={e => setCohortId(e.target.value)} style={{ width: 220 }}>
+          <option value="">전체 (모든 코호트)</option>
+          {cohorts.map(c => <option key={c.id} value={c.id}>{c.kind}: {c.name}</option>)}
+        </select>
+        <button className="ghost" onClick={load} disabled={busy}>{busy ? '...' : '새로고침'}</button>
+        {data?.dashboards_deeplink && (
+          <a href={data.dashboards_deeplink} target="_blank" rel="noreferrer">
+            <button className="ghost">Dashboards ↗</button>
+          </a>
+        )}
+      </div>
+      {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
+      {data && !data.enabled && (
+        <div className="card" style={{ color: 'var(--fg-dim)' }}>
+          중앙 SIEM 비활성. {data.note}
+          <div style={{ marginTop: 6, fontSize: 12 }}>활성화: 중앙에 OpenSearch 기동 후 서버 env <code>OPENSEARCH_URL</code> 설정.</div>
+        </div>
+      )}
+      {data?.dashboards_deeplink && (
+        <div className="card" style={{ padding: 0, marginBottom: 12, overflow: 'hidden' }}>
+          <iframe title="siem-dashboard" src={data.dashboards_deeplink}
+            style={{ width: '100%', height: 520, border: 0 }} />
+        </div>
+      )}
+      {data?.enabled && (
+        <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+          <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--fg-dim)' }}>
+            index <code>{data.index}</code> · {data.docs.length}건{data.cohort_path ? ` · ${data.cohort_path}` : ''}
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead><tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
+              <th align="left" style={{ padding: 8 }}>시각</th>
+              <th align="left" style={{ padding: 8 }}>학생</th>
+              <th align="left" style={{ padding: 8 }}>종류</th>
+              <th align="left" style={{ padding: 8 }}>내용</th>
+              <th align="left" style={{ padding: 8 }}>코호트</th>
+            </tr></thead>
+            <tbody>
+              {data.docs.length === 0 && <tr><td colSpan={5} style={{ padding: 14, color: 'var(--fg-dim)' }}>적재된 활동 없음 (실습 모니터링 lab-tick 시 적재됨).</td></tr>}
+              {data.docs.map((d, i) => (
+                <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td style={{ padding: 8, whiteSpace: 'nowrap' }}>{fmtTime(d.ts, true)}</td>
+                  <td style={{ padding: 8 }}>#{d.student}</td>
+                  <td style={{ padding: 8 }}><span className="badge blue">{d.kind}</span></td>
+                  <td style={{ padding: 8, fontSize: 12 }}><code>{JSON.stringify(d.payload).slice(0, 140)}</code></td>
+                  <td style={{ padding: 8, fontSize: 11, color: 'var(--fg-dim)' }}>{d.cohort_path || '-'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </>
   )
 }

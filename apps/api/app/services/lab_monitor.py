@@ -128,6 +128,7 @@ async def pull_activity_once(session: AsyncSession, battle_id: int, *, since_sec
     )).all())
 
     ingested = 0
+    new_events: list[dict] = []   # 중앙 SIEM 적재용 (cohort stamp 전 raw)
     for p in participants:
         if not p.infra_id:
             continue
@@ -145,15 +146,18 @@ async def pull_activity_once(session: AsyncSession, battle_id: int, *, since_sec
                 if key in existing_keys:
                     continue
                 existing_keys.add(key)
+                payload = item if isinstance(item, dict) else {"value": item}
                 session.add(ActivityEvent(
                     battle_id=battle_id, cohort_id=battle.cohort_id, user_id=p.user_id,
-                    infra_id=p.infra_id, kind=kind, dedupe_key=key,
-                    payload=item if isinstance(item, dict) else {"value": item},
+                    infra_id=p.infra_id, kind=kind, dedupe_key=key, payload=payload,
                 ))
+                new_events.append({"battle_id": battle_id, "user_id": p.user_id,
+                                   "infra_id": p.infra_id, "kind": kind, "payload": payload,
+                                   "ts": _now().isoformat(), "scenario_step": None})
                 ingested += 1
     if ingested:
         await session.commit()
-    return {"ingested": ingested}
+    return {"ingested": ingested, "events": new_events}
 
 
 # ── 진도 + 병목 산출 (LLM 0) ─────────────────────────
@@ -243,6 +247,7 @@ async def run_lab_tick(battle_id: int, *, since_sec: int = 180, feedback_cb=None
 
     feedback_cb(session, battle_id, user_id, progress) — stuck 학생에게만 호출(결정론 게이팅).
     """
+    exported = 0
     async with SessionLocal() as session:
         pulled = await pull_activity_once(session, battle_id, since_sec=since_sec)
         progress = await snapshot_progress(session, battle_id)
@@ -250,7 +255,30 @@ async def run_lab_tick(battle_id: int, *, since_sec: int = 180, feedback_cb=None
         if feedback_cb:
             for p in stuck:
                 await feedback_cb(session, battle_id, p["user_id"], p)
-    return {"ingested": pulled["ingested"], "students": len(progress), "stuck": len(stuck)}
+        # 중앙 SIEM 적재 — pull 한 활동을 코호트 stamp 해서 OpenSearch 로(미설정 시 no-op).
+        exported = await _export_to_siem(session, battle_id, pulled.get("events") or [])
+    return {"ingested": pulled["ingested"], "students": len(progress),
+            "stuck": len(stuck), "siem_exported": exported}
+
+
+async def _export_to_siem(session: AsyncSession, battle_id: int, events: list[dict]) -> int:
+    """pull 한 활동을 중앙 SIEM(OpenSearch)에 코호트 stamp 적재. is_enabled 아니면 0(no-op)."""
+    from . import siem_export
+    from . import cohort_service as cs
+    if not events or not siem_export.is_enabled():
+        return 0
+    try:
+        battle = await session.get(Battle, battle_id)
+        chain = await cs.ancestor_chain(session, battle.cohort_id) if (battle and battle.cohort_id) else []
+        client = siem_export.default_client()
+        res = await siem_export.export_events(client, events, chain)
+        # 코호트 데이터뷰/대시보드/RBAC 멱등 보장(있으면).
+        if chain:
+            await siem_export.ensure_cohort_objects(client, chain)
+        return int(res.get("indexed") or 0)
+    except Exception:
+        log.exception("siem export failed battle=%s", battle_id)
+        return 0
 
 
 async def _loop(battle_id: int, feedback_cb=None) -> None:

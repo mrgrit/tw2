@@ -78,6 +78,38 @@ async def lab_tick(
     return await lab_monitor.run_lab_tick(battle_id, feedback_cb=cb)
 
 
+class SiemSearchOut(BaseModel):
+    enabled: bool
+    index: str | None = None
+    cohort_path: str | None = None
+    dashboards_deeplink: str | None = None
+    docs: list[dict] = []
+    note: str | None = None
+
+
+@router.get("/siem/search", response_model=SiemSearchOut)
+async def siem_search(
+    cohort_id: int | None = None,
+    limit: int = 100,
+    q: str | None = None,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> SiemSearchOut:
+    """중앙 SIEM(OpenSearch) 활동을 tubewar 안에서 직접 조회(임베드). cohort_id 로 서브트리 필터."""
+    chain = await cs.ancestor_chain(session, cohort_id) if cohort_id else []
+    client = siem_export.default_client()
+    if client is None:
+        return SiemSearchOut(enabled=False, docs=[],
+                             note="중앙 SIEM 미설정(OPENSEARCH_URL). 활동은 Postgres/실습 모니터링에서 확인 가능.")
+    res = await siem_export.search_events(client, chain or None, limit=limit, q=q)
+    return SiemSearchOut(
+        enabled=True, index=res.get("index"),
+        cohort_path=siem_export.cohort_path_str(chain) if chain else None,
+        dashboards_deeplink=siem_export.dashboard_deeplink(chain) if chain else None,
+        docs=res.get("docs", []),
+    )
+
+
 class SiemDeeplinkOut(BaseModel):
     cohort_id: int
     cohort_path: str
