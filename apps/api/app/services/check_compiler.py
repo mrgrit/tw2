@@ -99,7 +99,12 @@ def _pattern_for(mission: dict[str, Any]) -> str:
 
 def _infer_type(target: str | None, text: str, verify: dict[str, Any]) -> str:
     low = text.lower()
-    if (target == "siem") and any(k in low for k in ("alert", "wazuh", "ossec", "rule")):
+    # Wazuh 알림 — 강한 신호(wazuh/alerts.json) 또는 siem 타깃의 alert/rule.
+    # 단 .conf 설정 점검(예: ossec.conf active-response)은 file_contains 로 두기 위해 제외.
+    has_conf = ".conf" in low
+    wazuh_signal = ("wazuh" in low or "alerts.json" in low
+                    or (target == "siem" and any(k in low for k in ("alert", "rule"))))
+    if wazuh_signal and not has_conf:
         return "wazuh_alert"
     path_m = _PATH_RE.search(text)
     if path_m:
