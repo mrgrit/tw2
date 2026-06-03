@@ -1065,6 +1065,7 @@ function SiemTab() {
   const [clears, setClears] = useState<ClearRow[]>([])
   const [selDoc, setSelDoc] = useState<SiemDoc | null>(null)
   const [showDash, setShowDash] = useState(false)
+  const [dashLink, setDashLink] = useState<string | null>(null)
 
   const [graders, setGraders] = useState<Grader[]>([])
   const [graderId, setGraderId] = useState('')
@@ -1112,10 +1113,14 @@ function SiemTab() {
   }
   // 코호트 변경 → 시나리오/클리어 재로딩 + 시나리오 선택 초기화
   useEffect(() => {
-    setScenarioId('')
+    setScenarioId(''); setShowDash(false); setDashLink(null)
     if (!cohortId) { setScenarios([]); setClears([]); return }
     api<{ scenarios: SiemScenario[] }>(`/monitoring/siem/scenarios?cohort_id=${cohortId}`)
       .then(r => setScenarios(r.scenarios)).catch(() => setScenarios([]))
+    // 코호트 선택 시 OSD 데이터뷰/저장검색/대시보드를 멱등 생성하고 딥링크 확보 → 바로 펼침
+    api<{ deeplink: string | null; enabled: boolean }>(`/monitoring/cohorts/${cohortId}/siem`)
+      .then(r => { setDashLink(r.deeplink); if (r.deeplink) setShowDash(true) })
+      .catch(() => setDashLink(null))
   }, [cohortId])
   useEffect(() => {
     if (!cohortId) { setClears([]); return }
@@ -1174,10 +1179,10 @@ function SiemTab() {
         <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} title="시작일(범위 지정)" />
         <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} title="종료일" />
         <button className="ghost" onClick={load} disabled={busy}>{busy ? '…' : '새로고침'}</button>
-        {search?.dashboards_deeplink && (
+        {dashLink && (
           <>
             <button className="ghost" onClick={() => setShowDash(v => !v)}>{showDash ? 'Dashboards 숨기기' : 'Dashboards 펼치기'}</button>
-            <a href={search.dashboards_deeplink} target="_blank" rel="noreferrer"><button className="ghost">↗ 새 탭</button></a>
+            <a href={dashLink} target="_blank" rel="noreferrer"><button className="ghost">↗ 새 탭</button></a>
           </>
         )}
       </div>
@@ -1347,10 +1352,19 @@ function SiemTab() {
       )}
 
       {/* ── Dashboards iframe (펼침 시) ── */}
-      {showDash && search?.dashboards_deeplink && (
+      {dashLink && showDash && (
         <div className="card" style={{ padding: 0, marginTop: 12, overflow: 'hidden' }}>
-          <iframe title="siem-dashboard" src={search.dashboards_deeplink}
+          <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--fg-dim)' }}>
+            OpenSearch Dashboards (이 코호트 전용) — 막대/시계열·필드 탐색. 아래 임베드:
+          </div>
+          <iframe title="siem-dashboard" src={dashLink}
             style={{ width: '100%', height: 600, border: 0 }} />
+        </div>
+      )}
+      {cohortId && !dashLink && (
+        <div className="card" style={{ marginTop: 12, color: 'var(--fg-dim)', fontSize: 13 }}>
+          Dashboards iframe 비활성 — 서버 env <code>OPENSEARCH_DASHBOARDS_URL</code> 가 설정돼야 표시됩니다.
+          (네이티브 통계·로그·AI 분석은 위에서 그대로 사용 가능)
         </div>
       )}
 
