@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 # (table, column, DDL type) — 기존 테이블에 나중에 추가된 컬럼들.
 _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("battles", "cohort_id", "INTEGER"),
+    ("scenarios", "grader_profile_id", "INTEGER"),
 ]
 
 

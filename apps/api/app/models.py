@@ -131,7 +131,33 @@ class Scenario(Base):
     scoring: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     time_limit_sec: Mapped[int] = mapped_column(Integer, default=1800, nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="draft", nullable=False)  # draft | validated | active | archived
+    # 이 시나리오를 채점할 AI 프로필 (null → 기본 프로필 → CC fallback)
+    grader_profile_id: Mapped[int | None] = mapped_column(
+        ForeignKey("grader_profiles.id", ondelete="SET NULL"), nullable=True
+    )
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class GraderProfile(Base):
+    """채점 AI 프로필 — 시나리오별로 등록/선택. provider=cc(Claude Code) | bastion(6v6 LLM).
+
+    - cc: claude CLI (`model` 예: claude-haiku-4-5, claude-opus-4-8). base_url 불필요.
+    - bastion: 6v6 Bastion 의 LLM API (ollama 호환 /api/generate). `base_url` 예: http://10.0.0.x:9100,
+      `model` 예: gpt-oss:120b / gemma3:4b. `api_key` = X-API-Key.
+    """
+    __tablename__ = "grader_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    provider: Mapped[str] = mapped_column(String(16), nullable=False)   # cc | bastion
+    model: Mapped[str] = mapped_column(String(80), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(200), nullable=True)   # bastion LLM endpoint
+    api_key: Mapped[str | None] = mapped_column(String(200), nullable=True)    # bastion X-API-Key
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

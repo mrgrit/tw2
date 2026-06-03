@@ -20,7 +20,11 @@ interface Job {
 }
 interface Draft {
   id: number; title: string; description: string; source: string;
-  status: string; time_limit_sec: number;
+  status: string; time_limit_sec: number; grader_profile_id?: number | null;
+}
+interface Grader {
+  id: number; name: string; provider: 'cc' | 'bastion'; model: string;
+  base_url: string | null; has_api_key: boolean; enabled: boolean; is_default: boolean; created_at: string;
 }
 interface ScrapPost {
   id: number; source: string; source_url: string; title: string; summary: string;
@@ -79,7 +83,7 @@ interface AdminInfra {
   last_smoke_at: string | null; last_smoke_ok: boolean | null; created_at: string
 }
 
-const TABS = ['stats', 'cohorts', 'infras', 'monitoring', 'feedback', 'generate', 'scrap', 'battles', 'users', 'scenarios'] as const
+const TABS = ['stats', 'cohorts', 'infras', 'monitoring', 'feedback', 'generate', 'scrap', 'battles', 'users', 'scenarios', 'graders'] as const
 type Tab = typeof TABS[number]
 
 export default function Admin() {
@@ -112,7 +116,8 @@ export default function Admin() {
              : t === 'scrap' ? 'Bastion 스크랩'
              : t === 'battles' ? '공방전 관리'
              : t === 'users' ? '사용자 관리'
-             : '시나리오 관리'}
+             : t === 'scenarios' ? '시나리오 관리'
+             : 'AI 채점기'}
           </button>
         ))}
       </div>
@@ -127,6 +132,7 @@ export default function Admin() {
       {tab === 'battles' && <BattlesTab onChange={refreshStats} />}
       {tab === 'users' && <UsersTab />}
       {tab === 'scenarios' && <ScenariosTab onChange={refreshStats} />}
+      {tab === 'graders' && <GradersTab />}
     </>
   )
 }
@@ -475,13 +481,14 @@ function UsersTab() {
 
 function ScenariosTab({ onChange }: { onChange: () => void }) {
   const [scenarios, setScenarios] = useState<Draft[]>([])
+  const [graders, setGraders] = useState<Grader[]>([])
   const refresh = async () => {
     const all = await api<Draft[]>('/scenarios')
     const drafts = await api<Draft[]>('/admin/scenarios/drafts')
     const seen = new Set(all.map(s => s.id))
     setScenarios([...all, ...drafts.filter(d => !seen.has(d.id))])
   }
-  useEffect(() => { refresh() }, [])
+  useEffect(() => { refresh(); api<Grader[]>('/admin/graders').then(setGraders).catch(() => {}) }, [])
 
   async function patch(id: number, body: any) {
     await api(`/admin/scenarios/${id}`, { method: 'PATCH', json: body })
@@ -510,6 +517,18 @@ function ScenariosTab({ onChange }: { onChange: () => void }) {
               <button className="ghost" onClick={() => patch(s.id, { status: 'validated' })}>복원</button>
             )}
             <button className="danger" onClick={() => del(s.id)}>삭제</button>
+          </div>
+          <div className="row" style={{ alignItems: 'center', marginTop: 6, fontSize: 13 }}>
+            <span style={{ color: 'var(--fg-dim)' }}>채점 AI:</span>
+            <select value={s.grader_profile_id ?? ''}
+              onChange={e => patch(s.id, { grader_profile_id: e.target.value ? Number(e.target.value) : 0 })}
+              style={{ width: 280 }}>
+              <option value="">기본 ({graders.find(g => g.is_default)?.name || 'CC(claude-haiku)'})</option>
+              {graders.filter(g => g.enabled).map(g => (
+                <option key={g.id} value={g.id}>{g.name} — {g.provider}:{g.model}</option>
+              ))}
+            </select>
+            {graders.length === 0 && <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>(채점기 미등록 — "AI 채점기" 탭에서 등록)</span>}
           </div>
         </div>
       ))}
@@ -919,6 +938,86 @@ function InfrasTab() {
           </tbody>
         </table>
       </div>
+    </>
+  )
+}
+
+function GradersTab() {
+  const [rows, setRows] = useState<Grader[]>([])
+  const [err, setErr] = useState<string | null>(null)
+  const [f, setF] = useState<{ name: string; provider: 'cc' | 'bastion'; model: string; base_url: string; api_key: string; is_default: boolean }>(
+    { name: '', provider: 'cc', model: 'claude-haiku-4-5', base_url: '', api_key: '', is_default: false })
+
+  const refresh = async () => { try { setRows(await api<Grader[]>('/admin/graders')) } catch (e: any) { setErr(e.message) } }
+  useEffect(() => { refresh() }, [])
+
+  async function create(e: React.FormEvent) {
+    e.preventDefault(); setErr(null)
+    try {
+      await api('/admin/graders', { method: 'POST', json: {
+        name: f.name, provider: f.provider, model: f.model,
+        base_url: f.provider === 'bastion' ? f.base_url : null,
+        api_key: f.provider === 'bastion' ? (f.api_key || null) : null,
+        is_default: f.is_default,
+      }})
+      setF({ ...f, name: '', api_key: '' }); await refresh()
+    } catch (e: any) { setErr(e.message) }
+  }
+  async function patch(id: number, body: any) { try { await api(`/admin/graders/${id}`, { method: 'PATCH', json: body }); refresh() } catch (e: any) { setErr(e.message) } }
+  async function del(id: number, name: string) { if (!confirm(`채점기 '${name}' 삭제?`)) return; try { await api(`/admin/graders/${id}`, { method: 'DELETE' }); refresh() } catch (e: any) { setErr(e.message) } }
+
+  return (
+    <>
+      {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
+      <form onSubmit={create} className="card col">
+        <h3 style={{ marginTop: 0 }}>AI 채점기 등록</h3>
+        <div className="row" style={{ flexWrap: 'wrap' }}>
+          <label>이름<input value={f.name} onChange={e => setF({ ...f, name: e.target.value })} required placeholder="예: CC-haiku / Bastion-gptoss" /></label>
+          <label>제공자
+            <select value={f.provider} onChange={e => {
+              const provider = e.target.value as 'cc' | 'bastion'
+              setF({ ...f, provider, model: provider === 'cc' ? 'claude-haiku-4-5' : 'gpt-oss:120b' })
+            }}>
+              <option value="cc">CC (Claude Code)</option>
+              <option value="bastion">Bastion (6v6 LLM)</option>
+            </select>
+          </label>
+          <label style={{ flex: 1 }}>모델
+            <input value={f.model} onChange={e => setF({ ...f, model: e.target.value })} required
+              placeholder={f.provider === 'cc' ? 'claude-haiku-4-5 / claude-opus-4-8' : 'gpt-oss:120b / gemma3:4b'} />
+          </label>
+        </div>
+        {f.provider === 'bastion' && (
+          <div className="row">
+            <label style={{ flex: 1 }}>base_url<input value={f.base_url} onChange={e => setF({ ...f, base_url: e.target.value })} required placeholder="http://10.0.0.80:9100" /></label>
+            <label style={{ flex: 1 }}>API key (X-API-Key)<input value={f.api_key} onChange={e => setF({ ...f, api_key: e.target.value })} placeholder="ccc-api-key-2026" /></label>
+          </div>
+        )}
+        <label style={{ fontSize: 13 }}>
+          <input type="checkbox" checked={f.is_default} onChange={e => setF({ ...f, is_default: e.target.checked })} style={{ width: 'auto', marginRight: 6 }} />
+          기본 채점기로 설정 (시나리오가 따로 지정 안 하면 이걸 사용)
+        </label>
+        <button type="submit">등록</button>
+      </form>
+
+      <h3>등록된 채점기 ({rows.length})</h3>
+      {rows.length === 0 && <div className="card" style={{ color: 'var(--fg-dim)' }}>없음 — CC 기본(claude-haiku)로 채점됩니다.</div>}
+      {rows.map(g => (
+        <div key={g.id} className="card">
+          <div className="row" style={{ alignItems: 'center' }}>
+            <b>{g.name}</b>
+            <span className={`badge ${g.provider === 'cc' ? 'blue' : 'yellow'}`}>{g.provider}</span>
+            <code>{g.model}</code>
+            {g.base_url && <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{g.base_url}{g.has_api_key ? ' 🔑' : ''}</span>}
+            {g.is_default && <span className="badge green">기본</span>}
+            {!g.enabled && <span className="badge red">비활성</span>}
+            <div style={{ flex: 1 }} />
+            {!g.is_default && <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => patch(g.id, { is_default: true })}>기본으로</button>}{' '}
+            <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => patch(g.id, { enabled: !g.enabled })}>{g.enabled ? '비활성화' : '활성화'}</button>{' '}
+            <button className="danger" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => del(g.id, g.name)}>삭제</button>
+          </div>
+        </div>
+      ))}
     </>
   )
 }

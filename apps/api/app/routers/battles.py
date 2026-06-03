@@ -26,6 +26,7 @@ from ..services import lab_monitor, provisioner
 from ..services import feedback as fb_svc
 from ..services import assessor_client, battlefield
 from ..services import check_compiler as cc
+from ..services import graders
 
 router = APIRouter(prefix="/battles", tags=["battles"])
 
@@ -417,10 +418,12 @@ async def post_event(
             resp = await assessor_client.assess(inf, checks, timeout=6.0)
             return resp.get("results", []) if resp.get("ok") else [{"error": resp.get("error")}]
 
+        grader_cfg = await graders.resolve_for_scenario(session, scenario)
         verdict = await ea.grade(
             report=report, mission=mission_ctx, scenario=scenario_ctx,
             evidence_text=evidence, max_points=mission_ctx.points,
             inspector=(_inspect if (target_infra or actor_infra) else None),
+            grader=grader_cfg,
         )
         awarded = max(0, min(int(verdict.awarded_points or 0), mission_ctx.points))  # [0,max] 보장
         analysis = verdict

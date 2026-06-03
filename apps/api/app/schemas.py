@@ -134,6 +134,7 @@ class ScenarioOut(BaseModel):
     source: str
     status: str
     time_limit_sec: int
+    grader_profile_id: int | None = None
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}
@@ -312,6 +313,41 @@ class FeedbackCreateIn(BaseModel):
     scope: str = Field(default="lab", pattern=r"^(lab|session|periodic)$")
     delivered_to: str = Field(default="both", pattern=r"^(student|instructor|both)$")
     note: str = Field(default="", max_length=1000)
+
+
+# ── 채점 AI 프로필 (시나리오별 등록/선택) ─────────────
+class GraderProfileIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    provider: str = Field(pattern=r"^(cc|bastion)$")
+    model: str = Field(min_length=1, max_length=80)
+    base_url: str | None = Field(default=None, max_length=200)   # bastion 필수
+    api_key: str | None = Field(default=None, max_length=200)
+    enabled: bool = True
+    is_default: bool = False
+
+
+class GraderProfilePatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    provider: str | None = Field(default=None, pattern=r"^(cc|bastion)$")
+    model: str | None = Field(default=None, min_length=1, max_length=80)
+    base_url: str | None = Field(default=None, max_length=200)
+    api_key: str | None = Field(default=None, max_length=200)
+    enabled: bool | None = None
+    is_default: bool | None = None
+
+
+class GraderProfileOut(BaseModel):
+    id: int
+    name: str
+    provider: str
+    model: str
+    base_url: str | None
+    has_api_key: bool = False        # 키 자체는 노출하지 않음
+    enabled: bool
+    is_default: bool
+    created_at: dt.datetime
+
+    model_config = {"from_attributes": True}
 
 
 TokenOut.model_rebuild()

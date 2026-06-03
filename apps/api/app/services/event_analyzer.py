@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass, field
+import httpx
 
 log = logging.getLogger(__name__)
 
@@ -497,11 +498,12 @@ _ALLOWED_INSPECT = {
 }
 
 
-async def _claude_grade(payload: dict) -> tuple[str | None, float]:
+async def _claude_grade(payload: dict, model: str | None = None) -> tuple[str | None, float]:
+    """CC (Claude Code CLI) 채점 1회. (text, cost) 반환, 실패 시 (None, 0)."""
     user = "## 채점 입력 (JSON)\n```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
     try:
         proc = await asyncio.create_subprocess_exec(
-            _CLAUDE_CMD, "-p", "--output-format", "json", "--model", _CLAUDE_MODEL,
+            _CLAUDE_CMD, "-p", "--output-format", "json", "--model", (model or _CLAUDE_MODEL),
             "--append-system-prompt", _CLAUDE_GRADE_SYSTEM, user,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
@@ -511,6 +513,32 @@ async def _claude_grade(payload: dict) -> tuple[str | None, float]:
         wrap = json.loads(out.decode("utf-8", "replace"))
         return (wrap.get("result") or "").strip(), float(wrap.get("total_cost_usd") or 0.0)
     except (asyncio.TimeoutError, FileNotFoundError, json.JSONDecodeError):
+        return None, 0.0
+
+
+async def _bastion_grade(payload: dict, base_url: str, model: str,
+                         api_key: str | None) -> tuple[str | None, float]:
+    """6v6 Bastion LLM (ollama 호환 /api/generate) 채점 1회. 로컬 모델이라 cost=0."""
+    if not base_url:
+        return None, 0.0
+    prompt = (_CLAUDE_GRADE_SYSTEM + "\n\n## 채점 입력 (JSON)\n"
+              + json.dumps(payload, ensure_ascii=False)
+              + "\n\n위 지시에 따라 최종 JSON 하나만 출력하라.")
+    url = base_url.rstrip("/") + "/api/generate"
+    headers = {"X-API-Key": api_key or "", "content-type": "application/json"}
+    body = {"model": model, "prompt": prompt, "stream": False, "format": "json"}
+    try:
+        async with httpx.AsyncClient(timeout=_CLAUDE_TIMEOUT, verify=False) as c:
+            r = await c.post(url, headers=headers, json=body)
+            if r.status_code >= 300:
+                return None, 0.0
+            data = r.json()
+            # ollama generate → {"response": "..."}; chat 변형 → {"message":{"content":...}}
+            text = data.get("response")
+            if not text and isinstance(data.get("message"), dict):
+                text = data["message"].get("content")
+            return ((text or "").strip() or None), 0.0
+    except Exception:
         return None, 0.0
 
 
@@ -533,12 +561,23 @@ async def grade(
     max_points: int = 0,
     inspector=None,          # async callable(list[check-spec]) -> list[result]  (참여자 infra 직접 점검)
     max_rounds: int = 3,
+    grader: dict | None = None,   # {provider:cc|bastion, model, base_url, api_key} — 시나리오별 채점기
 ) -> AnalysisResult:
     """학생 제출 1건을 AI 가 **참여자 인프라를 직접 점검**하며 시맨틱 채점. 점수는 AI 가 결정.
 
+    grader 로 시나리오별 채점 AI/모델 선택(CC=claude CLI / bastion=6v6 LLM). 미지정 시 CC 기본.
     inspector 가 주어지면 AI 가 추가 read-only check 를 요청할 수 있고(에이전트형), 그 결과를
     근거로 최종 판정한다. 단순 키워드 매칭은 극히 확실한 경우에만, 나머지는 AI 직접 점검.
     """
+    grader = grader or {"provider": "cc", "model": _CLAUDE_MODEL}
+    provider = grader.get("provider", "cc")
+    g_model = grader.get("model") or _CLAUDE_MODEL
+    model_label = f"{provider}:{g_model}"
+
+    async def _call(p: dict) -> tuple[str | None, float]:
+        if provider == "bastion":
+            return await _bastion_grade(p, grader.get("base_url") or "", g_model, grader.get("api_key"))
+        return await _claude_grade(p, g_model)
     if mission is None:
         return AnalysisResult(
             reasoning="미션이 지정되지 않아 자동 채점 불가 — 강사 검토가 필요합니다.",
@@ -577,7 +616,7 @@ async def grade(
     total_cost = 0.0
     inspections: list[dict] = []
     for _round in range(max_rounds):
-        text, cost = await _claude_grade(payload)
+        text, cost = await _call(payload)
         total_cost += cost
         if text is None:
             return AnalysisResult(
@@ -612,7 +651,7 @@ async def grade(
         verdict = str(v.get("verdict") or ("pass" if v.get("passed") else "fail"))
         return AnalysisResult(
             reasoning=str(v.get("reasoning") or ""),
-            model=_CLAUDE_MODEL, cost_usd=total_cost,
+            model=model_label, cost_usd=total_cost,
             criteria_met=list(v.get("criteria_met") or []),
             criteria_missing=list(v.get("criteria_missing") or []),
             verdict=verdict, awarded_points=pts,

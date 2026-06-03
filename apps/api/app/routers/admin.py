@@ -626,6 +626,8 @@ class ScenarioPatchIn(BaseModel):
     description: str | None = Field(default=None, max_length=4000)
     time_limit_sec: int | None = Field(default=None, ge=300, le=7200)
     status: str | None = Field(default=None, pattern=r"^(draft|validated|active|archived)$")
+    # 채점 AI 프로필 선택. 0 → 해제(기본 프로필 사용), >0 → 해당 프로필.
+    grader_profile_id: int | None = Field(default=None, ge=0)
 
 
 @router.patch("/scenarios/{scenario_id}", response_model=ScenarioOut)
@@ -648,6 +650,14 @@ async def admin_patch_scenario(
         s.time_limit_sec = body.time_limit_sec
     if body.status is not None:
         s.status = body.status
+    if body.grader_profile_id is not None:
+        if body.grader_profile_id == 0:
+            s.grader_profile_id = None       # 해제 → 기본 프로필 사용
+        else:
+            from ..models import GraderProfile
+            if not await session.get(GraderProfile, body.grader_profile_id):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "grader profile not found")
+            s.grader_profile_id = body.grader_profile_id
     await session.commit()
     await session.refresh(s)
     await audit.record(
@@ -655,7 +665,8 @@ async def admin_patch_scenario(
         target_type="scenario", target_id=scenario_id,
         detail={"prev": prev,
                 "next": {"title": s.title, "status": s.status,
-                         "time_limit_sec": s.time_limit_sec}},
+                         "time_limit_sec": s.time_limit_sec,
+                         "grader_profile_id": s.grader_profile_id}},
         request=request,
     )
     return ScenarioOut.model_validate(s)
