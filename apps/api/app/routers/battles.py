@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..db import SessionLocal, get_session
-from ..models import Battle, BattleEvent, BattleParticipant, Scenario, User
+from ..models import Battle, BattleEvent, BattleParticipant, Infra, Scenario, User
 from ..schemas import (
     BattleCreateIn, BattleDetail, BattleEventIn, BattleEventOut, BattleJoinIn,
     BattleOut, BattleParticipantOut, MissionOut,
@@ -24,6 +24,8 @@ from ..services import auto_monitor, battle_service as bs, hints as hint_svc
 from ..services import event_analyzer as ea
 from ..services import lab_monitor, provisioner
 from ..services import feedback as fb_svc
+from ..services import assessor_client, battlefield
+from ..services import check_compiler as cc
 
 router = APIRouter(prefix="/battles", tags=["battles"])
 
@@ -301,6 +303,65 @@ def _build_scenario_context(scenario: Scenario | None) -> ea.ScenarioContext | N
     )
 
 
+def _raw_mission(scenario: Scenario | None, side: str | None, order: int | None) -> dict | None:
+    if not scenario or not side or not order:
+        return None
+    container = (scenario.mission_red if side == "red" else scenario.mission_blue) or {}
+    return next((m for m in (container.get("missions") or [])
+                 if int(m.get("order") or 0) == order), None)
+
+
+async def _role_infra_map(session: AsyncSession, battle_id: int) -> tuple[dict[str, Infra], dict[int, Infra]]:
+    """role('red'/'blue') → Infra (solo/free 는 양쪽) + user_id → Infra."""
+    parts = (await session.scalars(
+        select(BattleParticipant).where(BattleParticipant.battle_id == battle_id)
+    )).all()
+    role_infra: dict[str, Infra] = {}
+    user_infra: dict[int, Infra] = {}
+    for p in parts:
+        inf = await session.get(Infra, p.infra_id) if p.infra_id else None
+        if not inf:
+            continue
+        user_infra[p.user_id] = inf
+        if p.role in ("red", "blue"):
+            role_infra[p.role] = inf
+        elif p.role in ("solo", "free"):
+            role_infra.setdefault("red", inf)
+            role_infra.setdefault("blue", inf)
+    return role_infra, user_infra
+
+
+async def _initial_evidence(actor_infra, target_infra, mission_raw: dict | None, side: str | None) -> str:
+    """AI 채점 초기 grounding — 학생이 **실제 실행한 명령/활동**(/activity) + 미션 check 상태.
+    AI 는 이후 inspector 로 추가 점검을 직접 요청한다. 학생 말만 믿지 않는 읽기전용 교차검증."""
+    lines: list[str] = []
+    if actor_infra:
+        act = await assessor_client.activity(actor_infra, want=["commands", "alerts", "fim", "services"],
+                                             since_sec=3600, timeout=5.0)
+        if act.get("ok"):
+            cmds = act.get("commands") or []
+            lines.append(f"[학생이 실제 실행한 최근 명령 {len(cmds)}건 — 핵심 증거]")
+            for c in cmds[:40]:
+                lines.append(f"  $ {c.get('cmd') if isinstance(c, dict) else c}")
+            if act.get("fim"):
+                lines.append(f"[파일변경 {len(act['fim'])}건] " + json.dumps(act["fim"][:5], ensure_ascii=False, default=str))
+            if act.get("alerts"):
+                lines.append(f"[최근 알림 {len(act['alerts'])}건]")
+        else:
+            lines.append(f"[학생 인프라 활동 수집 실패: {act.get('error')}]")
+    else:
+        lines.append("[학생 인프라 미등록 — 명령 증거 없음]")
+
+    if mission_raw and side and target_infra:
+        checks = cc.compile_mission_checks(dict(mission_raw), side=side)
+        resp = await assessor_client.assess(target_infra, checks, timeout=5.0)
+        if resp.get("ok"):
+            lines.append("[미션 check 상태 — 참고용. 앰비언트(타인이 만든 상태)일 수 있으니 학생 행위 증거와 함께 판단]")
+            for r in resp.get("results", []):
+                lines.append(f"  {r.get('id')}: passed={r.get('passed')} | {str(r.get('evidence'))[:120]}")
+    return "\n".join(lines)
+
+
 @router.post("/{battle_id}/events", response_model=BattleEventOut, status_code=201)
 async def post_event(
     battle_id: int,
@@ -308,16 +369,21 @@ async def post_event(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BattleEventOut:
-    if user.role != "admin" and not await bs.is_participant(session, battle_id, user.id):
+    """학생 제출 → AI 시맨틱 채점(개별). 점수는 **AI 가 증거 기반으로 결정**(학생이 부른 points 무시).
+
+    - mission_order 가 지정된 학생 제출("나 이거 했어요") → AI 검수 트리거 → 점수 부여.
+    - mission 미지정: admin 은 수동 점수 허용(운영 보정), 학생은 0점(기록만).
+    공정성: 앰비언트 상태만으로 통과 금지, 증거로 교차검증, AI 불가 시 보류(0점·강사 검토).
+    """
+    is_admin = user.role == "admin"
+    if not is_admin and not await bs.is_participant(session, battle_id, user.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "only participants or admin can post events")
 
-    # battle + scenario 로드 — analyzer 컨텍스트
     battle = await session.get(Battle, battle_id)
     if not battle:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "battle not found")
     scenario = await session.get(Scenario, battle.scenario_id) if battle.scenario_id else None
 
-    # mission_side 추론: 명시 안 됐으면 event_type 으로 추정 (red/blue 배타)
     side = body.mission_side
     if side is None:
         if body.event_type in ("attack", "exploit"):
@@ -327,50 +393,68 @@ async def post_event(
 
     mission_ctx = _build_mission_context(scenario, side, body.mission_order)
     scenario_ctx = _build_scenario_context(scenario)
+    mission_raw = _raw_mission(scenario, side, body.mission_order)
 
     report = ea.StudentReport(
-        user_name=user.name,
-        event_type=body.event_type,
-        target=body.target,
-        points_claimed=body.points,
-        description=body.description,
-        what_i_did=body.what_i_did,
-        what_happened=body.what_happened,
-    )
-    analysis = await ea.analyze_event(
-        monitor=battle.monitor or "bastion",
-        report=report,
-        mission=mission_ctx,
-        scenario=scenario_ctx,
+        user_name=user.name, event_type=body.event_type, target=body.target,
+        points_claimed=body.points, description=body.description,
+        what_i_did=body.what_i_did, what_happened=body.what_happened,
     )
 
-    # detail 에 학생 입력 + 분석 메타 모두 보존 (raw detail 도 진짜 데이터)
+    if mission_ctx is not None:
+        # ── 학생 제출 → AI 가 참여자 인프라 직접 점검 → 시맨틱 채점 (점수는 AI 결정) ──
+        role_infra, user_infra = await _role_infra_map(session, battle_id)
+        actor_infra = user_infra.get(user.id)
+        assess_target = battlefield.normalize_assess_target((mission_raw or {}).get("assess_target"))
+        target_infra = battlefield.resolve_target_infra(side or "blue", assess_target, role_infra) or actor_infra
+        evidence = await _initial_evidence(actor_infra, target_infra, mission_raw, side)
+
+        async def _inspect(checks: list[dict]) -> list[dict]:
+            """AI 가 요청한 read-only check 를 참여자(또는 타깃) 인프라에서 직접 실행."""
+            inf = target_infra or actor_infra
+            if not inf:
+                return [{"error": "no infra to inspect"}]
+            resp = await assessor_client.assess(inf, checks, timeout=6.0)
+            return resp.get("results", []) if resp.get("ok") else [{"error": resp.get("error")}]
+
+        verdict = await ea.grade(
+            report=report, mission=mission_ctx, scenario=scenario_ctx,
+            evidence_text=evidence, max_points=mission_ctx.points,
+            inspector=(_inspect if (target_infra or actor_infra) else None),
+        )
+        awarded = max(0, min(int(verdict.awarded_points or 0), mission_ctx.points))  # [0,max] 보장
+        analysis = verdict
+        evidence_summary = evidence[:1500]
+    else:
+        # 미션 미지정 — AI 채점 대상 아님. admin 만 수동 점수 보정.
+        analysis = await ea.analyze_event(
+            monitor=battle.monitor or "bastion", report=report,
+            mission=None, scenario=scenario_ctx)
+        awarded = int(body.points) if is_admin else 0
+        evidence_summary = ""
+
     detail = dict(body.detail or {})
     detail["report"] = {
-        "what_i_did": body.what_i_did,
-        "what_happened": body.what_happened,
-        "mission_order": body.mission_order,
-        "mission_side": side,
+        "what_i_did": body.what_i_did, "what_happened": body.what_happened,
+        "mission_order": body.mission_order, "mission_side": side,
     }
-    detail["analysis"] = {
+    detail["grading"] = {
         "model": analysis.model,
+        "verdict": getattr(analysis, "verdict", "review"),
+        "claimed_points": body.points,
+        "awarded_points": awarded,
+        "ai_decided": mission_ctx is not None,
         "cost_usd": analysis.cost_usd,
         "criteria_met": analysis.criteria_met,
         "criteria_missing": analysis.criteria_missing,
-        "negative_signs_hit": analysis.negative_signs_hit,
+        "evidence": evidence_summary,
     }
 
     try:
         ev = await bs.add_event(
-            session,
-            battle_id=battle_id,
-            actor_user_id=user.id,
-            event_type=body.event_type,
-            target=body.target,
-            description=body.description,
-            points=body.points,
-            detail=detail,
-            reasoning=analysis.reasoning,
+            session, battle_id=battle_id, actor_user_id=user.id,
+            event_type=body.event_type, target=body.target, description=body.description,
+            points=awarded, detail=detail, reasoning=analysis.reasoning,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))

@@ -142,7 +142,9 @@ for m in sorted(red_missions, key=lambda x: x["order"]):
         "target": m["target_vm"] or "attacker",
         "description": f"미션 #{m['order']} 완료 — {m['instruction'][:90]}",
         "points": m["points"],
-        "detail": {"mission_order": m["order"], "side": "red"},
+        "mission_order": m["order"], "mission_side": "red",
+        "what_i_did": f"미션 #{m['order']} 수행: {m['instruction'][:120]}",
+        "what_happened": "성공",
     })
     red_total += m["points"]
     print(f"    ✓ RED #{m['order']:>2} (+{m['points']:>2}) → 누적 {red_total}")
@@ -156,7 +158,9 @@ for m in sorted(blue_missions, key=lambda x: x["order"]):
         "target": m["target_vm"] or "siem",
         "description": f"방어 미션 #{m['order']} 완료 — {m['instruction'][:90]}",
         "points": m["points"],
-        "detail": {"mission_order": m["order"], "side": "blue"},
+        "mission_order": m["order"], "mission_side": "blue",
+        "what_i_did": f"방어 미션 #{m['order']} 수행: {m['instruction'][:120]}",
+        "what_happened": "완료",
     })
     blue_total += m["points"]
     print(f"    ✓ BLUE #{m['order']:>2} {et:>6} (+{m['points']:>2}) → 누적 {blue_total}")

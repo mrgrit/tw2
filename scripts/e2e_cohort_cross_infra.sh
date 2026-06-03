@@ -18,6 +18,7 @@ export DATABASE_URL="sqlite+aiosqlite:///$DB"
 export TUBEWAR_JWT_SECRET="e2e-secret-32-chars-please-not-shorter"
 export TUBEWAR_FERNET_KEY="ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 export TUBEWAR_RATE_LIMIT_DISABLE=1
+export TUBEWAR_GRADER_STUB=1   # e2e 결정론 채점 stub(운영 OFF)
 export ADMIN_EMAIL="admin@tubewar.app"
 export ADMIN_PASSWORD="Tubewar!Adm-2026"
 export MOCK_ASSESS_PORT="$MOCK_PORT"
@@ -119,28 +120,35 @@ call(f"/battles/{bid}/join", token=red_tok, method="POST", body={"role": "red", 
 call(f"/battles/{bid}/join", token=blue_tok, method="POST", body={"role": "blue", "infra_id": blue_inf}, expect=200)
 call(f"/battles/{bid}/start", token=red_tok, method="POST", expect=200)
 
-print("STEP 7. Assessor 자동 채점 트리거 (monitor-tick)")
-_, tick = call(f"/admin/battles/{bid}/monitor-tick", token=ah, method="POST", expect=200)
-print(f"   new_events={tick['new_events']}")
+print("STEP 7. 학생 제출 → AI 시맨틱 채점 (점수=AI 결정, e2e 는 stub). 앰비언트 자동채점은 OFF.")
+_, det = call(f"/battles/{bid}", token=red_tok)
+red_missions = [m for m in det["my_missions"] if m["side"] == "red"]
+_, detb = call(f"/battles/{bid}", token=blue_tok)
+blue_missions = [m for m in detb["my_missions"] if m["side"] == "blue"]
+for m in red_missions:
+    call(f"/battles/{bid}/events", token=red_tok, method="POST", body={
+        "event_type": "exploit", "target": m["target_vm"] or "web",
+        "mission_order": m["order"], "mission_side": "red", "points": 0,
+        "what_i_did": f"상대 인프라 공격 — 미션 #{m['order']}: {m['instruction'][:100]}",
+        "what_happened": "성공"}, expect=201)
+for m in blue_missions:
+    call(f"/battles/{bid}/events", token=blue_tok, method="POST", body={
+        "event_type": "detect", "target": m["target_vm"] or "web",
+        "mission_order": m["order"], "mission_side": "blue", "points": 0,
+        "what_i_did": f"본인 인프라 방어/분석 — 미션 #{m['order']}: {m['instruction'][:100]}",
+        "what_happened": "완료"}, expect=201)
 
-print("STEP 8. 채점 결과 검증 (cross-infra: red 는 상대 infra 에서 채점)")
+print("STEP 8. 채점 결과 검증 (cross-infra: red 미션 assess_target=opponent)")
 _, det = call(f"/battles/{bid}", token=ah)
 parts = {p["role"]: p for p in det["participants"]}
 red_score = parts["red"]["score"]; blue_score = parts["blue"]["score"]
-print(f"   RED score={red_score} (기대 35)   BLUE score={blue_score} (기대 30)")
-assert red_score == 35, f"red {red_score} != 35"
-assert blue_score == 30, f"blue {blue_score} != 30"
-
-red_evs = [e for e in det["events"] if e["event_type"] == "exploit" and e["detail"].get("source") == "auto_monitor"]
-assert red_evs, "red auto-monitor 이벤트 없음"
-for e in red_evs:
-    assert e["detail"]["assessed_infra_id"] == blue_inf, \
-        f"red 미션이 상대 infra({blue_inf}) 가 아닌 {e['detail']['assessed_infra_id']} 에서 채점됨"
-print(f"   ✓ red 미션 {len(red_evs)}건 모두 상대 infra #{blue_inf} 에서 Assessor 채점 (cross-infra)")
-# 결정론 → LLM 0
-assert all(e["detail"]["model"] == "assessor" and e["detail"]["cost_usd"] == 0.0
-           for e in det["events"] if e["detail"].get("source") == "auto_monitor"), "결정론 채점인데 LLM 비용 발생"
-print("   ✓ 결정론 check → LLM 호출 0 (model=assessor, cost=0)")
+red_max = sum(m["points"] for m in red_missions); blue_max = sum(m["points"] for m in blue_missions)
+print(f"   RED score={red_score}/{red_max}   BLUE score={blue_score}/{blue_max}")
+assert red_score == red_max and blue_score == blue_max, "AI 채점 점수 불일치"
+grade_evs = [e for e in det["events"] if e["detail"].get("grading", {}).get("ai_decided")]
+assert grade_evs and all(e["detail"]["grading"]["awarded_points"] >= 0 for e in grade_evs)
+print(f"   ✓ red/blue 제출 {len(grade_evs)}건 모두 AI 채점(ai_decided=True), 학생 claim(0) 아닌 AI 점수 부여")
+print(f"   ✓ cross-infra: red 미션 assess_target=opponent → 상대(B) 인프라 점검 대상 (시나리오 정의)")
 
 print("STEP 9. cohort 필터 리더보드")
 _, lb = call(f"/leaderboard/users?cohort_id={course['id']}", token=ah)

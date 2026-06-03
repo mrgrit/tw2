@@ -73,12 +73,15 @@ class ScenarioContext:
 @dataclass
 class AnalysisResult:
     reasoning: str               # markdown 자연어 — 분석 본문
-    model: str                   # bastion-analyzer / claude-haiku-4-5
+    model: str                   # bastion-analyzer / claude-haiku-4-5 / needs-review
     cost_usd: float = 0.0
     # 구조화된 평가 (UI 가 추가 표시·통계용으로 쓸 수 있음)
     criteria_met: list[str] = field(default_factory=list)
     criteria_missing: list[str] = field(default_factory=list)
     negative_signs_hit: list[str] = field(default_factory=list)
+    # AI 시맨틱 채점 결과 (grade() 가 채움). awarded_points=None → 채점 보류(강사 검토).
+    verdict: str = "review"      # pass | partial | fail | review
+    awarded_points: int | None = None
 
 
 # ──────────────────────────────────────────────────────
@@ -447,3 +450,175 @@ async def analyze_event(
         criteria_missing=base.criteria_missing,
         negative_signs_hit=base.negative_signs_hit,
     )
+
+
+# ──────────────────────────────────────────────────────
+# AI 시맨틱 채점 — 학생 제출 + 읽기전용 증거 → verdict + 점수 (claude)
+#
+# 원칙(공정성): 학생 말만 믿지 않고 증거(실제 실행 명령/Assessor 상태)로 교차검증.
+# 앰비언트 상태(공격자가 만든 로그 등)만으로는 절대 통과시키지 않는다. 점수는 AI 가 결정
+# (학생이 부른 점수 무시). 제출 1건당 1회 판정(개별·병렬). claude 불가 시 보류(0점, 강사 검토).
+# ──────────────────────────────────────────────────────
+_CLAUDE_GRADE_SYSTEM = """\
+You are a STRICT, FAIR cyber-range grader. Grade ONE student's submission for ONE mission by
+**directly inspecting the student's infrastructure** (read-only) — do not just trust their words.
+
+Inputs: the mission (intent / success_criteria / acceptable_methods / negative_signs / max_points),
+the student's self-report, and read-only EVIDENCE already collected from their infra.
+
+You may **request additional read-only inspection** of the student's infra before deciding. To inspect,
+return ONLY this JSON: {"inspect":[{"type":"<t>","target":"<vm>","params":{...}}, ...]}
+Allowed inspection types (read-only, no side effects):
+  file_exists{path} · file_contains{path,pattern} · file_hash{path} · process_running{name} ·
+  port_listening{port} · log_contains{log:apache_error|auth|modsec|suricata, pattern} ·
+  wazuh_alert{rule_id|pattern} · fim_change{path} · command_ran{pattern}
+Prefer inspecting to confirm the student's OWN ACTION — e.g. command_ran{pattern:"sqlmap"} or
+command_ran{pattern:"modsec_audit"} to confirm they actually ran the required command;
+file_contains to confirm config they created. After results come back, decide.
+
+Grading rules (fairness is critical — a single unfair point is a big problem):
+- Simple keyword/state match counts ONLY for extremely certain, unambiguous facts (e.g., a specific
+  file exists, a port listens). Everything else must be judged from inspected evidence, semantically.
+- Award ZERO when the claim is unsupported by inspection, matches negative_signs, or relies on AMBIENT
+  state created by someone else (e.g., a log/alert produced by the attacker, not by the student's own
+  analysis/defense). The student must have performed the action themselves (verify via command_ran etc.).
+- NEVER trust the student's self-claimed points. YOU decide points in [0, max_points]. Partial allowed.
+- If evidence is insufficient after inspection, be conservative and explain what's missing.
+
+When ready, return ONE final JSON object (no markdown, no prose):
+{"passed": true|false, "awarded_points": <int 0..max_points>, "verdict": "pass|partial|fail",
+ "criteria_met": ["..."], "criteria_missing": ["..."],
+ "reasoning": "<한국어 — 어떤 증거(직접 점검 포함)로 무엇을 인정/불인정했는지, 점수 근거, 부족한 점>"}
+"""
+
+_ALLOWED_INSPECT = {
+    "file_exists", "file_contains", "file_hash", "process_running",
+    "port_listening", "log_contains", "wazuh_alert", "fim_change", "command_ran",
+}
+
+
+async def _claude_grade(payload: dict) -> tuple[str | None, float]:
+    user = "## 채점 입력 (JSON)\n```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _CLAUDE_CMD, "-p", "--output-format", "json", "--model", _CLAUDE_MODEL,
+            "--append-system-prompt", _CLAUDE_GRADE_SYSTEM, user,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _err = await asyncio.wait_for(proc.communicate(), timeout=_CLAUDE_TIMEOUT)
+        if proc.returncode != 0:
+            return None, 0.0
+        wrap = json.loads(out.decode("utf-8", "replace"))
+        return (wrap.get("result") or "").strip(), float(wrap.get("total_cost_usd") or 0.0)
+    except (asyncio.TimeoutError, FileNotFoundError, json.JSONDecodeError):
+        return None, 0.0
+
+
+def _extract_json_obj(text: str) -> dict:
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1].rsplit("```", 1)[0] if "\n" in t else t
+    i, j = t.find("{"), t.rfind("}")
+    if i == -1 or j == -1:
+        raise ValueError("no json")
+    return json.loads(t[i:j + 1])
+
+
+async def grade(
+    *,
+    report: StudentReport,
+    mission: MissionContext | None,
+    scenario: ScenarioContext | None,
+    evidence_text: str = "",
+    max_points: int = 0,
+    inspector=None,          # async callable(list[check-spec]) -> list[result]  (참여자 infra 직접 점검)
+    max_rounds: int = 3,
+) -> AnalysisResult:
+    """학생 제출 1건을 AI 가 **참여자 인프라를 직접 점검**하며 시맨틱 채점. 점수는 AI 가 결정.
+
+    inspector 가 주어지면 AI 가 추가 read-only check 를 요청할 수 있고(에이전트형), 그 결과를
+    근거로 최종 판정한다. 단순 키워드 매칭은 극히 확실한 경우에만, 나머지는 AI 직접 점검.
+    """
+    if mission is None:
+        return AnalysisResult(
+            reasoning="미션이 지정되지 않아 자동 채점 불가 — 강사 검토가 필요합니다.",
+            model="needs-review", verdict="review", awarded_points=None)
+
+    # 테스트/e2e 전용 결정론 stub (운영 OFF). 플러밍 검증용 — what_i_did 가 있으면 통과.
+    if os.getenv("TUBEWAR_GRADER_STUB", "").lower() in ("1", "true", "yes"):
+        did = bool((report.what_i_did or "").strip())
+        return AnalysisResult(
+            reasoning="[grader-stub] " + ("제출 증거(what_i_did) 있음 → 통과" if did else "증거 없음 → 불인정"),
+            model="grader-stub", verdict="pass" if did else "fail",
+            awarded_points=(max_points if did else 0),
+            criteria_met=(list(mission.success_criteria) if did else []),
+            criteria_missing=([] if did else list(mission.success_criteria)))
+
+    payload = {
+        "mission": {
+            "side": mission.side, "order": mission.order, "instruction": mission.instruction,
+            "target_vm": mission.target_vm, "max_points": max_points,
+            "semantic_intent": mission.semantic_intent,
+            "success_criteria": mission.success_criteria,
+            "acceptable_methods": mission.acceptable_methods,
+            "negative_signs": mission.negative_signs,
+        },
+        "student_report": {
+            "user_name": report.user_name, "event_type": report.event_type,
+            "target": report.target, "claimed_points": report.points_claimed,
+            "description": report.description,
+            "what_i_did": report.what_i_did, "what_happened": report.what_happened,
+        },
+        "read_only_evidence": evidence_text or "(초기 증거 없음 — 필요하면 inspect 로 직접 점검하라)",
+        "max_points": max_points,
+        "can_inspect": inspector is not None,
+    }
+
+    total_cost = 0.0
+    inspections: list[dict] = []
+    for _round in range(max_rounds):
+        text, cost = await _claude_grade(payload)
+        total_cost += cost
+        if text is None:
+            return AnalysisResult(
+                reasoning="_AI 채점기를 호출할 수 없어 자동 채점을 보류합니다. 강사 검토 대기 "
+                          "(불공정 방지: 자동 점수 부여 안 함)._",
+                model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
+        try:
+            v = _extract_json_obj(text)
+        except Exception:
+            return AnalysisResult(
+                reasoning=f"_AI 응답 파싱 실패 — 강사 검토 필요._\n\n```\n{text[:400]}\n```",
+                model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
+
+        # AI 가 인프라 직접 점검을 요청한 경우 (마지막 라운드 전까지)
+        req = v.get("inspect")
+        if req and inspector is not None and _round < max_rounds - 1:
+            checks = []
+            for n, c in enumerate(req[:8], start=1):
+                if isinstance(c, dict) and c.get("type") in _ALLOWED_INSPECT:
+                    checks.append({"id": f"ai-{_round}-{n}", "type": c["type"],
+                                   "target": c.get("target") or mission.target_vm,
+                                   "params": c.get("params") or {}})
+            results = await inspector(checks) if checks else []
+            inspections.append({"requested": checks, "results": results})
+            payload["read_only_evidence"] += (
+                f"\n[AI 가 직접 요청한 점검 결과 round {_round + 1}]\n" + json.dumps(results, ensure_ascii=False)
+            )
+            continue
+
+        # 최종 판정
+        pts = max(0, min(int(v.get("awarded_points") or 0), max_points))
+        verdict = str(v.get("verdict") or ("pass" if v.get("passed") else "fail"))
+        return AnalysisResult(
+            reasoning=str(v.get("reasoning") or ""),
+            model=_CLAUDE_MODEL, cost_usd=total_cost,
+            criteria_met=list(v.get("criteria_met") or []),
+            criteria_missing=list(v.get("criteria_missing") or []),
+            verdict=verdict, awarded_points=pts,
+        )
+
+    # 라운드 소진 — 판정 미도출 → 보류
+    return AnalysisResult(
+        reasoning="_AI 가 점검을 반복했으나 최종 판정에 이르지 못함 — 강사 검토 필요._",
+        model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)

@@ -73,16 +73,36 @@ def _missions_for_role(scenario: Scenario | None, role: str) -> list[dict]:
     return red + blue   # solo/free → 양쪽
 
 
-def _solved_orders_by_side(events: list[BattleEvent]) -> dict[str, set[int]]:
-    out: dict[str, set[int]] = {"red": set(), "blue": set()}
-    for e in events:
-        d = e.detail or {}
-        if d.get("source") != "auto_monitor":
-            continue
+def _completed_step(e: BattleEvent) -> tuple[int | None, str, int] | None:
+    """점수가 부여된(>0) 미션 완료 이벤트면 (actor_user_id, side, order) 반환, 아니면 None.
+
+    진도는 **실제로 점수를 받은 미션**(AI 채점 통과)만 카운트한다. 같은 문제를 여러 번
+    제출/재시도해도 (user, side, order) 로 dedupe 되어 1회만 진도에 반영된다(중복 카운트 방지).
+    """
+    if (e.points or 0) <= 0:
+        return None
+    d = e.detail or {}
+    rep = d.get("report") or {}
+    if rep.get("mission_order") and rep.get("mission_side"):
+        return (e.actor_user_id, str(rep["mission_side"]), int(rep["mission_order"]))
+    if d.get("source") == "auto_monitor":   # (옵션) 자동채점 ON 일 때만 존재
         for side in ("red", "blue"):
-            o = d.get(f"{side}_mission_order")
-            if o:
-                out[side].add(int(o))
+            if d.get(f"{side}_mission_order"):
+                return (e.actor_user_id, side, int(d[f"{side}_mission_order"]))
+    return None
+
+
+def _solved_by_user(events: list[BattleEvent]) -> dict[int, set[tuple[str, int]]]:
+    """user_id → {(side, order)} — 점수 받은 미션, 사용자별·dedupe."""
+    out: dict[int, set[tuple[str, int]]] = {}
+    for e in events:
+        step = _completed_step(e)
+        if not step:
+            continue
+        uid, side, order = step
+        if uid is None:
+            continue
+        out.setdefault(uid, set()).add((side, order))
     return out
 
 
@@ -171,7 +191,7 @@ async def compute_progress(session: AsyncSession, battle_id: int, *, persist: bo
     events = (await session.scalars(
         select(BattleEvent).where(BattleEvent.battle_id == battle_id)
     )).all()
-    solved = _solved_orders_by_side(events)
+    solved_by_user = _solved_by_user(events)
     acts = (await session.scalars(
         select(ActivityEvent).where(ActivityEvent.battle_id == battle_id)
     )).all()
@@ -184,13 +204,15 @@ async def compute_progress(session: AsyncSession, battle_id: int, *, persist: bo
     out: list[dict] = []
     for p in participants:
         missions = _missions_for_role(scenario, p.role)
-        orders = {int(m.get("order") or 0) for m in missions}
+        # 진도는 (side, order) 단위로 계산 — solo/free 는 red+blue 양쪽.
         if p.role in ("solo", "free"):
-            done = (solved["red"] | solved["blue"]) & orders
+            wanted = {("red", int(m.get("order") or 0)) for m in (scenario.mission_red or {}).get("missions") or []}
+            wanted |= {("blue", int(m.get("order") or 0)) for m in (scenario.mission_blue or {}).get("missions") or []}
         else:
-            done = solved.get(p.role, set()) & orders
-        steps_total = len(orders)
-        steps_done = len(done)
+            wanted = {(p.role, int(m.get("order") or 0)) for m in missions}
+        my_solved = solved_by_user.get(p.user_id, set()) & wanted
+        steps_total = len(wanted)
+        steps_done = len(my_solved)
         completion = round(100.0 * steps_done / steps_total, 1) if steps_total else 0.0
 
         # 진전 추적

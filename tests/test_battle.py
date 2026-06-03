@@ -12,6 +12,15 @@ os.environ.setdefault("TUBEWAR_FERNET_KEY", "ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2
 from app.main import app  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.services.scenario_loader import import_scenarios  # noqa: E402
+from app.services import event_analyzer as ea  # noqa: E402
+
+
+def _mock_ai_pass(monkeypatch):
+    """AI 채점을 결정론 mock 으로 — 미션 최대점 부여(pass)."""
+    async def fake_grade(*, report, mission, scenario, evidence_text="", max_points=0, **kw):
+        return ea.AnalysisResult(reasoning="mock pass", model="mock-claude",
+                                 verdict="pass", awarded_points=max_points, cost_usd=0.0)
+    monkeypatch.setattr(ea, "grade", fake_grade)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -52,7 +61,8 @@ async def test_scenario_import_and_listing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_solo_battle_full_lifecycle() -> None:
+async def test_solo_battle_full_lifecycle(monkeypatch) -> None:
+    _mock_ai_pass(monkeypatch)
     async with await _new_client() as client:
         token = await _signup(client, "alice@example.com", "Alice")
         h = {"authorization": f"Bearer {token}"}
@@ -87,17 +97,26 @@ async def test_solo_battle_full_lifecycle() -> None:
         assert st.status_code == 200, st.text
         assert st.json()["battle"]["status"] == "active"
 
-        # 5) 이벤트 push (red 점수)
+        # 미션 #1(red) 최대 점수 확인
+        det0 = (await client.get(f"/battles/{battle_id}", headers=h)).json()
+        red1 = next(m for m in det0["my_missions"] if m["side"] == "red" and m["order"] == 1)
+        maxp = red1["points"]
+
+        # 5) 학생 제출 → AI 채점(mock pass) → 점수는 AI 가 결정(학생 claim 무시)
         ev = await client.post(f"/battles/{battle_id}/events", headers=h, json={
-            "event_type": "exploit", "target": "web", "description": "SQLi success", "points": 20,
+            "event_type": "exploit", "target": "web", "description": "SQLi success",
+            "mission_order": 1, "mission_side": "red",
+            "what_i_did": "sqlmap -u ... --batch", "what_happened": "is vulnerable", "points": 200,
         })
         assert ev.status_code == 201, ev.text
+        assert ev.json()["detail"]["grading"]["ai_decided"] is True
+        assert ev.json()["detail"]["grading"]["awarded_points"] == maxp   # claim(200) 아님
 
-        # 6) detail 확인 — 점수 반영
+        # 6) detail 확인 — AI 점수 반영
         det = await client.get(f"/battles/{battle_id}", headers=h)
         assert det.status_code == 200
         body = det.json()
-        assert body["participants"][0]["score"] == 20
+        assert body["participants"][0]["score"] == maxp
         # system 2개 (created+started) + exploit 1 = 3 이벤트
         assert len(body["events"]) >= 3
 

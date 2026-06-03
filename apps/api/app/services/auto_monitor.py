@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 from typing import Any
 
 import datetime as dt
@@ -40,6 +41,16 @@ _locks: dict[int, asyncio.Lock] = {}
 
 def _hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8", "ignore")).hexdigest()[:16]
+
+
+def _auto_score_enabled() -> bool:
+    """앰비언트 자동 채점(Assessor 상태만으로 점수 부여)은 **기본 OFF**.
+
+    공격자가 만든 로그/알림 같은 앰비언트 상태로 방어자에게 점수가 들어가는 불공정을 막는다.
+    채점은 학생 제출 + AI 시맨틱 검수(/battles/{id}/events)로만. 실험적으로 켜려면
+    TUBEWAR_AUTO_SCORE=1.
+    """
+    return os.getenv("TUBEWAR_AUTO_SCORE", "0").lower() in ("1", "true", "yes")
 
 
 def _missions_of(scenario: Scenario | None, side: str) -> list[dict]:
@@ -100,6 +111,10 @@ async def _tick_locked(battle_id: int, tick_idx: int) -> None:
                 raise StopAsyncIteration
 
     if not scenario or not role_infra:
+        return
+
+    # 앰비언트 자동 채점 기본 OFF — 채점은 학생 제출 + AI 검수로만(공정성).
+    if not _auto_score_enabled():
         return
 
     seen = _seen_hits.setdefault(battle_id, set())

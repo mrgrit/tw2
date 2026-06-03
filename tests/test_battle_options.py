@@ -13,6 +13,7 @@ from app.main import app  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.services import rate_limit as rl  # noqa: E402
 from app.services.scenario_loader import import_scenarios  # noqa: E402
+from app.services import event_analyzer as ea  # noqa: E402
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -222,7 +223,7 @@ async def test_heartbeat_collapse_in_place() -> None:
 
 
 @pytest.mark.asyncio
-async def test_event_reasoning_field_roundtrip() -> None:
+async def test_event_reasoning_field_roundtrip(monkeypatch) -> None:
     """이벤트 보고 시 채점 분석 자동 생성 — mission_order 유무로 두 모드:
 
     (a) mission_order 없음 → 일반 안내 reasoning + raw detail 에 report 보존
@@ -239,22 +240,20 @@ async def test_event_reasoning_field_roundtrip() -> None:
         })).json()["battle"]["id"]
         await client.post(f"/battles/{bid}/start", headers=h)
 
-        # (a) mission_order 미입력 — analyzer 가 "특정 미션 미연결" 안내
+        # (a) mission_order 미입력 — AI 채점 대상 아님(학생 0점) + 미연결 안내 reasoning
         await client.post(f"/battles/{bid}/events", headers=h, json={
             "event_type": "exploit", "target": "juiceshop",
             "description": "SQLi 시도", "points": 20,
         })
         body = (await client.get(f"/battles/{bid}", headers=h)).json()
         e_a = next(e for e in body["events"] if e["event_type"] == "exploit")
-        assert e_a["reasoning"] and "채점 분석" in e_a["reasoning"]
-        assert "특정 미션과 연결되지 않" in e_a["reasoning"]
+        assert e_a["reasoning"] and "특정 미션과 연결되지 않" in e_a["reasoning"]
         assert e_a["detail"]["report"]["mission_order"] is None
-        assert e_a["detail"]["analysis"]["model"].startswith("bastion")
+        g_a = e_a["detail"]["grading"]
+        assert g_a["ai_decided"] is False and g_a["awarded_points"] == 0   # 학생 self-점수 무시
 
-        # (b) DB 에서 시나리오의 success_criteria 를 직접 가져와서 그 텍스트를
-        # what_i_did/what_happened 에 그대로 박아넣음 → heuristic 매칭 100%
+        # (b) mission_order 지정 → AI 시맨틱 채점 경로 (점수는 AI 결정). AI 를 mock.
         from app.models import Scenario
-        from sqlalchemy import select
         async with SessionLocal() as s:
             scn = await s.get(Scenario, sc)
             red_missions = (scn.mission_red or {}).get("missions") or []
@@ -262,17 +261,22 @@ async def test_event_reasoning_field_roundtrip() -> None:
                                    if (m.get("verify") or {}).get("semantic", {}).get("success_criteria")), None)
         assert target_mission, "테스트 시나리오에 success_criteria 있는 red 미션 없음"
         crits = target_mission["verify"]["semantic"]["success_criteria"]
-        # success_criteria 텍스트를 그대로 what_i_did 에 → 모든 기준 충족
-        all_crits_text = "\n".join(crits)
+
+        async def fake_grade(*, report, mission, scenario, evidence_text="", max_points=0, **kw):
+            return ea.AnalysisResult(
+                reasoning=f"**AI 채점** 미션 #{mission.order} — 모든 기준 충족 ✅",
+                model="mock-claude", verdict="pass", awarded_points=max_points,
+                criteria_met=list(crits), criteria_missing=[])
+        monkeypatch.setattr(ea, "grade", fake_grade)
 
         await client.post(f"/battles/{bid}/events", headers=h, json={
             "event_type": "exploit",
             "target": target_mission.get("target_vm") or "attacker",
             "description": f"미션 #{target_mission['order']} 시도",
-            "points": target_mission.get("points", 10),
+            "points": 200,   # claim — 무시됨
             "mission_order": target_mission["order"], "mission_side": "red",
-            "what_i_did": all_crits_text,
-            "what_happened": "실행 완료 — " + (target_mission.get("verify", {}).get("expect") or "성공"),
+            "what_i_did": "\n".join(crits),
+            "what_happened": "실행 완료",
         })
         body = (await client.get(f"/battles/{bid}", headers=h)).json()
         scored = [e for e in body["events"]
@@ -280,13 +284,8 @@ async def test_event_reasoning_field_roundtrip() -> None:
         assert scored, f"mission #{target_mission['order']} 보고가 events 에 없음"
         e_b = scored[-1]
         rs = e_b["reasoning"]
-        assert rs and "채점 분석" in rs
-        assert f"미션 #{target_mission['order']}" in rs
-        ana = e_b["detail"]["analysis"]
-        assert isinstance(ana["criteria_met"], list)
-        # success_criteria 자체를 박았으니 모든 기준이 충족되어야
-        assert len(ana["criteria_met"]) == len(crits), \
-            f"all-met 기대 {len(crits)}, 실제 {len(ana['criteria_met'])} (missing={ana['criteria_missing']})"
-        assert len(ana["criteria_missing"]) == 0
-        # reasoning markdown 에 충족 표시
-        assert "✅" in rs
+        assert rs and "AI 채점" in rs and f"미션 #{target_mission['order']}" in rs
+        g_b = e_b["detail"]["grading"]
+        assert g_b["ai_decided"] is True and g_b["verdict"] == "pass"
+        assert g_b["criteria_met"] == crits and g_b["criteria_missing"] == []
+        assert g_b["awarded_points"] == target_mission.get("points", 0)   # AI=미션최대, claim(200) 아님

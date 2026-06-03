@@ -14,6 +14,7 @@ export DATABASE_URL="sqlite+aiosqlite:///$DB"
 export TUBEWAR_JWT_SECRET="e2e-secret-32-chars-please-not-shorter"
 export TUBEWAR_FERNET_KEY="ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 export TUBEWAR_RATE_LIMIT_DISABLE=1
+export TUBEWAR_GRADER_STUB=1   # e2e 결정론 채점 stub(운영 OFF)
 export ADMIN_EMAIL="admin@tubewar.app"
 export ADMIN_PASSWORD="Tubewar!Adm-2026"
 

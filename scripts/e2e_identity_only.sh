@@ -15,6 +15,7 @@ export DATABASE_URL="sqlite+aiosqlite:///$DB"
 export TUBEWAR_JWT_SECRET="e2e-secret-32-chars-please-not-shorter"
 export TUBEWAR_FERNET_KEY="ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
 export TUBEWAR_RATE_LIMIT_DISABLE=1
+export TUBEWAR_GRADER_STUB=1   # e2e 결정론 채점 stub(운영 OFF)
 export ADMIN_EMAIL="admin@tubewar.app"
 export ADMIN_PASSWORD="Tubewar!Adm-2026"
 
@@ -79,18 +80,26 @@ assert cr["battle"]["cohort_id"] is None, "신원-only 인데 cohort_id 가 채�
 print(f"   battle #{bid} cohort_id={cr['battle']['cohort_id']} (null=신원-only)")
 call(f"/battles/{bid}/start", token=tok, method="POST", expect=200)
 
-print("STEP 3. 수동 이벤트 보고 → 점수")
-call(f"/battles/{bid}/events", token=tok, method="POST", body={
-    "event_type": "exploit", "target": "web", "description": "SQLi 성공", "points": 25}, expect=201)
+print("STEP 3. 학생 제출 → AI 채점(점수=AI 결정, e2e 는 stub)")
+_, det = call(f"/battles/{bid}", token=tok)
+red1 = next(m for m in det["my_missions"] if m["side"] == "red" and m["order"] == 1)
+maxp = red1["points"]
+_, ev = call(f"/battles/{bid}/events", token=tok, method="POST", body={
+    "event_type": "exploit", "target": red1["target_vm"] or "attacker",
+    "mission_order": 1, "mission_side": "red", "points": 999 % 200,
+    "what_i_did": "미션 #1 수행 (sqlmap 등)", "what_happened": "성공"}, expect=201)
+g = ev["detail"]["grading"]
+assert g["ai_decided"] is True, "AI 채점 경로가 아님"
+assert g["awarded_points"] == maxp, f"awarded {g['awarded_points']} != {maxp}"
 _, det = call(f"/battles/{bid}", token=tok)
 score = det["participants"][0]["score"]
-assert score == 25, f"score {score} != 25"
-print(f"   ✓ solo score={score}")
+assert score == maxp, f"score {score} != {maxp}"
+print(f"   ✓ solo AI 채점 score={score} (verdict={g['verdict']}, ai_decided={g['ai_decided']})")
 call(f"/battles/{bid}/end", token=tok, method="POST", expect=200)
 
 print("STEP 4. cohort 없는 리더보드(전체) 에 반영")
 _, lb = call("/leaderboard/users", token=tok)
-assert any(r["name"] == "Solo" and r["total_score"] == 25 for r in lb), f"리더보드 누락: {lb}"
+assert any(r["name"] == "Solo" and r["total_score"] == maxp for r in lb), f"리더보드 누락: {lb}"
 print("   ✓ 무필터 리더보드에 신원-only 학생 반영")
 
 print("\n✓✓✓ identity-only e2e 통과 — battle #%d" % bid)

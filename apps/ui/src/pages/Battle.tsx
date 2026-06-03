@@ -546,24 +546,24 @@ function MissionCard({ m }: { m: Mission }) {
       opacity: m.solved ? 0.7 : 1,
     }}>
       <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-        <span className={`badge ${sideColor}`}>{m.side === 'red' ? '🔴 RED' : '🔵 BLUE'} #{m.order}</span>
-        {m.target_vm && <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>target: <code>{m.target_vm}</code></span>}
-        {m.points > 0 && <span className="badge green">+{m.points}점</span>}
-        {m.solved && <span className="badge green">✓ 자동 검증 통과</span>}
+        <span className={`badge ${sideColor}`} style={{ fontSize: 16 }}>{m.side === 'red' ? '🔴 RED' : '🔵 BLUE'} #{m.order}</span>
+        {m.target_vm && <span style={{ fontSize: 18, color: 'var(--fg-dim)' }}>target: <code>{m.target_vm}</code></span>}
+        {m.points > 0 && <span className="badge green" style={{ fontSize: 16 }}>+{m.points}점</span>}
+        {m.solved && <span className="badge green" style={{ fontSize: 16 }}>✓ 자동 검증 통과</span>}
         <div style={{ flex: 1 }} />
         {(m.hint || m.semantic_intent || m.success_criteria.length > 0 || m.verify_expect) && (
-          <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }}
+          <button className="ghost" style={{ fontSize: 15, padding: '4px 12px' }}
             onClick={() => setOpen(o => !o)}>
             {open ? '상세 ▲' : '상세 ▼'}
           </button>
         )}
       </div>
-      <div style={{ marginTop: 6, fontSize: 14 }}>
+      <div style={{ marginTop: 8, fontSize: 21, lineHeight: 1.5 }}>
         <b>할 일:</b> {m.instruction}
       </div>
       {open && (
-        <div style={{ marginTop: 8, padding: 10, background: 'rgba(255,255,255,0.04)',
-                      borderRadius: 6, fontSize: 13 }}>
+        <div style={{ marginTop: 8, padding: 12, background: 'rgba(255,255,255,0.04)',
+                      borderRadius: 6, fontSize: 19, lineHeight: 1.5 }}>
           {m.semantic_intent && (
             <div style={{ marginBottom: 8 }}>
               <b>의도/배경:</b> {m.semantic_intent}
@@ -572,13 +572,13 @@ function MissionCard({ m }: { m: Mission }) {
           {m.success_criteria.length > 0 && (
             <div style={{ marginBottom: 8 }}>
               <b>성공 조건:</b>
-              <ul style={{ margin: '4px 0 0 20px', padding: 0 }}>
+              <ul style={{ margin: '4px 0 0 22px', padding: 0 }}>
                 {m.success_criteria.map((c, i) => <li key={i}>{c}</li>)}
               </ul>
             </div>
           )}
           {m.verify_expect && (
-            <div style={{ marginBottom: 8, fontSize: 12 }}>
+            <div style={{ marginBottom: 8, fontSize: 17 }}>
               <b>검증 패턴:</b> <code>{m.verify_expect}</code>
             </div>
           )}
@@ -586,7 +586,7 @@ function MissionCard({ m }: { m: Mission }) {
             <details>
               <summary style={{ cursor: 'pointer', color: 'var(--yellow)' }}>💡 힌트 (스포일러)</summary>
               <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-                            fontSize: 12, margin: '6px 0 0' }}>{m.hint}</pre>
+                            fontSize: 17, margin: '6px 0 0' }}>{m.hint}</pre>
             </details>
           )}
         </div>
@@ -601,16 +601,27 @@ function MissionCard({ m }: { m: Mission }) {
 function EventRow({ e }: { e: BattleEvent }) {
   const [open, setOpen] = useState(false)
   const hasContent = !!e.reasoning || (e.detail && Object.keys(e.detail).length > 0)
+  const g: any = e.detail?.grading
+  const verdictBadge: Record<string, string> = { pass: 'green', partial: 'yellow', fail: 'red', review: 'yellow' }
+  const verdictLabel: Record<string, string> = { pass: 'AI 통과', partial: 'AI 부분', fail: 'AI 불인정', review: '검토 대기' }
   return (
     <div className="card" style={{ padding: 12 }}>
-      <div className="row" style={{ alignItems: 'center', fontSize: 13 }}>
+      <div className="row" style={{ alignItems: 'center', fontSize: 14, flexWrap: 'wrap' }}>
         <span className={`badge ${eventTypePalette[e.event_type] || 'yellow'}`}>{e.event_type}</span>
         <span style={{ color: 'var(--fg-dim)' }}>{fmtTime(e.ts, true)}</span>
         {e.target && <span style={{ color: 'var(--fg-dim)' }}>target: <code>{e.target}</code></span>}
         {e.actor_user_id && <span style={{ color: 'var(--fg-dim)' }}>by user #{e.actor_user_id}</span>}
-        {e.points !== 0 && <span className={`badge ${e.points > 0 ? 'green' : 'red'}`}>
-          {e.points > 0 ? '+' : ''}{e.points}
+        {g?.ai_decided && g?.verdict && (
+          <span className={`badge ${verdictBadge[g.verdict] || 'yellow'}`} style={{ fontSize: 13 }}>
+            {verdictLabel[g.verdict] || g.verdict}
+          </span>
+        )}
+        {e.points !== 0 && <span className={`badge ${e.points > 0 ? 'green' : 'red'}`} style={{ fontSize: 14 }}>
+          {e.points > 0 ? '+' : ''}{e.points}점
         </span>}
+        {g?.ai_decided && g?.claimed_points != null && g.claimed_points !== e.points && (
+          <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>(신청 {g.claimed_points} → AI {g.awarded_points})</span>
+        )}
         <div style={{ flex: 1 }} />
         {hasContent && (
           <button className="ghost" style={{ padding: '2px 8px', fontSize: 12 }}
@@ -926,14 +937,16 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
 
       {canPostEvent && b.battle.status === 'active' && (
         <form onSubmit={submitEvent} className="card col" style={{ marginTop: 16 }}>
-          <h3 style={{ marginTop: 0 }}>📝 내가 한 일 보고</h3>
-          <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
-            ① 어느 미션? ② 어떤 명령/페이로드를 썼는가? ③ 결과/응답은 무엇이었는가?
-            → 채점 모델이 이 보고를 success_criteria 기준으로 분석해 reasoning 작성.
+          <h3 style={{ marginTop: 0, fontSize: 22 }}>📝 내가 한 일 보고 → AI 채점 요청</h3>
+          <div style={{ fontSize: 15, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
+            ① 어느 미션? ② 어떤 명령/페이로드를 썼는가? ③ 결과/응답은 무엇이었는가?<br />
+            제출하면 <b>AI 채점기가 너의 인프라를 직접 점검</b>(실제 실행한 명령·상태)해서 success_criteria
+            기준으로 채점합니다. <b>점수는 AI 가 결정</b>하며, 아래 점수 칸은 참고용 신청값일 뿐입니다.
+            (앰비언트 상태만으로는 통과되지 않으니, 네가 직접 한 명령을 정확히 적어 주세요.)
           </div>
 
           {/* ① 미션 선택 — my_missions 에서 골라 자동 채움 */}
-          <label style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>
+          <label style={{ fontSize: 15, color: 'var(--fg-dim)', marginTop: 4 }}>
             ① 미션 선택
           </label>
           <select
@@ -978,7 +991,8 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
             </select>
             <input style={{ flex: 1 }} placeholder="target (예: juiceshop)" value={eventForm.target}
               onChange={e => setEventForm({ ...eventForm, target: e.target.value })} />
-            <input type="number" style={{ width: 100 }} placeholder="점수"
+            <input type="number" style={{ width: 130 }} placeholder="신청점수(참고)"
+              title="참고용 신청값 — 실제 점수는 AI 가 결정합니다"
               value={eventForm.points}
               onChange={e => setEventForm({ ...eventForm, points: parseInt(e.target.value || '0', 10) })} />
           </div>

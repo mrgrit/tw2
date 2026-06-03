@@ -18,7 +18,9 @@ from tests.assessor_fake import build_fake_assess  # noqa: E402
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _reset():
+async def _reset(monkeypatch):
+    # 이 모듈은 자동채점 '메커니즘'을 검증하므로 명시적으로 ON (기본은 OFF).
+    monkeypatch.setenv("TUBEWAR_AUTO_SCORE", "1")
     auto_monitor._seen_hits.clear()
     auto_monitor._locks.clear()
     grader._judge_cache.clear()
@@ -130,6 +132,18 @@ async def test_heartbeat_collapse_in_place(monkeypatch):
            and (e.detail or {}).get("kind") == "heartbeat_range"]
     assert len(hbs) == 1
     assert hbs[0].detail["ticks"] == 2
+
+
+@pytest.mark.asyncio
+async def test_auto_score_off_by_default_no_points(monkeypatch):
+    """기본(TUBEWAR_AUTO_SCORE 미설정)에서는 앰비언트 자동 채점이 점수를 주지 않음(공정성)."""
+    monkeypatch.delenv("TUBEWAR_AUTO_SCORE", raising=False)
+    bid, uid = await _make_solo_battle(monitor="bastion")
+    monkeypatch.setattr(assessor_client, "assess", build_fake_assess())  # 전부 passed 여도
+    await auto_monitor.run_once(bid, tick_idx=1)
+    detects = [e for e in await _events(bid) if e.event_type == "detect"]
+    assert detects == []           # 점수 이벤트 없음
+    assert await _score(bid) == 0
 
 
 @pytest.mark.asyncio

@@ -48,7 +48,8 @@ def test_normalize_assess_target():
 
 # ── 통합: duel cross-infra ───────────────────────────
 @pytest_asyncio.fixture(autouse=True)
-async def _reset():
+async def _reset(monkeypatch):
+    monkeypatch.setenv("TUBEWAR_AUTO_SCORE", "1")   # cross-infra 채점 메커니즘 검증용 ON
     auto_monitor._seen_hits.clear()
     auto_monitor._locks.clear()
     grader._judge_cache.clear()
