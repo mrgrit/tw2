@@ -16,7 +16,8 @@ DEFAULT_PORTS: dict[str, int] = {
     "http": 80,
     "https": 443,
     "bastion_ssh": 2204,
-    "attacker_ssh": 2202,
+    "attacker_ssh": 2202,        # attacker (insider, 내부 발판)
+    "attacker_ext_ssh": 2203,    # attacker-ext (outsider, 망 외부 침입자, 2026-06 신규)
     "portal": 8000,
     "siem_lite": 5601,
     "bastion_api": 9100,
@@ -30,6 +31,7 @@ PORT_SPEC: list[tuple[str, str, bool]] = [
     ("https", "https", False),
     ("bastion-ssh", "bastion_ssh", False),
     ("attacker-ssh", "attacker_ssh", True),
+    ("attacker-ext-ssh", "attacker_ext_ssh", False),   # 외부 attacker — 옵셔널(SKIP_ATTACKER_EXT 가능)
     ("portal", "portal", False),
     ("siem-lite", "siem_lite", False),
     ("bastion-api", "bastion_api", True),

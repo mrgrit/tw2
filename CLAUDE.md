@@ -22,12 +22,17 @@
 ## 외부 의존
 
 - 학생 6v6 VM 마다 다음 포트가 외부에서 reachable:
-  - 80/443 (HTTP/HTTPS — 7 vhost)
+  - 80/443 (HTTP/HTTPS — 7 vhost + `assessor.6v6.lab`/`provisioner.6v6.lab`)
   - 2204 (bastion SSH 점프)
-  - 2202 (attacker SSH)
+  - 2202 (attacker SSH — **insider** 내부 발판, ext 10.20.30.202)
+  - 2203 (attacker-ext SSH — **outsider** 망 외부 침입자, wan 10.20.20.202, 2026-06 신규)
   - 8000 (portal)
   - 5601 (siem lite)
   - 9100 (Bastion API, header `X-API-Key`)
+- **2-attacker 모델**: `attacker`(insider, 내부 라우팅/DNS) / `attacker-ext`(outsider, 공개포트+Host
+  헤더만, 내부 직접 접근 불가). **외부 attacker 의 명령 로그는 6v6 가 수집하지 못함** → 외부/cross-infra
+  공격 채점은 `command_ran(attacker-ext)` 대신 **타깃(상대) 인프라의 공격 흔적**(WAF/IPS/Wazuh/접근로그
+  + source IP·payload 상관)으로 한다.
 
 ## 코드 규칙
 

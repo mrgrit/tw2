@@ -34,15 +34,20 @@
 
    | 포트 | 용도 |
    |------|------|
-   | 80 / 443 | 7 vhost (juiceshop/dvwa/neobank/govportal/mediforum/admin/ai) |
+   | 80 / 443 | 7 vhost + `assessor.6v6.lab`(채점)·`provisioner.6v6.lab`(옵션) |
    | 2204 | bastion SSH 점프 |
-   | 2202 | attacker SSH (공격 발사대) — smoke 필수 |
+   | 2202 | attacker SSH — **insider**(내부 발판) — smoke 필수 |
+   | 2203 | attacker-ext SSH — **outsider**(망 외부 침입자, 2026-06 신규) — 옵션 |
    | 8000 | portal |
    | 5601 | siem-lite (Wazuh alert viewer) |
    | 9100 | Bastion API (`X-API-Key`) — smoke 필수 |
-   | (옵션) Assessor | 채점용 read-only 표면. 6v6 의 `assessor.6v6.lab` vhost 또는 별도 포트 |
 
-3. `.env` 로 포트를 바꿨다면 등록 시 **port_map** 에 알려주면 됩니다(아래 1.2).
+   > **두 종류의 공격자**: `attacker`(insider)는 내부 망에 발판이 있어 내부 IP/DNS 로 바로 공격합니다.
+   > `attacker-ext`(outsider)는 **망 밖**에서 상대 VM 의 **공개 포트(80/443 등)만 + `Host:` 헤더**로
+   > 공격합니다(내부 직접 접근 불가). cross-infra(상대 VM 공격)는 outsider 모델이 자연스럽습니다.
+
+3. `.env` 로 포트를 바꿨다면 등록 시 **port_map** 에 알려주면 됩니다(아래 1.2). 외부 attacker 포트 키는
+   `attacker_ext_ssh`(기본 2203).
 
 > 중앙 서버가 내 VM IP 로 **인바운드 접속**할 수 있어야 채점/모니터링이 동작합니다(실습망 기준).
 

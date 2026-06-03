@@ -18,7 +18,8 @@ const PORT_HINTS = [
   { port: 80, label: 'HTTP (vhost)' },
   { port: 443, label: 'HTTPS' },
   { port: 2204, label: 'bastion SSH' },
-  { port: 2202, label: 'attacker SSH' },
+  { port: 2202, label: 'attacker SSH (insider)' },
+  { port: 2203, label: 'attacker-ext SSH (외부 침입자)' },
   { port: 8000, label: 'portal' },
   { port: 5601, label: 'siem-lite' },
   { port: 9100, label: 'bastion API' },
@@ -134,7 +135,7 @@ export default function MyInfra() {
             <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
               {[
                 ['http', 80], ['https', 443],
-                ['bastion_ssh', 2204], ['attacker_ssh', 2202],
+                ['bastion_ssh', 2204], ['attacker_ssh', 2202], ['attacker_ext_ssh', 2203],
                 ['portal', 8000], ['siem_lite', 5601], ['bastion_api', 9100],
               ].map(([key, def]) => (
                 <label key={key as string} style={{ flex: '1 0 30%', fontSize: 12 }}>

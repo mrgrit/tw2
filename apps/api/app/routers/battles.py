@@ -332,16 +332,27 @@ async def _role_infra_map(session: AsyncSession, battle_id: int) -> tuple[dict[s
     return role_infra, user_infra
 
 
-async def _initial_evidence(actor_infra, target_infra, mission_raw: dict | None, side: str | None) -> str:
+async def _initial_evidence(actor_infra, target_infra, mission_raw: dict | None,
+                            side: str | None, external: bool = False) -> str:
     """AI 채점 초기 grounding — 학생이 **실제 실행한 명령/활동**(/activity) + 미션 check 상태.
-    AI 는 이후 inspector 로 추가 점검을 직접 요청한다. 학생 말만 믿지 않는 읽기전용 교차검증."""
+    AI 는 이후 inspector 로 추가 점검을 직접 요청한다. 학생 말만 믿지 않는 읽기전용 교차검증.
+
+    external=True(외부/cross-infra 공격)면 6v6 의 외부 attacker(attacker-ext) 명령은 수집이
+    불완전하므로, 타깃(상대) 인프라의 공격 흔적(WAF/IPS/Wazuh/접근로그 + source IP·payload)을
+    1차 근거로 삼으라는 caveat 를 명시한다."""
     lines: list[str] = []
+    if external:
+        lines.append("[외부/cross-infra 공격: 외부 attacker(attacker-ext) 명령 로그는 6v6 에서 수집이 "
+                     "불완전함 → command_ran(attacker-ext) 신뢰 금지. 아래 '타깃 인프라' 공격 흔적과 "
+                     "source IP·payload 상관으로 판정할 것.]")
     if actor_infra:
         act = await assessor_client.activity(actor_infra, want=["commands", "alerts", "fim", "services"],
                                              since_sec=3600, timeout=5.0)
         if act.get("ok"):
             cmds = act.get("commands") or []
-            lines.append(f"[학생이 실제 실행한 최근 명령 {len(cmds)}건 — 핵심 증거]")
+            hdr = (f"[내부 attacker 명령 {len(cmds)}건 — 참고(외부 attacker 명령은 미수집일 수 있음)]"
+                   if external else f"[학생이 실제 실행한 최근 명령 {len(cmds)}건 — 핵심 증거]")
+            lines.append(hdr)
             for c in cmds[:40]:
                 lines.append(f"  $ {c.get('cmd') if isinstance(c, dict) else c}")
             if act.get("fim"):
@@ -357,7 +368,9 @@ async def _initial_evidence(actor_infra, target_infra, mission_raw: dict | None,
         checks = cc.compile_mission_checks(dict(mission_raw), side=side)
         resp = await assessor_client.assess(target_infra, checks, timeout=5.0)
         if resp.get("ok"):
-            lines.append("[미션 check 상태 — 참고용. 앰비언트(타인이 만든 상태)일 수 있으니 학생 행위 증거와 함께 판단]")
+            lines.append("[타깃(상대) 인프라 공격 흔적 — 외부 공격의 핵심 증거. source IP·payload 상관 확인]"
+                         if external else
+                         "[미션 check 상태 — 참고용. 앰비언트(타인이 만든 상태)일 수 있으니 학생 행위 증거와 함께 판단]")
             for r in resp.get("results", []):
                 lines.append(f"  {r.get('id')}: passed={r.get('passed')} | {str(r.get('evidence'))[:120]}")
     return "\n".join(lines)
@@ -408,7 +421,8 @@ async def post_event(
         actor_infra = user_infra.get(user.id)
         assess_target = battlefield.normalize_assess_target((mission_raw or {}).get("assess_target"))
         target_infra = battlefield.resolve_target_infra(side or "blue", assess_target, role_infra) or actor_infra
-        evidence = await _initial_evidence(actor_infra, target_infra, mission_raw, side)
+        evidence = await _initial_evidence(actor_infra, target_infra, mission_raw, side,
+                                           external=(assess_target == "opponent"))
 
         async def _inspect(checks: list[dict]) -> list[dict]:
             """AI 가 요청한 read-only check 를 참여자(또는 타깃) 인프라에서 직접 실행."""

@@ -477,12 +477,23 @@ Prefer inspecting to confirm the student's OWN ACTION — e.g. command_ran{patte
 command_ran{pattern:"modsec_audit"} to confirm they actually ran the required command;
 file_contains to confirm config they created. After results come back, decide.
 
+6v6 attacker model (IMPORTANT for fairness):
+- Two attack personas exist: `attacker` (INSIDER — internal routing/DNS) and `attacker-ext` (OUTSIDER,
+  on an isolated WAN net — reaches the target ONLY via public ports with a `Host:` header).
+- The OUTSIDER's command log is NOT reliably collected by 6v6 — so `command_ran` on target `attacker-ext`
+  is UNRELIABLE/borrowed evidence; DO NOT rely on it. For an EXTERNAL or CROSS-INFRA attack (a student
+  attacking another VM, or assess_target=opponent), judge by the **TARGET (victim) infra's attack trace**:
+  WAF (modsec) / IPS (suricata) / Wazuh alerts / access logs — and CORRELATE the source IP and the exact
+  payload to confirm THIS student produced it. For an INSIDER attack on the student's own infra, the
+  student's own `command_ran` is reliable evidence.
+
 Grading rules (fairness is critical — a single unfair point is a big problem):
 - Simple keyword/state match counts ONLY for extremely certain, unambiguous facts (e.g., a specific
   file exists, a port listens). Everything else must be judged from inspected evidence, semantically.
 - Award ZERO when the claim is unsupported by inspection, matches negative_signs, or relies on AMBIENT
   state created by someone else (e.g., a log/alert produced by the attacker, not by the student's own
-  analysis/defense). The student must have performed the action themselves (verify via command_ran etc.).
+  analysis/defense). The student must have performed the action themselves (verify via command_ran for
+  insider actions, or via correlated target-side trace for external attacks).
 - NEVER trust the student's self-claimed points. YOU decide points in [0, max_points]. Partial allowed.
 - If evidence is insufficient after inspection, be conservative and explain what's missing.
 

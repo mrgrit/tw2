@@ -109,6 +109,20 @@ tubewar 가 호출하는 6v6 외부 표면(읽기 전용, 부작용 0):
 `X-API-Key` 값은 인프라 등록 시의 `bastion_api_key` 를 사용합니다. NAT 뒤 환경(인바운드 불가)도
 `assessor_client` 추상화가 push 모드를 막지 않도록 설계되어 있습니다.
 
+### 4.1 2-attacker 모델 (2026-06) 과 외부 공격 채점 — ★ 중요
+6v6 는 두 공격자 페르소나를 둡니다:
+- `attacker` (insider, ext `10.20.30.202`, SSH `2202`) — 내부 라우팅/DNS 로 직접 공격.
+- `attacker-ext` (outsider, wan `10.20.20.202`, SSH `2203`, 2026-06 신규) — **망 밖에서 공개 포트
+  (80/443 등) + `Host:` 헤더로만** 공격(내부 직접 접근 불가). cross-infra(상대 VM 공격)의 기본 모델.
+
+**채점 함의(공정성)**: 6v6 는 **외부 attacker(attacker-ext)의 명령 로그를 신뢰성 있게 수집하지 못합니다**
+(`command_ran` target `attacker-ext` 가 insider 로그를 잘못 매칭하는 것을 검증함). 따라서 tubewar 의 AI
+채점기는 **외부/cross-infra 공격을 `command_ran(attacker-ext)` 로 판정하지 않고**, 타깃(상대) 인프라의
+**공격 흔적**(ModSec/Suricata 로그, Wazuh 알림, 접근로그 + source IP·payload 상관)으로 판정하도록
+지시받습니다(`event_analyzer._CLAUDE_GRADE_SYSTEM`). 내부(insider) 공격은 본인 인프라의 `command_ran`
+이 신뢰 가능한 증거입니다. 외부 공격 시나리오는 `assess_target: opponent` + 타깃 측 verify(log_contains/
+wazuh_alert)로 작성하세요(`contents/battle-scenarios/cohort-cross-infra-demo.yaml` 참고).
+
 ---
 
 ## 5. 관리 콘솔 (관리자 메뉴 탭)
