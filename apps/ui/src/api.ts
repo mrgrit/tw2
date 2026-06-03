@@ -11,7 +11,8 @@ export async function api<T = any>(path: string, opts: ApiOpts = {}): Promise<T>
     headers.set('content-type', 'application/json')
     body = JSON.stringify(opts.json)
   }
-  const res = await fetch(path, { ...opts, headers, body })
+  // 사용자별 데이터가 브라우저 캐시로 다른 계정에 새지 않도록 항상 no-store.
+  const res = await fetch(path, { ...opts, headers, body, cache: 'no-store' })
   const text = await res.text()
   let parsed: any = null
   try { parsed = text ? JSON.parse(text) : null } catch { parsed = text }

@@ -61,11 +61,27 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173",
+                   "http://192.168.0.107:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def no_store_headers(request, call_next):
+    """API 응답은 절대 캐시 금지 — 사용자별 데이터(인프라/배틀 등)가 브라우저 HTTP 캐시에
+    남아 다른 계정에게 노출되는 cross-user 누수를 차단한다.
+
+    fetch() 가 같은 URL(`/infras` 등)을 다른 토큰으로 호출할 때, Cache-Control 이 없으면
+    브라우저가 직전 사용자의 200 응답을 재사용할 수 있다 → 반드시 no-store.
+    """
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Vary"] = "Authorization"
+    return response
 
 
 @app.get("/health")
