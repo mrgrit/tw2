@@ -51,16 +51,27 @@ def test_direct_command_ran():
     assert c["params"]["pattern"] == "sqlmap"
 
 
-def test_infer_log_contains_from_output_contains():
-    # blue: auth.log 의 Failed password 분석 → log_contains
+def test_infer_log_contains_uses_assessor_log_alias():
+    # live Assessor 계약: log_contains 는 path 가 아니라 로그 별칭(auth/modsec/suricata/apache_error).
     m = {"order": 2, "target_vm": "web",
          "verify": {"type": "output_contains", "expect": "Failed",
                     "semantic": {"intent": "auth.log 의 Failed password 분석",
                                  "success_criteria": ["/var/log/auth.log grep 'Failed password'"]}}}
     c = _compile_one(m)
     assert c["type"] == "log_contains"
-    assert c["params"]["path"] == "/var/log/auth.log"
+    assert c["params"]["log"] == "auth"        # path 아님 — 별칭
+    assert "path" not in c["params"]
     assert c["params"]["pattern"] == "Failed"
+
+
+def test_infer_log_contains_modsec_and_suricata():
+    modsec = _compile_one({"order": 1, "target_vm": "web",
+                           "verify": {"type": "log_contains", "log": "modsec", "pattern": "sqlmap"}})
+    assert modsec["params"]["log"] == "modsec"
+    sur = _compile_one({"order": 1, "target_vm": "ips",
+                        "verify": {"type": "output_contains", "expect": "scan",
+                                   "semantic": {"intent": "suricata nmap scan 탐지"}}})
+    assert sur["type"] == "log_contains" and sur["params"]["log"] == "suricata"
 
 
 def test_infer_wazuh_alert_with_rule_id():

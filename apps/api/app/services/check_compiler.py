@@ -31,13 +31,29 @@ ASSESSOR_TYPES = {
     "port_listening", "log_contains", "wazuh_alert", "fim_change", "command_ran",
 }
 
-# target_vm 별 기본 로그 경로 (output_contains → log_contains 추론용).
-_DEFAULT_LOG_PATHS = {
-    "web": "/var/log/apache2/access.log",
-    "siem": "/var/ossec/logs/alerts/alerts.json",
-    "secu": "/var/log/syslog",
-    "bastion": "/var/log/auth.log",
-}
+# 6v6 Assessor 의 log_contains 는 **로그 별칭**(path 아님)을 받는다.
+# 지원 별칭(live Assessor 계약): apache_error | auth | modsec | suricata.
+_LOG_ALIASES = ("apache_error", "auth", "modsec", "suricata")
+
+
+def _infer_log_alias(target: str | None, text: str, verify: dict[str, Any]) -> str:
+    explicit = verify.get("log") or verify.get("log_alias")
+    if explicit in _LOG_ALIASES:
+        return str(explicit)
+    low = text.lower()
+    if any(k in low for k in ("modsec", "modsecurity", "waf")):
+        return "modsec"
+    if any(k in low for k in ("suricata", "ids", "nmap", "scan", "eve.json", "fast.log")):
+        return "suricata"
+    if any(k in low for k in ("auth.log", "failed password", "sshd", "brute", " ssh")):
+        return "auth"
+    if any(k in low for k in ("apache", "access.log", "error.log", "modsec_audit")):
+        return "apache_error"
+    if target in ("ips", "secu"):
+        return "suricata"
+    if target == "bastion":
+        return "auth"
+    return "modsec"
 
 # 텍스트에서 파일/로그 경로 추출.
 _PATH_RE = re.compile(r"/[\w./-]+\.(?:log|json|conf|txt|cfg)|/var/log/[\w./-]+")
@@ -91,6 +107,10 @@ def _infer_type(target: str | None, text: str, verify: dict[str, Any]) -> str:
         if p.endswith((".log", ".json")) or "/var/log" in p or "alerts" in p:
             return "log_contains"
         return "file_contains"
+    # 방어자 측 로그/IDS 분석 키워드 → log_contains (공격 도구 출력 nmap/hydra 는 제외 → command_ran).
+    if any(k in low for k in ("suricata", "modsec", "modsecurity", "waf", "ids ", " ids",
+                              "access.log", "error.log", "apache", "auth.log")):
+        return "log_contains"
     if "listen" in low or ("port" in low and "open" in low):
         return "port_listening"
     if "process" in low or "running" in low or "daemon" in low:
@@ -128,11 +148,8 @@ def _params_for(ctype: str, mission: dict[str, Any], text: str) -> dict[str, Any
             port = int(next((g for g in (m.groups() if m else []) if g), 0) or 0)
         return {"port": int(port or 0), "proto": verify.get("proto") or "tcp"}
     if ctype == "log_contains":
-        path = verify.get("path")
-        if not path:
-            m = _PATH_RE.search(text)
-            path = m.group(0) if m else _DEFAULT_LOG_PATHS.get(target or "", "/var/log/syslog")
-        return {"path": path, "pattern": verify.get("pattern") or pattern}
+        # live Assessor 계약: {log: <alias>, pattern}. path 가 아니라 로그 별칭을 쓴다.
+        return {"log": _infer_log_alias(target, text, verify), "pattern": verify.get("pattern") or pattern}
     if ctype == "wazuh_alert":
         rule_id = verify.get("rule_id")
         if not rule_id:
