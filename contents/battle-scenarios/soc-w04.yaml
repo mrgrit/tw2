@@ -1,0 +1,138 @@
+id: "soc-w04"
+category: "soc"
+title: "[SOC관제 W4] 공격 vs Wazuh 관제(Manager/Agent)·커스텀 룰 작성·검증"
+difficulty: "medium"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 관제 4주차 — Wazuh 관제 환경(Manager/Agent 구조 + decoder/rule + 경보 생성 흐름)을 다룬다.
+  외부 공격이 들어오면, 분석가는 Wazuh manager/agent 상태를 점검하고, 기본 룰이 못 잡는 패턴을
+  **커스텀 룰** 로 직접 작성해 경보를 생성·검증한다.
+
+  ▸ 모드: solo(외부 공격자 → Wazuh 운영자) / duel(상대 공격 → 본인 Wazuh). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 SIEM/방어층 흔적으로 채점.
+  ▸ 커스텀 Wazuh 룰은 **/var/ossec/etc/rules/local_rules.xml**, 교육용 rule id 100500+ 와 description 'EDU'.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 — SSH 무차별 대입 (Wazuh 기본 룰 트리거)
+      망 외부 공격자(attacker-ext)로 SSH 무차별 대입을 시도한다. Wazuh 기본 룰(5710 등)이 경보를 낸다.
+      ```bash
+      hydra -l root -P /usr/share/wordlists/small.txt ssh://<대상_공개IP>:2204 -t 4 -f
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Wazuh 인증 실패 경보. ✅ 합격: 대상 SIEM 에 인증 실패 경보.
+    hint: "attacker-ext SSH 무차별 대입. 채점: 대상 Wazuh 인증 실패."
+    verify:
+      type: "wazuh_alert"
+      expect: "authentication"
+      checks:
+        - { id: "red-1-1", type: "wazuh_alert", target: "siem", params: { groups: "authentication_failed", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1110 — Wazuh 기본 룰 트리거. 외부 공격자 모델 → 대상 Wazuh 인증 실패 경보로 판정."
+        success_criteria: ["대상 Wazuh 인증 실패 경보(최근)", "(설명) 어떤 기본 룰이 잡았는지"]
+        acceptable_methods: ["attacker-ext hydra/medusa"]
+        negative_signs: ["대상 경보 없음", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 — 웹 스캐너 (커스텀 룰 표적 행위)
+      특정 스캐너(sqlmap User-Agent 등)로 공격한다. 분석가가 작성할 커스텀 룰의 표적이 된다.
+      ```bash
+      sqlmap -u "http://<대상_공개IP>:8080/vulnerabilities/sqli/?id=1&Submit=Submit" --cookie="security=low; PHPSESSID=test" --batch
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 ModSecurity audit 의 SQLi/스캐너 탐지. ✅ 합격: 대상 WAF audit 흔적.
+    hint: "attacker-ext sqlmap. 채점: 대상 ModSecurity audit."
+    verify:
+      type: "log_contains"
+      expect: "SQL"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "SQL", since_sec: 1800 } }
+      semantic:
+        intent: "스캐너 — 커스텀 룰 표적. 외부 공격자 모델 → 대상 WAF audit 탐지로 판정."
+        success_criteria: ["대상 ModSecurity audit 에 SQLi/스캐너 탐지(최근)", "(설명) 스캐너 시그니처"]
+        acceptable_methods: ["attacker-ext sqlmap/nikto"]
+        negative_signs: ["대상 WAF 흔적 없음", "command_ran(attacker-ext) 의존"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 — Wazuh Manager/Agent 상태 점검
+      본인 Wazuh manager 가 가동 중이고 에이전트(웹/IPS/FW/Windows)가 경보를 보내고 있는지 확인한다
+      (관제 토대). 최근 경보 수집으로 가시성을 확인한다.
+      ✅ 합격: 본인 SIEM 에 다수 에이전트의 최근 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 최근 경보 수집 + 에이전트 다양성 확인."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 3600 } }
+      semantic:
+        intent: "Wazuh 가용성 — manager 가동 + 에이전트 경보 수집(관제 토대)."
+        success_criteria: ["최근 경보 수집", "(설명) Manager/Agent 구조와 이벤트 흐름 서술"]
+        acceptable_methods: ["siem wazuh_alert", "wazuh-control status / agent_control -l"]
+        negative_signs: ["수집 비어있음"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-2 — 커스텀 Wazuh 룰 작성 (기본 룰이 못 잡는 패턴)
+      이번 주 핵심 — 기본 룰이 분류하지 못하는 패턴(예: 특정 스캐너 UA, 특정 경로 접근)을 잡는
+      **커스텀 룰** 을 `/var/ossec/etc/rules/local_rules.xml` 에 작성한다. **rule id 100501**,
+      description 에 'EDU' 포함.
+      ```xml
+      <group name="local,edu,">
+        <rule id="100501" level="10">
+          <if_sid>31100</if_sid>
+          <url>sqlmap</url>
+          <description>EDU custom: sqlmap scanner detected in web log</description>
+        </rule>
+      </group>
+      ```
+      적용 후 wazuh-manager 를 재시작/리로드한다.
+      📌 채점: local_rules.xml 에 교육용 커스텀 룰(rule id 100500+, 'EDU')이 작성됐는지.
+      ✅ 합격: local_rules.xml 에 EDU 커스텀 룰이 있다.
+    hint: "/var/ossec/etc/rules/local_rules.xml 에 rule id 100501 + description EDU 커스텀 룰 작성."
+    verify:
+      type: "file_contains"
+      expect: "100501"
+      checks:
+        # 교육용 rule id 100500+ / 'EDU' 는 기본 룰셋과 충돌 없는 고유 식별자.
+        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", regex: "EDU|100501" } }
+      semantic:
+        intent: "MITRE D3FEND — 기본 룰의 사각을 커스텀 Wazuh 룰로 보완. decoder→rule→alert 흐름 이해."
+        success_criteria: ["local_rules.xml 에 커스텀 룰(id 100500+/EDU)", "if_sid/match/description 등 구조", "(설명) 기본 룰이 왜 못 잡는지"]
+        acceptable_methods: ["local_rules.xml 직접 작성 후 manager 리로드"]
+        negative_signs: ["문법 오류로 manager 미기동", "기본 룰 중복(고유성 없음)"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 13
+    instruction: |
+      ## 🛡️ BLUE-3 — 커스텀 룰 동작 검증 + SIEM 확인
+      (solo 면 RED-2 재현 후) 작성한 커스텀 룰이 실제 경보를 생성했는지, 또는 기본 경보가 SIEM 에
+      모였는지 확인한다. 커스텀 rule id(100501)나 관련 경보를 식별한다.
+      ✅ 합격: 본인 SIEM 에 관련 경보가 수집돼 있다(가능하면 커스텀 룰 동작 확인).
+    hint: "본인 Wazuh 에서 커스텀 룰(100501) 또는 관련 경보 확인."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "룰 검증 — 커스텀/기본 룰이 공격을 경보로 생성하는지 확인."
+        success_criteria: ["관련 경보 수집(최근)", "(가능 시) 커스텀 rule id 100501 동작 식별", "(설명) decoder→rule→alert"]
+        acceptable_methods: ["siem wazuh_alert 에서 rule id 확인", "중앙 SIEM 탭"]
+        negative_signs: ["수집 비어있음"]

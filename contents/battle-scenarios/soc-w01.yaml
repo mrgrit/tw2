@@ -1,0 +1,146 @@
+id: "soc-w01"
+category: "soc"
+title: "[SOC관제 W1] 다중벡터 공격 vs SOC 관제·L1 트리아지"
+difficulty: "medium"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 관제 1주차 — 보안관제센터(SOC)의 기본 흐름을 익힌다. 외부 공격자가 다중벡터(스캔+웹/SSH)로
+  공격하면, L1 분석가는 SIEM(Wazuh) 대시보드에서 경보를 수집·분류(트리아지)하고 우선순위를 매긴다.
+  "이벤트가 어디서 와서 어떻게 SIEM 으로 모이는가" 와 "무엇부터 볼 것인가" 를 다룬다.
+
+  ▸ 모드: solo(외부 공격자 → L1 분석가) / duel(상대 공격 → 본인 SOC 관제). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 SIEM/방어층 흔적으로 채점.
+  ▸ 이 주차의 Blue 는 대부분 **관측·분석(SIEM 조회)** — 채점은 "경보 실존 + 분석가가 직접 본
+    구체값(룰/출발지/시각/심각도)을 정확히 보고" 로 한다(명령 로그 불필요).
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🎯 RED-1 — 외부 스캔 (관제 화면을 채우는 1차 경보)
+      망 외부 공격자(attacker-ext)로 대상을 포트 스캔한다. SOC 화면에 가장 먼저 뜨는 경보가 된다.
+      ```bash
+      nmap -sV -p 1-10000 <대상_공개IP> -T4 --max-retries 1
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Suricata/SIEM 스캔 탐지. ✅ 합격: 대상 IPS/SIEM 에 스캔 탐지.
+    hint: "attacker-ext nmap. 채점: 대상 Suricata 스캔 탐지."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1046 — SOC 1차 경보 유발. 외부 공격자 모델 → 대상 Suricata 흔적으로 판정."
+        success_criteria: ["대상 IPS 스캔 탐지", "(설명) 어떤 서비스가 노출됐는지"]
+        acceptable_methods: ["attacker-ext nmap"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — SSH 무차별 대입 (인증 경보 다발)
+      식별한 SSH 포트에 무차별 대입을 시도해 인증 실패 경보를 다발로 발생시킨다(L1 트리아지 대상).
+      ```bash
+      hydra -l root -P /usr/share/wordlists/small.txt ssh://<대상_공개IP>:2204 -t 4 -f
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Wazuh 인증 실패 경보. ✅ 합격: 대상 SIEM 에 인증 실패 경보.
+    hint: "attacker-ext SSH 무차별 대입. 채점: 대상 Wazuh 인증 실패."
+    verify:
+      type: "wazuh_alert"
+      expect: "authentication"
+      checks:
+        - { id: "red-2-1", type: "wazuh_alert", target: "siem", params: { groups: "authentication_failed", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1110 — 인증 경보 다발. 외부 공격자 모델 → 대상 Wazuh 인증 실패 경보로 판정."
+        success_criteria: ["대상 Wazuh 다수 인증 실패(최근)", "(설명) 표적 계정/포트"]
+        acceptable_methods: ["attacker-ext hydra/medusa"]
+        negative_signs: ["대상 경보 없음", "command_ran(attacker-ext) 의존"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 — SOC 대시보드 가동·경보 수집 확인
+      본인 SIEM(Wazuh)이 경보를 수집하고 있는지(최근 경보 존재) 확인한다. 관제의 출발점.
+      ✅ 합격: 본인 SIEM 에 최근 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 최근 경보 수집 확인."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 3600 } }
+      semantic:
+        intent: "SOC 가용성 — SIEM 이 경보를 수집 중(관제 토대)."
+        success_criteria: ["본인 Wazuh 에 최근 경보", "(설명) 이벤트 출처(IPS/WAF/엔드포인트)→SIEM 흐름 서술"]
+        acceptable_methods: ["siem wazuh_alert", "Wazuh dashboard Discover"]
+        negative_signs: ["수집 비어있음"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — L1 트리아지: 스캔 경보 분류·식별
+      RED-1 의 스캔 경보를 SIEM 에서 찾아 트리아지한다 — 출발지 IP, 시그니처, 시각, 심각도(level)를
+      식별하고 "정찰 단계" 로 분류한다. 보고에 **구체값** 을 명시한다.
+      ✅ 합격: 본인 SIEM 에 스캔 경보가 있고 구체값(출발지/시그니처/심각도)을 정확히 식별·분류했다.
+    hint: "본인 Wazuh/Suricata 에서 스캔 경보 + 출발지/시그니처/심각도 식별."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "blue-2-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "L1 트리아지 — 관측/분석. 경보 실존 + 분석가가 본 구체값(출발지/시그니처/심각도) 일치로 채점."
+        success_criteria: ["스캔 경보 실존", "출발지·시그니처·심각도 구체 식별(증거 일치)", "정찰 단계로 분류"]
+        acceptable_methods: ["Wazuh Discover/ips 이벤트에서 스캔 경보 분석"]
+        negative_signs: ["구체값 없는 막연 보고", "구체값 불일치"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 — L1 트리아지: 인증 실패 경보 우선순위 판정
+      RED-2 의 SSH 인증 실패 경보를 SIEM 에서 찾아, 빈도(짧은 시간 다발)와 표적 계정으로 무차별
+      대입 여부를 판정하고 스캔 대비 **우선순위** 를 매긴다. 구체값(출발지/실패횟수/계정)을 명시한다.
+      ✅ 합격: 본인 SIEM 에 인증 실패 경보가 있고 구체값으로 무차별 대입을 판정했다.
+    hint: "본인 Wazuh 에서 인증 실패 경보 + 빈도/계정 분석 → 우선순위."
+    verify:
+      type: "wazuh_alert"
+      expect: "authentication"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { groups: "authentication_failed", since_sec: 1800 } }
+      semantic:
+        intent: "L1 트리아지 우선순위 — 관측/분석. 경보 실존 + 빈도/계정 구체값 일치로 채점."
+        success_criteria: ["인증 실패 경보 실존", "출발지·실패횟수·계정 구체 식별", "무차별 대입 판정 + 우선순위 근거"]
+        acceptable_methods: ["siem wazuh_alert(authentication_failed) 분석"]
+        negative_signs: ["구체값 없음", "단발/무차별 구분 못함"]
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 — Purple: 공격 전체 그림 종합
+      스캔→인증공격으로 이어지는 다중벡터를 SIEM 경보로 한 사건으로 종합한다(공격자 1명의 단계적
+      행위로 상관). 중앙 SIEM 에 모든 경보가 모였는지 확인한다.
+      ✅ 합격: 본인 SIEM 에 다중벡터 경보가 수집돼 있고, 단계적 흐름으로 종합했다.
+    hint: "본인 Wazuh 경보를 공격자별·시간순으로 종합(스캔→인증공격)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "Purple 종합 — 다중벡터를 공격자 1명의 단계적 행위로 상관(SIEM 통합 관제)."
+        success_criteria: ["다중벡터 경보 수집", "(설명) 스캔→인증공격 시간순 종합 + 동일 출발지 상관"]
+        acceptable_methods: ["siem wazuh_alert 상관 분석", "중앙 SIEM 탭"]
+        negative_signs: ["수집 비어있음", "단편 보고(상관 없음)"]

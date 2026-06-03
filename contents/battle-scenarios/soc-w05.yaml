@@ -1,0 +1,135 @@
+id: "soc-w05"
+category: "soc"
+title: "[SOC관제 W5] 경보 폭주 vs 경보 분석(level·groups·빈도)·오탐 판정·억제"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  SOC 관제 5주차 — 경보 분석 기초. 외부 공격으로 경보가 폭주하면, 분석가는 level 히스토그램,
+  groups Top, rule 빈도(시간당 발생), agent 분포를 분석해 "진짜 위협 vs 오탐(false positive)" 을
+  판정하고, 과탐은 억제(suppression)로 통제한다. SOC 운영의 신호/잡음 분리가 핵심이다.
+
+  ▸ 모드: solo(외부 공격자 → 경보 분석가) / duel(상대 공격 → 본인 경보 분석). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 SIEM 경보 폭주로 채점.
+  ▸ Blue 는 **경보 분석(관측)** — 경보 실존 + 분석가가 본 구체값(level/groups/rule id/빈도/agent) 일치로 채점.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — 경보 폭주 유발 (다발 공격)
+      망 외부 공격자(attacker-ext)로 짧은 시간에 다발 공격(스캔+무차별 대입+스캐너)을 보내 경보를
+      폭주시킨다. 분석가가 신호/잡음을 분리해야 할 상황을 만든다.
+      ```bash
+      nmap -sV <대상_공개IP>; hydra ... ssh; nikto -h http://<대상_공개IP>:8080
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Wazuh 에 다수 경보(스캔/인증/웹) 수집.
+      ✅ 합격: 대상 SIEM 에 다발 경보가 수집된다.
+    hint: "attacker-ext 다발 공격(스캔+brute+스캐너). 채점: 대상 Wazuh 경보 폭주."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "red-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "다발 공격 — 경보 폭주 유발. 외부 공격자 모델 → 대상 Wazuh 다수 경보로 판정."
+        success_criteria: ["대상 Wazuh 에 다수 경보(최근, 여러 유형)", "(설명) 어떤 벡터들을 섞었는지"]
+        acceptable_methods: ["attacker-ext 다발 공격(nmap+hydra+nikto)"]
+        negative_signs: ["대상 경보 없음", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 — 반복 스캔 (동일 rule 빈도 ↑)
+      동일 스캔을 반복해 같은 rule.id 경보의 빈도를 높인다(분석가의 빈도 분석/오탐 판정 대상).
+      ```bash
+      for i in $(seq 1 5); do nmap -sS -p 1-2000 <대상_공개IP> -T4; done
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Suricata 스캔 탐지(반복). ✅ 합격: 대상 IPS 에 스캔 탐지.
+    hint: "attacker-ext 반복 스캔. 채점: 대상 Suricata 스캔 탐지."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "반복 스캔 — 동일 rule 빈도 상승. 외부 공격자 모델 → 대상 Suricata 흔적으로 판정."
+        success_criteria: ["대상 IPS 스캔 탐지(반복)", "(설명) 빈도가 분석에 주는 의미"]
+        acceptable_methods: ["attacker-ext 반복 nmap"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 — 경보 분포 분석 (level / groups / agent)
+      본인 SIEM(Wazuh)에서 경보를 분석한다 — level 히스토그램(심각도 분포), groups Top(어떤 유형이
+      많은가), agent 분포(어느 자산이 시끄러운가)를 구체값으로 식별한다.
+      ✅ 합격: 경보가 수집돼 있고, level/groups/agent 분포를 구체값으로 정확히 분석했다.
+    hint: "본인 Wazuh 에서 level/groups/agent 분포 분석(구체 수치)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "경보 분포 분석 — 관측/분석. 경보 실존 + 분석가가 본 구체값(level/groups/agent 분포) 일치로 채점."
+        success_criteria: ["경보 수집(최근)", "level 분포·groups Top·agent 분포 구체값 식별(증거 일치)"]
+        acceptable_methods: ["Wazuh dashboard/wazuh_alert 분포 분석"]
+        negative_signs: ["구체 수치 없는 막연 보고"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-2 — 빈도 분석 + 오탐(false positive) 판정
+      같은 rule.id 가 짧은 시간에 반복(빈도)되는 경보를 찾아, 진짜 위협(공격 다발)과 오탐(정상 행위가
+      반복 매칭)을 baseline 대비로 판정한다. rule id·빈도·판정 근거를 구체값으로 제시한다.
+      ✅ 합격: 빈도 높은 rule 을 식별하고 위협/오탐을 근거로 판정했다.
+    hint: "본인 Wazuh 에서 rule.id 빈도 분석 → 위협 vs 오탐 판정(근거)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-2-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "빈도/오탐 판정 — 관측/분석. 경보 실존 + 빈도 높은 rule id 구체 식별 + 위협/오탐 판정 근거로 채점."
+        success_criteria: ["빈도 높은 rule id 구체 식별", "위협 vs 오탐 판정 + baseline 근거", "(증거 일치)"]
+        acceptable_methods: ["wazuh_alert 빈도 집계 분석"]
+        negative_signs: ["구체 rule id/빈도 없음", "판정 근거 없음"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 — 오탐 억제 규칙 작성 (운영 통제)
+      오탐으로 판정한 경보를 억제(suppress)하거나 레벨을 낮추는 규칙을
+      `/var/ossec/etc/rules/local_rules.xml` 에 작성한다(예: 해당 rule 을 level 0 으로 override).
+      **rule id 100590**, description 'EDU-SUPPRESS'. 진짜 위협은 남기고 잡음만 줄인다.
+      ```xml
+      <rule id="100590" level="0">
+        <if_sid>거름대상rule</if_sid>
+        <description>EDU-SUPPRESS: known benign noise downgraded</description>
+      </rule>
+      ```
+      📌 채점: local_rules.xml 에 EDU-SUPPRESS 억제 규칙이 작성됐는지.
+      ✅ 합격: local_rules.xml 에 EDU-SUPPRESS 규칙이 있다.
+    hint: "/var/ossec/etc/rules/local_rules.xml 에 level 0 override + EDU-SUPPRESS 작성."
+    verify:
+      type: "file_contains"
+      expect: "EDU-SUPPRESS"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "EDU-SUPPRESS" } }
+      semantic:
+        intent: "운영 통제 — 오탐 억제(level 0/suppression)로 신호/잡음 비 개선. 진짜 위협 보존."
+        success_criteria: ["local_rules.xml 에 EDU-SUPPRESS 억제 규칙", "오탐만 억제(진짜 위협 보존)", "(설명) 무엇을 왜 억제했는지"]
+        acceptable_methods: ["local_rules.xml 에 level 0 override / suppression"]
+        negative_signs: ["진짜 위협까지 억제", "억제 근거 없음"]
