@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import SessionLocal
 from ..models import (
-    ActivityEvent, Battle, BattleEvent, BattleParticipant, Infra, ProgressSnapshot, Scenario,
+    ActivityEvent, Battle, BattleEvent, BattleParticipant, Infra, ProgressSnapshot, Scenario, User,
 )
 from . import assessor_client
 
@@ -127,6 +127,11 @@ async def pull_activity_once(session: AsyncSession, battle_id: int, *, since_sec
         select(ActivityEvent.dedupe_key).where(ActivityEvent.battle_id == battle_id)
     )).all())
 
+    # 학생 user_id → 이름 (SIEM 문서에 student_name 으로 적재 → Dashboards 에 숫자 대신 이름)
+    uids = [p.user_id for p in participants if p.user_id]
+    names = {u.id: u.name for u in (await session.scalars(
+        select(User).where(User.id.in_(uids)))).all()} if uids else {}
+
     ingested = 0
     new_events: list[dict] = []   # 중앙 SIEM 적재용 (cohort stamp 전 raw)
     for p in participants:
@@ -152,6 +157,7 @@ async def pull_activity_once(session: AsyncSession, battle_id: int, *, since_sec
                     infra_id=p.infra_id, kind=kind, dedupe_key=key, payload=payload,
                 ))
                 new_events.append({"battle_id": battle_id, "user_id": p.user_id,
+                                   "user_name": names.get(p.user_id),
                                    "infra_id": p.infra_id, "kind": kind, "payload": payload,
                                    "scenario_id": battle.scenario_id,
                                    "ts": _now().isoformat(), "scenario_step": None})

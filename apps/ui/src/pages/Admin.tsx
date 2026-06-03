@@ -1025,7 +1025,8 @@ function GradersTab() {
 }
 
 interface SiemDoc {
-  student: number | null; infra: number | null; ts: string | null; kind: string | null;
+  student: number | null; student_name?: string | null; infra: number | null;
+  ts: string | null; kind: string | null;
   cohort_path: string | null; cohort_id: number | null; payload: any;
   battle_id: number | null; scenario_id?: number | null; scenario_step?: number | null
 }
@@ -1339,7 +1340,7 @@ function SiemTab() {
                 return (
                   <tr key={i} style={{ borderTop: '1px solid var(--border)', cursor: 'pointer' }} onClick={() => setSelDoc(d)}>
                     <td style={{ padding: 8, whiteSpace: 'nowrap' }}>{fmtTime(d.ts, true)}</td>
-                    <td style={{ padding: 8 }}>{studentName(d.student)}</td>
+                    <td style={{ padding: 8 }}>{d.student_name || studentName(d.student)}</td>
                     <td style={{ padding: 8 }}><span className={`badge ${KIND_COLOR[d.kind || ''] || 'blue'}`}>{d.kind}</span></td>
                     <td style={{ padding: 8, fontSize: 12, maxWidth: 460, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><code>{String(summary).slice(0, 160)}</code></td>
                     <td style={{ padding: 8, fontSize: 11, color: 'var(--fg-dim)' }}>{d.scenario_id ? `#${d.scenario_id}` : '-'}</td>
@@ -1375,7 +1376,7 @@ function SiemTab() {
             <div className="row" style={{ alignItems: 'center', marginBottom: 8 }}>
               <b>전체 로그</b>
               <span className={`badge ${KIND_COLOR[selDoc.kind || ''] || 'blue'}`}>{selDoc.kind}</span>
-              <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>{fmtTime(selDoc.ts, true)} · {studentName(selDoc.student)}</span>
+              <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>{fmtTime(selDoc.ts, true)} · {selDoc.student_name || studentName(selDoc.student)}</span>
               <div style={{ flex: 1 }} />
               <button className="ghost" onClick={() => setSelDoc(null)}>닫기 ✕</button>
             </div>

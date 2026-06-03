@@ -67,6 +67,7 @@ def stamp(event: dict, chain: list) -> dict:
     """활동 이벤트를 코호트 문맥으로 stamp. 필드: student/infra/ts/kind/cohort_path/scenario_step."""
     return {
         "student": event.get("user_id"),
+        "student_name": event.get("user_name"),
         "infra": event.get("infra_id"),
         "ts": event.get("ts"),
         "kind": event.get("kind"),
@@ -123,7 +124,7 @@ async def ensure_cohort_objects(client, chain: list) -> dict:
     if await client.ensure_saved_object(
         "search", se_id,
         {"title": f"{node.name} 활동(검색)",
-         "columns": ["student", "kind", "cohort_path", "payload"],
+         "columns": ["student_name", "kind", "cohort_path", "payload"],
          "sort": [["ts", "desc"]],
          "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps(ssj)}},
         references=[{"name": "kibanaSavedObjectMeta.searchSourceJSON.index",

@@ -263,8 +263,8 @@ def _compact_doc(d: dict) -> dict:
     """AI 컨텍스트용 경량 로그 — payload 는 요약 문자열로."""
     p = d.get("payload") or {}
     summary = p.get("cmd") or p.get("description") or p.get("path") or p.get("rule_id") or p
-    return {"ts": d.get("ts"), "student": d.get("student"), "kind": d.get("kind"),
-            "scenario_id": d.get("scenario_id"), "info": str(summary)[:200]}
+    return {"ts": d.get("ts"), "student": d.get("student_name") or d.get("student"),
+            "kind": d.get("kind"), "scenario_id": d.get("scenario_id"), "info": str(summary)[:200]}
 
 
 @router.post("/siem/ask", response_model=SiemAskOut)
