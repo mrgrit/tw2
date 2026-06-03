@@ -186,15 +186,9 @@ async def _tick_locked(battle_id: int, tick_idx: int) -> None:
 
 
 def _fmt_korean_time(d: dt.datetime) -> str:
-    """오전/오후 H시 MM분 — heartbeat 표시용 (서버 KST 가정. 환경별로 다르면 그냥 24시간)."""
-    try:
-        local = d.astimezone()  # 서버 로컬 타임존
-    except Exception:
-        local = d
-    h = local.hour
-    am = "오전" if h < 12 else "오후"
-    h12 = h % 12 or 12
-    return f"{am} {h12}시 {local.minute:02d}분"
+    """오전/오후 H시 MM분 — heartbeat 표시용. 서버 로컬 TZ 와 무관하게 항상 KST(UTC+9)."""
+    from .. import timeutil
+    return timeutil.fmt_korean(d)
 
 
 async def _emit_heartbeat(

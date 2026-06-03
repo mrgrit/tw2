@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api.ts'
 import { getUser } from '../auth.ts'
+import { fmtTime } from '../time.ts'
 
 interface Feedback {
   id: number; scope: string; trigger: string; content_md: string;
@@ -61,7 +62,7 @@ export default function Dashboard() {
             <div className="row" style={{ alignItems: 'center' }}>
               <span className="badge blue">{f.scope}</span>
               <span className="badge yellow">{f.trigger}</span>
-              <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{f.created_at?.slice(0, 16).replace('T', ' ')}</span>
+              <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{fmtTime(f.created_at)}</span>
             </div>
             <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginTop: 6, fontFamily: 'inherit' }}>{f.content_md}</pre>
           </div>

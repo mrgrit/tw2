@@ -26,6 +26,8 @@ class Settings(BaseSettings):
         alias="TUBEWAR_JWT_SECRET",
     )
     jwt_expires_hours: int = Field(12, alias="TUBEWAR_JWT_EXPIRES_HOURS")
+    # 표시 타임존 — 기본 Asia/Seoul(UTC+9). 저장/전송은 UTC 유지, 사람용 표기만 KST.
+    tz: str = Field("Asia/Seoul", alias="TUBEWAR_TZ")
 
     database_url: str = Field(
         "postgresql+asyncpg://tubewar:tubewar@127.0.0.1:5435/tubewar",

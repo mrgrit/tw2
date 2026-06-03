@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.ts'
+import { fmtTime } from '../time.ts'
 
 interface Infra {
   id: number
@@ -181,7 +182,7 @@ export default function MyInfra() {
           </div>
           <div style={{ marginTop: 8, color: 'var(--fg-dim)', fontSize: 13 }}>
             IP <code>{i.vm_ip}</code> · SSH <code>{i.ssh_user}@…</code>
-            {i.last_smoke_at && <> · 마지막 검증 {new Date(i.last_smoke_at).toLocaleString()}</>}
+            {i.last_smoke_at && <> · 마지막 검증 {fmtTime(i.last_smoke_at, true)}</>}
           </div>
 
           {i.last_smoke_result && (

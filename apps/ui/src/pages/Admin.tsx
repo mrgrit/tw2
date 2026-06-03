@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.ts'
+import { fmtTime } from '../time.ts'
 
 interface Job {
   id: string
@@ -905,7 +906,7 @@ function InfrasTab() {
                 <td style={{ padding: 10 }}><code>{r.vm_ip}</code>{r.port_map?.assessor ? <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}> :assessor={r.port_map.assessor}</span> : null}</td>
                 <td style={{ padding: 10 }}><span className={`badge ${badge(r.status)}`}>{r.status}</span></td>
                 <td style={{ padding: 10, fontSize: 12, color: 'var(--fg-dim)' }}>
-                  {r.last_smoke_at ? `${r.last_smoke_at.slice(0, 16).replace('T', ' ')} (${r.last_smoke_ok ? 'ok' : 'fail'})` : '—'}
+                  {r.last_smoke_at ? `${fmtTime(r.last_smoke_at)} (${r.last_smoke_ok ? 'ok' : 'fail'})` : '—'}
                   {msg[r.id] && <div style={{ marginTop: 4, color: 'var(--fg)' }}>{msg[r.id]}</div>}
                 </td>
                 <td style={{ padding: 10, whiteSpace: 'nowrap' }}>

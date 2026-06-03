@@ -86,7 +86,14 @@ async def no_store_headers(request, call_next):
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "tubewar-api", "version": "0.1.0"}
+    from . import timeutil
+    _now = timeutil.now()
+    return {
+        "status": "ok", "service": "tubewar-api", "version": "0.1.0",
+        "tz": timeutil.TZ_NAME,                       # 표시 타임존 (UTC+9)
+        "server_time_kst": timeutil.iso_kst(_now),    # 서울 시각 (시각동기화 확인용)
+        "server_time_utc": _now.isoformat(),
+    }
 
 
 app.include_router(auth.router)

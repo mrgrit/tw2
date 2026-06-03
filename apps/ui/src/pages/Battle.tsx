@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { api } from '../api.ts'
 import { getUser } from '../auth.ts'
+import { fmtTime } from '../time.ts'
 
 interface Scenario {
   id: number
@@ -604,7 +605,7 @@ function EventRow({ e }: { e: BattleEvent }) {
     <div className="card" style={{ padding: 12 }}>
       <div className="row" style={{ alignItems: 'center', fontSize: 13 }}>
         <span className={`badge ${eventTypePalette[e.event_type] || 'yellow'}`}>{e.event_type}</span>
-        <span style={{ color: 'var(--fg-dim)' }}>{new Date(e.ts).toLocaleTimeString()}</span>
+        <span style={{ color: 'var(--fg-dim)' }}>{fmtTime(e.ts, true)}</span>
         {e.target && <span style={{ color: 'var(--fg-dim)' }}>target: <code>{e.target}</code></span>}
         {e.actor_user_id && <span style={{ color: 'var(--fg-dim)' }}>by user #{e.actor_user_id}</span>}
         {e.points !== 0 && <span className={`badge ${e.points > 0 ? 'green' : 'red'}`}>
