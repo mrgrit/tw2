@@ -1,6 +1,7 @@
 """siem_export — 코호트 stamp, 데이터뷰/대시보드/RBAC 멱등 생성(mock OpenSearch),
 재실행 중복 없음, RBAC 코호트 스코프."""
 from __future__ import annotations
+import json
 import os
 import pytest
 
@@ -28,11 +29,11 @@ class FakeOpenSearch:
         self.docs.setdefault(index, []).extend(docs)
         return len(docs)
 
-    async def ensure_saved_object(self, otype, oid, attributes):
+    async def ensure_saved_object(self, otype, oid, attributes, references=None):
         key = (otype, oid)
         if key in self.saved_objects:
             return False
-        self.saved_objects[key] = attributes
+        self.saved_objects[key] = {"attributes": attributes, "references": references or []}
         return True
 
     async def ensure_role(self, name, index_pattern):
@@ -90,15 +91,26 @@ async def test_export_events_indexes_to_physical():
 async def test_ensure_cohort_objects_idempotent_and_rbac_scope():
     fos = FakeOpenSearch()
     r1 = await se.ensure_cohort_objects(fos, CHAIN)
-    assert set(r1["created"]) == {"index-pattern:dv-4", "dashboard:dash-4",
+    # 실제 OSD saved-object 3종(데이터뷰→저장검색→대시보드) + RBAC
+    assert set(r1["created"]) == {"index-pattern:dv-4", "search:se-4", "dashboard:dash-4",
                                   "role:cohort-4", "role_mapping:cohort-4"}
     # 재실행 → 중복 생성 없음
     r2 = await se.ensure_cohort_objects(fos, CHAIN)
     assert r2["created"] == []
     # RBAC 롤이 이 코호트 물리 인덱스로 스코프됨
     assert fos.roles["cohort-4"] == "tubewar-activity-course3*"
-    # 데이터뷰는 cohort_id 로 필터
-    assert fos.saved_objects[("index-pattern", "dv-4")]["filter"] == {"cohort_id": 4}
+    # 데이터뷰: 물리 인덱스 + 시간필드 ts
+    dv = fos.saved_objects[("index-pattern", "dv-4")]["attributes"]
+    assert dv["title"] == "tubewar-activity-course3" and dv["timeFieldName"] == "ts"
+    # 저장검색: section(하위 코호트)이므로 cohort_id 로 스코프 + dv 를 reference 로 연결
+    se_obj = fos.saved_objects[("search", "se-4")]
+    ssj = json.loads(se_obj["attributes"]["kibanaSavedObjectMeta"]["searchSourceJSON"])
+    assert ssj["query"]["query"] == "cohort_id: 4"
+    assert se_obj["references"] == [{"name": "kibanaSavedObjectMeta.searchSourceJSON.index",
+                                     "type": "index-pattern", "id": "dv-4"}]
+    # 대시보드: 저장검색을 패널 reference 로 임베드
+    dash = fos.saved_objects[("dashboard", "dash-4")]
+    assert dash["references"] == [{"name": "panel_1", "type": "search", "id": "se-4"}]
 
 
 @pytest.mark.asyncio

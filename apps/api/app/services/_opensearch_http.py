@@ -57,14 +57,18 @@ class OpenSearchHttpClient:
             log.warning("bulk_index %s failed: %s", index, e)
             return 0
 
-    async def ensure_saved_object(self, otype: str, oid: str, attributes: dict) -> bool:
+    async def ensure_saved_object(self, otype: str, oid: str, attributes: dict,
+                                  references: list | None = None) -> bool:
         try:
             async with self._dash() as c:
                 r = await c.get(f"{self.dashboards_url}/api/saved_objects/{otype}/{oid}")
                 if r.status_code == 200:
                     return False
+                body: dict = {"attributes": attributes}
+                if references:
+                    body["references"] = references
                 r2 = await c.post(f"{self.dashboards_url}/api/saved_objects/{otype}/{oid}",
-                                  json={"attributes": attributes})
+                                  json=body)
                 return r2.status_code < 300
         except Exception as e:
             log.warning("ensure_saved_object %s/%s failed: %s", otype, oid, e)
@@ -98,6 +102,22 @@ class OpenSearchHttpClient:
         except Exception as e:
             log.warning("search %s failed: %s", index, e)
             return []
+
+    async def aggregate(self, index: str, body: dict) -> dict:
+        """_search(size:0) → {aggs, total}. 없거나 오류면 빈 결과."""
+        try:
+            async with self._os() as c:
+                r = await c.post(f"{self.os_url}/{index}/_search", json=body)
+                if r.status_code >= 300:
+                    return {"aggs": {}, "total": 0}
+                j = r.json()
+                total = (j.get("hits") or {}).get("total") or 0
+                if isinstance(total, dict):
+                    total = total.get("value") or 0
+                return {"aggs": j.get("aggregations") or {}, "total": total}
+        except Exception as e:
+            log.warning("aggregate %s failed: %s", index, e)
+            return {"aggs": {}, "total": 0}
 
     async def ensure_role_mapping(self, role: str, users: list[str]) -> bool:
         body = {"users": users or [], "backend_roles": [f"instructor-{role}"]}

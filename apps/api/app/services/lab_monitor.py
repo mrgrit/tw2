@@ -153,6 +153,7 @@ async def pull_activity_once(session: AsyncSession, battle_id: int, *, since_sec
                 ))
                 new_events.append({"battle_id": battle_id, "user_id": p.user_id,
                                    "infra_id": p.infra_id, "kind": kind, "payload": payload,
+                                   "scenario_id": battle.scenario_id,
                                    "ts": _now().isoformat(), "scenario_step": None})
                 ingested += 1
     if ingested:

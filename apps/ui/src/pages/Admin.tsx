@@ -1026,63 +1026,297 @@ function GradersTab() {
 
 interface SiemDoc {
   student: number | null; infra: number | null; ts: string | null; kind: string | null;
-  cohort_path: string | null; cohort_id: number | null; payload: any; battle_id: number | null
+  cohort_path: string | null; cohort_id: number | null; payload: any;
+  battle_id: number | null; scenario_id?: number | null; scenario_step?: number | null
 }
 interface SiemSearch {
   enabled: boolean; index: string | null; cohort_path: string | null;
   dashboards_deeplink: string | null; docs: SiemDoc[]; note: string | null
 }
+interface SiemStats {
+  enabled: boolean; index: string | null; total: number; note?: string | null;
+  by_kind: { key: string; count: number }[];
+  by_student: { student: number; name: string | null; count: number }[];
+  by_day: { date: string; count: number }[];
+}
+interface SiemMission { side: string; order: number | null; instruction: string; points: number | null }
+interface SiemScenario { scenario_id: number; title: string; battle_ids: number[]; missions: SiemMission[] }
+interface ClearRow {
+  student: number; name: string | null; cleared: number; steps_total: number;
+  battles: number; stuck: number; completion: number
+}
+interface AskOut { answer: string; model: string; used_logs: number; used_clears: number; cost_usd: number }
+
+const KIND_COLOR: Record<string, string> = { command: 'blue', alert: 'red', fim: 'yellow', service: 'green' }
 
 function SiemTab() {
   const [cohorts, setCohorts] = useState<Cohort[]>([])
   const [cohortId, setCohortId] = useState('')
-  const [data, setData] = useState<SiemSearch | null>(null)
+  const [scenarios, setScenarios] = useState<SiemScenario[]>([])
+  const [scenarioId, setScenarioId] = useState('')
+  const [range, setRange] = useState('now-7d')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [kindFilter, setKindFilter] = useState('')
+  const [studentFilter, setStudentFilter] = useState('')
+
+  const [stats, setStats] = useState<SiemStats | null>(null)
+  const [search, setSearch] = useState<SiemSearch | null>(null)
+  const [clears, setClears] = useState<ClearRow[]>([])
+  const [selDoc, setSelDoc] = useState<SiemDoc | null>(null)
+  const [showDash, setShowDash] = useState(false)
+
+  const [graders, setGraders] = useState<Grader[]>([])
+  const [graderId, setGraderId] = useState('')
+  const [question, setQuestion] = useState('')
+  const [answer, setAnswer] = useState<AskOut | null>(null)
+  const [asking, setAsking] = useState(false)
+
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => { api<Cohort[]>('/cohorts').then(setCohorts).catch(() => {}) }, [])
+  useEffect(() => {
+    api<Cohort[]>('/cohorts').then(setCohorts).catch(() => {})
+    api<Grader[]>('/admin/graders').then(g => setGraders(g.filter(x => x.enabled))).catch(() => {})
+  }, [])
+
+  function timeVals(): { time_from?: string; time_to?: string } {
+    if (dateFrom || dateTo) return {
+      time_from: dateFrom ? `${dateFrom}T00:00:00` : undefined,
+      time_to: dateTo ? `${dateTo}T23:59:59` : undefined,
+    }
+    return range ? { time_from: range } : {}
+  }
+  function filterQS(): string {
+    const t = timeVals()
+    const p = new URLSearchParams()
+    if (cohortId) p.set('cohort_id', cohortId)
+    if (scenarioId) p.set('scenario_id', scenarioId)
+    if (kindFilter) p.set('kind', kindFilter)
+    if (studentFilter) p.set('student', studentFilter)
+    if (t.time_from) p.set('time_from', t.time_from)
+    if (t.time_to) p.set('time_to', t.time_to)
+    return p.toString()
+  }
+
   async function load() {
     setBusy(true); setErr(null)
     try {
-      const qs = cohortId ? `?cohort_id=${cohortId}&limit=200` : '?limit=200'
-      setData(await api<SiemSearch>(`/monitoring/siem/search${qs}`))
+      const qs = filterQS()
+      const [st, se] = await Promise.all([
+        api<SiemStats>(`/monitoring/siem/stats?${qs}`),
+        api<SiemSearch>(`/monitoring/siem/search?limit=300&${qs}`),
+      ])
+      setStats(st); setSearch(se)
     } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
   }
-  useEffect(() => { load() }, [cohortId])
+  // 코호트 변경 → 시나리오/클리어 재로딩 + 시나리오 선택 초기화
+  useEffect(() => {
+    setScenarioId('')
+    if (!cohortId) { setScenarios([]); setClears([]); return }
+    api<{ scenarios: SiemScenario[] }>(`/monitoring/siem/scenarios?cohort_id=${cohortId}`)
+      .then(r => setScenarios(r.scenarios)).catch(() => setScenarios([]))
+  }, [cohortId])
+  useEffect(() => {
+    if (!cohortId) { setClears([]); return }
+    const q = scenarioId ? `&scenario_id=${scenarioId}` : ''
+    api<{ students: ClearRow[] }>(`/monitoring/siem/clears?cohort_id=${cohortId}${q}`)
+      .then(r => setClears(r.students)).catch(() => setClears([]))
+  }, [cohortId, scenarioId])
+  // 필터 변경 → 통계+로그 재로딩
+  useEffect(() => { load() }, [cohortId, scenarioId, range, dateFrom, dateTo, kindFilter, studentFilter])
+
+  async function ask() {
+    if (!question.trim()) return
+    setAsking(true); setAnswer(null); setErr(null)
+    try {
+      const t = timeVals()
+      const r = await api<AskOut>('/monitoring/siem/ask', {
+        method: 'POST', json: {
+          question, cohort_id: cohortId ? Number(cohortId) : null,
+          scenario_id: scenarioId ? Number(scenarioId) : null,
+          student: studentFilter ? Number(studentFilter) : null,
+          kind: kindFilter || null, ...t,
+          grader_profile_id: graderId ? Number(graderId) : null,
+        },
+      })
+      setAnswer(r)
+    } catch (e: any) { setErr(e.message) } finally { setAsking(false) }
+  }
+
+  const selScn = scenarios.find(s => String(s.scenario_id) === scenarioId)
+  const studentName = (id: number | null) =>
+    stats?.by_student.find(s => s.student === id)?.name
+    || clears.find(c => c.student === id)?.name || `#${id}`
 
   return (
-    <>
-      <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
-        <h3 style={{ margin: 0 }}>중앙 SIEM (학생 활동 lake)</h3>
+    <div style={{ fontSize: '1.05em' }}>
+      {/* ── 필터 바 ── */}
+      <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>중앙 SIEM · 활동 분석</h3>
         <div style={{ flex: 1 }} />
-        <select value={cohortId} onChange={e => setCohortId(e.target.value)} style={{ width: 220 }}>
-          <option value="">전체 (모든 코호트)</option>
+        <select value={cohortId} onChange={e => setCohortId(e.target.value)} style={{ minWidth: 200 }}>
+          <option value="">전체 코호트</option>
           {cohorts.map(c => <option key={c.id} value={c.id}>{c.kind}: {c.name}</option>)}
         </select>
-        <button className="ghost" onClick={load} disabled={busy}>{busy ? '...' : '새로고침'}</button>
-        {data?.dashboards_deeplink && (
-          <a href={data.dashboards_deeplink} target="_blank" rel="noreferrer">
-            <button className="ghost">Dashboards ↗</button>
-          </a>
+        <select value={scenarioId} onChange={e => setScenarioId(e.target.value)}
+          disabled={!cohortId} title="시나리오 드릴다운" style={{ minWidth: 180 }}>
+          <option value="">{cohortId ? '전체 시나리오' : '코호트 먼저 선택'}</option>
+          {scenarios.map(s => <option key={s.scenario_id} value={s.scenario_id}>#{s.scenario_id} {s.title}</option>)}
+        </select>
+        <select value={range} onChange={e => { setRange(e.target.value); setDateFrom(''); setDateTo('') }} title="기간">
+          <option value="now-1d">최근 1일</option>
+          <option value="now-7d">최근 7일</option>
+          <option value="now-30d">최근 30일</option>
+          <option value="now-365d">최근 1년</option>
+          <option value="">전체</option>
+        </select>
+        <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} title="시작일(범위 지정)" />
+        <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} title="종료일" />
+        <button className="ghost" onClick={load} disabled={busy}>{busy ? '…' : '새로고침'}</button>
+        {search?.dashboards_deeplink && (
+          <>
+            <button className="ghost" onClick={() => setShowDash(v => !v)}>{showDash ? 'Dashboards 숨기기' : 'Dashboards 펼치기'}</button>
+            <a href={search.dashboards_deeplink} target="_blank" rel="noreferrer"><button className="ghost">↗ 새 탭</button></a>
+          </>
         )}
       </div>
+
+      {/* 활성 필터 칩 */}
+      {(kindFilter || studentFilter) && (
+        <div className="row" style={{ gap: 6, marginBottom: 10, alignItems: 'center' }}>
+          <span style={{ color: 'var(--fg-dim)', fontSize: 13 }}>필터:</span>
+          {kindFilter && <span className="badge blue" style={{ cursor: 'pointer' }} onClick={() => setKindFilter('')}>kind={kindFilter} ✕</span>}
+          {studentFilter && <span className="badge yellow" style={{ cursor: 'pointer' }} onClick={() => setStudentFilter('')}>학생 {studentName(Number(studentFilter))} ✕</span>}
+        </div>
+      )}
+
       {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
-      {data && !data.enabled && (
+      {stats && !stats.enabled && (
         <div className="card" style={{ color: 'var(--fg-dim)' }}>
-          중앙 SIEM 비활성. {data.note}
-          <div style={{ marginTop: 6, fontSize: 12 }}>활성화: 중앙에 OpenSearch 기동 후 서버 env <code>OPENSEARCH_URL</code> 설정.</div>
+          중앙 SIEM 비활성. {stats.note}
+          <div style={{ marginTop: 6, fontSize: 12 }}>서버 env <code>OPENSEARCH_URL</code> 설정 시 활성화됩니다.</div>
         </div>
       )}
-      {data?.dashboards_deeplink && (
-        <div className="card" style={{ padding: 0, marginBottom: 12, overflow: 'hidden' }}>
-          <iframe title="siem-dashboard" src={data.dashboards_deeplink}
-            style={{ width: '100%', height: 520, border: 0 }} />
+
+      {/* ── 주요 통계 (테이블 위) ── */}
+      {stats?.enabled && (
+        <div className="row" style={{ flexWrap: 'wrap', marginBottom: 12, alignItems: 'stretch' }}>
+          <div className="card" style={{ minWidth: 130 }}>
+            <div style={{ color: 'var(--fg-dim)', fontSize: 13 }}>총 이벤트</div>
+            <div style={{ fontSize: 30, fontWeight: 700, color: 'var(--primary)' }}>{stats.total}</div>
+            <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{stats.by_day.length}일 · {stats.by_student.length}명</div>
+          </div>
+          <div className="card" style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginBottom: 6 }}>종류별 (클릭하면 필터)</div>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+              {stats.by_kind.length === 0 && <span style={{ color: 'var(--fg-dim)' }}>—</span>}
+              {stats.by_kind.map(k => (
+                <span key={k.key} className={`badge ${KIND_COLOR[k.key] || 'blue'}`}
+                  style={{ cursor: 'pointer', opacity: kindFilter && kindFilter !== k.key ? 0.4 : 1 }}
+                  onClick={() => setKindFilter(kindFilter === k.key ? '' : k.key)}>
+                  {k.key} <b>{k.count}</b>
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="card" style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginBottom: 6 }}>활동 많은 학생 (클릭하면 필터)</div>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+              {stats.by_student.length === 0 && <span style={{ color: 'var(--fg-dim)' }}>—</span>}
+              {stats.by_student.slice(0, 8).map(s => (
+                <span key={s.student} className="badge"
+                  style={{ cursor: 'pointer', opacity: studentFilter && studentFilter !== String(s.student) ? 0.4 : 1 }}
+                  onClick={() => setStudentFilter(studentFilter === String(s.student) ? '' : String(s.student))}>
+                  {s.name || `#${s.student}`} <b>{s.count}</b>
+                </span>
+              ))}
+            </div>
+          </div>
         </div>
       )}
-      {data?.enabled && (
+
+      {/* ── 시나리오 미션 레벨 (드릴다운 시) ── */}
+      {selScn && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>#{selScn.scenario_id} {selScn.title} · 미션 {selScn.missions.length}개 · 공방전 {selScn.battle_ids.length}건</div>
+          <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
+            {selScn.missions.map((m, i) => (
+              <span key={i} className={`badge ${m.side === 'red' ? 'red' : 'blue'}`} title={m.instruction}
+                style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {m.side} #{m.order} · {m.points}점 · {m.instruction}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── AI 분석 Q&A ── */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <div className="row" style={{ alignItems: 'center', marginBottom: 8 }}>
+          <b>AI 로그 분석</b>
+          <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>현재 필터(코호트/시나리오/기간/학생)의 로그·통계·클리어를 근거로 답변</span>
+          <div style={{ flex: 1 }} />
+          <select value={graderId} onChange={e => setGraderId(e.target.value)} title="AI/모델 선택">
+            <option value="">기본 채점기</option>
+            {graders.map(g => <option key={g.id} value={g.id}>{g.provider}: {g.name} ({g.model})</option>)}
+          </select>
+        </div>
+        <textarea value={question} onChange={e => setQuestion(e.target.value)} rows={2}
+          placeholder="예: 어떤 학생이 막혀 있고 왜? 가장 의심스러운 공격 활동은? 방어가 약한 지점은?"
+          style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 6, padding: 8 }} />
+        <div className="row" style={{ marginTop: 8, alignItems: 'center' }}>
+          <button onClick={ask} disabled={asking || !question.trim()}>{asking ? 'AI 분석 중… (최대 ~2분)' : 'AI에게 질문'}</button>
+          {answer && <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>모델 {answer.model} · 로그 {answer.used_logs}건 · 클리어 {answer.used_clears}명{answer.cost_usd ? ` · $${answer.cost_usd.toFixed(4)}` : ''}</span>}
+        </div>
+        {answer && (
+          <div style={{ marginTop: 10, padding: 12, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+            {answer.answer}
+          </div>
+        )}
+      </div>
+
+      {/* ── 학생별 클리어 ── */}
+      {cohortId && (
+        <div className="card" style={{ padding: 0, marginBottom: 12, overflowX: 'auto' }}>
+          <div style={{ padding: '8px 12px', fontSize: 13, color: 'var(--fg-dim)' }}>
+            학생별 클리어 (완수 미션){scenarioId ? ' · 선택 시나리오 한정' : ''} — {clears.length}명
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead><tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
+              <th align="left" style={{ padding: 8 }}>학생</th>
+              <th align="left" style={{ padding: 8 }}>클리어</th>
+              <th align="left" style={{ padding: 8 }}>완성도</th>
+              <th align="left" style={{ padding: 8 }}>공방전</th>
+              <th align="left" style={{ padding: 8 }}>상태</th>
+            </tr></thead>
+            <tbody>
+              {clears.length === 0 && <tr><td colSpan={5} style={{ padding: 14, color: 'var(--fg-dim)' }}>이 코호트의 공방전 진도 데이터 없음.</td></tr>}
+              {clears.map(c => (
+                <tr key={c.student} style={{ borderTop: '1px solid var(--border)', cursor: 'pointer' }}
+                  onClick={() => setStudentFilter(studentFilter === String(c.student) ? '' : String(c.student))}>
+                  <td style={{ padding: 8 }}>{c.name || `#${c.student}`}</td>
+                  <td style={{ padding: 8 }}><b>{c.cleared}</b> / {c.steps_total}</td>
+                  <td style={{ padding: 8 }}>
+                    <div style={{ background: 'var(--border)', borderRadius: 4, height: 8, width: 90, overflow: 'hidden' }}>
+                      <div style={{ width: `${c.completion}%`, height: '100%', background: c.completion >= 70 ? 'var(--green)' : c.completion >= 30 ? 'var(--yellow)' : 'var(--red)' }} />
+                    </div>
+                    <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{c.completion}%</span>
+                  </td>
+                  <td style={{ padding: 8 }}>{c.battles}</td>
+                  <td style={{ padding: 8 }}>{c.stuck > 0 ? <span className="badge red">막힘 {c.stuck}</span> : <span className="badge green">정상</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* ── 로그 테이블 (행 클릭 → 풀 로그) ── */}
+      {stats?.enabled && (
         <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
           <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--fg-dim)' }}>
-            index <code>{data.index}</code> · {data.docs.length}건{data.cohort_path ? ` · ${data.cohort_path}` : ''}
+            로그 <code>{search?.index}</code> · {search?.docs.length || 0}건{search?.cohort_path ? ` · ${search.cohort_path}` : ''} · 행 클릭 시 전체 로그
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead><tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
@@ -1090,23 +1324,56 @@ function SiemTab() {
               <th align="left" style={{ padding: 8 }}>학생</th>
               <th align="left" style={{ padding: 8 }}>종류</th>
               <th align="left" style={{ padding: 8 }}>내용</th>
-              <th align="left" style={{ padding: 8 }}>코호트</th>
+              <th align="left" style={{ padding: 8 }}>시나리오</th>
             </tr></thead>
             <tbody>
-              {data.docs.length === 0 && <tr><td colSpan={5} style={{ padding: 14, color: 'var(--fg-dim)' }}>적재된 활동 없음 (실습 모니터링 lab-tick 시 적재됨).</td></tr>}
-              {data.docs.map((d, i) => (
-                <tr key={i} style={{ borderTop: '1px solid var(--border)' }}>
-                  <td style={{ padding: 8, whiteSpace: 'nowrap' }}>{fmtTime(d.ts, true)}</td>
-                  <td style={{ padding: 8 }}>#{d.student}</td>
-                  <td style={{ padding: 8 }}><span className="badge blue">{d.kind}</span></td>
-                  <td style={{ padding: 8, fontSize: 12 }}><code>{JSON.stringify(d.payload).slice(0, 140)}</code></td>
-                  <td style={{ padding: 8, fontSize: 11, color: 'var(--fg-dim)' }}>{d.cohort_path || '-'}</td>
-                </tr>
-              ))}
+              {(!search || search.docs.length === 0) && <tr><td colSpan={5} style={{ padding: 14, color: 'var(--fg-dim)' }}>해당 조건의 활동 없음.</td></tr>}
+              {search?.docs.map((d, i) => {
+                const p = d.payload || {}
+                const summary = p.cmd || p.description || p.path || (p.rule_id ? `rule ${p.rule_id}` : JSON.stringify(p))
+                return (
+                  <tr key={i} style={{ borderTop: '1px solid var(--border)', cursor: 'pointer' }} onClick={() => setSelDoc(d)}>
+                    <td style={{ padding: 8, whiteSpace: 'nowrap' }}>{fmtTime(d.ts, true)}</td>
+                    <td style={{ padding: 8 }}>{studentName(d.student)}</td>
+                    <td style={{ padding: 8 }}><span className={`badge ${KIND_COLOR[d.kind || ''] || 'blue'}`}>{d.kind}</span></td>
+                    <td style={{ padding: 8, fontSize: 12, maxWidth: 460, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><code>{String(summary).slice(0, 160)}</code></td>
+                    <td style={{ padding: 8, fontSize: 11, color: 'var(--fg-dim)' }}>{d.scenario_id ? `#${d.scenario_id}` : '-'}</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
       )}
-    </>
+
+      {/* ── Dashboards iframe (펼침 시) ── */}
+      {showDash && search?.dashboards_deeplink && (
+        <div className="card" style={{ padding: 0, marginTop: 12, overflow: 'hidden' }}>
+          <iframe title="siem-dashboard" src={search.dashboards_deeplink}
+            style={{ width: '100%', height: 600, border: 0 }} />
+        </div>
+      )}
+
+      {/* ── 풀 로그 모달 ── */}
+      {selDoc && (
+        <div onClick={() => setSelDoc(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div className="card" onClick={e => e.stopPropagation()} style={{ maxWidth: 760, width: '90%', maxHeight: '85vh', overflow: 'auto' }}>
+            <div className="row" style={{ alignItems: 'center', marginBottom: 8 }}>
+              <b>전체 로그</b>
+              <span className={`badge ${KIND_COLOR[selDoc.kind || ''] || 'blue'}`}>{selDoc.kind}</span>
+              <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>{fmtTime(selDoc.ts, true)} · {studentName(selDoc.student)}</span>
+              <div style={{ flex: 1 }} />
+              <button className="ghost" onClick={() => setSelDoc(null)}>닫기 ✕</button>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginBottom: 8 }}>
+              {selDoc.cohort_path} {selDoc.scenario_id ? `· 시나리오 #${selDoc.scenario_id}` : ''} {selDoc.battle_id ? `· 공방전 #${selDoc.battle_id}` : ''}
+            </div>
+            <pre style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 12, overflow: 'auto', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {JSON.stringify(selDoc.payload, null, 2)}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }

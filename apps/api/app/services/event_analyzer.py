@@ -685,3 +685,78 @@ async def grade(
     return AnalysisResult(
         reasoning="_AI 가 점검을 반복했으나 최종 판정에 이르지 못함 — 강사 검토 필요._",
         model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
+
+
+# ── 중앙 SIEM 로그 분석 Q&A (강사가 페이지에서 질문 → CC/bastion 이 로그 근거로 답변) ──
+_SIEM_ANALYST_SYSTEM = (
+    "당신은 사이버 보안 실습 플랫폼 tubewar 의 SIEM 분석가다. 주어진 학생 활동 로그"
+    "(명령/알림/파일변경/서비스), 통계, 진도·클리어 데이터를 근거로 강사의 질문에 한국어로"
+    " 간결·정확하게 답한다.\n"
+    "원칙:\n"
+    "- 추측 금지. 데이터에 없으면 '데이터에 없음'이라고 분명히 말한다.\n"
+    "- 구체적 근거(학생 번호, 시각, 명령/룰, 시나리오·미션)를 인용한다.\n"
+    "- 보안 교육 관점의 통찰(막힌 학생, 공격/방어 흐름, 이상 징후, 의심 활동)을 우선한다.\n"
+    "- 표·불릿으로 구조화하고 장황하지 않게. 결론을 먼저."
+)
+
+
+async def _claude_text(system: str, user: str, model: str | None = None) -> tuple[str | None, float]:
+    """CC 자유서술 1회 (JSON 강제 X). (text, cost)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _CLAUDE_CMD, "-p", "--output-format", "json", "--model", (model or _CLAUDE_MODEL),
+            "--append-system-prompt", system, user,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _err = await asyncio.wait_for(proc.communicate(), timeout=_GRADE_TIMEOUT)
+        if proc.returncode != 0:
+            return None, 0.0
+        wrap = json.loads(out.decode("utf-8", "replace"))
+        return (wrap.get("result") or "").strip() or None, float(wrap.get("total_cost_usd") or 0.0)
+    except (asyncio.TimeoutError, FileNotFoundError, json.JSONDecodeError):
+        return None, 0.0
+
+
+async def _bastion_text(system: str, user: str, base_url: str, model: str,
+                        api_key: str | None) -> tuple[str | None, float]:
+    """6v6 Bastion LLM (ollama 호환) 자유서술 1회. (text, 0)."""
+    if not base_url:
+        return None, 0.0
+    url = base_url.rstrip("/") + "/api/generate"
+    headers = {"X-API-Key": api_key or "", "content-type": "application/json"}
+    body = {"model": model, "prompt": system + "\n\n" + user, "stream": False}
+    try:
+        async with httpx.AsyncClient(timeout=_GRADE_TIMEOUT, verify=False) as c:
+            r = await c.post(url, headers=headers, json=body)
+            if r.status_code >= 300:
+                return None, 0.0
+            data = r.json()
+            text = data.get("response")
+            if not text and isinstance(data.get("message"), dict):
+                text = data["message"].get("content")
+            return ((text or "").strip() or None), 0.0
+    except Exception:
+        return None, 0.0
+
+
+async def analyze_logs(question: str, context: dict, grader: dict) -> AnalysisResult:
+    """강사 질문 + 로그/통계 컨텍스트를 CC 또는 bastion 에 보내 분석 답변을 받는다.
+
+    grader: graders.resolve_* 가 주는 dict {provider, model, base_url, api_key, name}.
+    """
+    ctx = json.dumps(context, ensure_ascii=False, default=str)
+    if len(ctx) > 24000:          # 토큰 보호 — 너무 크면 자른다
+        ctx = ctx[:24000] + " …(생략)"
+    user = ("## 강사 질문\n" + (question or "(질문 없음)")
+            + "\n\n## 분석 대상 데이터 (JSON: 통계 + 최근 로그 + 진도)\n```json\n" + ctx + "\n```")
+    provider = grader.get("provider", "cc")
+    model = grader.get("model") or _CLAUDE_MODEL
+    if provider == "bastion":
+        text, cost = await _bastion_text(_SIEM_ANALYST_SYSTEM, user, grader.get("base_url") or "",
+                                         model, grader.get("api_key"))
+    else:
+        text, cost = await _claude_text(_SIEM_ANALYST_SYSTEM, user, model)
+    if not text:
+        return AnalysisResult(reasoning="_AI 응답 없음 또는 시간 초과 — 잠시 후 다시 시도하세요._",
+                              model=f"{provider}:error", cost_usd=0.0)
+    return AnalysisResult(reasoning=text, model=f"{provider}:{model}", cost_usd=cost)
