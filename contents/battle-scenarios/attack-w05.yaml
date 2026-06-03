@@ -1,0 +1,126 @@
+id: "attack-w05"
+category: "attack"
+title: "[공격기법 W5] XSS(Reflected·Stored·DOM·WAF 우회) vs XSS 탐지·차단 분석"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격기법 5주차 — Cross-Site Scripting(OWASP A03/A07). 공격자는 Reflected/Stored/DOM 3종 XSS 와
+  6종 페이로드 변형으로 스크립트 주입을 시도하고 WAF(CRS 941)·CSP 를 우회하려 한다. 방어자는 XSS
+  시도를 탐지하고 차단(403)/통과 결과와 CSP 보호 수준을 분석한다.
+
+  ▸ 모드: solo(공격자→XSS 탐지 1인) / duel(Red 가 상대에 XSS, Blue 가 본인 WAF 로 탐지/차단 분석). 대상=solo 본인 / duel 상대.
+  ▸ 공격자 위치: **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은 대상 WAF(ModSec 941) 흔적으로.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 — Reflected/Stored XSS 주입
+      입력 파라미터·저장 필드에 `<script>`/이벤트 핸들러 XSS 를 주입한다(CRS 941 탐지 대상).
+      ```bash
+      curl -s "http://<대상_공개IP>:8080/vulnerabilities/xss_r/?name=<script>alert(document.cookie)</script>" --cookie "security=low; PHPSESSID=test"
+      curl -s "http://<대상_공개IP>:8080/vulnerabilities/xss_s/" --data "txtName=<img src=x onerror=alert(1)>&mtxMessage=hi&btnSign=Sign" --cookie "security=low; PHPSESSID=test"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 ModSecurity(CRS 941) XSS 탐지. ✅ 합격: 대상 WAF audit 에 XSS 탐지.
+    hint: "attacker-ext Reflected/Stored XSS. 채점: 대상 ModSec 941 XSS 탐지."
+    verify:
+      type: "log_contains"
+      expect: "XSS"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "XSS", since_sec: 1800 } }
+      semantic:
+        intent: "OWASP XSS / MITRE T1059.007 — Reflected/Stored XSS. 외부 공격자 모델 → 대상 ModSec 941 탐지로 판정."
+        success_criteria: ["대상 ModSec audit 에 XSS 탐지(최근)", "(설명) Reflected vs Stored 차이/주입 위치"]
+        acceptable_methods: ["attacker-ext <script>/onerror 등 XSS 주입"]
+        negative_signs: ["대상 WAF 흔적 없음", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 — XSS 변형으로 WAF(941) 우회 시도
+      대소문자 혼합, 인코딩, 이벤트 핸들러, `javascript:` 등 6종 변형으로 CRS 941 우회를 시도한다.
+      우회 성공 시 페이로드가 403 이 아닌 200 으로 반영된다.
+      ```bash
+      curl -s "http://<대상_공개IP>:8080/vulnerabilities/xss_r/?name=<svg/onload=alert(1)>" --cookie "security=low; PHPSESSID=test"
+      curl -s "http://<대상_공개IP>:8080/vulnerabilities/xss_r/?name=%3Cscript%3Ealert(1)%3C/script%3E" --cookie "security=low; PHPSESSID=test"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 ModSec audit 의 XSS 변형 시도 흔적. ✅ 합격: 대상 WAF audit 에 변형 XSS 시도.
+    hint: "attacker-ext XSS 변형(svg/인코딩/핸들러). 채점: 대상 ModSec audit."
+    verify:
+      type: "log_contains"
+      expect: "XSS"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "XSS", since_sec: 1800 } }
+      semantic:
+        intent: "WAF 우회 — XSS 변형. 외부 공격자 모델 → 대상 ModSec audit 의 변형 XSS 시도로 판정. '우회 성공'은 200 반영 여부."
+        success_criteria: ["대상 ModSec audit 에 변형 XSS 시도(최근)", "(설명) 어떤 변형으로 무엇을 우회하려 했는지 + 결과"]
+        acceptable_methods: ["attacker-ext svg/onload, 인코딩, javascript: 등 변형"]
+        negative_signs: ["대상 흔적 없음", "command_ran(attacker-ext) 의존"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 — WAF 차단 모드 확인
+      XSS 를 실제 차단(403)하려면 ModSecurity 가 On 이어야 한다. SecRuleEngine On 을 확인한다.
+      ✅ 합격: 본인 web 의 ModSecurity 가 SecRuleEngine On 이다.
+    hint: "본인 web 의 modsecurity.conf SecRuleEngine On 확인."
+    verify:
+      type: "file_contains"
+      expect: "SecRuleEngine On"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "web", params: { path: "/etc/modsecurity/modsecurity.conf", pattern: "SecRuleEngine On" } }
+      semantic:
+        intent: "차단 태세 — On 이라야 CRS 941 이 403 차단."
+        success_criteria: ["SecRuleEngine On", "(설명) On/DetectionOnly 차이"]
+        acceptable_methods: ["file_contains modsecurity.conf / waf-gui"]
+        negative_signs: ["DetectionOnly 오해"]
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-2 — XSS 탐지·차단 분석 (CRS 941)
+      본인 WAF audit 에서 RED 의 XSS 를 분석한다 — 어떤 **941 룰 id** 가 어떤 **페이로드** 에 걸렸고,
+      차단(403)/통과(200) 결과가 무엇인지 구체 식별한다. 우회된 변형이 있으면 식별한다.
+      ✅ 합격: XSS 탐지가 있고 룰 id/페이로드/응답코드를 구체 식별했다.
+    hint: "본인 ModSecurity audit 에서 XSS → 941 룰 id/페이로드/응답코드 식별."
+    verify:
+      type: "log_contains"
+      expect: "XSS"
+      checks:
+        - { id: "blue-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "XSS", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE D3FEND D3-WAF — 관측/분석. ModSec audit 실존 + 구체값(941 룰 id/페이로드/응답코드) 일치로 채점."
+        success_criteria: ["XSS 탐지 실존", "941 룰 id·페이로드·응답코드 구체 식별(증거 일치)", "우회 변형 식별(있으면)"]
+        acceptable_methods: ["waf-gui audit/log_contains modsec 분석"]
+        negative_signs: ["구체값 없음/불일치", "차단/통과 구분 못함"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 13
+    instruction: |
+      ## 🛡️ BLUE-3 — SIEM 종합 + CSP 보호 권고
+      XSS 시도·우회가 SIEM(Wazuh)으로 모이는지 확인하고, 심층 방어로 CSP(Content-Security-Policy)
+      헤더 강화를 권고한다(WAF + CSP 다층).
+      ✅ 합격: 본인 SIEM 에 XSS/웹공격 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 XSS 경보 수집 + CSP 강화 권고."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "통합 가시성 + 다층 방어 — XSS 사건 Wazuh 수렴 + CSP 권고."
+        success_criteria: ["XSS/웹공격 경보 수집(최근)", "(설명) WAF+CSP 다층 방어 권고"]
+        acceptable_methods: ["siem wazuh_alert", "중앙 SIEM 탭"]
+        negative_signs: ["수집 비어있음"]

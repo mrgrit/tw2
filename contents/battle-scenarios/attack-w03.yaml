@@ -1,0 +1,104 @@
+id: "attack-w03"
+category: "attack"
+title: "[공격기법 W3] 웹앱 구조·API·JWT 공격 vs API 남용 탐지"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  공격기법 3주차 — 웹 애플리케이션 구조 분석. 공격자는 REST API(/api, /rest) 를 매핑하고, JWT 를
+  디코드/조작해 인증 우회를 시도한다(Burp 류 프록시 활용). 방어자는 비정상 API 접근/인증 시도를
+  로그에서 탐지한다.
+
+  ▸ 모드: solo(공격자→API 남용 탐지 1인) / duel(Red 가 상대 API 공격, Blue 가 본인 로그로 탐지). 대상=solo 본인 / duel 상대.
+  ▸ 공격자 위치: **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은 대상 방어층/접근 로그 흔적으로.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — REST API 엔드포인트 매핑·열거
+      JuiceShop(3000) 등의 `/api`, `/rest` 엔드포인트를 열거한다(다량 요청 → IDS/WAF 가 스캐너성으로 탐지).
+      ```bash
+      ffuf -u http://<대상_공개IP>:3000/FUZZ -w /usr/share/wordlists/api.txt -mc 200,401,403
+      curl -s http://<대상_공개IP>:3000/rest/products/search?q=
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Suricata/WAF 의 열거/스캐너 탐지. ✅ 합격: 대상 방어층에 열거 탐지.
+    hint: "attacker-ext API 엔드포인트 열거. 채점: 대상 Suricata/ModSec 탐지."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1083 / API 열거 — 외부 공격자 모델 → 대상 IDS/WAF 흔적으로 판정."
+        success_criteria: ["대상 방어층에 열거/스캐너 탐지", "(설명) 발견 API 엔드포인트"]
+        acceptable_methods: ["attacker-ext ffuf/gobuster/curl API 열거"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — JWT/인증 우회 시도
+      로그인 API 에 SQLi/인증 우회 페이로드를 보내거나, 탈취/조작한 JWT 로 권한 상승을 시도한다.
+      ```bash
+      curl -s -X POST http://<대상_공개IP>:3000/rest/user/login -H 'Content-Type: application/json' \
+           -d '{"email":"'"'"' or 1=1--","password":"x"}'
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 WAF(ModSec)/접근 로그의 인증 공격 흔적. ✅ 합격: 대상 방어층에 인증 공격 탐지.
+    hint: "attacker-ext 로그인 우회/JWT 조작. 채점: 대상 ModSec/접근 로그."
+    verify:
+      type: "log_contains"
+      expect: "SQL"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "SQL", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1190 / 인증 우회 — 외부 공격자 모델 → 대상 ModSec/접근 로그 흔적으로 판정."
+        success_criteria: ["대상 ModSec/접근 로그에 인증 공격 흔적(최근)", "(설명) 우회 기법(SQLi/JWT)"]
+        acceptable_methods: ["attacker-ext 로그인 SQLi / JWT 조작"]
+        negative_signs: ["대상 흔적 없음", "command_ran(attacker-ext) 의존"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-1 — API 열거 탐지
+      본인 IDS/WAF 에서 API 열거(다량 요청, 비정상 경로)를 탐지하고 출발지/패턴을 구체 식별한다.
+      ✅ 합격: 열거 탐지가 있고 출발지/패턴을 구체 식별했다.
+    hint: "본인 Suricata/ModSec 에서 API 열거 탐지 + 출발지/패턴 식별."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "blue-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "관측/분석 — 열거 탐지 실존 + 구체값(출발지/요청패턴) 일치로 채점."
+        success_criteria: ["열거 탐지 실존", "출발지/패턴 구체 식별(증거 일치)"]
+        acceptable_methods: ["ips/ModSec 분석"]
+        negative_signs: ["구체값 없음/불일치"]
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🛡️ BLUE-2 — 인증 공격 탐지 (로그인 남용/SQLi)
+      본인 WAF audit/접근 로그에서 로그인 우회/SQLi 인증 공격을 탐지하고, 룰/페이로드/응답코드를
+      구체 식별한다.
+      ✅ 합격: 인증 공격 탐지가 있고 룰/페이로드/응답코드를 구체 식별했다.
+    hint: "본인 ModSec audit 에서 인증 공격 + 룰/페이로드/응답코드 식별."
+    verify:
+      type: "log_contains"
+      expect: "SQL"
+      checks:
+        - { id: "blue-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "SQL", since_sec: 1800 } }
+      semantic:
+        intent: "관측/분석 — ModSec audit 실존 + 구체값(룰/페이로드/응답코드) 일치로 채점."
+        success_criteria: ["인증 공격 탐지 실존", "룰/페이로드/응답코드 구체 식별(증거 일치)"]
+        acceptable_methods: ["waf-gui audit/log_contains modsec"]
+        negative_signs: ["구체값 없음/불일치"]

@@ -1,0 +1,101 @@
+id: "attack-w02"
+category: "attack"
+title: "[공격기법 W2] 정찰 심화(nmap·nikto·디렉토리 brute) vs IDS/WAF 탐지"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  공격기법 2주차 — 정찰(Reconnaissance) 심화. 공격자는 nmap 다종 스캔(-sS/-sV/-O), nikto 웹 취약점
+  스캔, 디렉토리 brute(ffuf/dirb)로 공격면을 정밀 매핑한다. 방어자는 이 정찰을 IDS/WAF 에서 탐지한다.
+
+  ▸ 모드: solo(공격자→방어 탐지 1인) / duel(Red 가 상대 정찰, Blue 가 본인 IDS/WAF 로 탐지). 대상=solo 본인 / duel 상대.
+  ▸ 공격자 위치: **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은 대상 IDS/WAF 흔적으로.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — nmap 다종 스캔 (서비스/OS 식별)
+      ```bash
+      nmap -sS -sV -O -p 1-10000 <대상_공개IP> -T4 --max-retries 1
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Suricata SYN/포트 스캔 탐지. ✅ 합격: 대상 IPS 에 스캔 탐지.
+    hint: "attacker-ext nmap -sS -sV -O. 채점: 대상 Suricata 스캔 탐지."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1046 — 서비스/OS 식별. 외부 공격자 모델 → 대상 Suricata 흔적으로 판정."
+        success_criteria: ["대상 IPS 스캔 탐지", "(설명) 식별 서비스/OS"]
+        acceptable_methods: ["attacker-ext nmap -sS/-sV/-O"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — nikto 웹 취약점 스캔 + 디렉토리 brute
+      nikto 로 웹 취약점을, ffuf/dirb 로 숨은 경로를 탐색한다(다량 요청 → WAF/IDS 탐지).
+      ```bash
+      nikto -h http://<대상_공개IP>:8080 -maxtime 60s
+      ffuf -u http://<대상_공개IP>:8080/FUZZ -w /usr/share/wordlists/common.txt -mc 200,301,403
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 ModSecurity/Suricata 의 스캐너 탐지. ✅ 합격: 대상 방어층에 스캐너 탐지.
+    hint: "attacker-ext nikto+ffuf. 채점: 대상 ModSec/Suricata 스캐너 탐지."
+    verify:
+      type: "log_contains"
+      expect: "ModSecurity"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "id", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1595 — 웹 취약점/경로 정찰. 외부 공격자 모델 → 대상 ModSec/Suricata 스캐너 탐지로 판정."
+        success_criteria: ["대상 ModSec audit 또는 Suricata 에 스캐너 탐지(최근)", "(설명) 발견 경로/취약점 후보"]
+        acceptable_methods: ["attacker-ext nikto/ffuf/dirb/gobuster"]
+        negative_signs: ["대상 방어층 흔적 없음", "command_ran(attacker-ext) 의존"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-1 — 스캔 탐지·분류
+      본인 IPS 에서 nmap 스캔을 탐지하고 스캔 유형(SYN 등)·출발지·시그니처를 구체 식별한다.
+      ✅ 합격: 스캔 탐지가 있고 유형/출발지/시그니처를 구체 식별했다.
+    hint: "본인 Suricata 에서 스캔 탐지 + 유형/출발지/시그니처 식별."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "blue-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "관측/분석 — 스캔 탐지 실존 + 구체값(유형/출발지/시그니처) 일치로 채점."
+        success_criteria: ["스캔 탐지 실존", "유형/출발지/시그니처 구체 식별(증거 일치)"]
+        acceptable_methods: ["ips 이벤트/Suricata 분석"]
+        negative_signs: ["구체값 없음/불일치"]
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🛡️ BLUE-2 — 웹 스캐너 탐지 (ModSec)
+      본인 WAF(ModSecurity) audit 에서 nikto/ffuf 스캐너를 탐지하고, 어떤 룰/요청 패턴이 걸렸는지
+      구체 식별한다(스캐너 User-Agent, 다량 404/403 등).
+      ✅ 합격: ModSec audit 에 스캐너 탐지가 있고 룰/패턴을 구체 식별했다.
+    hint: "본인 ModSecurity audit 에서 스캐너 탐지 + 룰/패턴 식별."
+    verify:
+      type: "log_contains"
+      expect: "ModSecurity"
+      checks:
+        - { id: "blue-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "id", since_sec: 1800 } }
+      semantic:
+        intent: "관측/분석 — ModSec audit 실존 + 구체값(룰 id/스캐너 패턴) 일치로 채점."
+        success_criteria: ["ModSec audit 에 스캐너 탐지", "룰 id/스캐너 패턴 구체 식별(증거 일치)"]
+        acceptable_methods: ["waf-gui audit/log_contains modsec 분석"]
+        negative_signs: ["구체값 없음/불일치"]
