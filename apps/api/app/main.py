@@ -13,13 +13,15 @@ from sqlalchemy import select
 
 from .config import get_settings
 from .db import Base, SessionLocal, engine
-from .models import User
+from .models import Battle, User
 from .routers import (
     admin, auth, cohorts, feedback, graders, infras, battles, leaderboard, monitoring,
     scenarios, users,
 )
 from .schema_upgrade import ensure_added_columns
 from .security import hash_password
+from .services import feedback as fb_svc
+from .services import lab_monitor
 from .services.scenario_loader import import_scenarios
 
 log = logging.getLogger("tubewar")
@@ -48,6 +50,14 @@ async def lifespan(app: FastAPI):
         n = await import_scenarios(s)
         if n:
             log.info("imported %d scenarios from contents/battle-scenarios/", n)
+        # 실시간 중앙 SIEM 적재: autostart 켜진 경우, 재기동 후에도 활성 배틀의 실습 모니터를 재개.
+        # (모니터 루프가 주기적으로 /activity 를 pull → OpenSearch 로 적재 → SIEM 실시간 갱신)
+        if lab_monitor.autostart_enabled():
+            active = (await s.scalars(select(Battle).where(Battle.status == "active"))).all()
+            for b in active:
+                lab_monitor.start(b.id, feedback_cb=fb_svc.bottleneck_feedback_cb)
+            if active:
+                log.info("lab-monitor resumed for %d active battle(s)", len(active))
     log.info("tubewar API ready on %s:%s", settings.api_host, settings.api_port)
     yield
 

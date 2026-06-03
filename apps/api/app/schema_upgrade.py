@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     ("battles", "cohort_id", "INTEGER"),
     ("scenarios", "grader_profile_id", "INTEGER"),
+    ("scenarios", "category", "VARCHAR(40)"),
 ]
 
 

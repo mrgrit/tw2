@@ -1,0 +1,244 @@
+id: "secuops-easy-w03"
+category: "secuops-easy"
+title: "[보안운영입문 W3] 웹 SQL 인젝션 vs IPS 탐지룰 작성"
+difficulty: "easy"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  보안운영 입문 3주차 — 통과한 트래픽의 *내용* 을 검사하는 **IPS(Suricata)** 를 다룬다. 외부
+  공격자가 공개 웹앱에 SQL 인젝션(UNION SELECT)을 시도한다. 운영자는 Suricata 에 이 공격을
+  탐지하는 룰을 직접 작성·적용하고, 공격을 재현해 **실제로 탐지가 일어나는지** eve.json 에서
+  확인한다.
+
+  ▸ 모드
+    • solo : 외부 공격자(SQLi) → IPS 운영자(룰 작성·탐지 확인)를 한 학생이 차례로 수행. 대상=본인 인프라.
+    • duel : Red 가 상대 웹앱에 SQLi, Blue 는 본인 IPS 에서 탐지룰로 잡는다. 대상=상대 인프라.
+
+  ▸ 공격자 위치(중요): Red 는 **망 외부 공격자(attacker-ext)** 기준. 외부 명령 로그는 수집
+    불가 → Red 채점은 대상 웹 방어층(ModSecurity/Suricata)·SIEM 에 남은 탐지 흔적으로 한다.
+
+  ▸ IPS 커스텀 룰은 **/etc/suricata/rules/local.rules 에 작성** 한다(콘솔의 탐지룰 관리가 이
+    파일에 반영). 교육용 룰은 sid 9000000 이상을 권장한다.
+
+# ───────────────────────── RED (외부 공격자: 웹 SQLi) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-1 — 공개 웹앱 식별 (Fingerprint)
+
+      망 외부 공격자(attacker-ext)로 대상의 공개 웹앱(예: DVWA 8080 / JuiceShop 3000)을 식별하고
+      어떤 파라미터가 SQL 질의에 쓰이는지 가늠한다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      whatweb http://<대상_공개IP>:8080  ;  curl -s "http://<대상_공개IP>:8080/vulnerabilities/sqli/?id=1&Submit=Submit"
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → 대상 웹 접근 로그/방어층에 남은 요청 흔적으로 채점한다.
+
+      ### ✅ 합격 기준
+      대상 IPS(Suricata)에 웹 포트 정찰/스캔 탐지 흔적이 남는다(공개 웹 서비스 식별).
+    hint: "attacker-ext 에서 웹 포트 스캔 + 웹앱 식별. 채점: 대상 Suricata 의 스캔 탐지."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1190 정찰 — 공개 웹앱·SQLi 파라미터 식별. 외부 공격자 모델 → 대상 웹 로그 흔적으로 판정."
+        success_criteria:
+          - "대상 웹의 접근/감사 로그에 SQLi 파라미터 탐색 요청 흔적"
+          - "(설명) 어떤 엔드포인트/파라미터가 인젝션 후보인지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 whatweb/curl 로 sqli 엔드포인트 탐색"
+        negative_signs:
+          - "대상에 닿지 않은 로컬 명령(흔적 없음)"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — SQL 인젝션 (UNION SELECT)
+
+      식별한 파라미터에 **UNION 기반 SQL 인젝션** 을 시도해 DB 내용을 끌어내려 한다. 이 요청은
+      웹 방어층(ModSecurity CRS)이 SQLi 로 탐지하며, 운영자가 IPS 에 작성할 룰의 표적이기도 하다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      curl -s "http://<대상_공개IP>:8080/vulnerabilities/sqli/?id=1' UNION SELECT user,password FROM users-- -&Submit=Submit" \
+           --cookie "security=low; PHPSESSID=test"
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → **대상의 ModSecurity(WAF) SQLi 탐지 또는 IPS 탐지** 흔적으로 채점한다
+      (UNION SELECT 페이로드가 방어층에 잡힘).
+
+      ### ✅ 합격 기준
+      대상 방어층(ModSecurity audit/Suricata)에 SQLi(UNION) 공격 탐지 흔적이 남는다.
+    hint: "attacker-ext 에서 UNION SELECT SQLi. 채점: 대상 ModSecurity audit 의 SQLi 탐지."
+    verify:
+      type: "log_contains"
+      expect: "SQL"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "SQL", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE T1190 (Exploit Public-Facing Application) — UNION 기반 SQLi. 외부 공격자 모델 →
+          command_ran(attacker-ext) 신뢰 금지, 대상 ModSecurity audit(SQLi 룰)·Suricata 탐지로 판정.
+        success_criteria:
+          - "대상 ModSecurity audit 또는 Suricata 에 SQLi(UNION) 탐지 흔적(최근)"
+          - "페이로드가 대상 웹에 실제 도달(흔적 존재)"
+          - "(설명) UNION SELECT 로 무엇을 끌어내려 했는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 curl 로 UNION SELECT 페이로드"
+          - "sqlmap --technique=U (UNION) 자동화(대안)"
+        negative_signs:
+          - "대상 방어층에 SQLi 탐지 흔적 없음(공격 미도달)"
+          - "command_ran(attacker-ext)에만 의존(외부 명령 미수집이라 불인정)"
+
+# ───────────────────────── BLUE (IPS 운영자: self) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 10
+    instruction: |
+      ## 🛡️ BLUE-1 — IPS 가동 + 탐지룰 로딩 확인
+
+      탐지룰을 추가하기 전에, IPS(Suricata)가 가동 중이고 룰이 정상 로딩됐는지 확인한다(룰 작성의
+      토대). ips 콘솔의 "가동중 / 로딩된 룰 수 / 실패 0" 또는 프로세스로 점검한다.
+
+      ### ✅ 합격 기준
+      IPS 의 Suricata 가 프로세스로 가동 중이다.
+    hint: "본인 IPS 의 Suricata 프로세스/로딩 룰 확인."
+    verify:
+      type: "process_running"
+      expect: "suricata"
+      checks:
+        - { id: "blue-1-1", type: "process_running", target: "ips", params: { name: "suricata" } }
+      semantic:
+        intent: "탐지 토대 점검 — Suricata 가동 + 룰 로딩 정상."
+        success_criteria:
+          - "ips 에서 suricata 프로세스 running"
+          - "(설명) 룰이 정상 로딩됨(failed 0)을 확인"
+        acceptable_methods:
+          - "ips-gui 대시보드(가동중/로딩 룰)"
+          - "process_running suricata"
+        negative_signs:
+          - "프로세스 미가동/룰 로딩 실패"
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-2 — SQLi(UNION) 탐지 Suricata 룰 작성
+
+      이번 주의 핵심 — 외부 SQLi(UNION SELECT)를 탐지하는 **Suricata 룰을 직접 작성** 한다.
+      `/etc/suricata/rules/local.rules` 에 추가하며, 다음 요소를 갖춘다.
+
+      - 프로토콜/방향: `alert http any any -> any any`
+      - 버퍼+패턴: `http.uri` 또는 `http.request_body` 에서 `UNION SELECT`(대소문자 무시) 매치
+      - 메타: `msg:"EDU SQLi UNION detected"`, `classtype:web-application-attack`, **sid:9000001**, `rev:1`
+
+      ### 권장 형태 (참고)
+      ```
+      alert http any any -> any any (msg:"EDU SQLi UNION detected"; flow:to_server; \
+        http.uri; content:"union"; nocase; content:"select"; nocase; distance:0; \
+        classtype:web-application-attack; sid:9000001; rev:1;)
+      ```
+      ### 📌 채점
+      `/etc/suricata/rules/local.rules` 에 **UNION SELECT 를 잡는 교육용 룰(sid 9000000+)** 이
+      작성됐는지로 확인한다.
+
+      ### ✅ 합격 기준
+      local.rules 에 SQLi(UNION) 탐지 룰이 작성돼 있다(msg/sid 포함).
+    hint: "/etc/suricata/rules/local.rules 에 union+select 매치 룰 작성(sid 9000001)."
+    verify:
+      type: "file_contains"
+      expect: "union"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", regex: "(?i)union" } }
+      semantic:
+        intent: |
+          MITRE D3FEND D3-NTA — Suricata 시그니처로 SQLi(UNION) 탐지. http 버퍼+content 로
+          페이로드를 매치하는 룰을 local.rules 에 작성. 입문 주차의 '탐지룰 직접 작성'.
+        success_criteria:
+          - "local.rules 에 union(+select) 매치 룰"
+          - "msg/classtype/sid(9000000+) 등 메타 포함"
+          - "(설명) 버퍼(http.uri)와 content 의 역할을 서술"
+        acceptable_methods:
+          - "ips-gui 탐지룰 폼으로 작성(→ local.rules 반영)"
+          - "local.rules 직접 편집(union/select content)"
+        negative_signs:
+          - "문법 오류로 로딩 실패(rules_failed>0)"
+          - "union 만 있고 select/SQLi 맥락 없는 과탐 룰"
+
+  - order: 3
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-3 — 공격 재현 → eve.json 에서 실제 탐지 확인
+
+      룰을 적용했으면, 그 룰이 **실제로 동작** 하는지 확인한다. (solo 면 본인이 RED-2 의 UNION
+      공격을 재현하고) IPS 의 이벤트 로그(eve.json)에서 방금 작성한 룰이 트리거한 경보를 찾는다.
+
+      ### 📌 채점
+      IPS(Suricata) 로그에 UNION/SQLi 탐지 경보가 남았는지로 확인한다(룰이 살아 동작).
+
+      ### ✅ 합격 기준
+      본인 IPS 로그에 UNION/SQLi 탐지 경보가 있다.
+    hint: "UNION 공격 재현 후 eve.json 에서 SQLi 탐지 경보 확인(룰 msg 에 'SQLi' 포함 권장)."
+    verify:
+      type: "log_contains"
+      expect: "SQL"
+      checks:
+        - { id: "blue-3-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "SQL", since_sec: 1800 } }
+      semantic:
+        intent: "룰 검증 — 작성한 탐지룰이 재현 공격을 실제로 잡는지 eve.json 으로 확인. '작성'과 '동작'은 다르다."
+        success_criteria:
+          - "Suricata eve.json 에 UNION/SQLi 탐지 경보(최근)"
+          - "경보가 BLUE-2 에서 작성한 룰(sid 9000000+)에서 트리거됨"
+          - "(설명) 공격 재현 → 탐지 흐름을 서술"
+        acceptable_methods:
+          - "UNION 공격 재현 후 ips-gui 이벤트에서 경보 확인"
+          - "log_contains suricata 의 union/sql"
+        negative_signs:
+          - "룰만 작성하고 동작 확인 안 함"
+          - "경보가 작성 룰이 아닌 CRS/기존 룰에서만 나옴(자기 룰 미검증)"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 10
+    instruction: |
+      ## 🛡️ BLUE-4 — SIEM 으로 SQLi 탐지 수집 확인
+
+      IPS·WAF 의 SQLi 탐지가 SIEM(Wazuh)으로 모여 한곳에서 보이는지 확인한다(통합 관제).
+
+      ### ✅ 합격 기준
+      본인 SIEM 에 SQLi/웹공격 관련 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 SQLi/웹공격 경보 수집 확인(중앙 SIEM 탭에서도 보임)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "통합 가시성 — IPS/WAF 의 SQLi 탐지가 Wazuh 로 수렴."
+        success_criteria:
+          - "본인 Wazuh 에 최근 웹공격/SQLi 관련 경보"
+          - "(설명) 장비별 탐지가 SIEM 으로 모이는 흐름 서술"
+        acceptable_methods:
+          - "siem 에서 wazuh_alert 확인"
+          - "중앙 SIEM 탭 확인"
+        negative_signs:
+          - "수집이 비어있음"

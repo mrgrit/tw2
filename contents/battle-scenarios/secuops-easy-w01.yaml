@@ -1,0 +1,281 @@
+id: "secuops-easy-w01"
+category: "secuops-easy"
+title: "[보안운영입문 W1] 경계 정찰 vs 토폴로지·탐지 관측"
+difficulty: "easy"
+time_limit: 2400
+battle_type: "1v1"
+description: |
+  보안운영 입문 1주차 — "전체 지도"를 직접 확인하는 주차다. 외부에서 한 침입자가 우리 망의
+  바깥문을 두드리며 정찰(스캔)을 시작했다. 이 한 번의 정찰이 방화벽 → IPS(Suricata) →
+  WAF(ModSecurity) → 웹서버를 차례로 지나며 **탐지 흔적(경보)** 을 남긴다.
+
+  ▸ 이 시나리오는 두 가지 모드로 진행된다.
+    • solo  : 한 학생이 두 역할을 모두 수행한다. 먼저 "외부 공격자" 입장에서 우리 망의 공개
+              표면을 스캔하고(공격이 만든 경보가 SIEM 으로 모인다), 이어서 "운영자(방어)" 입장
+              에서 그 경보를 추적하고 방어 장비들의 상태를 점검한다. 공격 대상 = 본인 인프라.
+    • duel  : Red(공격) 학생이 상대(Blue) 학생의 인프라를 외부에서 스캔하고, Blue 학생은 자기
+              인프라에서 그 스캔을 탐지·관측한다. 공격 대상 = 상대 인프라.
+
+  ▸ 공격자 위치 안내(중요): 이 주차의 Red 미션은 **망 외부 공격자(attacker-ext, SSH 2203)** 가
+    기본이다. 외부 공격자가 친 명령 자체는 6v6 가 수집하지 못하므로, Red 미션 채점은
+    "공격자가 무슨 명령을 쳤는가"가 아니라 **대상 인프라(피해자) 쪽에 남은 탐지 흔적**
+    (Suricata 경보 / Wazuh 경보 / 접근 로그)으로 한다. 내부 발판(attacker, 2202)은 이 주차에선
+    쓰지 않는다.
+
+# ───────────────────────── RED (외부 공격자: 경계 정찰) ─────────────────────────
+# 모든 Red 미션: 망 외부 공격자(attacker-ext)로 수행. 대상은 duel=상대 인프라 / solo=본인 인프라.
+# 채점은 "대상 인프라에 남은 탐지 흔적"으로 한다(외부 공격자 명령 로그는 수집 불가).
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🎯 RED-1 — 외부에서 대상 망의 생존 호스트 탐색 (Host Discovery)
+
+      당신은 **망 외부 공격자(attacker-ext)** 다. 대상 조직의 내부 구조를 전혀 모르는 상태에서,
+      가장 먼저 "어떤 호스트가 살아있는지" 부터 알아낸다.
+
+      ### 어디서 / 무엇을
+      - 접속: 대상 6v6 의 **attacker-ext (SSH 2203)** 로 들어가 거기서 스캔을 수행한다.
+      - 동작: 대상의 외부 대역에 **ping/ARP 스윕** 을 보내 살아있는 호스트를 찾는다.
+
+      ### 권장 명령 (참고 — 실제로는 본인이 판단해 수행)
+      ```bash
+      nmap -sn 10.20.30.0/24 --max-retries 1 --host-timeout 15s -T4
+      ```
+
+      ### 📌 채점 방식 (꼭 읽을 것)
+      외부 공격자가 친 명령은 6v6 가 수집하지 못한다. 따라서 이 미션은 **대상 인프라의 IPS
+      (Suricata)/SIEM(Wazuh) 에 남은 스캔 탐지 흔적** 으로 채점한다. 스캔이 실제로 대상에
+      닿아 탐지가 일어나야 인정된다(허공에 친 명령은 인정 안 됨).
+
+      ### ✅ 합격 기준
+      대상 IPS 또는 SIEM 에 당신의 스캔에 해당하는 탐지/흐름 흔적이 남는다.
+    hint: "attacker-ext 에서 nmap -sn 으로 대상 대역 핑 스윕. 채점은 대상 Suricata/Wazuh 의 스캔 탐지 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE ATT&CK T1018 (Remote System Discovery) — 망 외부에서 ping/ARP 스윕으로
+          생존 호스트를 enumerate. 외부 공격자 모델이므로 "command_ran(attacker-ext)" 은
+          신뢰하지 않고, 대상 Suricata eve.json / Wazuh 에 남은 스캔 흔적으로 판정한다.
+        success_criteria:
+          - "대상 IPS(Suricata) eve.json 또는 fast.log 에 스캔 관련 alert/flow 가 남음"
+          - "흔적의 source 가 외부 공격자(공격 출발지) 임"
+          - "(설명) 생존 호스트 목록을 다음 단계 표적으로 좁혔음을 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 nmap -sn (ping sweep)"
+          - "fping -a -g <대역> (대안)"
+          - "arp-scan / TCP ping(-PS) 등 동등 기법"
+        negative_signs:
+          - "대상에 닿지 않은 로컬 명령만 (대상 IPS/SIEM 에 흔적 없음)"
+          - "내부 발판(attacker)에서 수행 — 이 주차 Red 는 외부(attacker-ext) 기준"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 공개 웹 서비스 포트·버전 스캔 (Service/Version Scan)
+
+      살아있는 호스트를 찾았으면, 이제 **어떤 문(포트)이 열려 있고 무슨 서비스인지** 를 본다.
+      이 스캔은 IPS 가 가장 분명하게 잡아내는 "시끄러운" 정찰이다.
+
+      ### 어디서 / 무엇을
+      - 접속: 대상의 **attacker-ext (SSH 2203)**.
+      - 동작: 대상 공개 IP 의 포트·서비스 버전을 스캔한다(SYN 스캔).
+
+      ### 권장 명령 (참고)
+      ```bash
+      nmap -sV -p 1-10000 <대상_공개IP> --max-retries 1 --host-timeout 15s -T4
+      ```
+
+      ### 📌 채점 방식
+      대상 IPS(Suricata) 가 SYN 스캔을 탐지해 남기는 경보(예: "Possible nmap SYN scan")
+      또는 Wazuh 로 올라온 동일 경보로 채점한다. 외부 공격자 명령 로그는 보지 않는다.
+
+      ### ✅ 합격 기준
+      대상 IPS/SIEM 에 **포트 스캔 탐지 경보** 가 남는다.
+    hint: "attacker-ext 에서 nmap -sV 포트 스캔. 채점: 대상 Suricata 의 'nmap SYN scan' 경보."
+    verify:
+      type: "log_contains"
+      expect: "nmap"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "nmap", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE ATT&CK T1046 (Network Service Discovery) — SYN 스캔으로 포트·서비스 버전
+          enumerate. Suricata 의 scan 카테고리 시그니처(예: 6V6 Possible nmap SYN scan)가
+          트리거된다. 외부 공격자 모델 → 대상 측 탐지 흔적으로만 판정.
+        success_criteria:
+          - "대상 Suricata 에 SYN 스캔/포트 스캔 탐지 경보가 남음(nmap 시그니처)"
+          - "스캔이 대상 공개 표면에 실제로 도달했음(흔적 존재)"
+          - "(설명) 열린 포트/서비스로 다음 침투 표면을 식별했음을 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 nmap -sV (서비스 버전 스캔)"
+          - "nmap -sS / --top-ports 등 동등 SYN 스캔"
+          - "masscan 후 nmap -sV (속도+정확도)"
+        negative_signs:
+          - "대상 IPS 에 스캔 경보 없음(스캔이 대상에 닿지 않음)"
+          - "command_ran(attacker-ext) 에만 의존 — 외부 명령은 수집 불가라 불인정"
+
+# ───────────────────────── BLUE (운영자: 토폴로지 점검 + 탐지 관측) ─────────────────────────
+# 모든 Blue 미션: 본인 인프라(self). 방어 장비 상태를 점검하고, Red 의 정찰을 탐지한다.
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-1 — IPS(Suricata) 가 살아서 감시 중인지 확인
+
+      방어의 1층은 "내용 검사" 를 하는 IPS 다. 무엇보다 **IPS 가 실제로 가동 중** 이어야 정찰을
+      탐지할 수 있다. 본인 인프라의 Suricata 가 프로세스로 떠 있는지 확인한다.
+
+      ### 어떻게
+      - 운영 콘솔(ips-gui)에서 "가동중 / 로딩된 룰 수" 를 보거나,
+      - IPS 컨테이너에 Suricata 프로세스가 떠 있는지 점검한다.
+
+      ### ✅ 합격 기준
+      IPS 의 Suricata 가 **프로세스로 가동 중** 이다(감시 준비 완료).
+    hint: "본인 IPS 의 Suricata 프로세스 가동 확인. ips-gui 대시보드 '가동중' 또는 프로세스 점검."
+    verify:
+      type: "process_running"
+      expect: "suricata"
+      checks:
+        - { id: "blue-1-1", type: "process_running", target: "ips",
+            params: { name: "suricata" } }
+      semantic:
+        intent: |
+          방어 가용성 점검 — IPS(Suricata)가 가동 중이어야 정찰/공격을 탐지할 수 있다.
+          입문 주차의 '장비가 살아있다' 확인 단계.
+        success_criteria:
+          - "IPS 에서 suricata 프로세스가 running"
+          - "(설명) IPS 가 통과 트래픽의 '내용' 을 검사하는 층임을 자기 말로 설명"
+        acceptable_methods:
+          - "ips-gui 대시보드의 '가동중/로딩된 룰' 카드 확인"
+          - "process_running suricata (프로세스 점검)"
+        negative_signs:
+          - "프로세스 미가동 — 탐지가 원천적으로 불가"
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 외부 정찰 스캔을 IPS 로그에서 탐지
+
+      방금(또는 직전에) 외부 공격자가 우리 망을 스캔했다. 그 흔적은 IPS(Suricata) 의 탐지 로그
+      (eve.json / fast.log)에 **스캔 경보** 로 남는다. 이 경보를 직접 찾아 "누가/언제 스캔했는지"
+      를 확인한다.
+
+      ### 어떻게
+      - IPS 콘솔의 이벤트(eve.json) 또는 fast.log 에서 scan/nmap 관련 경보를 찾는다.
+      - 경보의 출발지 IP(공격자)와 시각을 확인한다.
+
+      ### 📌 이 미션이 핵심인 이유
+      "장비가 켜져 있다"(BLUE-1)와 "실제로 공격을 잡았다"(BLUE-2)는 다르다. 탐지 경보를 눈으로
+      확인해야 비로소 관제가 의미를 가진다. 이 경보는 곧 중앙 SIEM 으로도 모인다.
+
+      ### ✅ 합격 기준
+      본인 IPS 에 외부 스캔에 해당하는 **탐지 경보** 가 있고, 그 출발지/유형을 식별했다.
+    hint: "본인 Suricata 의 eve.json/fast.log 에서 nmap/scan 경보 확인. 출발지 IP·시각 식별."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "blue-2-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE D3FEND D3-NTA (Network Traffic Analysis) — Suricata eve.json/fast.log 에서
+          Red 의 nmap 스캔에 대응되는 scan 카테고리 경보를 식별. 입문 주차의 '탐지 체감' 단계.
+        success_criteria:
+          - "본인 Suricata 로그에 scan/nmap 관련 경보 1건 이상"
+          - "경보의 source IP(공격자) 와 시각을 식별"
+          - "(설명) 이 경보가 Red 의 정찰과 연결됨을 서술"
+        acceptable_methods:
+          - "ips-gui 이벤트 화면에서 scan 경보 확인"
+          - "log_contains suricata (eve.json/fast.log) 의 scan/nmap"
+          - "Wazuh 로 올라온 동일 경보 확인(대안)"
+        negative_signs:
+          - "로그를 안 보고 추측만 함"
+          - "경보는 봤으나 출발지/유형을 식별 못함"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 — WAF(ModSecurity) 가 '차단 모드' 인지 확인
+
+      웹 앞단의 마지막 방패는 WAF(ModSecurity)다. WAF 가 **SecRuleEngine On**(차단 모드)인지,
+      아니면 DetectionOnly(탐지만)인지에 따라 웹 공격을 실제로 막을 수 있는지가 갈린다.
+
+      ### 어떻게
+      - waf-gui 대시보드에서 SecRuleEngine 모드를 보거나,
+      - 웹 서버의 ModSecurity 설정 파일에서 `SecRuleEngine On` 을 확인한다.
+
+      ### ✅ 합격 기준
+      웹 서버의 ModSecurity 가 **SecRuleEngine On**(차단 모드)으로 설정돼 있다.
+    hint: "본인 web 의 /etc/modsecurity/modsecurity.conf 에 SecRuleEngine On 확인(차단 모드)."
+    verify:
+      type: "file_contains"
+      expect: "SecRuleEngine On"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "web",
+            params: { path: "/etc/modsecurity/modsecurity.conf", pattern: "SecRuleEngine On" } }
+      semantic:
+        intent: |
+          웹 방어 태세 점검 — ModSecurity 가 On(차단)인지 DetectionOnly(탐지만)인지 확인.
+          입문 주차의 '마지막 방패' 이해.
+        success_criteria:
+          - "modsecurity.conf 에 SecRuleEngine On"
+          - "(설명) On 과 DetectionOnly 의 차이를 서술(차단 vs 탐지만)"
+        acceptable_methods:
+          - "waf-gui 대시보드의 SecRuleEngine 카드 확인"
+          - "file_contains modsecurity.conf 의 'SecRuleEngine On'"
+        negative_signs:
+          - "DetectionOnly 인데 차단으로 오해"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 — 정찰 경보가 중앙 SIEM(Wazuh)까지 모였는지 확인
+
+      각 장비의 경보는 흩어져 있으면 의미가 약하다. SIEM(Wazuh)이 이를 한곳에 모아야 관제가 된다.
+      외부 정찰로 생긴 경보가 **SIEM 까지 도달** 했는지 확인한다.
+
+      ### 어떻게
+      - SIEM(Wazuh) 의 경보 저장소(alerts.json)에서 최근 스캔/IDS 관련 경보를 찾거나,
+      - siem-gui(또는 중앙 SIEM 탭)에서 동일 경보를 확인한다.
+
+      ### ✅ 합격 기준
+      SIEM 에 외부 정찰과 관련된 **보안 경보** 가 수집돼 있다.
+    hint: "본인 SIEM(Wazuh)에서 최근 스캔/IDS 경보 확인(alerts.json). 중앙 SIEM 탭에서도 보임."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem",
+            params: { groups: "ids", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE D3FEND 통합 가시성 — 흩어진 장비 경보가 Wazuh(SIEM)로 수렴함을 확인. 입문 주차
+          종합: '관문(fw/ips/waf) + 수집(SIEM)' 이 함께 작동해야 관제가 완성됨을 이해.
+        success_criteria:
+          - "Wazuh alerts.json 에 ids/scan 그룹 경보 1건 이상(최근)"
+          - "(설명) 장비별 경보가 SIEM 으로 모이는 흐름을 서술"
+        acceptable_methods:
+          - "siem 에서 wazuh_alert (groups=ids) 확인"
+          - "중앙 SIEM 탭에서 동일 경보 확인(대안)"
+        negative_signs:
+          - "alerts.json 비어있음 — Suricata→Wazuh 수집 경로 점검 필요"

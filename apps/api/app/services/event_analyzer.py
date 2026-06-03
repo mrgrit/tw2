@@ -496,6 +496,16 @@ Grading rules (fairness is critical — a single unfair point is a big problem):
   state created by someone else (e.g., a log/alert produced by the attacker, not by the student's own
   analysis/defense). The student must have performed the action themselves (verify via command_ran for
   insider actions, or via correlated target-side trace for external attacks).
+- EXCEPTION for DEFENSIVE OBSERVATION/ANALYSIS missions (blue team READS logs/alerts/SIEM, often via a
+  GUI console → NO shell-command trace exists; do NOT require command_ran here): the student's action is
+  to FIND and INTERPRET evidence. Valid proof = (a) the claimed evidence genuinely EXISTS (confirm by
+  inspecting the infra), AND (b) the student's report states VERIFIABLE SPECIFICS they could only know by
+  actually observing it — correct source IP, timestamp, signature/rule id, count, or affected resource —
+  that MATCH the inspected evidence. Specifics match → award (full or near-full). This is still strict and
+  fair: a student who did NOT look cannot state the correct specifics. Withhold ONLY if the report is
+  vague/generic with no verifiable specifics, the specifics are WRONG, or the evidence does not exist.
+  Classify by the mission intent: rule/config/attack missions need the artifact/trace; pure
+  observation/analysis missions need accurate, evidence-matching specifics.
 - NEVER trust the student's self-claimed points. YOU decide points in [0, max_points]. Partial allowed.
 - If evidence is insufficient after inspection, be conservative and explain what's missing.
 

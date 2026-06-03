@@ -1,0 +1,253 @@
+id: "secuops-easy-w02"
+category: "secuops-easy"
+title: "[보안운영입문 W2] SSH 무차별 대입 vs 방화벽 차단·완화"
+difficulty: "easy"
+time_limit: 2400
+battle_type: "1v1"
+description: |
+  보안운영 입문 2주차 — 가장 바깥 관문인 **방화벽(nftables)** 을 다룬다. 외부 공격자가 SSH 로
+  무차별 대입(brute force)을 시도하며 문을 두드린다. 운영자는 이 시도를 탐지하고, 방화벽으로
+  ① 공격자 IP 를 차단하고 ② 무차별 대입을 rate limit 으로 완화한다.
+
+  ▸ 모드
+    • solo : 한 학생이 외부 공격자(무차별 대입) → 운영자(탐지·차단·완화)를 차례로 수행. 대상=본인 인프라.
+    • duel : Red 가 상대 인프라에 무차별 대입, Blue 는 본인 인프라에서 탐지·차단. 대상=상대 인프라.
+
+  ▸ 공격자 위치(중요): Red 는 **망 외부 공격자(attacker-ext, SSH 2203)** 기준. 외부 공격자의
+    명령 로그는 6v6 가 수집하지 못하므로, Red 채점은 **대상 인프라에 남은 탐지 흔적**
+    (Wazuh 인증 실패 경보 / Suricata 스캔 경보)으로 한다.
+
+  ▸ 방화벽 룰은 **영속 설정(/etc/nftables.conf)에 반영** 하고, 차단 룰에는 감사 추적용
+    `log prefix "BLOCKED-APT:"` 를 붙인다(운영 모범사례 — 누가 차단됐는지 로그로 남긴다).
+
+# ───────────────────────── RED (외부 공격자) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🎯 RED-1 — 외부에서 SSH 노출 여부 정찰
+
+      무차별 대입에 앞서, 대상의 어떤 포트로 SSH 가 열려 있는지부터 확인한다. 망 외부 공격자
+      (attacker-ext)로 대상의 공개 표면을 포트 스캔한다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      nmap -p 22,2202,2203,2204 -sV <대상_공개IP> --max-retries 1 -T4
+      ```
+      ### 📌 채점
+      외부 공격자 명령은 수집 불가 → 대상 IPS(Suricata)에 남는 스캔 탐지 흔적으로 채점한다.
+
+      ### ✅ 합격 기준
+      대상 IPS 에 포트 스캔 탐지 흔적이 남는다(SSH 노출 포트 식별).
+    hint: "attacker-ext 에서 SSH 포트 스캔. 채점: 대상 Suricata 의 스캔 탐지."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1046 — SSH 노출 포트 정찰. 외부 공격자 모델 → 대상 Suricata 스캔 흔적으로 판정."
+        success_criteria:
+          - "대상 IPS 에 스캔 탐지 흔적"
+          - "(설명) 식별한 SSH 포트를 다음 단계 무차별 대입 표적으로 삼음"
+        acceptable_methods:
+          - "attacker-ext 에서 nmap 포트 스캔(22/2202~2204)"
+        negative_signs:
+          - "대상에 닿지 않은 로컬 명령(흔적 없음)"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 외부에서 SSH 무차별 대입 (Brute Force)
+
+      식별한 SSH 포트에 사전 기반 무차별 대입을 시도한다. 다수의 인증 실패가 발생하며, 이는
+      방화벽/SIEM 이 탐지·완화해야 할 대표적 외부 위협이다.
+
+      ### 권장 명령 (참고 — 교육용, 소규모 사전)
+      ```bash
+      hydra -l root -P /usr/share/wordlists/small.txt ssh://<대상_공개IP>:2204 -t 4 -f
+      ```
+      ### 📌 채점
+      외부 공격자 명령은 수집 불가 → **대상 SIEM(Wazuh)에 인증 실패/무차별 대입 경보** 가
+      남았는지로 채점한다(다수의 sshd 인증 실패 → Wazuh 룰 트리거).
+
+      ### ✅ 합격 기준
+      대상 SIEM 에 SSH 인증 실패/무차별 대입 관련 경보가 남는다.
+    hint: "attacker-ext 에서 SSH 무차별 대입. 채점: 대상 Wazuh 의 인증 실패/brute 경보."
+    verify:
+      type: "wazuh_alert"
+      expect: "authentication"
+      checks:
+        - { id: "red-2-1", type: "wazuh_alert", target: "siem",
+            params: { groups: "authentication_failed", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE T1110 (Brute Force) — SSH 사전 대입. 외부 공격자 모델 → command_ran(attacker-ext)
+          신뢰 금지, 대상 Wazuh 의 authentication_failed/sshd 경보(다수 실패)로 판정.
+        success_criteria:
+          - "대상 Wazuh 에 sshd 인증 실패/무차별 대입 경보(최근)"
+          - "다수 실패가 짧은 시간에 몰림(무차별 대입 특성)"
+          - "(설명) 어떤 계정/포트를 노렸는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 hydra/medusa/patator SSH 무차별 대입"
+          - "ncrack ssh (대안)"
+        negative_signs:
+          - "대상에 인증 실패 경보 없음(공격이 대상에 닿지 않음)"
+          - "command_ran(attacker-ext)에만 의존(외부 명령 미수집이라 불인정)"
+
+# ───────────────────────── BLUE (방화벽 운영자: self) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-1 — SSH 무차별 대입 탐지
+
+      외부에서 SSH 무차별 대입이 들어왔다. 본인 SIEM(Wazuh)에서 인증 실패가 몰린 경보를 찾아
+      "어느 IP 가 어느 계정/포트를 노렸는지" 를 파악한다. 차단의 근거를 먼저 확보하는 단계다.
+
+      ### 어떻게
+      - SIEM(Wazuh) 경보에서 sshd 인증 실패 / 무차별 대입 관련 경보를 찾는다(출발지 IP 식별).
+
+      ### ✅ 합격 기준
+      본인 SIEM 에 SSH 인증 실패/무차별 대입 경보가 있고, 출발지 IP 를 식별했다.
+    hint: "본인 Wazuh 에서 sshd 인증 실패 경보 확인 → 공격자 IP 식별."
+    verify:
+      type: "wazuh_alert"
+      expect: "authentication"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem",
+            params: { groups: "authentication_failed", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE D3FEND D3-UAA — Wazuh 인증 실패 경보로 무차별 대입 식별. 차단 근거 확보."
+        success_criteria:
+          - "본인 Wazuh 에 인증 실패/brute 경보(최근)"
+          - "공격자 출발지 IP 식별"
+          - "(설명) 차단 대상 IP 를 결정"
+        acceptable_methods:
+          - "siem 에서 wazuh_alert(authentication_failed) 확인"
+          - "log_contains auth 의 'Failed password'(대안)"
+        negative_signs:
+          - "경보 미확인 상태로 차단 IP 를 임의 지정"
+
+  - order: 2
+    assess_target: self
+    target_vm: fw
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 공격자 IP 를 방화벽으로 차단 (감사 추적 포함)
+
+      탐지로 확보한 공격자 IP 를 nftables 로 차단한다. **영속 설정(/etc/nftables.conf)에 반영**
+      하고, 차단 룰에는 반드시 `log prefix "BLOCKED-APT:"` 를 붙여 차단된 트래픽이 로그로 남게
+      한다(누가 언제 차단됐는지 추적 = 운영 모범사례).
+
+      ### 권장 형태 (참고)
+      ```
+      nft add rule inet six_filter input ip saddr <공격자IP> log prefix "BLOCKED-APT: " drop
+      # 영속화: 위 룰이 /etc/nftables.conf 에 포함되도록 저장
+      ```
+      ### 📌 채점
+      본인 방화벽의 **/etc/nftables.conf 에 `BLOCKED-APT` 표식이 포함된 차단 룰** 이 있는지로
+      확인한다(영속 반영 + 감사 추적 모범사례 동시 충족).
+
+      ### ✅ 합격 기준
+      /etc/nftables.conf 에 `BLOCKED-APT` 표식의 차단 룰이 영속 반영돼 있다.
+    hint: "공격자 IP drop + log prefix \"BLOCKED-APT:\" 를 /etc/nftables.conf 에 영속 반영."
+    verify:
+      type: "file_contains"
+      expect: "BLOCKED-APT"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "fw",
+            params: { path: "/etc/nftables.conf", pattern: "BLOCKED-APT" } }
+      semantic:
+        intent: |
+          MITRE D3FEND D3-NTF (Network Traffic Filtering) — 공격자 IP 차단 + log prefix 로
+          감사 추적. /etc/nftables.conf 영속 반영을 file_contains 로 확인.
+        success_criteria:
+          - "/etc/nftables.conf 에 공격자 IP drop 룰"
+          - "log prefix 'BLOCKED-APT' 포함(감사 추적)"
+          - "(설명) 차단 대상이 BLUE-1 에서 식별한 IP 와 일치"
+        acceptable_methods:
+          - "nft add rule ... log prefix \"BLOCKED-APT:\" drop 후 영속화"
+          - "fw-gui 객체/룰로 차단 후 영속 반영"
+        negative_signs:
+          - "런타임만 적용하고 /etc/nftables.conf 영속화 누락"
+          - "log prefix 누락(차단 추적 불가)"
+
+  - order: 3
+    assess_target: self
+    target_vm: fw
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 — SSH 무차별 대입 완화 (rate limit)
+
+      단순 IP 차단은 공격자가 IP 를 바꾸면 무력화된다. 보다 일반적인 방어로, SSH(22/2204) 신규
+      연결에 **rate limit** 을 걸어 무차별 대입 속도를 떨어뜨린다. 정상 사용자는 영향이 적고
+      자동화 대입만 억제된다.
+
+      ### 권장 형태 (참고)
+      ```
+      nft add rule inet six_filter input tcp dport {22,2204} ct state new \
+        limit rate over 10/minute log prefix "SSH-RATELIMIT: " drop
+      ```
+      ### 📌 채점
+      /etc/nftables.conf 에 SSH 포트 대상 **`limit rate`** 완화 룰이 영속 반영됐는지로 확인.
+
+      ### ✅ 합격 기준
+      /etc/nftables.conf 에 SSH 신규 연결 `limit rate` 완화 룰이 있다.
+    hint: "SSH dport 에 limit rate over ... drop 를 /etc/nftables.conf 에 영속 반영."
+    verify:
+      type: "file_contains"
+      expect: "limit rate"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "fw",
+            params: { path: "/etc/nftables.conf", pattern: "SSH-RATELIMIT" } }
+      semantic:
+        intent: |
+          무차별 대입 완화 — IP 차단을 넘어 rate limit 으로 자동화 대입을 구조적으로 억제.
+          SSH-RATELIMIT 표식의 limit rate 룰을 /etc/nftables.conf 에서 확인.
+        success_criteria:
+          - "/etc/nftables.conf 에 SSH 포트(22/2204) 대상 limit rate 룰"
+          - "SSH-RATELIMIT log prefix 로 식별 가능"
+          - "(설명) IP 차단 대비 rate limit 의 장점을 서술"
+        acceptable_methods:
+          - "nft ... limit rate over N/minute ... 영속 반영"
+        negative_signs:
+          - "limit rate 없이 전체 차단(정상 사용자까지 차단)"
+          - "영속화 누락"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 10
+    instruction: |
+      ## 🛡️ BLUE-4 — 차단/완화 후 SIEM 가시성 확인
+
+      방화벽 조치가 끝나면, 그 효과와 공격 흔적이 SIEM(Wazuh)에 모여 한눈에 보여야 한다. 본인
+      SIEM 에서 이번 무차별 대입/차단과 관련된 경보가 수집됐는지 확인한다.
+
+      ### ✅ 합격 기준
+      본인 SIEM 에 이번 사건(인증 실패/스캔 등) 관련 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 이번 사건 관련 경보 수집 확인(중앙 SIEM 탭에서도 보임)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem",
+            params: { since_sec: 1800 } }
+      semantic:
+        intent: "통합 가시성 — 방화벽 조치 전후의 공격 흔적이 Wazuh 로 수렴함을 확인."
+        success_criteria:
+          - "본인 Wazuh 에 최근 보안 경보 수집(인증 실패/스캔 등)"
+          - "(설명) 탐지→차단→완화 흐름을 SIEM 근거로 요약"
+        acceptable_methods:
+          - "siem 에서 wazuh_alert 확인"
+          - "중앙 SIEM 탭에서 동일 경보 확인"
+        negative_signs:
+          - "경보 수집이 비어있음(수집 경로 점검 필요)"

@@ -132,6 +132,7 @@ class ScenarioOut(BaseModel):
     title: str
     description: str
     source: str
+    category: str | None = None
     status: str
     time_limit_sec: int
     grader_profile_id: int | None = None

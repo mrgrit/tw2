@@ -14,7 +14,7 @@ from ..models import (
 )
 from ..schemas import ScenarioOut, SmokeResult
 from ..security import require_admin
-from ..services import audit, auto_monitor, battle_service as bs, scenario_jobs
+from ..services import audit, auto_monitor, battle_service as bs, lab_monitor, scenario_jobs
 from ..services import cohort_service as cs
 from ..services import assessor_client
 from ..services.dry_run import review_scenario
@@ -458,7 +458,7 @@ async def admin_list_battles(
             time_limit_sec=b.time_limit_sec,
             elapsed_sec=round(elapsed, 1),
             participant_count=pcount, event_count=ecount,
-            monitor_running=auto_monitor.is_running(b.id),
+            monitor_running=auto_monitor.is_running(b.id) or lab_monitor.is_running(b.id),
             created_at=b.created_at.isoformat() if b.created_at else "",
         ))
     return out

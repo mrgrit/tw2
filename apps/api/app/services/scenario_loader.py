@@ -49,9 +49,12 @@ def _normalize(raw: dict[str, Any], slug: str) -> dict[str, Any]:
         "battle_type_hint": raw.get("battle_type") or "1v1",
         "difficulty": raw.get("difficulty") or "medium",
     }
+    # 카테고리: YAML 의 category(권장) → 없으면 course → 없으면 미분류(None).
+    category = raw.get("category") or raw.get("course")
     return {
         "title": str(raw.get("title") or slug),
         "description": str(raw.get("description") or ""),
+        "category": str(category) if category else None,
         "course_ref": str(raw.get("id") or slug),
         "mission_red": {"missions": red, "battle_type": raw.get("battle_type") or "1v1"},
         "mission_blue": {"missions": blue},
@@ -69,7 +72,12 @@ async def import_scenarios(session: AsyncSession, scenario_dir: Path | None = No
         log.warning("scenario dir not found: %s", d)
         return 0
 
+    # 파일(YAML)이 시나리오 '내용' 의 source of truth — 재로딩 시 내용 필드는 갱신(upsert)하되
+    # 운영 설정(grader_profile_id)·아카이브 상태는 보존한다. UI 는 미션 내용을 편집하지 않으므로 충돌 없음.
+    _CONTENT_FIELDS = ("title", "description", "category", "mission_red",
+                       "mission_blue", "scoring", "time_limit_sec")
     inserted = 0
+    updated = 0
     for path in sorted(d.glob("*.yaml")):
         slug = path.stem
         try:
@@ -85,12 +93,23 @@ async def import_scenarios(session: AsyncSession, scenario_dir: Path | None = No
             select(Scenario).where(Scenario.course_ref == normalized["course_ref"])
         )
         if existing:
+            changed = False
+            for f in _CONTENT_FIELDS:
+                if getattr(existing, f) != normalized[f]:
+                    setattr(existing, f, normalized[f])
+                    changed = True
+            # archived 가 아니면 validated 로 유지(draft→validated 승격 허용), archived 는 보존.
+            if existing.status not in ("validated", "archived"):
+                existing.status = "validated"
+                changed = True
+            if changed:
+                updated += 1
             continue
 
         session.add(Scenario(**normalized))
         inserted += 1
 
-    if inserted:
+    if inserted or updated:
         await session.commit()
-        log.info("imported %d new scenarios from %s", inserted, d)
+        log.info("scenarios: %d new, %d updated from %s", inserted, updated, d)
     return inserted

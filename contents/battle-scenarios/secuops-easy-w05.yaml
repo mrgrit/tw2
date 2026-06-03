@@ -1,0 +1,234 @@
+id: "secuops-easy-w05"
+category: "secuops-easy"
+title: "[보안운영입문 W5] 웹 공격(XSS·스캐너) vs WAF(ModSecurity) 차단룰"
+difficulty: "easy"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  보안운영 입문 5주차 — 웹 앞단의 마지막 방패 **WAF(ModSecurity)** 를 다룬다. 외부 공격자가 웹
+  공격(스캐너·XSS)을 보내면, 운영자는 SecRule 로 해당 패턴을 **실제로 차단(403)** 하고 audit
+  로그로 확인한다. 잘못된 룰은 configtest 에서 거부되어 웹서버가 보존되는 안전장치도 체험한다.
+
+  ▸ 모드
+    • solo : 외부 공격자(웹 공격) → WAF 운영자(차단룰·403 확인)를 한 학생이 차례로 수행. 대상=본인 인프라.
+    • duel : Red 가 상대 웹에 공격, Blue 는 본인 WAF 로 차단. 대상=상대 인프라.
+
+  ▸ 공격자 위치(중요): Red 는 **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은
+    대상 WAF(ModSecurity) audit·SIEM 탐지 흔적으로 한다.
+
+  ▸ WAF 차단의 증거는 **ModSecurity audit 로그(modsec_audit.log)** 다. 차단이 일어나면 audit 에
+    해당 룰/패턴과 403 응답이 기록되고, 이는 Wazuh(SIEM)로도 모인다.
+
+# ───────────────────────── RED (외부 공격자: 웹 공격) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — 반사형 XSS 시도
+
+      대상 웹앱의 입력 파라미터에 스크립트를 주입하는 **반사형 XSS** 를 시도한다. WAF 가 있으면
+      이 요청은 탐지/차단되어야 한다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      curl -s "http://<대상_공개IP>:8080/vulnerabilities/xss_r/?name=<script>alert(1)</script>" \
+           --cookie "security=low; PHPSESSID=test"
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → **대상 WAF(ModSecurity) audit 의 XSS 탐지/차단** 흔적으로 채점.
+
+      ### ✅ 합격 기준
+      대상 WAF audit 에 XSS 공격 탐지(또는 403 차단) 흔적이 남는다.
+    hint: "attacker-ext 에서 <script> XSS. 채점: 대상 ModSecurity audit 의 XSS 탐지."
+    verify:
+      type: "log_contains"
+      expect: "XSS"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "XSS", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE T1059.007 (JS) / OWASP XSS — 반사형 XSS. 외부 공격자 모델 → 대상 ModSecurity
+          audit(XSS 룰 942/941 계열)·차단 흔적으로 판정(command_ran(attacker-ext) 불신뢰).
+        success_criteria:
+          - "대상 ModSecurity audit 에 XSS 탐지/차단 흔적(최근)"
+          - "(설명) 어떤 파라미터에 어떤 스크립트를 주입했는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 curl 로 <script> XSS"
+          - "이벤트 핸들러(onerror=) 등 변형(대안)"
+        negative_signs:
+          - "대상 WAF audit 에 탐지 흔적 없음(미도달)"
+          - "command_ran(attacker-ext) 의존"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 — 스캐너성 다중 공격 (User-Agent 노출)
+
+      자동화 스캐너(또는 반복 curl)로 다수의 공격 페이로드를 보낸다. CRS 가 이를 누적 점수로
+      탐지/차단한다. (이 공격은 BLUE 가 만들 커스텀 SecRule 의 표적이 된다.)
+
+      ### 권장 명령 (참고)
+      ```bash
+      nikto -h http://<대상_공개IP>:8080 -maxtime 60s   # 또는 sqlmap --batch
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → 대상 WAF audit 의 스캐너/공격 탐지 흔적으로 채점.
+
+      ### ✅ 합격 기준
+      대상 WAF audit 에 스캐너/다중 공격 탐지 흔적이 남는다.
+    hint: "attacker-ext 에서 nikto/sqlmap 스캔. 채점: 대상 ModSecurity audit 의 탐지."
+    verify:
+      type: "log_contains"
+      expect: "ModSecurity"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "id", since_sec: 1800 } }
+      semantic:
+        intent: "스캐너 다중 공격 — CRS 누적 점수 탐지. 외부 공격자 모델 → 대상 WAF audit 흔적으로 판정."
+        success_criteria:
+          - "대상 ModSecurity audit 에 공격/스캐너 탐지 트랜잭션(최근)"
+          - "(설명) 어떤 도구로 어떤 표면을 공격했는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 nikto/sqlmap/반복 curl"
+        negative_signs:
+          - "대상 WAF audit 에 흔적 없음"
+
+# ───────────────────────── BLUE (WAF 운영자: self) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-1 — WAF 차단 모드(On) 확인
+
+      차단룰을 추가하기 전에 WAF 가 실제로 차단(403)할 수 있는 상태인지 확인한다. ModSecurity 의
+      `SecRuleEngine` 가 **On**(차단)인지 DetectionOnly(탐지만)인지 본다.
+
+      ### ✅ 합격 기준
+      웹 서버의 ModSecurity 가 SecRuleEngine On(차단 모드)이다.
+    hint: "본인 web 의 modsecurity.conf 에 SecRuleEngine On 확인."
+    verify:
+      type: "file_contains"
+      expect: "SecRuleEngine On"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "web",
+            params: { path: "/etc/modsecurity/modsecurity.conf", pattern: "SecRuleEngine On" } }
+      semantic:
+        intent: "차단 태세 점검 — On 이라야 SecRule 이 실제 403 차단을 한다."
+        success_criteria:
+          - "modsecurity.conf 에 SecRuleEngine On"
+          - "(설명) On vs DetectionOnly 차이 서술"
+        acceptable_methods:
+          - "waf-gui 대시보드 / file_contains modsecurity.conf"
+        negative_signs:
+          - "DetectionOnly 인데 차단으로 오해"
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-2 — 공격 패턴을 차단하는 SecRule 작성 + 실제 403 확인
+
+      이번 주 핵심 — RED 의 공격(XSS/스캐너)을 막는 **커스텀 SecRule** 을 작성·적용하고, 실제로
+      **403 차단** 이 일어나 ModSecurity audit 로그에 기록되는지 확인한다.
+
+      ### 권장 형태 (참고 — User-Agent 가 sqlmap 이면 차단)
+      ```
+      SecRule REQUEST_HEADERS:User-Agent "@contains sqlmap" \
+        "id:9000100,phase:1,deny,status:403,log,msg:'EDU block sqlmap UA'"
+      ```
+      적용은 **configtest 통과 후 reload** 로 한다(잘못된 룰은 configtest 에서 거부되어 웹서버가
+      보존된다 — 안전장치). 적용 후 그 패턴으로 접속하면 **403** 이 떨어지고 audit 에 기록된다.
+
+      ### 📌 채점
+      본인 WAF 의 ModSecurity audit 로그에 **차단(403)/커스텀 룰 동작** 흔적이 남았는지로 확인한다.
+
+      ### ✅ 합격 기준
+      WAF audit 에 차단/룰 동작 흔적이 있다(SecRule 이 실제 공격을 막음).
+    hint: "SecRule 에 msg:'EDU block ...' + deny status:403 작성 → configtest+reload → 그 패턴 접속 시 본인 룰이 audit 에 기록."
+    verify:
+      type: "log_contains"
+      expect: "EDU block"
+      checks:
+        # 기존 CRS 도 403 을 내므로 '403' 만으론 오탐(자동통과) → 학생 커스텀 SecRule 의 고유 표식
+        # msg 'EDU block' 이 modsec audit 에 남았는지로 '본인 룰이 실제 차단' 했음을 한정 확인.
+        - { id: "blue-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "EDU block", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE D3FEND D3-WAF — 커스텀 SecRule 로 공격 패턴 차단(deny status:403). '작성'이 아니라
+          '실제 차단'이 핵심 — modsec_audit 에 403/룰 동작이 남아야 인정.
+        success_criteria:
+          - "ModSecurity audit 에 403 차단 트랜잭션(최근)"
+          - "차단이 학생이 작성한 커스텀 SecRule(또는 의도한 패턴)에서 발생"
+          - "(설명) configtest 통과 후 reload 로 안전하게 적용했음을 서술"
+        acceptable_methods:
+          - "SecRule ... deny status:403 작성 → configtest+reload → 공격 재현으로 403 확인"
+          - "waf-gui SecRule 폼으로 작성·적용"
+        negative_signs:
+          - "룰만 작성하고 403 차단 미확인"
+          - "configtest 없이 적용(잘못된 룰로 웹서버 손상 위험)"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 10
+    instruction: |
+      ## 🛡️ BLUE-3 — 안전장치 이해: 잘못된 룰은 거부된다
+
+      운영 신뢰성의 핵심 — 잘못 작성한 SecRule(문법 오류)을 적용하려 하면 **configtest 가 실패** 해
+      적용이 거부되고, 현재 동작 중인 웹서버는 보존된다. 이 안전장치를 직접 확인한다(콘솔의 적용
+      절차가 configtest 를 강제). 정상 동작 중인 Apache/ModSecurity 가 유지됨을 확인한다.
+
+      ### ✅ 합격 기준
+      웹 서버(Apache)가 정상 가동 중이다(안전장치로 보존됨).
+    hint: "잘못된 룰은 configtest 거부 → 웹서버 보존. Apache 프로세스 가동 확인."
+    verify:
+      type: "process_running"
+      expect: "apache"
+      checks:
+        - { id: "blue-3-1", type: "process_running", target: "web",
+            params: { name: "apache2" } }
+      semantic:
+        intent: "운영 안전장치 — 잘못된 룰은 configtest 에서 거부되어 가동 중 웹서버가 보존됨을 이해."
+        success_criteria:
+          - "web 의 apache2 프로세스 running(보존됨)"
+          - "(설명) configtest 가 잘못된 룰을 어떻게 막는지 서술"
+        acceptable_methods:
+          - "process_running apache2 / waf-gui 의 가동 상태"
+        negative_signs:
+          - "잘못된 룰 적용으로 웹서버 다운(안전장치 미작동 오해)"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 10
+    instruction: |
+      ## 🛡️ BLUE-4 — WAF 차단이 SIEM 으로 모이는지 확인
+
+      WAF 의 차단(403)·탐지 audit 가 SIEM(Wazuh)으로 모여 통합 관제되는지 확인한다.
+
+      ### ✅ 합격 기준
+      본인 SIEM 에 웹공격/WAF 차단 관련 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 웹공격/WAF 관련 경보 수집 확인(중앙 SIEM 탭에서도 보임)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "통합 가시성 — WAF audit 가 Wazuh 로 수렴."
+        success_criteria:
+          - "본인 Wazuh 에 최근 웹공격/WAF 관련 경보"
+          - "(설명) WAF→SIEM 수집 흐름 서술"
+        acceptable_methods:
+          - "siem 에서 wazuh_alert / 중앙 SIEM 탭"
+        negative_signs:
+          - "수집이 비어있음"

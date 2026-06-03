@@ -21,7 +21,18 @@ interface Job {
 interface Draft {
   id: number; title: string; description: string; source: string;
   status: string; time_limit_sec: number; grader_profile_id?: number | null;
+  category?: string | null;
 }
+
+// 교과목 카테고리 라벨/색 — 시나리오 그룹핑·필터·뱃지에 공용 사용
+const CATEGORY_LABEL: Record<string, string> = {
+  'secuops-easy': '보안운영 입문', 'secuops': '보안운영', 'soc': 'SOC 관제', 'attack': '공격기법',
+}
+const CATEGORY_COLOR: Record<string, string> = {
+  'secuops-easy': 'green', 'secuops': 'blue', 'soc': 'yellow', 'attack': 'red',
+}
+const catLabel = (c?: string | null) => (c ? (CATEGORY_LABEL[c] || c) : '미분류')
+const catColor = (c?: string | null) => (c ? (CATEGORY_COLOR[c] || 'blue') : '')
 interface Grader {
   id: number; name: string; provider: 'cc' | 'bastion'; model: string;
   base_url: string | null; has_api_key: boolean; enabled: boolean; is_default: boolean; created_at: string;
@@ -484,6 +495,7 @@ function UsersTab() {
 function ScenariosTab({ onChange }: { onChange: () => void }) {
   const [scenarios, setScenarios] = useState<Draft[]>([])
   const [graders, setGraders] = useState<Grader[]>([])
+  const [catFilter, setCatFilter] = useState('')
   const refresh = async () => {
     const all = await api<Draft[]>('/scenarios')
     const drafts = await api<Draft[]>('/admin/scenarios/drafts')
@@ -502,36 +514,76 @@ function ScenariosTab({ onChange }: { onChange: () => void }) {
     refresh(); onChange()
   }
 
+  // 카테고리별 그룹핑 (알려진 카테고리 우선순서 → 기타 → 미분류)
+  const order = ['secuops-easy', 'secuops', 'soc', 'attack']
+  const cats = Array.from(new Set(scenarios.map(s => s.category || ''))).sort((a, b) => {
+    const ia = a ? (order.indexOf(a) < 0 ? 98 : order.indexOf(a)) : 99
+    const ib = b ? (order.indexOf(b) < 0 ? 98 : order.indexOf(b)) : 99
+    return ia - ib
+  })
+  const counts: Record<string, number> = {}
+  scenarios.forEach(s => { const k = s.category || ''; counts[k] = (counts[k] || 0) + 1 })
+  const shown = catFilter ? cats.filter(c => c === catFilter) : cats
+
+  function card(s: Draft) {
+    return (
+      <div key={s.id} className="card">
+        <div className="row" style={{ alignItems: 'center' }}>
+          <b>#{s.id} {s.title}</b>
+          {s.category && <span className={`badge ${catColor(s.category)}`}>{catLabel(s.category)}</span>}
+          <span className={`badge ${s.status === 'validated' ? 'green' : s.status === 'archived' ? 'red' : 'yellow'}`}>{s.status}</span>
+          <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{s.source}</span>
+          <div style={{ flex: 1 }} />
+          {s.status !== 'archived' && (
+            <button className="ghost" onClick={() => patch(s.id, { status: 'archived' })}>archive</button>
+          )}
+          {s.status === 'archived' && (
+            <button className="ghost" onClick={() => patch(s.id, { status: 'validated' })}>복원</button>
+          )}
+          <button className="danger" onClick={() => del(s.id)}>삭제</button>
+        </div>
+        <div className="row" style={{ alignItems: 'center', marginTop: 6, fontSize: 13 }}>
+          <span style={{ color: 'var(--fg-dim)' }}>채점 AI:</span>
+          <select value={s.grader_profile_id ?? ''}
+            onChange={e => patch(s.id, { grader_profile_id: e.target.value ? Number(e.target.value) : 0 })}
+            style={{ width: 280 }}>
+            <option value="">기본 ({graders.find(g => g.is_default)?.name || 'CC(claude-haiku)'})</option>
+            {graders.filter(g => g.enabled).map(g => (
+              <option key={g.id} value={g.id}>{g.name} — {g.provider}:{g.model}</option>
+            ))}
+          </select>
+          {graders.length === 0 && <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>(채점기 미등록 — "AI 채점기" 탭에서 등록)</span>}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
-      <h3>시나리오 관리</h3>
-      {scenarios.map(s => (
-        <div key={s.id} className="card">
-          <div className="row" style={{ alignItems: 'center' }}>
-            <b>#{s.id} {s.title}</b>
-            <span className={`badge ${s.status === 'validated' ? 'green' : s.status === 'archived' ? 'red' : 'yellow'}`}>{s.status}</span>
-            <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{s.source}</span>
-            <div style={{ flex: 1 }} />
-            {s.status !== 'archived' && (
-              <button className="ghost" onClick={() => patch(s.id, { status: 'archived' })}>archive</button>
-            )}
-            {s.status === 'archived' && (
-              <button className="ghost" onClick={() => patch(s.id, { status: 'validated' })}>복원</button>
-            )}
-            <button className="danger" onClick={() => del(s.id)}>삭제</button>
+      <div className="row" style={{ alignItems: 'center', marginBottom: 8 }}>
+        <h3 style={{ margin: 0 }}>시나리오 관리</h3>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 13, color: 'var(--fg-dim)' }}>카테고리</span>
+        <select value={catFilter} onChange={e => setCatFilter(e.target.value)}>
+          <option value="">전체 ({scenarios.length})</option>
+          {cats.map(c => <option key={c} value={c}>{catLabel(c)} ({counts[c]})</option>)}
+        </select>
+      </div>
+      {/* 카테고리 칩 줄 — 클릭 시 필터 */}
+      <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+        {cats.map(c => (
+          <span key={c} className={`badge ${catColor(c)}`} style={{ cursor: 'pointer', opacity: catFilter && catFilter !== c ? 0.4 : 1 }}
+            onClick={() => setCatFilter(catFilter === c ? '' : c)}>
+            {catLabel(c)} <b>{counts[c]}</b>
+          </span>
+        ))}
+      </div>
+      {shown.map(c => (
+        <div key={c || 'none'} style={{ marginBottom: 18 }}>
+          <div style={{ borderBottom: '2px solid var(--border)', paddingBottom: 4, marginBottom: 10, fontWeight: 700 }}>
+            {catLabel(c)} <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>· {counts[c]}개</span>
           </div>
-          <div className="row" style={{ alignItems: 'center', marginTop: 6, fontSize: 13 }}>
-            <span style={{ color: 'var(--fg-dim)' }}>채점 AI:</span>
-            <select value={s.grader_profile_id ?? ''}
-              onChange={e => patch(s.id, { grader_profile_id: e.target.value ? Number(e.target.value) : 0 })}
-              style={{ width: 280 }}>
-              <option value="">기본 ({graders.find(g => g.is_default)?.name || 'CC(claude-haiku)'})</option>
-              {graders.filter(g => g.enabled).map(g => (
-                <option key={g.id} value={g.id}>{g.name} — {g.provider}:{g.model}</option>
-              ))}
-            </select>
-            {graders.length === 0 && <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>(채점기 미등록 — "AI 채점기" 탭에서 등록)</span>}
-          </div>
+          {scenarios.filter(s => (s.category || '') === c).sort((a, b) => a.id - b.id).map(card)}
         </div>
       ))}
     </>

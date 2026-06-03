@@ -125,6 +125,8 @@ class Scenario(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     source: Mapped[str] = mapped_column(String(40), default="admin", nullable=False)  # admin | claude | bastion-scrap
+    # 교과목 카테고리 — UI 그룹핑/필터용 (secuops-easy | secuops | soc | attack | ...). null=미분류
+    category: Mapped[str | None] = mapped_column(String(40), nullable=True)
     course_ref: Mapped[str | None] = mapped_column(String(120), nullable=True)        # e.g. "course3 / w01-w03"
     mission_red: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     mission_blue: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

@@ -1,0 +1,244 @@
+id: "secuops-easy-w04"
+category: "secuops-easy"
+title: "[보안운영입문 W4] 자동화 공격(sqlmap·무차별대입) vs IPS 침해대응 탐지룰"
+difficulty: "easy"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  보안운영 입문 4주차 — 3주차에서 배운 IPS 룰 작성을 "침해대응" 관점으로 확장한다. 외부 공격자가
+  자동화 도구(sqlmap)와 SSH 무차별 대입으로 공격하면, 운영자는 각 공격을 잡는 Suricata 탐지룰을
+  작성한다. 단발 시그니처(스캐너 User-Agent)와 빈도 기반(threshold by_src) 탐지를 모두 다룬다.
+
+  ▸ 모드
+    • solo : 외부 공격자(sqlmap·brute) → IPS 운영자(탐지룰 작성·검증)를 한 학생이 차례로 수행. 대상=본인 인프라.
+    • duel : Red 가 상대에 자동화 공격, Blue 는 본인 IPS 에서 탐지룰로 잡는다. 대상=상대 인프라.
+
+  ▸ 공격자 위치(중요): Red 는 **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은
+    대상 방어층(ModSecurity/Suricata)·SIEM 탐지 흔적으로 한다.
+
+  ▸ 탐지룰은 **/etc/suricata/rules/local.rules** 에 작성(교육용 sid 9000000+).
+
+# ───────────────────────── RED (외부 공격자: 자동화 공격) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — sqlmap 자동화 SQL 인젝션 스캔
+
+      수동 인젝션을 넘어 **sqlmap** 자동화 도구로 대상 웹앱을 공격한다. sqlmap 은 기본적으로
+      식별 가능한 User-Agent(`sqlmap/...`)와 다량의 변형 페이로드를 보내므로, 방어층이 "스캐너"로
+      탐지하기 쉽다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      sqlmap -u "http://<대상_공개IP>:8080/vulnerabilities/sqli/?id=1&Submit=Submit" \
+             --cookie="security=low; PHPSESSID=test" --batch --technique=U --level=2
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → **대상 ModSecurity/Suricata 의 sqlmap·SQLi 스캐너 탐지** 흔적으로 채점.
+
+      ### ✅ 합격 기준
+      대상 방어층에 sqlmap/SQLi 자동화 공격 탐지 흔적이 남는다.
+    hint: "attacker-ext 에서 sqlmap 자동화 공격. 채점: 대상 ModSecurity 의 SQLi/스캐너 탐지."
+    verify:
+      type: "log_contains"
+      expect: "SQL"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "SQL", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE T1190 + 자동화(T1595) — sqlmap 스캐너. 외부 공격자 모델 → 대상 ModSecurity audit /
+          Suricata 의 SQLi·scanner 탐지로 판정(command_ran(attacker-ext) 불신뢰).
+        success_criteria:
+          - "대상 ModSecurity/Suricata 에 SQLi 또는 scanner 탐지 흔적(최근)"
+          - "다량 변형 요청(자동화 특성)이 방어층에 잡힘"
+          - "(설명) sqlmap 의 어떤 기법(UNION 등)을 썼는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 sqlmap --batch (자동화)"
+          - "수동 다중 페이로드(대안)"
+        negative_signs:
+          - "대상 방어층에 탐지 흔적 없음(미도달)"
+          - "command_ran(attacker-ext) 의존(외부 명령 미수집이라 불인정)"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 — SSH 무차별 대입 (빈도 기반 공격)
+
+      자동화 도구로 SSH 무차별 대입을 시도한다. 단발 시그니처로는 한 번의 실패와 구분이 안 되므로,
+      방어자는 **짧은 시간 다수 실패(빈도)** 로 탐지해야 한다(이번 주 BLUE-2 의 threshold 룰 표적).
+
+      ### 권장 명령 (참고)
+      ```bash
+      hydra -l root -P /usr/share/wordlists/small.txt ssh://<대상_공개IP>:2204 -t 4 -f
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → 대상 SIEM(Wazuh)의 인증 실패/무차별 대입 경보로 채점.
+
+      ### ✅ 합격 기준
+      대상 SIEM 에 SSH 인증 실패/무차별 대입 경보가 남는다.
+    hint: "attacker-ext 에서 SSH 무차별 대입. 채점: 대상 Wazuh 의 인증 실패 경보."
+    verify:
+      type: "wazuh_alert"
+      expect: "authentication"
+      checks:
+        - { id: "red-2-1", type: "wazuh_alert", target: "siem",
+            params: { groups: "authentication_failed", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1110 — SSH 무차별 대입(빈도 기반). 외부 공격자 모델 → 대상 Wazuh 인증 실패 경보로 판정."
+        success_criteria:
+          - "대상 Wazuh 에 다수의 sshd 인증 실패 경보(최근)"
+          - "(설명) 단발이 아닌 '빈도' 가 탐지 포인트임을 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 hydra/medusa SSH 무차별 대입"
+        negative_signs:
+          - "대상에 인증 실패 경보 없음"
+          - "command_ran(attacker-ext) 의존"
+
+# ───────────────────────── BLUE (IPS 운영자: self) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 — sqlmap 스캐너 탐지룰 작성 (단발 시그니처)
+
+      자동화 스캐너는 식별 가능한 흔적(User-Agent)을 남긴다. `http.user_agent` 버퍼에서
+      `sqlmap` 문자열을 잡는 Suricata 룰을 `/etc/suricata/rules/local.rules` 에 작성한다.
+
+      ### 권장 형태 (참고)
+      ```
+      alert http any any -> any any (msg:"EDU sqlmap scanner detected"; flow:to_server; \
+        http.user_agent; content:"sqlmap"; nocase; classtype:web-application-attack; \
+        sid:9000010; rev:1;)
+      ```
+      ### 📌 채점
+      local.rules 에 **http.user_agent 기반 sqlmap 탐지 룰** 이 작성됐는지로 확인.
+
+      ### ✅ 합격 기준
+      local.rules 에 sqlmap User-Agent 탐지 룰이 있다.
+    hint: "local.rules 에 http.user_agent + content:sqlmap 룰 작성(sid 9000010)."
+    verify:
+      type: "file_contains"
+      expect: "sqlmap"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", regex: "(?i)sqlmap" } }
+      semantic:
+        intent: "MITRE D3FEND D3-NTA — 스캐너 User-Agent 단발 시그니처. http.user_agent 버퍼+content 로 sqlmap 탐지."
+        success_criteria:
+          - "local.rules 에 http.user_agent + sqlmap content 룰"
+          - "msg/classtype/sid(9000000+) 메타 포함"
+          - "(설명) User-Agent 위장 시 한계도 인지"
+        acceptable_methods:
+          - "ips-gui 탐지룰 폼(→ local.rules)"
+          - "local.rules 직접 작성(http.user_agent content:sqlmap)"
+        negative_signs:
+          - "문법 오류로 로딩 실패"
+          - "버퍼 지정 없이 과탐(전체 페이로드 content)"
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — SSH 무차별 대입 탐지룰 작성 (threshold by_src)
+
+      무차별 대입은 단발이 아니라 **빈도** 로 탐지한다. SSH(22/2204) 신규 연결이 출발지별로 짧은
+      시간에 임계치를 넘으면 경보하는 **threshold(by_src)** 룰을 작성한다.
+
+      ### 권장 형태 (참고)
+      ```
+      alert tcp any any -> any 2204 (msg:"EDU SSH bruteforce (threshold)"; flow:to_server; \
+        flags:S; threshold:type threshold, track by_src, count 10, seconds 60; \
+        classtype:attempted-recon; sid:9000020; rev:1;)
+      ```
+      ### 📌 채점
+      local.rules 에 **threshold/by_src 빈도 기반** SSH 탐지 룰이 작성됐는지로 확인.
+
+      ### ✅ 합격 기준
+      local.rules 에 threshold(by_src) 기반 SSH 무차별 대입 탐지 룰이 있다.
+    hint: "local.rules 에 dport 2204 + threshold track by_src 룰 작성. msg 에 'EDU SSH' 포함(본인 룰 식별)."
+    verify:
+      type: "file_contains"
+      expect: "EDU SSH"
+      checks:
+        # 베이스 local.rules 에도 threshold 룰이 있어 'threshold' 만으론 오탐(자동통과) → 학생 룰의
+        # 고유 표식 msg 'EDU SSH' 로 한정. 빈도(threshold) 충족 여부는 AI 가 semantic 으로 검증.
+        - { id: "blue-2-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "EDU SSH" } }
+      semantic:
+        intent: "MITRE D3FEND — 빈도 기반 탐지. threshold(track by_src, count/seconds)로 무차별 대입의 '몰림' 을 탐지."
+        success_criteria:
+          - "local.rules 에 threshold(track by_src) SSH 룰"
+          - "count/seconds 임계치 + dport(22/2204) 지정"
+          - "(설명) 단발 vs 빈도 탐지의 차이를 서술"
+        acceptable_methods:
+          - "threshold:type threshold, track by_src, count N, seconds M"
+          - "detection_filter (동등 효과)"
+        negative_signs:
+          - "threshold 없이 단발 alert(정상 1회 실패도 경보 → 과탐)"
+
+  - order: 3
+    assess_target: self
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 — 공격 재현 → 작성한 룰의 실제 탐지 확인
+
+      작성한 룰들이 실제로 동작하는지 확인한다. (solo 면 본인이 RED 의 sqlmap/brute 를 재현하고)
+      IPS 이벤트 로그(eve.json)에서 방금 작성한 룰들이 트리거한 경보를 찾는다.
+
+      ### ✅ 합격 기준
+      본인 IPS 로그에 sqlmap 또는 무차별 대입 탐지 경보가 있다(작성 룰 동작 확인).
+    hint: "sqlmap/brute 재현 후 eve.json 에서 작성 룰의 경보 확인."
+    verify:
+      type: "log_contains"
+      expect: "sqlmap"
+      checks:
+        - { id: "blue-3-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "sqlmap", since_sec: 1800 } }
+      semantic:
+        intent: "룰 검증 — 작성한 탐지룰이 재현 공격을 실제로 잡는지 eve.json 으로 확인."
+        success_criteria:
+          - "Suricata eve.json 에 sqlmap/SSH brute 탐지 경보(최근)"
+          - "경보가 BLUE-1/BLUE-2 의 작성 룰에서 트리거됨"
+          - "(설명) 작성 → 재현 → 탐지 흐름 서술"
+        acceptable_methods:
+          - "sqlmap/brute 재현 후 ips 이벤트에서 경보 확인"
+          - "log_contains suricata 의 sqlmap"
+        negative_signs:
+          - "룰만 작성하고 동작 미확인"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 10
+    instruction: |
+      ## 🛡️ BLUE-4 — SIEM 통합 수집 확인
+
+      작성한 탐지룰의 경보가 SIEM(Wazuh)으로 모여 통합 관제되는지 확인한다.
+
+      ### ✅ 합격 기준
+      본인 SIEM 에 이번 자동화 공격 관련 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 자동화 공격 관련 경보 수집 확인."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "통합 가시성 — IPS 탐지가 Wazuh 로 수렴."
+        success_criteria:
+          - "본인 Wazuh 에 최근 공격 관련 경보"
+          - "(설명) 통합 관제의 가치 서술"
+        acceptable_methods:
+          - "siem 에서 wazuh_alert / 중앙 SIEM 탭"
+        negative_signs:
+          - "수집이 비어있음"
