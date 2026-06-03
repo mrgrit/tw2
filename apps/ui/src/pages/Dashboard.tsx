@@ -3,16 +3,23 @@ import { Link } from 'react-router-dom'
 import { api } from '../api.ts'
 import { getUser } from '../auth.ts'
 
+interface Feedback {
+  id: number; scope: string; trigger: string; content_md: string;
+  created_at: string; battle_id: number | null
+}
+
 export default function Dashboard() {
   const user = getUser()!
   const [infraCount, setInfraCount] = useState<number | null>(null)
   const [battleCount, setBattleCount] = useState<number | null>(null)
   const [scenarioCount, setScenarioCount] = useState<number | null>(null)
+  const [feedback, setFeedback] = useState<Feedback[]>([])
 
   useEffect(() => {
     api<any[]>('/infras').then(d => setInfraCount(d.length)).catch(() => setInfraCount(0))
     api<any[]>('/battles').then(d => setBattleCount(d.length)).catch(() => setBattleCount(0))
     api<any[]>('/scenarios').then(d => setScenarioCount(d.length)).catch(() => setScenarioCount(0))
+    api<Feedback[]>('/feedback/me').then(setFeedback).catch(() => setFeedback([]))
   }, [])
 
   return (
@@ -44,6 +51,21 @@ export default function Dashboard() {
           </div>
           <Link to="/battle">목록 보기 →</Link>
         </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 24 }}>
+        <h3 style={{ marginTop: 0 }}>받은 피드백 ({feedback.length})</h3>
+        {feedback.length === 0 && <div style={{ color: 'var(--fg-dim)' }}>아직 받은 피드백이 없습니다.</div>}
+        {feedback.map(f => (
+          <div key={f.id} style={{ padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+            <div className="row" style={{ alignItems: 'center' }}>
+              <span className="badge blue">{f.scope}</span>
+              <span className="badge yellow">{f.trigger}</span>
+              <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{f.created_at?.slice(0, 16).replace('T', ' ')}</span>
+            </div>
+            <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginTop: 6, fontFamily: 'inherit' }}>{f.content_md}</pre>
+          </div>
+        ))}
       </div>
 
       <div className="card" style={{ marginTop: 24 }}>

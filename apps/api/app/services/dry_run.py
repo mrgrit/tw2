@@ -23,6 +23,8 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from .scenario_gen import _invoke_claude  # subprocess wrapper
+from . import assessor_client
+from . import check_compiler as cc
 
 log = logging.getLogger(__name__)
 
@@ -137,18 +139,56 @@ async def _probe_via_bastion(infra) -> list[dict]:
     return out
 
 
+# ── Assessor 기반 reachability/정합성 (실제 /assess) ──
+async def assess_reachability(scenario: dict[str, Any], infra) -> dict[str, Any]:
+    """시나리오의 모든 미션을 check-spec 으로 컴파일해 infra 1대에 실제 `/assess`.
+
+    pass_rate = passed / total. ≥0.7 이면 validated 후보. 부작용 0(읽기 전용).
+    """
+    red = (scenario.get("mission_red") or {}).get("missions") or []
+    blue = (scenario.get("mission_blue") or {}).get("missions") or []
+    checks = cc.compile_side(list(red), side="red") + cc.compile_side(list(blue), side="blue")
+    resp = await assessor_client.assess(infra, checks)
+    results = resp.get("results", []) or []
+    total = len(checks)
+    passed = sum(1 for r in results if r.get("passed"))
+    pass_rate = round(passed / total, 3) if total else 0.0
+    return {
+        "ok": bool(resp.get("ok")),
+        "pass_rate": pass_rate,
+        "passed": passed,
+        "total": total,
+        "validated": pass_rate >= 0.7,
+        "results": results,
+        "error": resp.get("error"),
+    }
+
+
 # ── 공개 API ────────────────────────────────────────
 async def review_scenario(scenario: dict[str, Any], infra=None) -> dict[str, Any]:
-    """LLM 기반 정합성 검증 + (옵션) reachability probe.
+    """정합성 검증. infra 가 있으면 **실제 Assessor `/assess`** 로 reachability·정합성 확인
+    (pass_rate≥0.7 → validated). LLM(claude) 정합성 리뷰는 best-effort 로 병행.
 
     반환 dict shape:
-      {
-        "summary": str,
-        "review": ScenarioReview.dict(),
-        "passed": bool,
-        "executor": {"probes": [...]} (optional),
-      }
+      {"summary", "passed", "pass_rate", "review"?, "claude_meta"?, "assessor"?}
     """
+    out = await _llm_review_scenario(scenario)
+    if infra is not None:
+        assessor = await assess_reachability(scenario, infra)
+        out["assessor"] = assessor
+        if assessor.get("ok"):
+            # Assessor 가 권위 — pass_rate/passed 를 실제 측정값으로 대체.
+            out["passed"] = bool(assessor["validated"])
+            out["pass_rate"] = assessor["pass_rate"]
+            out["summary"] = (
+                (out.get("summary") or "")
+                + f" | Assessor reachable {assessor['passed']}/{assessor['total']} "
+                  f"(validated={assessor['validated']})"
+            ).strip(" |")
+    return out
+
+
+async def _llm_review_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
     system, user = _build_review_prompt(scenario)
     raw = await _invoke_claude(system, user)
     if raw.get("is_error") or raw.get("subtype") != "success":
@@ -181,11 +221,4 @@ async def review_scenario(scenario: dict[str, Any], infra=None) -> dict[str, Any
             "cost_usd": raw.get("total_cost_usd"),
         },
     }
-
-    if infra is not None:
-        try:
-            out["executor"] = {"probes": await _probe_via_bastion(infra)}
-        except Exception as e:
-            out["executor"] = {"error": f"{type(e).__name__}: {e}"}
-
     return out

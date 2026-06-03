@@ -204,6 +204,99 @@ async def judge(
                        model=result.model, cache_hit=False, cost_usd=result.cost_usd)
 
 
+# ──────────────────────────────────────────────────────
+# Assessor 기반 판정 (Phase: Assessor 연동)
+# ──────────────────────────────────────────────────────
+def _checks_evidence_text(check_results: list[dict]) -> str:
+    return "\n".join(
+        f"{r.get('id')}|{int(bool(r.get('passed')))}|{r.get('evidence') or ''}"
+        for r in check_results
+    )
+
+
+def _deterministic_checks_reasoning(mission: dict, check_results: list[dict], *, matched: bool) -> str:
+    """Assessor check 결과로부터 LLM 없이 채점 근거 markdown 생성 (결정론)."""
+    instr = mission.get("instruction") or mission.get("title") or "(미션 정보 없음)"
+    head = "**자동 채점 (Assessor — 결정론, LLM 0)**"
+    lines = [head, "", f"> {instr}", ""]
+    n_pass = sum(1 for r in check_results if r.get("passed"))
+    lines.append(f"### check 결과 {n_pass}/{len(check_results)} 통과")
+    for r in check_results:
+        mark = "✅" if r.get("passed") else "❌"
+        ev = (str(r.get("evidence") or "")).strip().replace("\n", " ")[:160]
+        lines.append(f"- {mark} `{r.get('id')}` ({(r.get('raw') or {}).get('type', '?')}) — {ev or '(no evidence)'}")
+    lines.append("")
+    if matched:
+        lines.append("→ 모든 check 통과 — 미션 충족으로 판정, 점수 부여.")
+    else:
+        lines.append("→ 일부 check 미통과 — 미션 미충족, 점수 미부여.")
+    return "\n".join(lines)
+
+
+def _is_ambiguous(check_results: list[dict]) -> bool:
+    """결과가 모호한가 — passed=True 인데 evidence 가 비어있는 check 가 있으면 모호."""
+    return any(r.get("passed") and not (r.get("evidence") or "").strip() for r in check_results)
+
+
+async def judge_checks(
+    *, monitor: str, battle_id: int, mission: dict, check_results: list[dict],
+    side: str = "blue", scenario_title: str = "", course_ref: str | None = None,
+) -> JudgeResult:
+    """Assessor check 결과 → 판정.
+
+    - matched = 모든 check 통과 (Assessor `passed` 기반, 결정론).
+    - **결정론 check 는 LLM 0**: 근거는 evidence 로부터 직접 생성.
+    - monitor=claude AND 결과가 모호(passed 인데 evidence 없음)할 때만 event_analyzer(LLM) 로
+      보강 분석. monitor=bastion 은 항상 LLM 0.
+    """
+    order = int(mission.get("order") or 0)
+    matched = bool(check_results) and all(r.get("passed") for r in check_results)
+
+    h = _hash(_checks_evidence_text(check_results))
+    key = (battle_id, order, h)
+    if key in _judge_cache:
+        return JudgeResult(matched=matched, reasoning=_judge_cache[key],
+                           model="assessor:cache", cache_hit=True, cost_usd=0.0)
+
+    if not matched:
+        reasoning = _deterministic_checks_reasoning(mission, check_results, matched=False)
+        _judge_cache[key] = reasoning
+        return JudgeResult(matched=False, reasoning=reasoning, model="assessor", cost_usd=0.0)
+
+    # matched. 결정론 → LLM 0. 단, claude 모드 + 모호하면 analyzer 로 보강.
+    if monitor == "claude" and _is_ambiguous(check_results):
+        from . import event_analyzer as ea
+        verify = mission.get("verify") or {}
+        sem = verify.get("semantic") or {}
+        mission_ctx = ea.MissionContext(
+            side=side, order=order, instruction=str(mission.get("instruction") or ""),
+            target_vm=mission.get("target_vm"), points=int(mission.get("points") or 0),
+            hint=mission.get("hint"), verify_expect=verify.get("expect") if isinstance(verify.get("expect"), str) else None,
+            semantic_intent=sem.get("intent"),
+            success_criteria=list(sem.get("success_criteria") or []),
+            acceptable_methods=list(sem.get("acceptable_methods") or []),
+            negative_signs=list(sem.get("negative_signs") or []),
+        )
+        scenario_ctx = ea.ScenarioContext(title=scenario_title, description="", course_ref=course_ref)
+        evidence_blob = "\n".join(f"{r.get('id')}: {r.get('evidence')}" for r in check_results)
+        report = ea.StudentReport(
+            user_name="auto-monitor (Assessor)", event_type="detect" if side == "blue" else "exploit",
+            target=mission.get("target_vm") or "", points_claimed=int(mission.get("points") or 0),
+            description=f"Assessor matched {side} #{order} (모호 — 보강 분석)",
+            what_i_did="Assessor checks: " + ", ".join(str(r.get("id")) for r in check_results),
+            what_happened=evidence_blob[:1500],
+        )
+        result = await ea.analyze_event(monitor=monitor, report=report,
+                                        mission=mission_ctx, scenario=scenario_ctx)
+        _judge_cache[key] = result.reasoning
+        return JudgeResult(matched=True, reasoning=result.reasoning,
+                           model=result.model, cost_usd=result.cost_usd)
+
+    reasoning = _deterministic_checks_reasoning(mission, check_results, matched=True)
+    _judge_cache[key] = reasoning
+    return JudgeResult(matched=True, reasoning=reasoning, model="assessor", cost_usd=0.0)
+
+
 def clear_cache(battle_id: int) -> None:
     keys = [k for k in _judge_cache if k[0] == battle_id]
     for k in keys:

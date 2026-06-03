@@ -26,8 +26,17 @@ interface ScrapPost {
   relevance: any; status: 'pending' | 'approved' | 'rejected';
   decided_at: string | null; spawned_scenario_id: number | null; created_at: string;
 }
+interface Cohort {
+  id: number; kind: string; name: string; parent_id: number | null;
+  course_ref: string | null; created_at: string; member_count: number;
+}
+interface CohortMember {
+  id: number; cohort_id: number; user_id: number;
+  user_name: string | null; user_email: string | null;
+  role: string | null; created_at: string;
+}
 interface AdminBattle {
-  id: number; scenario_id: number | null; scenario_title: string | null;
+  id: number; scenario_id: number | null; cohort_id: number | null; scenario_title: string | null;
   mode: string; status: string; monitor: string;
   started_at: string | null; ended_at: string | null;
   time_limit_sec: number; elapsed_sec: number;
@@ -46,7 +55,23 @@ interface Stats {
   top_scorers: { user_id: number; name: string; total_score: number }[];
 }
 
-const TABS = ['stats', 'generate', 'scrap', 'battles', 'users', 'scenarios'] as const
+interface StudentProgress {
+  user_id: number; name: string | null; completion: number;
+  steps_done: number; steps_total: number; bottleneck_flags: Record<string, any>; stuck: boolean
+}
+interface CohortProgress {
+  cohort_id: number | null; battle_id: number | null; steps_total: number; students: StudentProgress[]
+}
+interface ActivityEvt {
+  id: number; user_id: number | null; kind: string; scenario_step: number | null;
+  payload: Record<string, any>; ts: string
+}
+interface AdminFeedback {
+  id: number; user_id: number; cohort_id: number | null; battle_id: number | null;
+  scope: string; trigger: string; content_md: string; model: string; delivered_to: string; created_at: string
+}
+
+const TABS = ['stats', 'cohorts', 'monitoring', 'feedback', 'generate', 'scrap', 'battles', 'users', 'scenarios'] as const
 type Tab = typeof TABS[number]
 
 export default function Admin() {
@@ -71,6 +96,9 @@ export default function Admin() {
             className={t === tab ? '' : 'ghost'}
             onClick={() => setTab(t)}>
             {t === 'stats' ? '통계'
+             : t === 'cohorts' ? '코호트'
+             : t === 'monitoring' ? '실습 모니터링'
+             : t === 'feedback' ? '피드백'
              : t === 'generate' ? '시나리오 생성'
              : t === 'scrap' ? 'Bastion 스크랩'
              : t === 'battles' ? '공방전 관리'
@@ -81,6 +109,9 @@ export default function Admin() {
       </div>
 
       {tab === 'stats' && stats && <StatsTab s={stats} reload={refreshStats} />}
+      {tab === 'cohorts' && <CohortsTab />}
+      {tab === 'monitoring' && <MonitoringTab />}
+      {tab === 'feedback' && <FeedbackTab />}
       {tab === 'generate' && <GenerateTab onChange={refreshStats} />}
       {tab === 'scrap' && <ScrapTab onChange={refreshStats} />}
       {tab === 'battles' && <BattlesTab onChange={refreshStats} />}
@@ -91,17 +122,37 @@ export default function Admin() {
 }
 
 function StatsTab({ s, reload }: { s: Stats; reload: () => void }) {
+  const [cohorts, setCohorts] = useState<Cohort[]>([])
+  const [cohortId, setCohortId] = useState<string>('')
+  const [scoped, setScoped] = useState<Stats | null>(null)
+
+  useEffect(() => { api<Cohort[]>('/cohorts').then(setCohorts).catch(() => {}) }, [])
+  useEffect(() => {
+    if (!cohortId) { setScoped(null); return }
+    api<Stats>(`/admin/stats?cohort_id=${cohortId}`).then(setScoped).catch(() => setScoped(null))
+  }, [cohortId])
+  const v = scoped ?? s
+
   return (
     <>
+      <div className="row" style={{ marginBottom: 12, alignItems: 'center' }}>
+        <label style={{ fontSize: 13, color: 'var(--fg-dim)' }}>코호트 필터</label>
+        <select value={cohortId} onChange={e => setCohortId(e.target.value)} style={{ width: 240 }}>
+          <option value="">(전체 — 신원 포함)</option>
+          {cohorts.map(c => (
+            <option key={c.id} value={c.id}>{c.kind}: {c.name}</option>
+          ))}
+        </select>
+      </div>
       <div className="row" style={{ flexWrap: 'wrap' }}>
-        <Card title="사용자" big={s.user_count} sub={`student ${s.student_count} · admin ${s.admin_count}`} />
-        <Card title="시나리오 (활성)" big={s.scenario_validated} sub={`총 ${s.scenario_total} · draft ${s.scenario_draft}`} />
-        <Card title="공방전" big={s.battles_total} sub={`active ${s.battles_active} · completed ${s.battles_completed}`} />
-        <Card title="이벤트 누적" big={s.events_total} sub={`스크랩 대기 ${s.scrap_pending}`} />
+        <Card title="사용자" big={v.user_count} sub={`student ${v.student_count} · admin ${v.admin_count}`} />
+        <Card title="시나리오 (활성)" big={v.scenario_validated} sub={`총 ${v.scenario_total} · draft ${v.scenario_draft}`} />
+        <Card title="공방전" big={v.battles_total} sub={`active ${v.battles_active} · completed ${v.battles_completed}`} />
+        <Card title="이벤트 누적" big={v.events_total} sub={`스크랩 대기 ${v.scrap_pending}`} />
       </div>
       <div className="card">
-        <h3 style={{ marginTop: 0 }}>Top scorer</h3>
-        {s.top_scorers.map((t, i) => (
+        <h3 style={{ marginTop: 0 }}>Top scorer{scoped ? ' (코호트)' : ''}</h3>
+        {v.top_scorers.map((t, i) => (
           <div key={t.user_id} className="row" style={{ padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
             <span style={{ width: 40, fontSize: 18 }}>
               {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i+1}`}
@@ -285,11 +336,17 @@ function ScrapTab({ onChange }: { onChange: () => void }) {
 function BattlesTab({ onChange }: { onChange: () => void }) {
   const [battles, setBattles] = useState<AdminBattle[]>([])
   const [filter, setFilter] = useState('')
+  const [cohortId, setCohortId] = useState('')
+  const [cohorts, setCohorts] = useState<Cohort[]>([])
+  useEffect(() => { api<Cohort[]>('/cohorts').then(setCohorts).catch(() => {}) }, [])
   const refresh = async () => {
-    const url = filter ? `/admin/battles?status_filter=${filter}` : '/admin/battles'
+    const qs: string[] = []
+    if (filter) qs.push(`status_filter=${filter}`)
+    if (cohortId) qs.push(`cohort_id=${cohortId}`)
+    const url = qs.length ? `/admin/battles?${qs.join('&')}` : '/admin/battles'
     setBattles(await api<AdminBattle[]>(url))
   }
-  useEffect(() => { refresh() }, [filter])
+  useEffect(() => { refresh() }, [filter, cohortId])
 
   async function forceEnd(id: number) {
     if (!confirm(`battle #${id} 강제 종료 (cancelled)?`)) return
@@ -307,6 +364,10 @@ function BattlesTab({ onChange }: { onChange: () => void }) {
       <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
         <h3 style={{ margin: 0 }}>공방전 관리</h3>
         <div style={{ flex: 1 }} />
+        <select value={cohortId} onChange={e => setCohortId(e.target.value)} style={{ width: 200 }}>
+          <option value="">코호트: 전체</option>
+          {cohorts.map(c => <option key={c.id} value={c.id}>{c.kind}: {c.name}</option>)}
+        </select>
         <select value={filter} onChange={e => setFilter(e.target.value)} style={{ width: 160 }}>
           <option value="">all</option>
           <option value="pending">pending</option>
@@ -440,6 +501,313 @@ function ScenariosTab({ onChange }: { onChange: () => void }) {
             )}
             <button className="danger" onClick={() => del(s.id)}>삭제</button>
           </div>
+        </div>
+      ))}
+    </>
+  )
+}
+
+const COHORT_KINDS = ['department', 'grade', 'course', 'section', 'team'] as const
+
+function CohortsTab() {
+  const [cohorts, setCohorts] = useState<Cohort[]>([])
+  const [users, setUsers] = useState<AdminUser[]>([])
+  const [sel, setSel] = useState<number | null>(null)
+  const [members, setMembers] = useState<CohortMember[]>([])
+  const [err, setErr] = useState<string | null>(null)
+
+  // 새 노드 폼
+  const [kind, setKind] = useState<string>('department')
+  const [name, setName] = useState('')
+  const [parentId, setParentId] = useState<string>('')
+  const [courseRef, setCourseRef] = useState('')
+  // 멤버 추가 폼
+  const [memUser, setMemUser] = useState<string>('')
+
+  async function refresh() {
+    try {
+      const [c, u] = await Promise.all([
+        api<Cohort[]>('/cohorts'),
+        api<AdminUser[]>('/admin/users'),
+      ])
+      setCohorts(c); setUsers(u)
+    } catch (e: any) { setErr(e.message) }
+  }
+  useEffect(() => { refresh() }, [])
+
+  async function loadMembers(id: number) {
+    setSel(id)
+    try { setMembers(await api<CohortMember[]>(`/cohorts/${id}/members`)) }
+    catch (e: any) { setErr(e.message) }
+  }
+
+  async function createNode(e: React.FormEvent) {
+    e.preventDefault(); setErr(null)
+    try {
+      await api('/cohorts', { method: 'POST', json: {
+        kind, name, parent_id: parentId ? Number(parentId) : null,
+        course_ref: courseRef || null,
+      }})
+      setName(''); setCourseRef(''); await refresh()
+    } catch (e: any) { setErr(e.message) }
+  }
+
+  async function delNode(id: number) {
+    if (!confirm(`코호트 #${id} 삭제? (하위 노드·멤버십 함께 삭제)`)) return
+    try { await api(`/cohorts/${id}`, { method: 'DELETE' }); if (sel === id) setSel(null); await refresh() }
+    catch (e: any) { setErr(e.message) }
+  }
+
+  async function addMember() {
+    if (!sel || !memUser) return
+    try {
+      await api(`/cohorts/${sel}/members`, { method: 'POST', json: { user_id: Number(memUser) } })
+      setMemUser(''); await loadMembers(sel); await refresh()
+    } catch (e: any) { setErr(e.message) }
+  }
+
+  async function removeMember(uid: number) {
+    if (!sel) return
+    try { await api(`/cohorts/${sel}/members/${uid}`, { method: 'DELETE' }); await loadMembers(sel); await refresh() }
+    catch (e: any) { setErr(e.message) }
+  }
+
+  async function moveMember(uid: number, to: string) {
+    if (!sel || !to) return
+    try {
+      await api('/cohorts/members/move', { method: 'POST', json: {
+        user_id: uid, from_cohort_id: sel, to_cohort_id: Number(to),
+      }})
+      await loadMembers(sel); await refresh()
+    } catch (e: any) { setErr(e.message) }
+  }
+
+  async function openSiem(id: number) {
+    try {
+      const r = await api<{ deeplink: string | null; enabled: boolean; cohort_path: string }>(
+        `/monitoring/cohorts/${id}/siem`)
+      if (r.enabled && r.deeplink) window.open(r.deeplink, '_blank')
+      else alert(`중앙 SIEM 미설정(disabled). 코호트 경로: ${r.cohort_path}\n(데이터뷰/RBAC 는 OPENSEARCH_URL 설정 시 자동 생성됩니다.)`)
+    } catch (e: any) { setErr(e.message) }
+  }
+
+  const byParent = (pid: number | null) =>
+    cohorts.filter(c => c.parent_id === pid).sort((a, b) => a.name.localeCompare(b.name))
+
+  function renderNode(c: Cohort, depth: number): React.ReactNode {
+    return (
+      <div key={c.id}>
+        <div className="row" style={{
+          alignItems: 'center', padding: '6px 8px', marginLeft: depth * 18,
+          borderLeft: depth ? '1px solid var(--border)' : undefined,
+          background: sel === c.id ? 'rgba(255,255,255,0.04)' : undefined, borderRadius: 4,
+        }}>
+          <span className="badge blue">{c.kind}</span>
+          <b style={{ cursor: 'pointer' }} onClick={() => loadMembers(c.id)}>{c.name}</b>
+          {c.course_ref && <code style={{ fontSize: 11 }}>{c.course_ref}</code>}
+          <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>멤버 {c.member_count}</span>
+          <div style={{ flex: 1 }} />
+          <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => loadMembers(c.id)}>멤버</button>
+          <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => openSiem(c.id)}>SIEM</button>
+          <button className="danger" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => delNode(c.id)}>삭제</button>
+        </div>
+        {byParent(c.id).map(ch => renderNode(ch, depth + 1))}
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
+      <form onSubmit={createNode} className="card col">
+        <h3 style={{ marginTop: 0 }}>코호트 노드 추가</h3>
+        <div className="row" style={{ flexWrap: 'wrap' }}>
+          <label>종류
+            <select value={kind} onChange={e => setKind(e.target.value)}>
+              {COHORT_KINDS.map(k => <option key={k} value={k}>{k}</option>)}
+            </select>
+          </label>
+          <label style={{ flex: 1 }}>이름
+            <input value={name} onChange={e => setName(e.target.value)} required placeholder="정보보안과 / 2학년 / A분반..." />
+          </label>
+          <label>상위 노드
+            <select value={parentId} onChange={e => setParentId(e.target.value)}>
+              <option value="">(루트)</option>
+              {cohorts.map(c => <option key={c.id} value={c.id}>{c.kind}: {c.name}</option>)}
+            </select>
+          </label>
+          <label>course_ref
+            <input value={courseRef} onChange={e => setCourseRef(e.target.value)} placeholder="course3" style={{ width: 120 }} />
+          </label>
+        </div>
+        <button type="submit">노드 생성</button>
+      </form>
+
+      <div className="row">
+        <div className="card" style={{ flex: 1 }}>
+          <h3 style={{ marginTop: 0 }}>트리</h3>
+          {cohorts.length === 0 && <div style={{ color: 'var(--fg-dim)' }}>없음.</div>}
+          {byParent(null).map(c => renderNode(c, 0))}
+        </div>
+
+        <div className="card" style={{ flex: 1 }}>
+          <h3 style={{ marginTop: 0 }}>멤버 {sel ? `(코호트 #${sel})` : ''}</h3>
+          {!sel && <div style={{ color: 'var(--fg-dim)' }}>← 트리에서 노드 선택</div>}
+          {sel && (
+            <>
+              <div className="row" style={{ marginBottom: 8 }}>
+                <select value={memUser} onChange={e => setMemUser(e.target.value)} style={{ flex: 1 }}>
+                  <option value="">학생 선택…</option>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}
+                </select>
+                <button onClick={addMember}>배치</button>
+              </div>
+              {members.length === 0 && <div style={{ color: 'var(--fg-dim)' }}>멤버 없음.</div>}
+              {members.map(m => (
+                <div key={m.id} className="row" style={{ alignItems: 'center', padding: '4px 0', borderTop: '1px solid var(--border)' }}>
+                  <span>{m.user_name}</span>
+                  <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{m.user_email}</span>
+                  <div style={{ flex: 1 }} />
+                  <select defaultValue="" onChange={e => moveMember(m.user_id, e.target.value)} style={{ width: 150, fontSize: 12 }}>
+                    <option value="">이동…</option>
+                    {cohorts.filter(c => c.id !== sel).map(c => (
+                      <option key={c.id} value={c.id}>{c.kind}: {c.name}</option>
+                    ))}
+                  </select>
+                  <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => removeMember(m.user_id)}>제거</button>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+    </>
+  )
+}
+
+function MonitoringTab() {
+  const [battles, setBattles] = useState<AdminBattle[]>([])
+  const [bid, setBid] = useState<number | null>(null)
+  const [prog, setProg] = useState<CohortProgress | null>(null)
+  const [timeline, setTimeline] = useState<ActivityEvt[]>([])
+  const [drillUser, setDrillUser] = useState<number | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => { api<AdminBattle[]>('/admin/battles').then(setBattles).catch(e => setErr(e.message)) }, [])
+
+  async function loadProgress(id: number) {
+    setBid(id); setTimeline([]); setDrillUser(null)
+    try { setProg(await api<CohortProgress>(`/monitoring/battles/${id}/progress`)) }
+    catch (e: any) { setErr(e.message) }
+  }
+  async function tick() {
+    if (!bid) return
+    setBusy(true)
+    try {
+      await api(`/monitoring/battles/${bid}/lab-tick?with_feedback=true`, { method: 'POST' })
+      await loadProgress(bid)
+    } catch (e: any) { setErr(e.message) } finally { setBusy(false) }
+  }
+  async function drill(uid: number) {
+    if (!bid) return
+    setDrillUser(uid)
+    try { setTimeline(await api<ActivityEvt[]>(`/monitoring/battles/${bid}/activity?user_id=${uid}`)) }
+    catch (e: any) { setErr(e.message) }
+  }
+  async function makeFeedback(uid: number) {
+    if (!bid) return
+    try {
+      await api(`/feedback/students/${uid}`, { method: 'POST', json: { battle_id: bid, delivered_to: 'both' } })
+      alert('피드백 생성됨 (학생 대시보드 + 피드백 탭)')
+    } catch (e: any) { setErr(e.message) }
+  }
+
+  return (
+    <>
+      {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
+      <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>실습 모니터링 (진도·병목)</h3>
+        <div style={{ flex: 1 }} />
+        <select value={bid ?? ''} onChange={e => e.target.value && loadProgress(Number(e.target.value))} style={{ width: 280 }}>
+          <option value="">battle 선택…</option>
+          {battles.map(b => <option key={b.id} value={b.id}>#{b.id} {b.scenario_title || ''} [{b.status}]</option>)}
+        </select>
+        <button onClick={tick} disabled={!bid || busy}>{busy ? '...' : '지금 점검'}</button>
+      </div>
+
+      {prog && (
+        <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+            <thead>
+              <tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
+                <th align="left" style={{ padding: 10 }}>학생</th>
+                <th align="left" style={{ padding: 10 }}>진도</th>
+                <th align="left" style={{ padding: 10 }}>step</th>
+                <th align="left" style={{ padding: 10 }}>병목</th>
+                <th align="left" style={{ padding: 10 }}>액션</th>
+              </tr>
+            </thead>
+            <tbody>
+              {prog.students.map(s => (
+                <tr key={s.user_id} style={{ borderTop: '1px solid var(--border)',
+                  background: s.stuck ? 'rgba(255,80,80,0.08)' : undefined }}>
+                  <td style={{ padding: 10 }}>{s.name || `user-${s.user_id}`} {s.stuck && <span className="badge red">막힘</span>}</td>
+                  <td style={{ padding: 10 }}>{s.completion}%</td>
+                  <td style={{ padding: 10 }}>{s.steps_done}/{s.steps_total}</td>
+                  <td style={{ padding: 10, fontSize: 12 }}>{Object.keys(s.bottleneck_flags).join(', ') || '-'}</td>
+                  <td style={{ padding: 10 }}>
+                    <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => drill(s.user_id)}>타임라인</button>{' '}
+                    <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => makeFeedback(s.user_id)}>피드백 생성</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {drillUser && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <h4 style={{ marginTop: 0 }}>활동 타임라인 (user #{drillUser})</h4>
+          {timeline.length === 0 && <div style={{ color: 'var(--fg-dim)' }}>활동 없음.</div>}
+          {timeline.map(e => (
+            <div key={e.id} style={{ fontSize: 12, padding: '3px 0', borderTop: '1px solid var(--border)' }}>
+              <span className="badge blue">{e.kind}</span>{' '}
+              <code>{JSON.stringify(e.payload).slice(0, 160)}</code>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function FeedbackTab() {
+  const [rows, setRows] = useState<AdminFeedback[]>([])
+  const [err, setErr] = useState<string | null>(null)
+  const refresh = async () => { try { setRows(await api<AdminFeedback[]>('/feedback')) } catch (e: any) { setErr(e.message) } }
+  useEffect(() => { refresh() }, [])
+  async function regen(id: number) {
+    try { await api(`/feedback/${id}/regenerate`, { method: 'POST' }); refresh() }
+    catch (e: any) { setErr(e.message) }
+  }
+  return (
+    <>
+      {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
+      <h3>학생 피드백 검토</h3>
+      {rows.length === 0 && <div className="card" style={{ color: 'var(--fg-dim)' }}>피드백 없음.</div>}
+      {rows.map(f => (
+        <div key={f.id} className="card">
+          <div className="row" style={{ alignItems: 'center' }}>
+            <b>user #{f.user_id}</b>
+            <span className="badge blue">{f.scope}</span>
+            <span className="badge yellow">{f.trigger}</span>
+            <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>{f.model} · {f.delivered_to}</span>
+            <div style={{ flex: 1 }} />
+            <button className="ghost" onClick={() => regen(f.id)}>재생성</button>
+          </div>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginTop: 6, fontFamily: 'inherit' }}>{f.content_md}</pre>
         </div>
       ))}
     </>

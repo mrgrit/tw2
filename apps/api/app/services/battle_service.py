@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..models import Battle, BattleEvent, BattleParticipant, Infra, Scenario, User
+from ..models import Battle, BattleEvent, BattleParticipant, Cohort, Infra, Scenario, User
 
 
 def _now() -> dt.datetime:
@@ -91,6 +91,7 @@ async def create_battle(
     target_apps: list[str] | None = None,
     hint_enabled: bool = False,
     allow_lobby: bool = False,
+    cohort_id: int | None = None,
 ) -> Battle:
     validate_participants(mode, participants, allow_lobby=allow_lobby)
 
@@ -99,6 +100,11 @@ async def create_battle(
         raise ValueError(f"scenario {scenario_id} not found")
     if scenario.status not in ("validated", "active"):
         raise ValueError(f"scenario {scenario_id} is {scenario.status}, not playable")
+
+    # cohort 지정(수업용)이면 존재 검증. None 이면 신원-only 모드.
+    if cohort_id is not None:
+        if not await session.get(Cohort, cohort_id):
+            raise ValueError(f"cohort {cohort_id} not found")
 
     # 참가자의 user / infra 존재 검증
     for p in participants:
@@ -123,6 +129,7 @@ async def create_battle(
 
     battle = Battle(
         scenario_id=scenario_id,
+        cohort_id=cohort_id,
         mode=mode,
         monitor=monitor,
         target_apps=apps,

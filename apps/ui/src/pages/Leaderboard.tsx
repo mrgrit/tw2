@@ -14,6 +14,11 @@ interface UserRow {
 
 interface BattleSummary { id: number; mode: string; status: string }
 
+interface Cohort {
+  id: number; kind: string; name: string; parent_id: number | null;
+  course_ref: string | null; created_at: string; member_count: number;
+}
+
 interface BattleRankRow {
   user_id: number
   name: string
@@ -37,13 +42,20 @@ export default function Leaderboard() {
   const [battles, setBattles] = useState<BattleSummary[]>([])
   const [board, setBoard] = useState<BattleBoard | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [cohorts, setCohorts] = useState<Cohort[]>([])
+  const [cohortId, setCohortId] = useState('')
 
   useEffect(() => {
     Promise.all([
-      api<UserRow[]>('/leaderboard/users'),
       api<BattleSummary[]>('/battles'),
-    ]).then(([u, b]) => { setUsers(u); setBattles(b) }).catch(e => setErr(e.message))
+      api<Cohort[]>('/cohorts'),
+    ]).then(([b, c]) => { setBattles(b); setCohorts(c) }).catch(e => setErr(e.message))
   }, [])
+
+  useEffect(() => {
+    const url = cohortId ? `/leaderboard/users?cohort_id=${cohortId}` : '/leaderboard/users'
+    api<UserRow[]>(url).then(setUsers).catch(e => setErr(e.message))
+  }, [cohortId])
 
   async function loadBoard(bid: number) {
     try {
@@ -56,8 +68,16 @@ export default function Leaderboard() {
       <h1 style={{ color: 'var(--primary)' }}>리더보드</h1>
       {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
 
-      <h3>사용자 누적</h3>
-      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+      <div className="row" style={{ alignItems: 'center', marginTop: 8 }}>
+        <h3 style={{ margin: 0 }}>사용자 누적</h3>
+        <div style={{ flex: 1 }} />
+        <label style={{ fontSize: 13, color: 'var(--fg-dim)' }}>코호트</label>
+        <select value={cohortId} onChange={e => setCohortId(e.target.value)} style={{ width: 220 }}>
+          <option value="">전체 (신원 포함)</option>
+          {cohorts.map(c => <option key={c.id} value={c.id}>{c.kind}: {c.name}</option>)}
+        </select>
+      </div>
+      <div className="card" style={{ padding: 0, overflowX: 'auto', marginTop: 8 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
           <thead>
             <tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>

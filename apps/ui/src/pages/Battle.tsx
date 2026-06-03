@@ -72,6 +72,7 @@ interface BattleDetail {
 }
 
 interface UserLookup { id: number; email: string; name: string; role: string }
+interface Cohort { id: number; kind: string; name: string; parent_id: number | null; course_ref: string | null; member_count: number }
 interface Infra { id: number; name: string; vm_ip: string }
 interface HintOut { text: string; model: string; cache_hit: boolean; cost_usd: number; cooldown_remaining_sec: number }
 
@@ -355,6 +356,9 @@ function LobbyCreateDialog({ scenarios, onCancel, onCreated, onErr }: {
   const [scenarioId, setScenarioId] = useState<number | null>(scenarios[0]?.id ?? null)
   const [opts, setOpts] = useState<BattleOptions>({ ...defaultOpts })
   const [busy, setBusy] = useState(false)
+  const [cohorts, setCohorts] = useState<Cohort[]>([])
+  const [cohortId, setCohortId] = useState<string>('')
+  useEffect(() => { api<Cohort[]>('/cohorts').then(setCohorts).catch(() => {}) }, [])
 
   function toggleApp(app: string) {
     if (opts.use_random) return
@@ -373,6 +377,7 @@ function LobbyCreateDialog({ scenarios, onCancel, onCreated, onErr }: {
         method: 'POST',
         json: {
           scenario_id: scenarioId, mode: opts.mode, monitor: opts.monitor,
+          cohort_id: cohortId ? Number(cohortId) : null,   // 수업용이면 지정, 신원-only 면 null
           hint_enabled: opts.hint_enabled,
           target_apps: opts.use_random ? ['random'] : opts.target_apps,
           participants: [],   // 로비 — 학생이 join 함
@@ -401,6 +406,14 @@ function LobbyCreateDialog({ scenarios, onCancel, onCreated, onErr }: {
           <option key={s.id} value={s.id}>
             {s.title} · {Math.round(s.time_limit_sec / 60)}분
           </option>
+        ))}
+      </select>
+
+      <h3 style={{ marginTop: 16 }}>코호트 (수업용 — 선택)</h3>
+      <select value={cohortId} onChange={e => setCohortId(e.target.value)} style={{ width: '100%' }}>
+        <option value="">없음 (신원-only 모드)</option>
+        {cohorts.map(c => (
+          <option key={c.id} value={c.id}>{c.kind}: {c.name}{c.course_ref ? ` (${c.course_ref})` : ''}</option>
         ))}
       </select>
 

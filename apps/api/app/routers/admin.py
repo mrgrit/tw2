@@ -13,6 +13,7 @@ from ..models import AuditLog, Battle, BattleEvent, BattleParticipant, Scenario,
 from ..schemas import ScenarioOut
 from ..security import require_admin
 from ..services import audit, auto_monitor, battle_service as bs, scenario_jobs
+from ..services import cohort_service as cs
 from ..services.dry_run import review_scenario
 from ..services.scrap_crawler import fetch_hn_top, seed_demo
 
@@ -309,16 +310,34 @@ class StatsOut(BaseModel):
 
 @router.get("/stats", response_model=StatsOut)
 async def admin_stats(
+    cohort_id: int | None = None,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> StatsOut:
     from sqlalchemy import func
-    user_count = int((await session.execute(select(func.count(User.id)))).scalar_one())
+    # cohort_id 지정 시 user/battle 통계를 해당 서브트리로 스코프. 미지정이면 전체.
+    cohort_uids: set[int] | None = None
+    cohort_bids: list[int] | None = None
+    if cohort_id is not None:
+        cohort_uids = await cs.user_ids_in_subtree(session, cohort_id)
+        sub_ids = await cs.subtree_ids(session, cohort_id)
+        brows = (await session.scalars(
+            select(Battle.id).where(Battle.cohort_id.in_(sub_ids))
+        )).all() if sub_ids else []
+        cohort_bids = list(brows)
+
+    def _scoped_user_q(base):
+        if cohort_uids is not None:
+            return base.where(User.id.in_(cohort_uids or {-1}))
+        return base
+
+    user_count = int((await session.execute(
+        _scoped_user_q(select(func.count(User.id))))).scalar_one())
     student_count = int((await session.execute(
-        select(func.count(User.id)).where(User.role == "student")
+        _scoped_user_q(select(func.count(User.id)).where(User.role == "student"))
     )).scalar_one())
     admin_count = int((await session.execute(
-        select(func.count(User.id)).where(User.role == "admin")
+        _scoped_user_q(select(func.count(User.id)).where(User.role == "admin"))
     )).scalar_one())
 
     scn_total = int((await session.execute(select(func.count(Scenario.id)))).scalar_one())
@@ -333,15 +352,24 @@ async def admin_stats(
         select(func.count(ScrapPost.id)).where(ScrapPost.status == "pending")
     )).scalar_one())
 
-    btl_total = int((await session.execute(select(func.count(Battle.id)))).scalar_one())
+    def _scoped_battle_q(base):
+        if cohort_bids is not None:
+            return base.where(Battle.id.in_(cohort_bids or [-1]))
+        return base
+
+    btl_total = int((await session.execute(
+        _scoped_battle_q(select(func.count(Battle.id))))).scalar_one())
     btl_active = int((await session.execute(
-        select(func.count(Battle.id)).where(Battle.status == "active")
+        _scoped_battle_q(select(func.count(Battle.id)).where(Battle.status == "active"))
     )).scalar_one())
     btl_completed = int((await session.execute(
-        select(func.count(Battle.id)).where(Battle.status == "completed")
+        _scoped_battle_q(select(func.count(Battle.id)).where(Battle.status == "completed"))
     )).scalar_one())
 
-    ev_total = int((await session.execute(select(func.count(BattleEvent.id)))).scalar_one())
+    ev_q = select(func.count(BattleEvent.id))
+    if cohort_bids is not None:
+        ev_q = ev_q.where(BattleEvent.battle_id.in_(cohort_bids or [-1]))
+    ev_total = int((await session.execute(ev_q)).scalar_one())
 
     # top scorers — User × sum(BattleParticipant.score)
     top_q = (
@@ -354,6 +382,8 @@ async def admin_stats(
         .order_by(func.coalesce(func.sum(BattleParticipant.score), 0).desc())
         .limit(5)
     )
+    if cohort_uids is not None:
+        top_q = top_q.where(User.id.in_(cohort_uids or {-1}))
     top_rows = (await session.execute(top_q)).all()
 
     return StatsOut(
@@ -372,6 +402,7 @@ async def admin_stats(
 class AdminBattleOut(BaseModel):
     id: int
     scenario_id: int | None
+    cohort_id: int | None = None
     scenario_title: str | None
     mode: str
     status: str
@@ -389,6 +420,7 @@ class AdminBattleOut(BaseModel):
 @router.get("/battles", response_model=list[AdminBattleOut])
 async def admin_list_battles(
     status_filter: str | None = None,
+    cohort_id: int | None = None,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> list[AdminBattleOut]:
@@ -396,6 +428,9 @@ async def admin_list_battles(
     q = select(Battle).order_by(Battle.id.desc()).limit(200)
     if status_filter:
         q = q.where(Battle.status == status_filter)
+    if cohort_id is not None:
+        sub_ids = await cs.subtree_ids(session, cohort_id)
+        q = q.where(Battle.cohort_id.in_(sub_ids or [-1]))
     battles = (await session.scalars(q)).all()
 
     out: list[AdminBattleOut] = []
@@ -412,7 +447,7 @@ async def admin_list_battles(
         )).scalar_one())
         elapsed, _ = bs.battle_elapsed(b)
         out.append(AdminBattleOut(
-            id=b.id, scenario_id=b.scenario_id, scenario_title=title,
+            id=b.id, scenario_id=b.scenario_id, cohort_id=b.cohort_id, scenario_title=title,
             mode=b.mode, status=b.status, monitor=b.monitor,
             started_at=b.started_at.isoformat() if b.started_at else None,
             ended_at=b.ended_at.isoformat() if b.ended_at else None,
@@ -423,6 +458,30 @@ async def admin_list_battles(
             created_at=b.created_at.isoformat() if b.created_at else "",
         ))
     return out
+
+
+@router.post("/battles/{battle_id}/monitor-tick")
+async def trigger_monitor_tick(
+    battle_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """auto-monitor 1 tick 을 즉시 실행 (Assessor 채점). 15s 폴링을 기다리지 않고
+    채점을 강제하는 운영/e2e 용 컨트롤. 결정론 채점이므로 안전(부작용 0)."""
+    from sqlalchemy import func
+    b = await session.get(Battle, battle_id)
+    if not b:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "battle not found")
+
+    async def _count() -> int:
+        return int((await session.execute(
+            select(func.count(BattleEvent.id)).where(BattleEvent.battle_id == battle_id)
+        )).scalar_one())
+
+    before = await _count()
+    await auto_monitor.run_once(battle_id)
+    after = await _count()
+    return {"battle_id": battle_id, "new_events": after - before}
 
 
 @router.post("/battles/{battle_id}/force-end", response_model=AdminBattleOut)
@@ -481,7 +540,7 @@ async def _admin_battle_view(session: AsyncSession, b: Battle) -> AdminBattleOut
     )).scalar_one())
     elapsed, _ = bs.battle_elapsed(b)
     return AdminBattleOut(
-        id=b.id, scenario_id=b.scenario_id, scenario_title=title,
+        id=b.id, scenario_id=b.scenario_id, cohort_id=b.cohort_id, scenario_title=title,
         mode=b.mode, status=b.status, monitor=b.monitor,
         started_at=b.started_at.isoformat() if b.started_at else None,
         ended_at=b.ended_at.isoformat() if b.ended_at else None,

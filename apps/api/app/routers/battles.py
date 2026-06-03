@@ -22,20 +22,23 @@ from ..schemas import (
 from ..security import get_current_user, require_admin
 from ..services import auto_monitor, battle_service as bs, hints as hint_svc
 from ..services import event_analyzer as ea
+from ..services import lab_monitor, provisioner
+from ..services import feedback as fb_svc
 
 router = APIRouter(prefix="/battles", tags=["battles"])
 
 
 def _solved_orders(events: list, side_marker: str) -> set[int]:
-    """auto-monitor 가 매칭한 (auto detect) blue 미션의 order 집합. red 는 수동 이벤트의
-    target_vm 과 매칭되는 score 이벤트가 있으면 solved 로 본다."""
+    """auto-monitor(Assessor) 가 매칭한 미션 order 집합.
+
+    blue/red 둘 다 detail.source=="auto_monitor" + "{side}_mission_order" 로 표기된다
+    (red 는 cross-infra assess_target=opponent 채점 결과 포함)."""
     out: set[int] = set()
+    key = f"{side_marker}_mission_order"
     for e in events:
         d = e.detail or {}
-        if side_marker == "blue":
-            if d.get("source") == "auto_monitor" and d.get("blue_mission_order"):
-                out.add(int(d["blue_mission_order"]))
-        # red 는 일단 자동 검증이 없으므로 비워둠 (학생이 수동 보고)
+        if d.get("source") == "auto_monitor" and d.get(key):
+            out.add(int(d[key]))
     return out
 
 
@@ -73,6 +76,9 @@ def _missions_for_side(scenario, side: str, solved: set[int]) -> list[MissionOut
             verify_expect=expect_str,
             semantic_intent=sem.get("intent"),
             success_criteria=list(sem.get("success_criteria") or []),
+            checks=list(verify.get("checks") or []),
+            assess_target="opponent" if str(m.get("assess_target") or "").lower() == "opponent" else "self",
+            arm_rule=m.get("arm_rule"),
             solved=order in solved,
         ))
     return sorted(out, key=lambda m: m.order)
@@ -195,6 +201,7 @@ async def create_battle(
             target_apps=body.target_apps,
             hint_enabled=body.hint_enabled,
             allow_lobby=allow_lobby,
+            cohort_id=body.cohort_id,
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -216,6 +223,11 @@ async def start_battle(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     if b.monitor in ("bastion", "claude"):
         auto_monitor.start(battle_id)
+    # (옵션) 룰 무장 — 기본 skip(no-op).
+    await provisioner.arm_battle_rules(session, battle_id)
+    # (옵션) 백그라운드 실습 모니터 — 기본 OFF(env TUBEWAR_LAB_MONITOR=1 일 때만).
+    if lab_monitor.autostart_enabled():
+        lab_monitor.start(battle_id, feedback_cb=fb_svc.bottleneck_feedback_cb)
     return await _serialize_with_missions(session, b, viewer_user_id=user.id)
 
 
@@ -378,6 +390,8 @@ async def end_battle(
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     auto_monitor.stop(battle_id)
+    lab_monitor.stop(battle_id)
+    await provisioner.withdraw_battle_rules(session, battle_id)
     return await _serialize_with_missions(session, b, viewer_user_id=user.id)
 
 

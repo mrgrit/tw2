@@ -14,7 +14,11 @@ from sqlalchemy import select
 from .config import get_settings
 from .db import Base, SessionLocal, engine
 from .models import User
-from .routers import admin, auth, infras, battles, leaderboard, scenarios, users
+from .routers import (
+    admin, auth, cohorts, feedback, infras, battles, leaderboard, monitoring,
+    scenarios, users,
+)
+from .schema_upgrade import ensure_added_columns
 from .security import hash_password
 from .services.scenario_loader import import_scenarios
 
@@ -27,6 +31,8 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 기존 DB 호환: create_all 이 못 만드는 '기존 테이블의 신규 컬럼' 보강.
+        await conn.run_sync(ensure_added_columns)
     async with SessionLocal() as s:
         admin = await s.scalar(select(User).where(User.email == settings.admin_email))
         if not admin:
@@ -73,4 +79,7 @@ app.include_router(scenarios.router)
 app.include_router(battles.router)
 app.include_router(leaderboard.router)
 app.include_router(users.router)
+app.include_router(cohorts.router)
+app.include_router(feedback.router)
+app.include_router(monitoring.router)
 app.include_router(admin.router)

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..models import Battle, BattleEvent, BattleParticipant, Scenario, User
 from ..security import get_current_user
+from ..services import cohort_service as cs
 
 router = APIRouter(prefix="/leaderboard", tags=["leaderboard"])
 
@@ -47,9 +48,17 @@ class BattleLeaderboard(BaseModel):
 
 @router.get("/users", response_model=list[UserRankRow])
 async def user_leaderboard(
+    cohort_id: int | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[UserRankRow]:
+    # cohort_id 지정 시 해당 서브트리 소속 학생으로 한정. 미지정(신원-only)이면 전체.
+    cohort_user_ids: set[int] | None = None
+    if cohort_id is not None:
+        cohort_user_ids = await cs.user_ids_in_subtree(session, cohort_id)
+        if not cohort_user_ids:
+            return []
+
     # 사용자별 합산 — completed 만 win_count 에 반영
     stmt = (
         select(
@@ -62,6 +71,8 @@ async def user_leaderboard(
         .order_by(func.coalesce(func.sum(BattleParticipant.score), 0).desc())
         .limit(50)
     )
+    if cohort_user_ids is not None:
+        stmt = stmt.where(User.id.in_(cohort_user_ids))
     rows = (await session.execute(stmt)).all()
 
     # win_count: 그 battle 에서 가장 높은 점수를 받은 participant 의 user_id

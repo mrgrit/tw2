@@ -66,6 +66,66 @@ class SmokeResult(BaseModel):
     summary: str
 
 
+# ── Cohort (위계 트리) ───────────────────────────────
+_COHORT_KIND = r"^(department|grade|course|section|team)$"
+_MEMBER_ROLE = r"^(student|instructor|ta)$"
+
+
+class CohortIn(BaseModel):
+    kind: str = Field(pattern=_COHORT_KIND)
+    name: str = Field(min_length=1, max_length=120)
+    parent_id: int | None = None
+    course_ref: str | None = Field(default=None, max_length=120)
+
+
+class CohortPatchIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    parent_id: int | None = None
+    course_ref: str | None = Field(default=None, max_length=120)
+
+
+class CohortOut(BaseModel):
+    id: int
+    kind: str
+    name: str
+    parent_id: int | None
+    course_ref: str | None
+    created_at: dt.datetime
+    member_count: int = 0
+
+    model_config = {"from_attributes": True}
+
+
+class CohortTreeOut(CohortOut):
+    """서브트리 조회용 — children 을 재귀로 포함."""
+    children: list["CohortTreeOut"] = Field(default_factory=list)
+
+
+class CohortMembershipIn(BaseModel):
+    user_id: int
+    role: str | None = Field(default=None, pattern=_MEMBER_ROLE)
+
+
+class CohortMembershipOut(BaseModel):
+    id: int
+    cohort_id: int
+    user_id: int
+    user_name: str | None = None
+    user_email: str | None = None
+    role: str | None = None
+    created_at: dt.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CohortMoveIn(BaseModel):
+    """학생을 한 Cohort 에서 다른 Cohort 로 이동."""
+    user_id: int
+    from_cohort_id: int
+    to_cohort_id: int
+    role: str | None = Field(default=None, pattern=_MEMBER_ROLE)
+
+
 # ── Battle / Scenario (Phase 1 placeholder) ──────────
 class ScenarioOut(BaseModel):
     id: int
@@ -82,6 +142,7 @@ class ScenarioOut(BaseModel):
 class BattleOut(BaseModel):
     id: int
     scenario_id: int | None
+    cohort_id: int | None = None
     mode: str
     status: str
     monitor: str
@@ -113,6 +174,8 @@ class BattleParticipantOut(BaseModel):
 
 class BattleCreateIn(BaseModel):
     scenario_id: int
+    # 수업용 배틀이면 Cohort(보통 section/team) 지정, 신원-only 면 None.
+    cohort_id: int | None = None
     mode: str = Field(pattern=r"^(solo|duel|ffa)$")
     monitor: str = Field(default="bastion", pattern=r"^(bastion|claude)$")
     # 6v6 8개 취약 웹 중 1~5 또는 ['random']. 빈 리스트면 시나리오 default 사용.
@@ -169,6 +232,10 @@ class MissionOut(BaseModel):
     verify_expect: str | None = None              # mission.verify.expect (refined 우선)
     semantic_intent: str | None = None            # mission.verify.semantic.intent
     success_criteria: list[str] = Field(default_factory=list)
+    # Assessor check-spec[] (compile 결과 캐시) + 채점 대상(self|opponent)
+    checks: list[dict[str, Any]] = Field(default_factory=list)
+    assess_target: str = "self"                   # self | opponent
+    arm_rule: dict[str, Any] | None = None        # (옵션) 룰 무장 템플릿 참조
     solved: bool = False                          # auto-monitor 가 매칭한 적 있나
 
 
@@ -189,4 +256,63 @@ class BattleJoinIn(BaseModel):
     infra_id: int | None = None
 
 
+# ── 활동 / 진도 / 피드백 ─────────────────────────────
+class ActivityEventOut(BaseModel):
+    id: int
+    battle_id: int | None
+    cohort_id: int | None
+    user_id: int | None
+    infra_id: int | None
+    kind: str
+    scenario_step: int | None
+    payload: dict[str, Any]
+    ts: dt.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class StudentProgressOut(BaseModel):
+    user_id: int
+    name: str | None = None
+    completion: float = 0.0
+    steps_done: int = 0
+    steps_total: int = 0
+    bottleneck_flags: dict[str, Any] = Field(default_factory=dict)
+    stuck: bool = False
+    last_activity_ts: dt.datetime | None = None
+
+
+class CohortProgressOut(BaseModel):
+    cohort_id: int | None
+    battle_id: int | None
+    steps_total: int
+    students: list[StudentProgressOut] = Field(default_factory=list)
+
+
+class StudentFeedbackOut(BaseModel):
+    id: int
+    user_id: int
+    cohort_id: int | None
+    battle_id: int | None
+    scope: str
+    trigger: str
+    content_md: str
+    basis: dict[str, Any]
+    model: str
+    cost_usd: float
+    delivered_to: str
+    created_at: dt.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class FeedbackCreateIn(BaseModel):
+    battle_id: int | None = None
+    cohort_id: int | None = None
+    scope: str = Field(default="lab", pattern=r"^(lab|session|periodic)$")
+    delivered_to: str = Field(default="both", pattern=r"^(student|instructor|both)$")
+    note: str = Field(default="", max_length=1000)
+
+
 TokenOut.model_rebuild()
+CohortTreeOut.model_rebuild()
