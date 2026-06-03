@@ -9,13 +9,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
-from ..models import AuditLog, Battle, BattleEvent, BattleParticipant, Scenario, ScrapPost, User
-from ..schemas import ScenarioOut
+from ..models import (
+    AuditLog, Battle, BattleEvent, BattleParticipant, Infra, Scenario, ScrapPost, User,
+)
+from ..schemas import ScenarioOut, SmokeResult
 from ..security import require_admin
 from ..services import audit, auto_monitor, battle_service as bs, scenario_jobs
 from ..services import cohort_service as cs
+from ..services import assessor_client
 from ..services.dry_run import review_scenario
 from ..services.scrap_crawler import fetch_hn_top, seed_demo
+from ..services.six_smoke import run_smoke
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -717,4 +721,145 @@ async def admin_delete_scenario(
         target_type="scenario", target_id=scenario_id,
         detail={"title": title},
         request=request,
+    )
+
+
+# ── 인프라 관리 (전체 학생 등록 인프라) ─────────────
+class AdminInfraOut(BaseModel):
+    id: int
+    owner_id: int
+    owner_name: str | None
+    owner_email: str | None
+    name: str
+    vm_ip: str
+    ssh_user: str
+    bastion_api_key: str
+    port_map: dict
+    status: str
+    last_smoke_at: str | None
+    last_smoke_ok: bool | None
+    created_at: str
+
+
+async def _admin_infra_rows(session: AsyncSession, rows: list[Infra]) -> list[AdminInfraOut]:
+    owners = {
+        u.id: u for u in (await session.scalars(
+            select(User).where(User.id.in_([r.owner_id for r in rows]))
+        )).all()
+    } if rows else {}
+    out: list[AdminInfraOut] = []
+    for r in rows:
+        u = owners.get(r.owner_id)
+        out.append(AdminInfraOut(
+            id=r.id, owner_id=r.owner_id,
+            owner_name=u.name if u else None, owner_email=u.email if u else None,
+            name=r.name, vm_ip=r.vm_ip, ssh_user=r.ssh_user,
+            bastion_api_key=r.bastion_api_key, port_map=r.port_map or {},
+            status=r.status,
+            last_smoke_at=r.last_smoke_at.isoformat() if r.last_smoke_at else None,
+            last_smoke_ok=(r.last_smoke_result or {}).get("ok") if r.last_smoke_result else None,
+            created_at=r.created_at.isoformat() if r.created_at else "",
+        ))
+    return out
+
+
+@router.get("/infras", response_model=list[AdminInfraOut])
+async def admin_list_infras(
+    owner_id: int | None = None,
+    status_filter: str | None = None,
+    cohort_id: int | None = None,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[AdminInfraOut]:
+    """전체 학생이 등록한 인프라 목록(소유자 정보 포함). owner/status/cohort 서브트리 필터."""
+    q = select(Infra).order_by(Infra.id.desc()).limit(500)
+    if owner_id is not None:
+        q = q.where(Infra.owner_id == owner_id)
+    if status_filter:
+        q = q.where(Infra.status == status_filter)
+    if cohort_id is not None:
+        uids = await cs.user_ids_in_subtree(session, cohort_id)
+        q = q.where(Infra.owner_id.in_(uids or {-1}))
+    rows = (await session.scalars(q)).all()
+    return await _admin_infra_rows(session, list(rows))
+
+
+@router.post("/infras/{infra_id}/smoke", response_model=SmokeResult)
+async def admin_infra_smoke(
+    infra_id: int,
+    request: Request,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> SmokeResult:
+    """관리자가 임의 학생 인프라에 smoke 테스트 실행 + 상태 갱신."""
+    import datetime as _dt
+    infra = await session.get(Infra, infra_id)
+    if not infra:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "infra not found")
+    result = await run_smoke(ip=infra.vm_ip, bastion_api_key=infra.bastion_api_key,
+                             port_map=infra.port_map or None)
+    infra.last_smoke_at = _dt.datetime.now(_dt.timezone.utc)
+    infra.last_smoke_result = result.model_dump()
+    infra.status = "healthy" if result.ok else "degraded"
+    await session.commit()
+    await audit.record(
+        session, actor=admin, action="infra.smoke",
+        target_type="infra", target_id=infra_id,
+        detail={"owner_id": infra.owner_id, "vm_ip": infra.vm_ip, "ok": result.ok},
+        request=request,
+    )
+    return result
+
+
+class AssessCheckOut(BaseModel):
+    infra_id: int
+    vm_ip: str
+    assessor_ok: bool
+    bastion_ok: bool
+    evidence: str | None = None
+    error: str | None = None
+
+
+@router.post("/infras/{infra_id}/assess-check", response_model=AssessCheckOut)
+async def admin_infra_assess_check(
+    infra_id: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> AssessCheckOut:
+    """채점 도달성 확인 — 학생 infra 의 Assessor `/assess`(읽기 전용 1건)·`/activity` 왕복 점검.
+    '이 학생을 지금 채점할 수 있는가'를 관리자가 즉시 확인."""
+    infra = await session.get(Infra, infra_id)
+    if not infra:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "infra not found")
+    resp = await assessor_client.assess(
+        infra, [{"id": "ping", "type": "file_exists", "target": "web",
+                 "params": {"path": "/etc/passwd"}}])
+    act = await assessor_client.activity(infra, since_sec=60, want=["services"])
+    ev = None
+    if resp.get("results"):
+        ev = resp["results"][0].get("evidence")
+    return AssessCheckOut(
+        infra_id=infra_id, vm_ip=infra.vm_ip,
+        assessor_ok=bool(resp.get("ok")),
+        bastion_ok=bool(act.get("ok")),
+        evidence=ev, error=resp.get("error"),
+    )
+
+
+@router.delete("/infras/{infra_id}", status_code=204)
+async def admin_delete_infra(
+    infra_id: int,
+    request: Request,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    infra = await session.get(Infra, infra_id)
+    if not infra:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "infra not found")
+    meta = {"owner_id": infra.owner_id, "vm_ip": infra.vm_ip, "name": infra.name}
+    await session.delete(infra)
+    await session.commit()
+    await audit.record(
+        session, actor=admin, action="infra.delete",
+        target_type="infra", target_id=infra_id, detail=meta, request=request,
     )

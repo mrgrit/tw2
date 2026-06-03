@@ -71,7 +71,14 @@ interface AdminFeedback {
   scope: string; trigger: string; content_md: string; model: string; delivered_to: string; created_at: string
 }
 
-const TABS = ['stats', 'cohorts', 'monitoring', 'feedback', 'generate', 'scrap', 'battles', 'users', 'scenarios'] as const
+interface AdminInfra {
+  id: number; owner_id: number; owner_name: string | null; owner_email: string | null;
+  name: string; vm_ip: string; ssh_user: string; bastion_api_key: string;
+  port_map: Record<string, number>; status: string;
+  last_smoke_at: string | null; last_smoke_ok: boolean | null; created_at: string
+}
+
+const TABS = ['stats', 'cohorts', 'infras', 'monitoring', 'feedback', 'generate', 'scrap', 'battles', 'users', 'scenarios'] as const
 type Tab = typeof TABS[number]
 
 export default function Admin() {
@@ -97,6 +104,7 @@ export default function Admin() {
             onClick={() => setTab(t)}>
             {t === 'stats' ? '통계'
              : t === 'cohorts' ? '코호트'
+             : t === 'infras' ? '인프라 관리'
              : t === 'monitoring' ? '실습 모니터링'
              : t === 'feedback' ? '피드백'
              : t === 'generate' ? '시나리오 생성'
@@ -110,6 +118,7 @@ export default function Admin() {
 
       {tab === 'stats' && stats && <StatsTab s={stats} reload={refreshStats} />}
       {tab === 'cohorts' && <CohortsTab />}
+      {tab === 'infras' && <InfrasTab />}
       {tab === 'monitoring' && <MonitoringTab />}
       {tab === 'feedback' && <FeedbackTab />}
       {tab === 'generate' && <GenerateTab onChange={refreshStats} />}
@@ -810,6 +819,105 @@ function FeedbackTab() {
           <pre style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginTop: 6, fontFamily: 'inherit' }}>{f.content_md}</pre>
         </div>
       ))}
+    </>
+  )
+}
+
+function InfrasTab() {
+  const [rows, setRows] = useState<AdminInfra[]>([])
+  const [cohorts, setCohorts] = useState<Cohort[]>([])
+  const [cohortId, setCohortId] = useState('')
+  const [statusF, setStatusF] = useState('')
+  const [busy, setBusy] = useState<number | null>(null)
+  const [msg, setMsg] = useState<Record<number, string>>({})
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => { api<Cohort[]>('/cohorts').then(setCohorts).catch(() => {}) }, [])
+  async function refresh() {
+    const qs: string[] = []
+    if (cohortId) qs.push(`cohort_id=${cohortId}`)
+    if (statusF) qs.push(`status_filter=${statusF}`)
+    try { setRows(await api<AdminInfra[]>(`/admin/infras${qs.length ? '?' + qs.join('&') : ''}`)) }
+    catch (e: any) { setErr(e.message) }
+  }
+  useEffect(() => { refresh() }, [cohortId, statusF])
+
+  async function smoke(id: number) {
+    setBusy(id); setErr(null)
+    try {
+      const r = await api<{ ok: boolean; summary: string }>(`/admin/infras/${id}/smoke`, { method: 'POST' })
+      setMsg(m => ({ ...m, [id]: `smoke: ${r.ok ? 'OK' : 'DEGRADED'} — ${r.summary}` }))
+      await refresh()
+    } catch (e: any) { setErr(e.message) } finally { setBusy(null) }
+  }
+  async function assessCheck(id: number) {
+    setBusy(id); setErr(null)
+    try {
+      const r = await api<{ assessor_ok: boolean; bastion_ok: boolean; evidence: string | null; error: string | null }>(
+        `/admin/infras/${id}/assess-check`, { method: 'POST' })
+      setMsg(m => ({ ...m, [id]: `채점도달성: assessor=${r.assessor_ok ? '✓' : '✗'} bastion=${r.bastion_ok ? '✓' : '✗'}${r.error ? ' (' + r.error + ')' : ''}${r.evidence ? ' · ' + r.evidence.slice(0, 60) : ''}` }))
+    } catch (e: any) { setErr(e.message) } finally { setBusy(null) }
+  }
+  async function del(id: number, who: string) {
+    if (!confirm(`${who} 의 인프라 #${id} 를 삭제할까요?`)) return
+    try { await api(`/admin/infras/${id}`, { method: 'DELETE' }); await refresh() }
+    catch (e: any) { setErr(e.message) }
+  }
+
+  const badge = (s: string) => s === 'healthy' ? 'green' : s === 'degraded' ? 'red' : 'yellow'
+
+  return (
+    <>
+      <div className="row" style={{ alignItems: 'center', marginBottom: 12 }}>
+        <h3 style={{ margin: 0 }}>등록 인프라 관리 ({rows.length})</h3>
+        <div style={{ flex: 1 }} />
+        <select value={cohortId} onChange={e => setCohortId(e.target.value)} style={{ width: 190 }}>
+          <option value="">코호트: 전체</option>
+          {cohorts.map(c => <option key={c.id} value={c.id}>{c.kind}: {c.name}</option>)}
+        </select>
+        <select value={statusF} onChange={e => setStatusF(e.target.value)} style={{ width: 140 }}>
+          <option value="">상태: 전체</option>
+          <option value="registered">registered</option>
+          <option value="healthy">healthy</option>
+          <option value="degraded">degraded</option>
+        </select>
+        <button className="ghost" onClick={refresh}>새로고침</button>
+      </div>
+      {err && <div className="card" style={{ color: 'var(--red)' }}>{err}</div>}
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+          <thead>
+            <tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
+              <th align="left" style={{ padding: 10 }}>소유자</th>
+              <th align="left" style={{ padding: 10 }}>이름</th>
+              <th align="left" style={{ padding: 10 }}>vm_ip</th>
+              <th align="left" style={{ padding: 10 }}>상태</th>
+              <th align="left" style={{ padding: 10 }}>last smoke</th>
+              <th align="left" style={{ padding: 10 }}>액션</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && <tr><td colSpan={6} style={{ padding: 14, color: 'var(--fg-dim)' }}>등록된 인프라 없음.</td></tr>}
+            {rows.map(r => (
+              <tr key={r.id} style={{ borderTop: '1px solid var(--border)' }}>
+                <td style={{ padding: 10 }}>{r.owner_name}<div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{r.owner_email}</div></td>
+                <td style={{ padding: 10 }}>{r.name}</td>
+                <td style={{ padding: 10 }}><code>{r.vm_ip}</code>{r.port_map?.assessor ? <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}> :assessor={r.port_map.assessor}</span> : null}</td>
+                <td style={{ padding: 10 }}><span className={`badge ${badge(r.status)}`}>{r.status}</span></td>
+                <td style={{ padding: 10, fontSize: 12, color: 'var(--fg-dim)' }}>
+                  {r.last_smoke_at ? `${r.last_smoke_at.slice(0, 16).replace('T', ' ')} (${r.last_smoke_ok ? 'ok' : 'fail'})` : '—'}
+                  {msg[r.id] && <div style={{ marginTop: 4, color: 'var(--fg)' }}>{msg[r.id]}</div>}
+                </td>
+                <td style={{ padding: 10, whiteSpace: 'nowrap' }}>
+                  <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }} disabled={busy === r.id} onClick={() => smoke(r.id)}>smoke</button>{' '}
+                  <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }} disabled={busy === r.id} onClick={() => assessCheck(r.id)}>채점확인</button>{' '}
+                  <button className="danger" style={{ fontSize: 12, padding: '2px 8px' }} onClick={() => del(r.id, r.owner_name || `user-${r.owner_id}`)}>삭제</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   )
 }
