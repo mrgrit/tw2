@@ -4,6 +4,11 @@
 중앙 tubewar 서버가 학생 인프라 간 **공방전 (Red/Blue)** 을 시나리오/미션 단위로
 관리·채점·시각화한다.
 
+## 📖 매뉴얼
+
+대상별 사용 설명서: **[docs/manuals.md](docs/manuals.md)**
+([학생](docs/manual_student.md) · [교수](docs/manual_instructor.md) · [관리자](docs/manual_admin.md))
+
 ## 전체 그림
 
 ```
