@@ -17,6 +17,11 @@ class LoginIn(BaseModel):
     password: str
 
 
+class GoogleAuthIn(BaseModel):
+    # GIS 가 발급한 ID 토큰(credential).
+    credential: str = Field(min_length=10, max_length=8192)
+
+
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"

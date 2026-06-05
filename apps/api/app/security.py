@@ -32,6 +32,17 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+def unusable_password_hash() -> str:
+    """로컬 로그인이 불가능한 placeholder 해시.
+
+    구글 전용 계정처럼 비밀번호가 없는 사용자에게 사용. 알 수 없는 무작위 입력의
+    bcrypt 해시라 verify_password 가 어떤 입력에도 매칭되지 않는다
+    (Django set_unusable_password 와 동일 발상).
+    """
+    import secrets
+    return hash_password(secrets.token_urlsafe(32))
+
+
 def issue_token(user: User) -> str:
     settings = get_settings()
     now = dt.datetime.now(dt.timezone.utc)

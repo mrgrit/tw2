@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.ts'
 import { login } from '../auth.ts'
+import GoogleSignIn from '../components/GoogleSignIn.tsx'
 
 export default function Login() {
   const nav = useNavigate()
@@ -41,6 +42,7 @@ export default function Login() {
         </label>
         {err && <div style={{ color: 'var(--red)', fontSize: 13 }}>{err}</div>}
         <button type="submit" disabled={busy}>{busy ? '...' : '로그인'}</button>
+        <GoogleSignIn onError={setErr} />
         <div style={{ fontSize: 13, color: 'var(--fg-dim)', textAlign: 'center', marginTop: 6 }}>
           계정이 없나요? <Link to="/signup">회원가입</Link>
         </div>

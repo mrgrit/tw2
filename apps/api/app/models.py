@@ -27,6 +27,9 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(16), default="student", nullable=False)  # student | admin
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # 인증 출처 — local(이메일/비번) | google. 구글 연결 시 google_sub 채움.
+    auth_provider: Mapped[str] = mapped_column(String(16), default="local", nullable=False)
+    google_sub: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -4,13 +4,69 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import get_settings
 from ..db import get_session
 from ..models import User
-from ..schemas import LoginIn, SignupIn, TokenOut, UserOut
+from ..schemas import GoogleAuthIn, LoginIn, SignupIn, TokenOut, UserOut
 from ..security import get_current_user, hash_password, issue_token, verify_password
-from ..services import audit, rate_limit
+from ..services import audit, google_auth, rate_limit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+@router.get("/providers")
+async def providers() -> dict:
+    """프론트가 어떤 소셜 로그인을 띄울지 결정하기 위한 공개 정보(인증 불필요)."""
+    settings = get_settings()
+    return {
+        "google": {
+            "enabled": bool(settings.google_client_id),
+            "client_id": settings.google_client_id or None,
+        }
+    }
+
+
+@router.post("/google", response_model=TokenOut)
+async def google_login(
+    body: GoogleAuthIn,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> TokenOut:
+    rate_limit.enforce_login(request, email="google")
+    try:
+        claims = google_auth.verify_credential(body.credential)
+    except google_auth.GoogleAuthDisabled:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "google login not configured")
+    except google_auth.GoogleAuthError as e:
+        await audit.record(
+            session, actor=None, action="auth.google_fail",
+            target_type="user", target_id=None,
+            detail={"reason": str(e)}, request=request,
+        )
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"google login failed: {e}")
+
+    try:
+        user, created = await google_auth.resolve_user(session, claims)
+    except google_auth.GoogleAuthError as e:
+        await audit.record(
+            session, actor=None, actor_email=claims.get("email"), action="auth.google_fail",
+            target_type="user", target_id=None,
+            detail={"reason": str(e)}, request=request,
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e))
+
+    if not user.is_active:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "account disabled")
+
+    await session.commit()
+    await session.refresh(user)
+    await audit.record(
+        session, actor=user,
+        action="auth.google_signup" if created else "auth.google",
+        target_type="user", target_id=user.id,
+        detail={"created": created}, request=request,
+    )
+    return TokenOut(access_token=issue_token(user), user=UserOut.model_validate(user))
 
 
 @router.post("/signup", response_model=TokenOut)

@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     admin_password: str = Field("change-me-on-first-login", alias="ADMIN_PASSWORD")
     admin_name: str = Field("admin", alias="ADMIN_NAME")
 
+    # ── Google 로그인 (OAuth2 / GIS ID 토큰) ──
+    # GOOGLE_CLIENT_ID 가 비어 있으면 구글 로그인 비활성(프론트 버튼도 안 뜸).
+    google_client_id: str = Field("", alias="GOOGLE_CLIENT_ID")
+    # 허용 도메인(예: ync.ac.kr). 비우면 모든 구글 계정 허용.
+    google_allowed_domain: str = Field("", alias="GOOGLE_ALLOWED_DOMAIN")
+    # 첫 로그인 시 학생 계정 자동 생성 여부.
+    google_auto_provision: bool = Field(True, alias="GOOGLE_AUTO_PROVISION")
+
 
 @lru_cache
 def get_settings() -> Settings:
