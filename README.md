@@ -46,6 +46,31 @@
 | 리더보드 | 공방전별 + 사용자 누적. |
 | 관리자 페이지 | 진행중 공방전 → 강제 종료/삭제 + 히스토리. |
 
+## 배포 / 운영 (학생 PC 단일 명령)
+
+라이브러리·패키지 설치부터 서버 기동/정지까지 단일 제어 스크립트로 처리한다.
+DB 는 sqlite(`.data/tubewar.sqlite3`) 라 **docker/postgres 불필요**, Java 는 OpenSearch
+번들 JDK, node/npm 은 설치 시 자동 프로비저닝된다.
+
+```bash
+# 1) 최초 1회 — 라이브러리·패키지 전부 자동 설치 (system pkg + venv + npm + UI 빌드 + .env)
+bash scripts/tubewar.sh install
+
+# 2) 서버 올리기 (api + ui + SIEM)
+bash scripts/tubewar.sh up            # 전체 스택
+bash scripts/tubewar.sh up --no-siem  # OpenSearch/Dashboards 없이 api+ui 만
+bash scripts/tubewar.sh up --dev      # ui 를 vite dev(자동 리로드)로
+
+# 3) 운영
+bash scripts/tubewar.sh status        # 서비스/포트/헬스
+bash scripts/tubewar.sh restart       # 내렸다 올리기
+bash scripts/tubewar.sh down          # 서버 내리기
+bash scripts/tubewar.sh logs api      # 로그 (api|ui|opensearch|dashboards)
+```
+
+접속: UI `http://<host>:5173` · API `http://<host>:9200` · OpenSearch `:9201` · Dashboards `:5601`.
+PID/로그는 `runtime/` (gitignore). 비밀값(`.env` 의 `ADMIN_PASSWORD` 등)은 운영 전 반드시 수정.
+
 ## 빠른 시작 (개발)
 
 전제: docker, docker compose plugin, python ≥ 3.10, node ≥ 18.
