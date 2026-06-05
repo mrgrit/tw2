@@ -234,15 +234,35 @@ start_api() {
   wait_port "$API_PORT" "API" 40 || { c_red "  API 헬스 실패 — $LOGDIR/api.log"; tail -n 20 "$LOGDIR/api.log"; return 1; }
 }
 
+# node 실행기 탐색 — 시스템 node 우선, 없으면 OpenSearch Dashboards 번들 node 재사용.
+# 결과를 NODE_BIN 에 채우고 PATH 에 추가(npm 없이 vite 를 직접 구동하기 위함).
+resolve_node() {
+  NODE_BIN="$(command -v node 2>/dev/null || true)"
+  if [ -z "$NODE_BIN" ]; then
+    for c in "$DASHBOARDS_HOME/node/bin" "$OPENSEARCH_HOME/jdk/../node/bin"; do
+      if [ -x "$c/node" ]; then NODE_BIN="$c/node"; export PATH="$c:$PATH"; break; fi
+    done
+  fi
+  [ -n "$NODE_BIN" ]
+}
+
 start_ui() {
   local mode="$1"  # prod | dev
+  local vite="$ROOT/apps/ui/node_modules/vite/bin/vite.js"
+  resolve_node || { c_red "  node 없음 — 'install' 로 node 설치 후 재시도"; return 1; }
+  [ -f "$vite" ] || { c_red "  vite 미설치(node_modules 없음) — 'install' 필요"; return 1; }
+  log "  UI runner: $NODE_BIN (npm 없이 vite 직접 구동)"
+
   if [ "$mode" = "dev" ]; then
     start_bg ui "$LOGDIR/ui.log" -- \
-      bash -c "cd '$ROOT/apps/ui' && exec npm run dev -- --port $UI_PORT --host 0.0.0.0"
+      bash -c "cd '$ROOT/apps/ui' && exec '$NODE_BIN' '$vite' --port $UI_PORT --host 0.0.0.0"
   else
-    [ -d "$ROOT/apps/ui/dist" ] || { c_ylw "  dist 없음 → 빌드"; ( cd "$ROOT/apps/ui" && npm run build ); }
+    if [ ! -d "$ROOT/apps/ui/dist" ]; then
+      c_ylw "  dist 없음 → 빌드"
+      ( cd "$ROOT/apps/ui" && "$NODE_BIN" "$vite" build ) || { c_red "  UI 빌드 실패"; return 1; }
+    fi
     start_bg ui "$LOGDIR/ui.log" -- \
-      bash -c "cd '$ROOT/apps/ui' && exec npm run preview -- --port $UI_PORT --host 0.0.0.0"
+      bash -c "cd '$ROOT/apps/ui' && exec '$NODE_BIN' '$vite' preview --port $UI_PORT --host 0.0.0.0"
   fi
   wait_port "$UI_PORT" "UI" 30 || c_ylw "  UI 헬스 지연 — $LOGDIR/ui.log"
 }
