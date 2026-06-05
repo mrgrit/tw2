@@ -321,6 +321,42 @@ cmd_status() {
 }
 
 ###############################################################################
+# reset-admin — admin 패스워드 리셋(없으면 생성). DB(.env DATABASE_URL) 대상.
+#   reset-admin [email] [newpassword]
+###############################################################################
+cmd_reset_admin() {
+  load_env
+  local email="${1:-${ADMIN_EMAIL:-admin@tubewar.app}}"
+  local newpass="${2:-}"
+  [ -n "$newpass" ] || { read -r -s -p "새 패스워드: " newpass; echo; }
+  [ -n "$newpass" ] || die "패스워드가 비었습니다."
+  PYTHONPATH="$ROOT/apps/api" "$VENV/bin/python" - "$email" "$newpass" <<'PY'
+import sys, asyncio
+from sqlalchemy import select
+from app.db import SessionLocal
+from app.models import User
+from app.security import hash_password
+
+email, newpass = sys.argv[1].strip().lower(), sys.argv[2]
+
+async def main():
+    async with SessionLocal() as s:
+        u = await s.scalar(select(User).where(User.email == email))
+        if u is None:
+            u = User(email=email, name="admin", role="admin", is_active=True,
+                     password_hash=hash_password(newpass))
+            s.add(u); action = "생성"
+        else:
+            u.password_hash = hash_password(newpass)
+            u.role = "admin"; u.is_active = True; action = "리셋"
+        await s.commit()
+        print(f"admin {action} 완료: {email}")
+
+asyncio.run(main())
+PY
+}
+
+###############################################################################
 # logs
 ###############################################################################
 cmd_logs() {
@@ -340,6 +376,7 @@ case "${1:-help}" in
   down|stop) shift; cmd_down "$@" ;;
   restart) shift; cmd_down; echo; cmd_up "$@" ;;
   status)  shift; cmd_status "$@" ;;
+  reset-admin) shift; cmd_reset_admin "$@" ;;
   logs)    shift; cmd_logs "$@" ;;
   help|*)
     cat <<EOF
@@ -349,6 +386,7 @@ tubewar 운영 제어:
   bash scripts/tubewar.sh down               # 서버 내리기
   bash scripts/tubewar.sh restart [옵션]     # 내렸다 올리기
   bash scripts/tubewar.sh status             # 상태
+  bash scripts/tubewar.sh reset-admin [email] [pw]  # admin 패스워드 리셋/생성
   bash scripts/tubewar.sh logs <svc>         # 로그 (api|ui|opensearch|dashboards)
 EOF
     ;;
