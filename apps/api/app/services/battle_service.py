@@ -115,6 +115,14 @@ async def create_battle(
             inf = await session.get(Infra, p["infra_id"])
             if not inf or inf.owner_id != p["user_id"]:
                 raise ValueError(f"infra {p['infra_id']} not owned by user {p['user_id']}")
+        else:
+            # infra_id 미지정 → 해당 학생이 등록한 인프라를 자동 연결한다.
+            # (AI 채점기가 참가자 인프라를 직접 점검해야 하므로, 미연결이면 채점 불능이 된다.)
+            own = await session.scalar(
+                select(Infra).where(Infra.owner_id == p["user_id"]).order_by(Infra.id.desc()).limit(1)
+            )
+            if own is not None:
+                p["infra_id"] = own.id
 
     apps = [a.lower() for a in (target_apps or [])]
     if apps == ["random"]:
