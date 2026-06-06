@@ -288,12 +288,17 @@ cmd_up() {
   if [ "$with_siem" -eq 1 ]; then
     start_opensearch || c_ylw "  OpenSearch 미기동 — SIEM 적재 비활성으로 계속"
     start_dashboards || true
-    # OpenSearch 가 떴으면 API 가 SIEM 으로 적재하도록 환경 주입
+    # OpenSearch 가 떴으면 API 가 SIEM 으로 적재하도록 환경 주입.
+    # OPENSEARCH_URL 은 서버 내부 통신(127.0.0.1) 이지만, Dashboards URL 은 학생/강사
+    # 브라우저가 iframe 으로 직접 접속하므로 외부에서 닿는 호스트여야 한다.
+    # TUBEWAR_PUBLIC_HOST 로 지정(없으면 LAN IP 자동 감지, 그것도 없으면 127.0.0.1).
     if port_up "$OS_PORT"; then
+      local pub="${TUBEWAR_PUBLIC_HOST:-$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(192\.168|10\.|172\.(1[6-9]|2[0-9]|3[01]))\.' | head -1)}"
+      pub="${pub:-127.0.0.1}"
       export OPENSEARCH_URL="http://127.0.0.1:$OS_PORT"
-      export OPENSEARCH_DASHBOARDS_URL="http://127.0.0.1:$OSD_PORT"
+      export OPENSEARCH_DASHBOARDS_URL="http://${pub}:$OSD_PORT"
       export TUBEWAR_LAB_MONITOR="1"
-      log "  SIEM 실시간 적재 활성 (OPENSEARCH_URL/LAB_MONITOR)"
+      log "  SIEM 실시간 적재 활성 (Dashboards iframe → http://${pub}:$OSD_PORT)"
     fi
   fi
 
