@@ -364,6 +364,77 @@ async def mission_check_tick(session: AsyncSession, battle_id: int) -> int:
         return 0
 
 
+_cmd_seen: dict[tuple, set] = {}   # (infra_id, port) → 본 명령 dedupe 키 집합
+
+
+async def command_log_tick(session: AsyncSession, battle_id: int) -> int:
+    """학생 명령 수집 — attacker 박스의 /var/log/6v6-cmd.log(셸 로거가 기록)를 SSH 로 읽어
+    SIEM 에 kind=command 로 적재. 6v6 Assessor /activity 가 명령을 안 주므로(소스 비활성)
+    SSH 직접 읽기로 보완. 신규 라인만(dedupe). SIEM 미설정 시 0."""
+    import asyncssh
+    from ..crypto import decrypt as _decrypt
+    from . import siem_export
+    from . import cohort_service as cs
+    if not siem_export.is_enabled():
+        return 0
+    battle = await session.get(Battle, battle_id)
+    if not battle:
+        return 0
+    parts = (await session.scalars(
+        select(BattleParticipant).where(BattleParticipant.battle_id == battle_id))).all()
+    uids = [p.user_id for p in parts if p.user_id]
+    names = {u.id: u.name for u in (await session.scalars(
+        select(User).where(User.id.in_(uids)))).all()} if uids else {}
+    events: list[dict] = []
+    for p in parts:
+        if not p.infra_id:
+            continue
+        inf = await session.get(Infra, p.infra_id)
+        if not inf:
+            continue
+        try:
+            pw = _decrypt(inf.ssh_password_enc)
+        except Exception:
+            pw = inf.ssh_password_enc   # Phase1 평문 fallback
+        pm = inf.port_map or {}
+        for port in (int(pm.get("attacker_ext_ssh", 2203)), int(pm.get("attacker_ssh", 2202))):
+            try:
+                async with asyncssh.connect(inf.vm_ip, port=port, username=inf.ssh_user,
+                                            password=pw, known_hosts=None, connect_timeout=8) as c:
+                    r = await c.run("tail -n 120 /var/log/6v6-cmd.log 2>/dev/null",
+                                    check=False, timeout=10)
+                lines = [l for l in r.stdout.splitlines() if "\t" in l]
+            except Exception:
+                continue
+            seen = _cmd_seen.setdefault((p.infra_id, port), set())
+            for line in lines:
+                k = hashlib.sha1(line.encode("utf-8", "replace")).hexdigest()
+                if k in seen:
+                    continue
+                seen.add(k)
+                f = line.split("\t")
+                if len(f) < 3:
+                    continue
+                ts, suser, cmd = f[0], f[1], "\t".join(f[2:])
+                events.append({
+                    "battle_id": battle_id, "user_id": p.user_id, "user_name": names.get(p.user_id),
+                    "infra_id": p.infra_id, "kind": "command", "scenario_id": battle.scenario_id,
+                    "ts": ts, "scenario_step": None,
+                    "payload": {"cmd": cmd[:500], "shell_user": suser, "port": port},
+                })
+            if len(seen) > 2000:
+                _cmd_seen[(p.infra_id, port)] = set(list(seen)[-1000:])
+    if not events:
+        return 0
+    chain = await cs.ancestor_chain(session, battle.cohort_id) if battle.cohort_id else []
+    try:
+        res = await siem_export.export_events(siem_export.default_client(), events, chain)
+        return int(res.get("indexed") or 0)
+    except Exception:
+        log.exception("command_log export failed battle=%s", battle_id)
+        return 0
+
+
 async def run_lab_tick(battle_id: int, *, since_sec: int = 180, feedback_cb=None) -> dict:
     """1 tick: /activity pull → 진도/병목 스냅샷 → 막힌 학생만 feedback_cb 호출.
 
@@ -371,6 +442,7 @@ async def run_lab_tick(battle_id: int, *, since_sec: int = 180, feedback_cb=None
     """
     exported = 0
     mchecks = 0
+    mcmds = 0
     async with SessionLocal() as session:
         pulled = await pull_activity_once(session, battle_id, since_sec=since_sec)
         progress = await snapshot_progress(session, battle_id)
@@ -380,6 +452,12 @@ async def run_lab_tick(battle_id: int, *, since_sec: int = 180, feedback_cb=None
                 await feedback_cb(session, battle_id, p["user_id"], p)
         # 중앙 SIEM 적재 — pull 한 활동을 코호트 stamp 해서 OpenSearch 로(미설정 시 no-op).
         exported = await _export_to_siem(session, battle_id, pulled.get("events") or [])
+        # 학생 명령 수집 — attacker 박스 cmd 로그 → SIEM kind=command (매 tick, 경량).
+        try:
+            mcmds = await command_log_tick(session, battle_id)
+        except Exception:
+            mcmds = 0
+            log.exception("command_log_tick failed battle=%s", battle_id)
         # 미션-최적화 증거 수집 — 간격 가드(_MC_INTERVAL)로 너무 잦은 실행 방지.
         nowm = _time.monotonic()
         if nowm - _mc_last.get(battle_id, 0.0) >= _MC_INTERVAL:
@@ -389,7 +467,8 @@ async def run_lab_tick(battle_id: int, *, since_sec: int = 180, feedback_cb=None
             except Exception:
                 log.exception("mission_check_tick failed battle=%s", battle_id)
     return {"ingested": pulled["ingested"], "students": len(progress),
-            "stuck": len(stuck), "siem_exported": exported, "mission_checks": mchecks}
+            "stuck": len(stuck), "siem_exported": exported,
+            "mission_checks": mchecks, "commands": mcmds}
 
 
 async def _export_to_siem(session: AsyncSession, battle_id: int, events: list[dict]) -> int:
