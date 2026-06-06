@@ -212,6 +212,46 @@ async def siem_scenarios(
     return {"cohort_id": cohort_id, "scenarios": out}
 
 
+@router.get("/siem/mission-checks")
+async def siem_mission_checks(
+    cohort_id: int,
+    scenario_id: int | None = None,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """미션-체크 실시간 현황판 — lab_monitor 가 적재한 mission_check 문서를
+    학생 × 미션단계(red-1, blue-2 …) 매트릭스(최신 통과/증거)로 환원."""
+    chain = await cs.ancestor_chain(session, cohort_id) if cohort_id else []
+    client = siem_export.default_client()
+    if client is None:
+        return {"enabled": False, "students": [], "steps": [], "cells": {}}
+    res = await siem_export.search_events(
+        client, chain or None, kind="mission_check", scenario_id=scenario_id, limit=500)
+    docs = res.get("docs", [])
+    # 최신 우선 정렬돼 옴 → (student, step) 첫 등장만 채택
+    cells: dict[str, dict] = {}
+    steps: list[str] = []
+    students: dict[int, str] = {}
+    for d in docs:
+        p = d.get("payload") or {}
+        step = d.get("scenario_step")
+        sid = d.get("student")
+        if step is None or sid is None:
+            continue
+        key = f"{sid}|{step}"
+        if key in cells:
+            continue
+        if step not in steps:
+            steps.append(step)
+        students[sid] = d.get("student_name") or f"#{sid}"
+        cells[key] = {"passed": bool(p.get("passed")), "evidence": str(p.get("evidence") or "")[:300],
+                      "ts": d.get("ts"), "points": p.get("points")}
+    steps.sort(key=lambda s: (s.split("-")[0], int(s.split("-")[1]) if "-" in s and s.split("-")[1].isdigit() else 0))
+    return {"enabled": True, "scenario_id": scenario_id,
+            "students": [{"student": k, "name": v} for k, v in students.items()],
+            "steps": steps, "cells": cells}
+
+
 @router.get("/siem/mission")
 async def siem_mission(
     cohort_id: int,

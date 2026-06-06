@@ -28,8 +28,14 @@ from ..models import (
     ActivityEvent, Battle, BattleEvent, BattleParticipant, Infra, ProgressSnapshot, Scenario, User,
 )
 from . import assessor_client
+from . import check_compiler, battlefield
 
 log = logging.getLogger(__name__)
+
+# 미션-체크 수집 간격 가드(배틀별, monotonic 초) — 매 20s tick 마다 돌면 인덱스 폭증.
+import time as _time
+_mc_last: dict[int, float] = {}
+_MC_INTERVAL = float(os.getenv("TUBEWAR_MISSION_CHECK_SEC", "60"))
 
 POLL_INTERVAL_SEC = 20.0
 
@@ -249,12 +255,99 @@ async def compute_progress(session: AsyncSession, battle_id: int, *, persist: bo
     return out
 
 
+async def mission_check_tick(session: AsyncSession, battle_id: int) -> int:
+    """미션-최적화 증거 수집 — 각 미션의 verify.checks 를 학생 인프라에 실제 실행해
+    {학생·미션·체크·통과·증거} 를 SIEM 에 적재한다. 문제/채점기준(checks)이 곧 수집 스키마.
+
+    solo: 양측(red+blue) 미션을 본인 인프라에. duel: red→상대, blue→본인(assess_target 따름).
+    반환=적재 문서 수. SIEM 미설정/오류 시 0(no-op)."""
+    from . import siem_export
+    from . import cohort_service as cs
+    if not siem_export.is_enabled():
+        return 0
+    battle = await session.get(Battle, battle_id)
+    if not battle or not battle.scenario_id:
+        return 0
+    scenario = await session.get(Scenario, battle.scenario_id)
+    if not scenario:
+        return 0
+    parts = (await session.scalars(
+        select(BattleParticipant).where(BattleParticipant.battle_id == battle_id))).all()
+    role_infra: dict[str, object] = {}
+    user_infra: dict[int, object] = {}
+    for p in parts:
+        if not p.infra_id:
+            continue
+        inf = await session.get(Infra, p.infra_id)
+        if not inf:
+            continue
+        user_infra[p.user_id] = inf
+        if p.role in ("red", "blue"):
+            role_infra[p.role] = inf
+        elif p.role in ("solo", "free"):
+            role_infra.setdefault("red", inf)
+            role_infra.setdefault("blue", inf)
+    uids = [p.user_id for p in parts if p.user_id]
+    names = {u.id: u.name for u in (await session.scalars(
+        select(User).where(User.id.in_(uids)))).all()} if uids else {}
+    red = (scenario.mission_red or {}).get("missions") or []
+    blue = (scenario.mission_blue or {}).get("missions") or []
+    now = _now().isoformat()
+    events: list[dict] = []
+    for p in parts:
+        if not p.infra_id:
+            continue
+        sides = (("red", red), ("blue", blue)) if p.role in ("solo", "free") \
+            else ((p.role, red if p.role == "red" else blue),)
+        for side, missions in sides:
+            for m in missions:
+                order = int(m.get("order") or 0)
+                checks = check_compiler.compile_mission_checks(m, side=side)
+                if not checks:
+                    continue
+                at = battlefield.normalize_assess_target(m.get("assess_target"))
+                target = battlefield.resolve_target_infra(side, at, role_infra) or user_infra.get(p.user_id)
+                if not target:
+                    continue
+                try:
+                    resp = await assessor_client.assess(target, checks, timeout=6.0)
+                except Exception:
+                    continue
+                if not resp.get("ok"):
+                    continue
+                for r in resp.get("results", []):
+                    events.append({
+                        "battle_id": battle_id, "user_id": p.user_id,
+                        "user_name": names.get(p.user_id),
+                        "infra_id": getattr(target, "id", None), "kind": "mission_check",
+                        "scenario_id": battle.scenario_id, "ts": now,
+                        "scenario_step": f"{side}-{order}",
+                        "payload": {
+                            "mission_side": side, "mission_order": order,
+                            "points": m.get("points"), "check_id": r.get("id"),
+                            "passed": bool(r.get("passed")),
+                            "evidence": str(r.get("evidence") or "")[:500],
+                        },
+                    })
+    if not events:
+        return 0
+    chain = await cs.ancestor_chain(session, battle.cohort_id) if battle.cohort_id else []
+    client = siem_export.default_client()
+    try:
+        res = await siem_export.export_events(client, events, chain)
+        return int(res.get("indexed") or 0)
+    except Exception:
+        log.exception("mission_check export failed battle=%s", battle_id)
+        return 0
+
+
 async def run_lab_tick(battle_id: int, *, since_sec: int = 180, feedback_cb=None) -> dict:
     """1 tick: /activity pull → 진도/병목 스냅샷 → 막힌 학생만 feedback_cb 호출.
 
     feedback_cb(session, battle_id, user_id, progress) — stuck 학생에게만 호출(결정론 게이팅).
     """
     exported = 0
+    mchecks = 0
     async with SessionLocal() as session:
         pulled = await pull_activity_once(session, battle_id, since_sec=since_sec)
         progress = await snapshot_progress(session, battle_id)
@@ -264,8 +357,16 @@ async def run_lab_tick(battle_id: int, *, since_sec: int = 180, feedback_cb=None
                 await feedback_cb(session, battle_id, p["user_id"], p)
         # 중앙 SIEM 적재 — pull 한 활동을 코호트 stamp 해서 OpenSearch 로(미설정 시 no-op).
         exported = await _export_to_siem(session, battle_id, pulled.get("events") or [])
+        # 미션-최적화 증거 수집 — 간격 가드(_MC_INTERVAL)로 너무 잦은 실행 방지.
+        nowm = _time.monotonic()
+        if nowm - _mc_last.get(battle_id, 0.0) >= _MC_INTERVAL:
+            _mc_last[battle_id] = nowm
+            try:
+                mchecks = await mission_check_tick(session, battle_id)
+            except Exception:
+                log.exception("mission_check_tick failed battle=%s", battle_id)
     return {"ingested": pulled["ingested"], "students": len(progress),
-            "stuck": len(stuck), "siem_exported": exported}
+            "stuck": len(stuck), "siem_exported": exported, "mission_checks": mchecks}
 
 
 async def _export_to_siem(session: AsyncSession, battle_id: int, events: list[dict]) -> int:

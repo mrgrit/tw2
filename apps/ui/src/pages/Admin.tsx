@@ -1128,6 +1128,8 @@ function SiemTab() {
   const [answer, setAnswer] = useState<AskOut | null>(null)
   const [missionSel, setMissionSel] = useState<{ side: string; order: number | null } | null>(null)
   const [missionRes, setMissionRes] = useState<any | null>(null)
+  const [mcheck, setMcheck] = useState<any | null>(null)
+  const [mcCell, setMcCell] = useState<any | null>(null)
 
   async function openMission(side: string, order: number | null) {
     if (!cohortId || order == null || !scenarioId) return
@@ -1194,6 +1196,14 @@ function SiemTab() {
     const q = scenarioId ? `&scenario_id=${scenarioId}` : ''
     api<{ students: ClearRow[] }>(`/monitoring/siem/clears?cohort_id=${cohortId}${q}`)
       .then(r => setClears(r.students)).catch(() => setClears([]))
+  }, [cohortId, scenarioId])
+  // 미션 체크 현황 매트릭스 (mission_check 적재 문서)
+  useEffect(() => {
+    setMcCell(null)
+    if (!cohortId) { setMcheck(null); return }
+    const q = scenarioId ? `&scenario_id=${scenarioId}` : ''
+    api<any>(`/monitoring/siem/mission-checks?cohort_id=${cohortId}${q}`)
+      .then(r => setMcheck(r)).catch(() => setMcheck(null))
   }, [cohortId, scenarioId])
   // 필터 변경 → 통계+로그 재로딩
   useEffect(() => { load() }, [cohortId, scenarioId, range, dateFrom, dateTo, kindFilter, studentFilter])
@@ -1351,6 +1361,56 @@ function SiemTab() {
                   </div>
                 )
               })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── 미션 체크 현황 매트릭스 (mission_check 실시간 적재) ── */}
+      {mcheck?.enabled && mcheck.steps.length > 0 && (
+        <div className="card" style={{ padding: 0, marginBottom: 12, overflowX: 'auto' }}>
+          <div style={{ padding: '8px 12px', fontSize: 13, fontWeight: 600 }}>
+            미션 체크 현황 (학생 × 미션) <span style={{ fontSize: 11, color: 'var(--fg-dim)', fontWeight: 400 }}>— 각 미션 verify.checks 를 실제 실행한 최신 결과 · 셀 클릭 시 증거</span>
+          </div>
+          <table style={{ borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead><tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
+              <th align="left" style={{ padding: 8, position: 'sticky', left: 0, background: 'var(--card)' }}>학생</th>
+              {mcheck.steps.map((st: string) => (
+                <th key={st} style={{ padding: 8 }}><span className={`badge ${st.startsWith('red') ? 'red' : 'blue'}`}>{st}</span></th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {mcheck.students.map((s: any) => (
+                <tr key={s.student} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td style={{ padding: 8, fontWeight: 600, position: 'sticky', left: 0, background: 'var(--card)' }}>{s.name}</td>
+                  {mcheck.steps.map((st: string) => {
+                    const c = mcheck.cells[`${s.student}|${st}`]
+                    return (
+                      <td key={st} align="center" style={{ padding: 6 }}>
+                        {c ? (
+                          <span onClick={() => setMcCell({ ...c, who: s.name, step: st })}
+                            title="클릭: 증거"
+                            style={{ cursor: 'pointer', display: 'inline-block', width: 22, height: 22, lineHeight: '22px', borderRadius: 4, color: '#fff', background: c.passed ? 'var(--green)' : 'var(--red)' }}>
+                            {c.passed ? '✓' : '✕'}
+                          </span>
+                        ) : <span style={{ color: 'var(--fg-dim)' }}>·</span>}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {mcCell && (
+            <div style={{ padding: 12, borderTop: '1px solid var(--border)', background: 'var(--bg)' }}>
+              <div className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <b>{mcCell.who}</b> · <span className="badge blue">{mcCell.step}</span>
+                <span className={`badge ${mcCell.passed ? 'green' : 'red'}`}>{mcCell.passed ? '통과' : '미달'}</span>
+                <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{fmtTime(mcCell.ts, true)}</span>
+                <div style={{ flex: 1 }} />
+                <button className="ghost" onClick={() => setMcCell(null)}>닫기 ✕</button>
+              </div>
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: 12, color: 'var(--fg-dim)' }}>{mcCell.evidence || '(증거 없음)'}</pre>
             </div>
           )}
         </div>
