@@ -212,6 +212,52 @@ async def siem_scenarios(
     return {"cohort_id": cohort_id, "scenarios": out}
 
 
+@router.get("/siem/mission")
+async def siem_mission(
+    cohort_id: int,
+    scenario_id: int,
+    side: str,
+    order: int,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """미션 레벨 드릴다운 — 코호트의 해당 시나리오/미션에 대한 학생별 채점결과.
+
+    battle_events 에서 detail.report.mission_(order|side) 가 일치하는 제출을 학생별로
+    모아 최신 1건(통과/점수/AI 근거)을 반환. 시나리오→미션 아래 마지막 레벨.
+    """
+    from ..models import BattleEvent
+    ids = await cs.subtree_ids(session, cohort_id)
+    if not ids:
+        return {"results": []}
+    battles = (await session.scalars(
+        select(Battle).where(Battle.cohort_id.in_(ids), Battle.scenario_id == scenario_id))).all()
+    bids = [b.id for b in battles]
+    if not bids:
+        return {"results": []}
+    evs = (await session.scalars(
+        select(BattleEvent).where(BattleEvent.battle_id.in_(bids)).order_by(BattleEvent.id))).all()
+    per: dict[int, dict] = {}
+    for e in evs:
+        rep = (e.detail or {}).get("report") or {}
+        if rep.get("mission_order") == order and rep.get("mission_side") == side:
+            g = (e.detail or {}).get("grading") or {}
+            per[e.actor_user_id] = {   # 최신(id 오름차순 순회 → 마지막이 최신) 우선
+                "student": e.actor_user_id, "points": e.points,
+                "verdict": g.get("verdict"), "awarded": g.get("awarded_points"),
+                "claimed": g.get("claimed_points"),
+                "criteria_met": g.get("criteria_met") or [],
+                "criteria_missing": g.get("criteria_missing") or [],
+                "reasoning": e.reasoning or "", "battle_id": e.battle_id,
+                "what_i_did": rep.get("what_i_did", ""),
+            }
+    names = await _names_for(session, list(per.keys()))
+    results = [{**v, "name": names.get(v["student"])} for v in per.values()]
+    results.sort(key=lambda r: -(r["points"] or 0))
+    return {"cohort_id": cohort_id, "scenario_id": scenario_id, "side": side,
+            "order": order, "results": results}
+
+
 async def _compute_clears(session: AsyncSession, cohort_id: int,
                           scenario_id: int | None) -> list[dict]:
     """코호트(서브트리) 공방전들의 학생별 클리어(완수 미션) 집계 — Postgres 권위 채점 기준."""

@@ -1126,6 +1126,18 @@ function SiemTab() {
   const [graderId, setGraderId] = useState('')
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState<AskOut | null>(null)
+  const [missionSel, setMissionSel] = useState<{ side: string; order: number | null } | null>(null)
+  const [missionRes, setMissionRes] = useState<any | null>(null)
+
+  async function openMission(side: string, order: number | null) {
+    if (!cohortId || order == null || !scenarioId) return
+    if (missionSel?.side === side && missionSel?.order === order) { setMissionSel(null); setMissionRes(null); return }
+    setMissionSel({ side, order }); setMissionRes(null)
+    try {
+      const r = await api<any>(`/monitoring/siem/mission?cohort_id=${cohortId}&scenario_id=${scenarioId}&side=${side}&order=${order}`)
+      setMissionRes(r)
+    } catch (e: any) { setMissionRes({ results: [], error: e.message }) }
+  }
   const [asking, setAsking] = useState(false)
 
   const [err, setErr] = useState<string | null>(null)
@@ -1300,14 +1312,47 @@ function SiemTab() {
       {selScn && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>#{selScn.scenario_id} {selScn.title} · 미션 {selScn.missions.length}개 · 공방전 {selScn.battle_ids.length}건</div>
+          <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginBottom: 6 }}>미션 클릭 → 학생별 채점결과 드릴다운</div>
           <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}>
-            {selScn.missions.map((m, i) => (
-              <span key={i} className={`badge ${m.side === 'red' ? 'red' : 'blue'}`} title={m.instruction}
-                style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {m.side} #{m.order} · {m.points}점 · {m.instruction}
-              </span>
-            ))}
+            {selScn.missions.map((m, i) => {
+              const sel = missionSel?.side === m.side && missionSel?.order === m.order
+              return (
+                <span key={i} className={`badge ${m.side === 'red' ? 'red' : 'blue'}`} title={m.instruction}
+                  onClick={() => openMission(m.side, m.order)}
+                  style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer', outline: sel ? '2px solid var(--primary)' : 'none' }}>
+                  {m.side} #{m.order} · {m.points}점 · {m.instruction}
+                </span>
+              )
+            })}
           </div>
+
+          {/* 미션 → 학생별 채점결과 (마지막 레벨) */}
+          {missionSel && (
+            <div style={{ marginTop: 10, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+                {missionSel.side} #{missionSel.order} — 학생별 결과 {missionRes ? `(${missionRes.results.length}명)` : '…'}
+              </div>
+              {missionRes && missionRes.results.length === 0 && (
+                <div style={{ color: 'var(--fg-dim)', fontSize: 13 }}>이 미션에 대한 학생 제출 기록 없음.</div>
+              )}
+              {missionRes?.results.map((r: any) => {
+                const vColor: Record<string, string> = { pass: 'green', partial: 'yellow', fail: 'red', review: 'yellow' }
+                const vLabel: Record<string, string> = { pass: 'AI 통과', partial: 'AI 부분', fail: 'AI 불인정', review: '검토대기' }
+                return (
+                  <div key={r.student} className="card" style={{ marginBottom: 6, padding: 10 }}>
+                    <div className="row" style={{ alignItems: 'center', gap: 8 }}>
+                      <b>{r.name || `#${r.student}`}</b>
+                      {r.verdict && <span className={`badge ${vColor[r.verdict] || 'yellow'}`}>{vLabel[r.verdict] || r.verdict}</span>}
+                      <span className={`badge ${r.points > 0 ? 'green' : 'red'}`}>{r.points}점</span>
+                      {r.claimed != null && r.claimed !== r.points && <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>(신청 {r.claimed}→AI {r.awarded})</span>}
+                      <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>battle #{r.battle_id}</span>
+                    </div>
+                    {r.reasoning && <div style={{ marginTop: 6, fontSize: 12, whiteSpace: 'pre-wrap', color: 'var(--fg-dim)' }}>{r.reasoning.slice(0, 600)}</div>}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
 
