@@ -1090,7 +1090,9 @@ interface SiemStats {
   enabled: boolean; index: string | null; total: number; note?: string | null;
   by_kind: { key: string; count: number }[];
   by_student: { student: number; name: string | null; count: number }[];
+  by_scenario: { scenario_id: number; title: string | null; count: number }[];
   by_day: { date: string; count: number }[];
+  pivot: { student: number; name: string | null; total: number; kinds: Record<string, number> }[];
 }
 interface SiemMission { side: string; order: number | null; instruction: string; points: number | null }
 interface SiemScenario { scenario_id: number; title: string; battle_ids: number[]; missions: SiemMission[] }
@@ -1370,39 +1372,73 @@ function SiemTab() {
         </div>
       )}
 
-      {/* ── 로그 테이블 (행 클릭 → 풀 로그) ── */}
-      {stats?.enabled && (
-        <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-          <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--fg-dim)' }}>
-            로그 <code>{search?.index}</code> · {search?.docs.length || 0}건{search?.cohort_path ? ` · ${search.cohort_path}` : ''} · 행 클릭 시 전체 로그
+      {/* ── 피벗 분석 (raw 로그 나열 대신 의미있는 집계) ── */}
+      {stats?.enabled && (() => {
+        const kindCols = stats.by_kind.map(k => k.key)
+        const maxScn = Math.max(1, ...stats.by_scenario.map(s => s.count))
+        const maxDay = Math.max(1, ...stats.by_day.map(d => d.count))
+        return (
+          <div className="col" style={{ gap: 12 }}>
+            {/* 학생 × 종류 피벗 매트릭스 */}
+            <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+              <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--fg-dim)' }}>
+                피벗: 학생 × 활동종류 (셀 클릭 시 해당 학생 필터)
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead><tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
+                  <th align="left" style={{ padding: 8 }}>학생</th>
+                  {kindCols.map(k => <th key={k} align="right" style={{ padding: 8 }}><span className={`badge ${KIND_COLOR[k] || 'blue'}`}>{k}</span></th>)}
+                  <th align="right" style={{ padding: 8 }}>합계</th>
+                </tr></thead>
+                <tbody>
+                  {stats.pivot.length === 0 && <tr><td colSpan={kindCols.length + 2} style={{ padding: 14, color: 'var(--fg-dim)' }}>활동 데이터 없음.</td></tr>}
+                  {stats.pivot.map(r => (
+                    <tr key={r.student} style={{ borderTop: '1px solid var(--border)', cursor: 'pointer' }}
+                      onClick={() => setStudentFilter(studentFilter === String(r.student) ? '' : String(r.student))}>
+                      <td style={{ padding: 8, fontWeight: 600 }}>{r.name || `#${r.student}`}</td>
+                      {kindCols.map(k => <td key={k} align="right" style={{ padding: 8, color: r.kinds[k] ? 'var(--fg)' : 'var(--fg-dim)' }}>{r.kinds[k] || 0}</td>)}
+                      <td align="right" style={{ padding: 8, fontWeight: 700, color: 'var(--primary)' }}>{r.total}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="row" style={{ flexWrap: 'wrap', alignItems: 'stretch' }}>
+              {/* 시나리오별 */}
+              <div className="card" style={{ flex: 1, minWidth: 280 }}>
+                <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginBottom: 8 }}>시나리오별 활동량 (클릭 시 드릴다운)</div>
+                {stats.by_scenario.length === 0 && <span style={{ color: 'var(--fg-dim)' }}>—</span>}
+                {stats.by_scenario.map(s => (
+                  <div key={s.scenario_id} className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 4, cursor: 'pointer' }}
+                    onClick={() => setScenarioId(scenarioId === String(s.scenario_id) ? '' : String(s.scenario_id))}>
+                    <div style={{ width: 200, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={s.title || `#${s.scenario_id}`}>{s.title || `#${s.scenario_id}`}</div>
+                    <div style={{ flex: 1, background: 'var(--border)', borderRadius: 4, height: 14, overflow: 'hidden' }}>
+                      <div style={{ width: `${(s.count / maxScn) * 100}%`, height: '100%', background: 'var(--primary)' }} />
+                    </div>
+                    <b style={{ width: 44, textAlign: 'right' }}>{s.count}</b>
+                  </div>
+                ))}
+              </div>
+              {/* 일자별 */}
+              <div className="card" style={{ flex: 1, minWidth: 240 }}>
+                <div style={{ color: 'var(--fg-dim)', fontSize: 13, marginBottom: 8 }}>일자별 추이</div>
+                {stats.by_day.length === 0 && <span style={{ color: 'var(--fg-dim)' }}>—</span>}
+                {stats.by_day.map(d => (
+                  <div key={d.date} className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <div style={{ width: 90, fontSize: 12, color: 'var(--fg-dim)' }}>{String(d.date).slice(0, 10)}</div>
+                    <div style={{ flex: 1, background: 'var(--border)', borderRadius: 4, height: 14, overflow: 'hidden' }}>
+                      <div style={{ width: `${(d.count / maxDay) * 100}%`, height: '100%', background: 'var(--green)' }} />
+                    </div>
+                    <b style={{ width: 44, textAlign: 'right' }}>{d.count}</b>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead><tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
-              <th align="left" style={{ padding: 8 }}>시각</th>
-              <th align="left" style={{ padding: 8 }}>학생</th>
-              <th align="left" style={{ padding: 8 }}>종류</th>
-              <th align="left" style={{ padding: 8 }}>내용</th>
-              <th align="left" style={{ padding: 8 }}>시나리오</th>
-            </tr></thead>
-            <tbody>
-              {(!search || search.docs.length === 0) && <tr><td colSpan={5} style={{ padding: 14, color: 'var(--fg-dim)' }}>해당 조건의 활동 없음.</td></tr>}
-              {search?.docs.map((d, i) => {
-                const p = d.payload || {}
-                const summary = p.cmd || p.description || p.path || (p.rule_id ? `rule ${p.rule_id}` : JSON.stringify(p))
-                return (
-                  <tr key={i} style={{ borderTop: '1px solid var(--border)', cursor: 'pointer' }} onClick={() => setSelDoc(d)}>
-                    <td style={{ padding: 8, whiteSpace: 'nowrap' }}>{fmtTime(d.ts, true)}</td>
-                    <td style={{ padding: 8 }}>{d.student_name || studentName(d.student)}</td>
-                    <td style={{ padding: 8 }}><span className={`badge ${KIND_COLOR[d.kind || ''] || 'blue'}`}>{d.kind}</span></td>
-                    <td style={{ padding: 8, fontSize: 12, maxWidth: 460, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><code>{String(summary).slice(0, 160)}</code></td>
-                    <td style={{ padding: 8, fontSize: 11, color: 'var(--fg-dim)' }}>{d.scenario_id ? `#${d.scenario_id}` : '-'}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+        )
+      })()}
 
       {/* ── Dashboards iframe (펼침 시) ── */}
       {dashLink && showDash && (

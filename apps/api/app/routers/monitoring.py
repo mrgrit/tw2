@@ -131,7 +131,9 @@ class SiemStatsOut(BaseModel):
     total: int = 0
     by_kind: list[dict] = []
     by_student: list[dict] = []
+    by_scenario: list[dict] = []
     by_day: list[dict] = []
+    pivot: list[dict] = []   # 학생 × 종류 매트릭스
     note: str | None = None
 
 
@@ -163,11 +165,21 @@ async def siem_stats(
     res = await siem_export.aggregate(
         client, chain or None, scenario_id=scenario_id, student=student, kind=kind,
         time_from=time_from, time_to=time_to, q=q)
-    names = await _names_for(session, [b["student"] for b in res.get("by_student", [])])
+    pivot_ids = [b["student"] for b in res.get("pivot", [])]
+    names = await _names_for(session, [b["student"] for b in res.get("by_student", [])] + pivot_ids)
     by_student = [{**b, "name": names.get(b.get("student"))} for b in res.get("by_student", [])]
+    pivot = [{**b, "name": names.get(b.get("student"))} for b in res.get("pivot", [])]
+    # 시나리오 제목 매핑
+    from ..models import Scenario
+    sc_ids = [b["scenario_id"] for b in res.get("by_scenario", []) if b.get("scenario_id") is not None]
+    titles = dict((await session.execute(
+        select(Scenario.id, Scenario.title).where(Scenario.id.in_(sc_ids))
+    )).all()) if sc_ids else {}
+    by_scenario = [{**b, "title": titles.get(b.get("scenario_id"))} for b in res.get("by_scenario", [])]
     return SiemStatsOut(
         enabled=True, index=res.get("index"), total=res.get("total", 0),
-        by_kind=res.get("by_kind", []), by_student=by_student, by_day=res.get("by_day", []))
+        by_kind=res.get("by_kind", []), by_student=by_student,
+        by_scenario=by_scenario, by_day=res.get("by_day", []), pivot=pivot)
 
 
 @router.get("/siem/scenarios")

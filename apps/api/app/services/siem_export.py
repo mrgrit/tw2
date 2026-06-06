@@ -227,8 +227,12 @@ async def aggregate(client, chain: list | None = None, *, scenario_id: int | Non
         "aggs": {
             "by_kind": {"terms": {"field": "kind.keyword", "size": 20}},
             "by_student": {"terms": {"field": "student", "size": 100}},
+            "by_scenario": {"terms": {"field": "scenario_id", "size": 40}},
             "by_day": {"date_histogram": {"field": "ts", "calendar_interval": "day",
                                           "min_doc_count": 1}},
+            # 학생 × 종류 피벗 매트릭스 (학생별로 종류 분포 sub-agg).
+            "pivot": {"terms": {"field": "student", "size": 60},
+                      "aggs": {"kinds": {"terms": {"field": "kind.keyword", "size": 12}}}},
         },
     }
     res = await client.aggregate(index, body)
@@ -237,10 +241,15 @@ async def aggregate(client, chain: list | None = None, *, scenario_id: int | Non
           for b in (aggs.get("by_kind", {}).get("buckets") or [])]
     bs = [{"student": b["key"], "count": b["doc_count"]}
           for b in (aggs.get("by_student", {}).get("buckets") or [])]
+    bsc = [{"scenario_id": b["key"], "count": b["doc_count"]}
+           for b in (aggs.get("by_scenario", {}).get("buckets") or [])]
     bd = [{"date": b.get("key_as_string") or b.get("key"), "count": b["doc_count"]}
           for b in (aggs.get("by_day", {}).get("buckets") or [])]
+    pivot = [{"student": b["key"], "total": b["doc_count"],
+              "kinds": {k["key"]: k["doc_count"] for k in (b.get("kinds", {}).get("buckets") or [])}}
+             for b in (aggs.get("pivot", {}).get("buckets") or [])]
     return {"enabled": True, "index": index, "total": int(res.get("total") or 0),
-            "by_kind": bk, "by_student": bs, "by_day": bd}
+            "by_kind": bk, "by_student": bs, "by_scenario": bsc, "by_day": bd, "pivot": pivot}
 
 
 def dashboard_deeplink(chain: list) -> str | None:
