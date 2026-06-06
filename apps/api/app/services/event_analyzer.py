@@ -32,6 +32,18 @@ _CLAUDE_TIMEOUT = float(os.getenv("TUBEWAR_ANALYZER_TIMEOUT", "40"))
 # 채점(grade)은 claude -p 1회가 ~30-40s 걸리고 멀티라운드(직접 점검)면 더 길어 → 넉넉히.
 _GRADE_TIMEOUT = float(os.getenv("TUBEWAR_GRADE_TIMEOUT", "150"))
 
+# 동시 채점 제한 — 학생 20명이 동시에 채점 요청해도 claude -p 프로세스가 폭주하지 않도록
+# 동시 실행 수를 제한(나머지는 대기 큐). lazy 초기화(이벤트 루프 바인딩 회피).
+_GRADE_CONCURRENCY = int(os.getenv("TUBEWAR_GRADE_CONCURRENCY", "4"))
+_grade_sem: "asyncio.Semaphore | None" = None
+
+
+def _get_grade_sem() -> "asyncio.Semaphore":
+    global _grade_sem
+    if _grade_sem is None:
+        _grade_sem = asyncio.Semaphore(_GRADE_CONCURRENCY)
+    return _grade_sem
+
 
 @dataclass
 class StudentReport:
@@ -525,12 +537,13 @@ async def _claude_grade(payload: dict, model: str | None = None) -> tuple[str | 
     """CC (Claude Code CLI) 채점 1회. (text, cost) 반환, 실패 시 (None, 0)."""
     user = "## 채점 입력 (JSON)\n```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
     try:
-        proc = await asyncio.create_subprocess_exec(
-            _CLAUDE_CMD, "-p", "--output-format", "json", "--model", (model or _CLAUDE_MODEL),
-            "--append-system-prompt", _CLAUDE_GRADE_SYSTEM, user,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        out, _err = await asyncio.wait_for(proc.communicate(), timeout=_GRADE_TIMEOUT)
+        async with _get_grade_sem():   # 동시 채점 수 제한(20명 동시 → 큐잉)
+            proc = await asyncio.create_subprocess_exec(
+                _CLAUDE_CMD, "-p", "--output-format", "json", "--model", (model or _CLAUDE_MODEL),
+                "--append-system-prompt", _CLAUDE_GRADE_SYSTEM, user,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, _err = await asyncio.wait_for(proc.communicate(), timeout=_GRADE_TIMEOUT)
         if proc.returncode != 0:
             return None, 0.0
         wrap = json.loads(out.decode("utf-8", "replace"))

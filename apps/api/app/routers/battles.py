@@ -27,6 +27,9 @@ from ..services import feedback as fb_svc
 from ..services import assessor_client, battlefield
 from ..services import check_compiler as cc
 from ..services import graders
+from ..services import siem_export
+from ..services import cohort_service as cs
+import datetime as _dt
 
 router = APIRouter(prefix="/battles", tags=["battles"])
 
@@ -490,6 +493,34 @@ async def post_event(
         )
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+
+    # ── 채점 결과(제출+verdict+피드백)를 중앙 SIEM 에 영구 보존 → 강사 실시간 모니터링.
+    # (sqlite battle_events 가 권위 기록, SIEM 은 강사용 통합 가시화. 휘발 방지.)
+    if mission_ctx is not None and siem_export.is_enabled():
+        try:
+            chain = await cs.ancestor_chain(session, battle.cohort_id) if battle.cohort_id else []
+            grade_doc = {
+                "battle_id": battle_id, "user_id": user.id, "user_name": user.name,
+                "infra_id": getattr(actor_infra, "id", None), "kind": "grade",
+                "scenario_id": battle.scenario_id,
+                "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "scenario_step": f"{side}-{body.mission_order}",
+                "payload": {
+                    "mission_side": side, "mission_order": body.mission_order,
+                    "verdict": getattr(analysis, "verdict", "review"),
+                    "claimed_points": body.points, "awarded_points": awarded,
+                    "max_points": mission_ctx.points,
+                    "what_i_did": (body.what_i_did or "")[:1000],
+                    "what_happened": (body.what_happened or "")[:1000],
+                    "feedback": (analysis.reasoning or "")[:1500],
+                    "model": analysis.model,
+                    "criteria_met": analysis.criteria_met,
+                    "criteria_missing": analysis.criteria_missing,
+                },
+            }
+            await siem_export.export_events(siem_export.default_client(), [grade_doc], chain)
+        except Exception:
+            pass  # SIEM 전송 실패는 채점 자체를 막지 않음(best-effort)
     return BattleEventOut.model_validate(ev)
 
 
