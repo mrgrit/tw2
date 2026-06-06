@@ -149,7 +149,9 @@ class ScenarioOut(BaseModel):
 class BattleOut(BaseModel):
     id: int
     scenario_id: int | None
+    scenario_title: str | None = None
     cohort_id: int | None = None
+    cohort_name: str | None = None
     mode: str
     status: str
     monitor: str

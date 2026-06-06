@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..db import SessionLocal, get_session
-from ..models import Battle, BattleEvent, BattleParticipant, Infra, Scenario, User
+from ..models import Battle, BattleEvent, BattleParticipant, Cohort, Infra, Scenario, User
 from ..schemas import (
     BattleCreateIn, BattleDetail, BattleEventIn, BattleEventOut, BattleJoinIn,
     BattleOut, BattleParticipantOut, MissionOut,
@@ -154,7 +154,22 @@ async def list_battles(
     rows = (await session.scalars(
         select(Battle).order_by(Battle.id.desc()).limit(100)
     )).all()
-    return [BattleOut.model_validate(r) for r in rows]
+    # 시나리오 제목 / 코호트 이름을 배치 조회(N+1 방지)해 목록에 의미있는 이름 제공.
+    sc_ids = {r.scenario_id for r in rows if r.scenario_id}
+    co_ids = {r.cohort_id for r in rows if r.cohort_id}
+    sc_titles = dict((await session.execute(
+        select(Scenario.id, Scenario.title).where(Scenario.id.in_(sc_ids))
+    )).all()) if sc_ids else {}
+    co_names = dict((await session.execute(
+        select(Cohort.id, Cohort.name).where(Cohort.id.in_(co_ids))
+    )).all()) if co_ids else {}
+    out: list[BattleOut] = []
+    for r in rows:
+        o = BattleOut.model_validate(r)
+        o.scenario_title = sc_titles.get(r.scenario_id)
+        o.cohort_name = co_names.get(r.cohort_id)
+        out.append(o)
+    return out
 
 
 @router.get("/{battle_id}", response_model=BattleDetail)

@@ -35,6 +35,9 @@ interface BattleEvent {
 interface BattleSummary {
   id: number
   scenario_id: number | null
+  scenario_title: string | null
+  cohort_id: number | null
+  cohort_name: string | null
   mode: string
   status: string
   monitor: string
@@ -265,13 +268,17 @@ export default function Battle() {
             <div key={b.id} className="card">
               <div className="row">
                 <div style={{ flex: 1 }}>
-                  <b>#{b.id}</b> · <span className="badge blue">{b.mode}</span> · monitor: <span className={`badge ${b.monitor === 'claude' ? 'red' : 'green'}`}>{b.monitor}</span>
-                  {b.hint_enabled && <span className="badge yellow" style={{ marginLeft: 6 }}>hint</span>}
-                  {b.target_apps?.length > 0 && (
-                    <span style={{ marginLeft: 8, color: 'var(--fg-dim)', fontSize: 12 }}>
-                      targets: {b.target_apps.join(', ')}
-                    </span>
-                  )}
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                    {b.scenario_title || `시나리오 #${b.scenario_id ?? '-'}`}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
+                    <span className="badge blue">{b.mode}</span>
+                    {b.cohort_name && <span style={{ marginLeft: 6 }}>· {b.cohort_name}</span>}
+                    <span style={{ marginLeft: 6 }}>· #{b.id}</span>
+                    <span style={{ marginLeft: 6 }}>· 채점 <span className={b.monitor === 'claude' ? '' : ''}>{b.monitor === 'claude' ? 'AI(Claude)' : 'Bastion'}</span></span>
+                    {b.hint_enabled && <span className="badge yellow" style={{ marginLeft: 6 }}>hint</span>}
+                    {b.target_apps?.length > 0 && <span style={{ marginLeft: 6 }}>· targets: {b.target_apps.join(', ')}</span>}
+                  </div>
                 </div>
                 <span className={`badge ${b.status === 'active' ? 'green' : 'blue'}`}>
                   {b.status}
