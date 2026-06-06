@@ -37,6 +37,19 @@ import time as _time
 _mc_last: dict[int, float] = {}
 _MC_INTERVAL = float(os.getenv("TUBEWAR_MISSION_CHECK_SEC", "60"))
 
+# 중앙 SIEM 노이즈 필터 — 인프라 상시 발생 시그니처(예: 6V6 nmap SYN scan)는 학생 활동
+# 분석에 의미 없고 SIEM 을 압도하므로 적재에서 제외(진도 계산용 DB 에는 유지).
+# 미션 관련 탐지는 mission_check(미션별 증거)로 별도 수집되므로 손실 없음.
+_SIEM_NOISE = [s.strip().lower() for s in os.getenv(
+    "TUBEWAR_SIEM_NOISE", "nmap syn scan,possible nmap").split(",") if s.strip()]
+
+
+def _is_noise_alert(payload: dict) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    desc = str(payload.get("description") or payload.get("signature") or "").lower()
+    return any(p in desc for p in _SIEM_NOISE)
+
 POLL_INTERVAL_SEC = 20.0
 
 # ── 병목 결정론 임계 ─────────────────────────────────
@@ -162,6 +175,10 @@ async def pull_activity_once(session: AsyncSession, battle_id: int, *, since_sec
                     battle_id=battle_id, cohort_id=battle.cohort_id, user_id=p.user_id,
                     infra_id=p.infra_id, kind=kind, dedupe_key=key, payload=payload,
                 ))
+                # 노이즈 alert 는 SIEM 적재 제외(DB 진도엔 위에서 이미 반영).
+                if kind == "alert" and _is_noise_alert(payload):
+                    ingested += 1
+                    continue
                 new_events.append({"battle_id": battle_id, "user_id": p.user_id,
                                    "user_name": names.get(p.user_id),
                                    "infra_id": p.infra_id, "kind": kind, "payload": payload,
