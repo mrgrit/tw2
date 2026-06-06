@@ -315,7 +315,11 @@ async def mission_check_tick(session: AsyncSession, battle_id: int) -> int:
                     continue
                 if not resp.get("ok"):
                     continue
+                # check_id → type (영속/휘발 구분용). 휘발(로그·알림)은 앰비언트 노이즈에
+                # 취약 → 보조 신호로만. 영속(프로세스·파일)은 방어 태세.
+                ctype = {c.get("id"): c.get("type") for c in checks}
                 for r in resp.get("results", []):
+                    t = ctype.get(r.get("id"))
                     events.append({
                         "battle_id": battle_id, "user_id": p.user_id,
                         "user_name": names.get(p.user_id),
@@ -325,6 +329,8 @@ async def mission_check_tick(session: AsyncSession, battle_id: int) -> int:
                         "payload": {
                             "mission_side": side, "mission_order": order,
                             "points": m.get("points"), "check_id": r.get("id"),
+                            "check_type": t,
+                            "volatile": t in ("log_contains", "wazuh_alert", "fim_change", "command_ran"),
                             "passed": bool(r.get("passed")),
                             "evidence": str(r.get("evidence") or "")[:500],
                         },

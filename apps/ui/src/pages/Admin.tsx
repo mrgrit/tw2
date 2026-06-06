@@ -1130,6 +1130,8 @@ function SiemTab() {
   const [missionRes, setMissionRes] = useState<any | null>(null)
   const [mcheck, setMcheck] = useState<any | null>(null)
   const [mcCell, setMcCell] = useState<any | null>(null)
+  const [acc, setAcc] = useState<any | null>(null)
+  const [accCell, setAccCell] = useState<any | null>(null)
 
   async function openMission(side: string, order: number | null) {
     if (!cohortId || order == null || !scenarioId) return
@@ -1197,11 +1199,13 @@ function SiemTab() {
     api<{ students: ClearRow[] }>(`/monitoring/siem/clears?cohort_id=${cohortId}${q}`)
       .then(r => setClears(r.students)).catch(() => setClears([]))
   }, [cohortId, scenarioId])
-  // 미션 체크 현황 매트릭스 (mission_check 적재 문서)
+  // 학생 달성도 매트릭스(주축, AI 채점) + 미션 증거 현황(보조, mission_check)
   useEffect(() => {
-    setMcCell(null)
-    if (!cohortId) { setMcheck(null); return }
+    setMcCell(null); setAccCell(null)
+    if (!cohortId) { setMcheck(null); setAcc(null); return }
     const q = scenarioId ? `&scenario_id=${scenarioId}` : ''
+    api<any>(`/monitoring/siem/accomplishment?cohort_id=${cohortId}${q}`)
+      .then(r => setAcc(r)).catch(() => setAcc(null))
     api<any>(`/monitoring/siem/mission-checks?cohort_id=${cohortId}${q}`)
       .then(r => setMcheck(r)).catch(() => setMcheck(null))
   }, [cohortId, scenarioId])
@@ -1366,11 +1370,65 @@ function SiemTab() {
         </div>
       )}
 
-      {/* ── 미션 체크 현황 매트릭스 (mission_check 실시간 적재) ── */}
+      {/* ── 학생 달성도 매트릭스 (주축, AI 채점 — '누가 실제로 깼나') ── */}
+      {acc && acc.steps.length > 0 && (
+        <div className="card" style={{ padding: 0, marginBottom: 12, overflowX: 'auto' }}>
+          <div style={{ padding: '8px 12px', fontSize: 13, fontWeight: 600 }}>
+            학생 달성도 (학생 × 미션) <span style={{ fontSize: 11, color: 'var(--fg-dim)', fontWeight: 400 }}>— AI 채점(출처·근거 교차검증) 최신 결과 · 셀 클릭 시 근거 · 회색=미제출</span>
+          </div>
+          {acc.students.length === 0 && <div style={{ padding: 14, color: 'var(--fg-dim)' }}>이 코호트의 제출/채점 기록 없음{scenarioId ? '' : ' (시나리오 선택 시 미제출 칸까지 표시)'}.</div>}
+          {acc.students.length > 0 && (
+            <table style={{ borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead><tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
+                <th align="left" style={{ padding: 8, position: 'sticky', left: 0, background: 'var(--card)' }}>학생</th>
+                {acc.steps.map((st: string) => (
+                  <th key={st} style={{ padding: 8 }}><span className={`badge ${st.startsWith('red') ? 'red' : 'blue'}`}>{st}{acc.points?.[st] ? ` ·${acc.points[st]}` : ''}</span></th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {acc.students.map((s: any) => (
+                  <tr key={s.student} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: 8, fontWeight: 600, position: 'sticky', left: 0, background: 'var(--card)' }}>{s.name}</td>
+                    {acc.steps.map((st: string) => {
+                      const c = acc.cells[`${s.student}|${st}`]
+                      const vc: Record<string, string> = { pass: 'var(--green)', partial: 'var(--yellow)', fail: 'var(--red)', review: '#888' }
+                      return (
+                        <td key={st} align="center" style={{ padding: 6 }}>
+                          {c ? (
+                            <span onClick={() => setAccCell({ ...c, who: s.name, step: st })} title="클릭: AI 근거"
+                              style={{ cursor: 'pointer', display: 'inline-block', minWidth: 30, padding: '2px 6px', borderRadius: 4, color: '#fff', fontWeight: 700, background: vc[c.verdict || 'review'] || '#888' }}>
+                              {c.points}
+                            </span>
+                          ) : <span title="미제출" style={{ color: 'var(--fg-dim)' }}>·</span>}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {accCell && (
+            <div style={{ padding: 12, borderTop: '1px solid var(--border)', background: 'var(--bg)' }}>
+              <div className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                <b>{accCell.who}</b> · <span className="badge blue">{accCell.step}</span>
+                <span className={`badge ${accCell.verdict === 'pass' ? 'green' : accCell.verdict === 'fail' ? 'red' : 'yellow'}`}>{accCell.verdict || '?'}</span>
+                <span className="badge green">{accCell.points}점</span>
+                <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>battle #{accCell.battle_id}</span>
+                <div style={{ flex: 1 }} />
+                <button className="ghost" onClick={() => setAccCell(null)}>닫기 ✕</button>
+              </div>
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--fg-dim)', lineHeight: 1.5 }}>{accCell.reasoning || '(근거 없음)'}</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── 미션 증거 현황 (보조, 인프라 상태 — 앰비언트 주의) ── */}
       {mcheck?.enabled && mcheck.steps.length > 0 && (
         <div className="card" style={{ padding: 0, marginBottom: 12, overflowX: 'auto' }}>
           <div style={{ padding: '8px 12px', fontSize: 13, fontWeight: 600 }}>
-            미션 체크 현황 (학생 × 미션) <span style={{ fontSize: 11, color: 'var(--fg-dim)', fontWeight: 400 }}>— 각 미션 verify.checks 를 실제 실행한 최신 결과 · 셀 클릭 시 증거</span>
+            미션 증거 현황 <span style={{ fontSize: 11, color: 'var(--fg-dim)', fontWeight: 400 }}>— 인프라에 그 증거가 지금 있나(verify.checks 실행). ⚠️ 휘발성(로그·알림, 점선)은 앰비언트 노이즈로 거짓-초록 가능 → 달성도는 위 표 참고. 셀 클릭 시 증거</span>
           </div>
           <table style={{ borderCollapse: 'collapse', fontSize: 13 }}>
             <thead><tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
@@ -1389,8 +1447,8 @@ function SiemTab() {
                       <td key={st} align="center" style={{ padding: 6 }}>
                         {c ? (
                           <span onClick={() => setMcCell({ ...c, who: s.name, step: st })}
-                            title="클릭: 증거"
-                            style={{ cursor: 'pointer', display: 'inline-block', width: 22, height: 22, lineHeight: '22px', borderRadius: 4, color: '#fff', background: c.passed ? 'var(--green)' : 'var(--red)' }}>
+                            title={`클릭: 증거${c.volatile ? ' (휘발성 — 앰비언트 노이즈 주의)' : ' (영속 — 방어 태세)'}`}
+                            style={{ cursor: 'pointer', display: 'inline-block', width: 22, height: 22, lineHeight: '20px', borderRadius: 4, color: '#fff', background: c.passed ? 'var(--green)' : 'var(--red)', border: c.volatile ? '2px dotted #fff' : '2px solid transparent', opacity: c.volatile ? 0.75 : 1 }}>
                             {c.passed ? '✓' : '✕'}
                           </span>
                         ) : <span style={{ color: 'var(--fg-dim)' }}>·</span>}

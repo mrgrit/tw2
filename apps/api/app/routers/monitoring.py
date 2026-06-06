@@ -212,6 +212,60 @@ async def siem_scenarios(
     return {"cohort_id": cohort_id, "scenarios": out}
 
 
+@router.get("/siem/accomplishment")
+async def siem_accomplishment(
+    cohort_id: int,
+    scenario_id: int | None = None,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """학생 달성도 매트릭스(주축) — AI 채점된 battle_events 기반. 출처/근거 교차검증된
+    '누가 실제로 깼나'. 학생 × 미션단계 → 최신 verdict/점수/근거. (mission_check 와 달리
+    앰비언트 노이즈에 안 흔들림.) scenario_id 주면 미제출 칸까지 표시."""
+    from ..models import BattleEvent, Scenario
+    ids = await cs.subtree_ids(session, cohort_id)
+    if not ids:
+        return {"students": [], "steps": [], "cells": {}, "points": {}}
+    bq = select(Battle).where(Battle.cohort_id.in_(ids))
+    if scenario_id is not None:
+        bq = bq.where(Battle.scenario_id == scenario_id)
+    battles = (await session.scalars(bq)).all()
+    bids = [b.id for b in battles]
+    steps: list[str] = []
+    points: dict[str, int] = {}
+    if scenario_id is not None:
+        scn = await session.get(Scenario, scenario_id)
+        if scn:
+            for side, mb in (("red", scn.mission_red), ("blue", scn.mission_blue)):
+                for m in (mb or {}).get("missions") or []:
+                    st = f"{side}-{int(m.get('order') or 0)}"
+                    steps.append(st); points[st] = m.get("points") or 0
+    cells: dict[str, dict] = {}
+    students: dict[int, str] = {}
+    if bids:
+        evs = (await session.scalars(
+            select(BattleEvent).where(BattleEvent.battle_id.in_(bids)).order_by(BattleEvent.id))).all()
+        for e in evs:
+            rep = (e.detail or {}).get("report") or {}
+            o, sd = rep.get("mission_order"), rep.get("mission_side")
+            if o is None or sd is None:
+                continue
+            st = f"{sd}-{int(o)}"
+            if st not in steps:
+                steps.append(st)
+            g = (e.detail or {}).get("grading") or {}
+            students[e.actor_user_id] = ""
+            cells[f"{e.actor_user_id}|{st}"] = {   # id 오름차순 → 마지막이 최신
+                "verdict": g.get("verdict"), "points": e.points,
+                "reasoning": (e.reasoning or "")[:600], "battle_id": e.battle_id,
+            }
+    names = await _names_for(session, list(students.keys()))
+    steps.sort(key=lambda s: (s.split("-")[0], int(s.split("-")[1]) if "-" in s and s.split("-")[1].isdigit() else 0))
+    return {"scenario_id": scenario_id,
+            "students": [{"student": k, "name": names.get(k) or f"#{k}"} for k in students],
+            "steps": steps, "points": points, "cells": cells}
+
+
 @router.get("/siem/mission-checks")
 async def siem_mission_checks(
     cohort_id: int,
@@ -245,7 +299,8 @@ async def siem_mission_checks(
             steps.append(step)
         students[sid] = d.get("student_name") or f"#{sid}"
         cells[key] = {"passed": bool(p.get("passed")), "evidence": str(p.get("evidence") or "")[:300],
-                      "ts": d.get("ts"), "points": p.get("points")}
+                      "ts": d.get("ts"), "points": p.get("points"),
+                      "check_type": p.get("check_type"), "volatile": bool(p.get("volatile"))}
     steps.sort(key=lambda s: (s.split("-")[0], int(s.split("-")[1]) if "-" in s and s.split("-")[1].isdigit() else 0))
     return {"enabled": True, "scenario_id": scenario_id,
             "students": [{"student": k, "name": v} for k, v in students.items()],
