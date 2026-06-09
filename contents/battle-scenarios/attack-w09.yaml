@@ -1,0 +1,149 @@
+id: "attack-w09"
+category: "attack"
+title: "[공격기법 W9] 네트워크 공격·패킷 크래프팅(scapy) vs 패킷 분석·네트워크 탐지룰"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격기법 9주차 — **네트워크 공격 + 패킷 분석**. 공격자는 tcpdump/scapy 로 패킷을 직접 만들어
+  비정상 스캔(SYN/FIN/Xmas)·스푸핑·프로토콜 악용을 시도한다. 방어자는 Suricata eve.json/pcap 을
+  분석(Wireshark 관점)해 비정상 패킷을 식별하고 네트워크 탐지룰을 작성한다.
+
+  ▸ 모드: solo(공격자→분석 1인) / duel(Red 가 상대망에 패킷 공격, Blue 가 본인 IPS 로 분석/탐지). 대상=solo 본인 / duel 상대.
+  ▸ 공격자 위치: **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은 대상 Suricata(eve.json) 탐지로.
+  ▸ 탐지룰은 Suricata **local.rules**(교육용 sid **9409001+**).
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 — 패킷 크래프팅 스캔 (비정상 플래그)
+
+      scapy/nmap 으로 비정상 플래그 스캔(SYN/FIN/Xmas/NULL)을 보낸다. 정상 핸드셰이크가 아닌 패킷을
+      만들어 방화벽/IDS 반응을 탐색한다.
+
+      ### 권장 명령 (참고 — 외부 공격자)
+      ```bash
+      nmap -sX -p 1-1000 <대상_공개IP>          # Xmas scan
+      # scapy: send(IP(dst=t)/TCP(flags="FPU"))   # 커스텀 플래그
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Suricata 의 스캔 탐지.
+      ✅ 합격: 대상 IPS 에 스캔 탐지.
+    hint: "attacker-ext scapy/nmap 비정상 플래그 스캔. 채점: 대상 Suricata scan."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "MITRE T1595.001 — 비정상 플래그 스캔(SYN/FIN/Xmas/NULL). 외부 공격자 모델 → 대상 Suricata eve.json 탐지로 판정."
+        success_criteria: ["대상 IPS 에 스캔 탐지(최근)", "(설명) 어떤 플래그 조합으로 무엇을 탐색했는지 서술"]
+        acceptable_methods: ["attacker-ext nmap -sX/-sF/-sN, scapy 커스텀 패킷"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: ips
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 — 프로토콜 악용 / 다발 패킷
+
+      비정상 프로토콜 시퀀스·다발 패킷(반복 스캔)으로 IDS 의 임계·상태 추적을 시험한다. 패킷 분석가가
+      flow/protocol 로 식별해야 할 트래픽을 만든다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      for i in $(seq 3); do nmap -sS -p 1-2000 <대상_공개IP> -T4; done
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Suricata 의 반복 스캔/프로토콜 탐지.
+      ✅ 합격: 대상 IPS 에 스캔/프로토콜 탐지.
+    hint: "attacker-ext 반복/프로토콜 악용. 채점: 대상 Suricata scan."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "프로토콜 악용/다발 패킷 — IDS 임계·상태 추적 시험. 대상 Suricata 흔적으로 판정."
+        success_criteria: ["대상 IPS 스캔/프로토콜 탐지", "(설명) flow/protocol 특성 서술"]
+        acceptable_methods: ["attacker-ext 반복 스캔/커스텀 시퀀스"]
+        negative_signs: ["대상 미도달"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 — 패킷 분석 (eve.json / pcap, Wireshark 관점)
+
+      Suricata eve.json(또는 pcap)을 분석해 비정상 패킷의 플래그·flow·출발지를 식별한다. 정상 트래픽과
+      스캔/스푸핑을 구분한다.
+
+      📌 채점: 본인 IPS 에 스캔/패킷 탐지가 있는지(분석 대상).
+      ✅ 합격: 본인 IPS 에 스캔 탐지가 있다.
+    hint: "eve.json/pcap 분석(플래그/flow/출발지). 채점: log_contains ips suricata scan."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "blue-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "패킷 분석 — eve.json/pcap 의 플래그/flow/출발지로 비정상 식별. Wireshark 필터링 관점."
+        success_criteria: ["IPS 스캔 탐지 확인", "(분석) 비정상 플래그/flow 식별", "(구분) 정상 vs 스캔/스푸핑"]
+        acceptable_methods: ["eve.json/pcap 분석 / log_contains"]
+        negative_signs: ["raw 만 보고 해석 없음"]
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 — 네트워크 탐지룰 작성 (sid 9409001)
+
+      비정상 플래그/스캔 패턴을 탐지하는 Suricata 룰(**sid 9409001**)을 `local.rules` 에 작성한다
+      (flags 조합, threshold 로 스캔 빈도).
+
+      ### 권장 룰 (참고)
+      ```
+      alert tcp any any -> any any (msg:"ATK W09 Xmas scan"; flags:FPU; threshold:type both, track by_src, count 5, seconds 30; sid:9409001; rev:1;)
+      ```
+      📌 채점: local.rules 에 네트워크 탐지룰(sid 9409001)이 작성됐는지.
+      ✅ 합격: local.rules 에 9409001 룰이 있다.
+    hint: "local.rules 에 비정상 플래그/스캔 탐지룰(sid 9409001, flags+threshold) → reload."
+    verify:
+      type: "file_contains"
+      expect: "9409001"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "ips", params: { path: "/etc/suricata/rules/local.rules", pattern: "9409001" } }
+      semantic:
+        intent: "네트워크 탐지룰 — flags 조합(Xmas/FIN/NULL) + threshold 로 스캔 빈도. 패킷 수준 탐지."
+        success_criteria: ["local.rules 에 sid 9409001", "flags/threshold 활용", "(설명) 정상 트래픽 오탐 회피"]
+        acceptable_methods: ["local.rules 작성 + reload"]
+        negative_signs: ["문법 오류", "threshold 없이 과탐"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 — 네트워크 방어 권고 (분할/스푸핑 대응)
+
+      패킷 수준 위협(스캔/스푸핑/프로토콜 악용)에 대한 방어를 권고한다: 방화벽 상태 추적,
+      anti-spoofing(uRPF), 재조합/정규화, rate limiting.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ 권고는 제출로 검증).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "상태추적/anti-spoofing/재조합/rate limit 권고. 채점: wazuh_alert + 권고 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "네트워크 방어 — 상태 추적(conntrack), anti-spoofing(uRPF), 패킷 재조합/정규화, rate limiting."
+        success_criteria: ["경보 수집 확인", "(권고) 패킷 수준 방어 다층", "(우선순위) 위협별 대응"]
+        acceptable_methods: ["분석 + 네트워크 방어 권고"]
+        negative_signs: ["단일 통제만"]

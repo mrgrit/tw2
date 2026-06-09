@@ -1,0 +1,151 @@
+id: "attack-w13"
+category: "attack"
+title: "[공격기법 W13] MITRE Caldera 적대자 에뮬레이션 자동화 vs ATT&CK 기반 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격기법 13주차 — **MITRE Caldera(1) — Adversary Emulation 자동화**. 수동 공격을 넘어 Caldera 의
+  **ability**(ATT&CK technique 단위 행위)를 **adversary**(체인)로 묶어 자동 실행한다. 정찰→실행→발견→
+  지속성을 에이전트가 자동으로 수행한다. 방어자는 에뮬레이션된 ATT&CK technique 을 탐지·매핑한다.
+
+  ▸ 모드: solo(에뮬레이션→탐지 1인) / duel(상대망 에뮬레이션→본인 탐지). 대상=solo 본인 / duel 상대.
+  ▸ 공격자 위치: **망 외부 공격자(attacker-ext)** + 호스트 에뮬레이션. 외부 명령 미수집 → 대상 방어층/호스트 흔적으로 채점.
+  ▸ 주의: Caldera 는 이 6v6 에 **미설치** — ability/adversary 는 설계/시뮬, 실 행위는 동등 수동 명령으로.
+    에뮬레이션 마커: 발견 단계 산물 계정 **eduintruder**. 탐지룰은 Suricata **local.rules**(sid **9413001**).
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 — adversary 체인 에뮬레이션 (정찰 → 실행)
+
+      Caldera adversary(또는 동등 수동)로 정찰(T1595)→웹 실행(T1190) ability 체인을 자동 실행한다.
+      ability 가 ATT&CK technique 단위로 매핑됨을 이해한다.
+
+      ### 권장 (참고 — Caldera ability 또는 동등 수동)
+      ```bash
+      nikto -h http://<대상_공개IP> -maxtime 60s
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%201"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 WAF/IPS 의 에뮬레이션 행위 탐지.
+      ✅ 합격: 대상 IPS 에 스캔, WAF 에 익스플로잇 탐지.
+    hint: "Caldera/수동으로 정찰+실행 ability 체인. 채점: 대상 Suricata scan + ModSec 942."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+        - { id: "red-1-2", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+      semantic:
+        intent: "Caldera ability/adversary — ATT&CK technique 단위 자동 실행. 외부 공격자 모델 → 대상 IPS+WAF 흔적으로 판정."
+        success_criteria: ["대상 IPS 스캔 + WAF 익스플로잇 탐지", "(매핑) 각 ability 의 ATT&CK technique 서술", "(자동화) adversary 체인 구성 서술"]
+        acceptable_methods: ["Caldera adversary 실행 / 동등 수동 명령 체인"]
+        negative_signs: ["대상 미도달", "technique 매핑 누락"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 — 발견 + 지속성 ability (호스트)
+
+      발견(Discovery T1087 계정 열거)·지속성(T1136) ability 를 에뮬레이션해 백도어 계정
+      (**eduintruder**)을 만든다.
+
+      ### 권장 (참고)
+      ```bash
+      useradd -m -s /bin/bash eduintruder      # T1136 ability 산물
+      ```
+      📌 채점: 대상 호스트의 /etc/passwd 에 에뮬레이션 산물(eduintruder)이 있는지.
+      ✅ 합격: /etc/passwd 에 eduintruder 가 있다.
+    hint: "Discovery/Persistence ability → useradd eduintruder. 채점: file_contains passwd eduintruder."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+      semantic:
+        intent: "Caldera Discovery/Persistence ability — T1087/T1136 자동 실행. 호스트 산물로 판정."
+        success_criteria: ["/etc/passwd 에 eduintruder", "(매핑) ability→technique 서술"]
+        acceptable_methods: ["Caldera ability / 동등 수동"]
+        negative_signs: ["산물 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 — 에뮬레이션 탐지 + ATT&CK 매핑
+
+      에뮬레이션된 technique 들을 SIEM 에서 탐지하고 ATT&CK 매트릭스로 매핑한다. 자동 에뮬레이션의
+      장점(반복성/커버리지)을 활용해 탐지 검증한다.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(탐지 대상).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "에뮬레이션 technique 탐지 + ATT&CK 매핑. 채점: wazuh_alert + 매핑 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "에뮬레이션 탐지 — 실행된 technique 을 SIEM 에서 탐지 + ATT&CK 매핑. 반복 가능한 탐지 검증."
+        success_criteria: ["경보 수집 확인", "(매핑) 탐지된 technique → ATT&CK", "(검증) 어느 ability 가 탐지/미탐지"]
+        acceptable_methods: ["SIEM 탐지 + ATT&CK 매핑"]
+        negative_signs: ["매핑 누락"]
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 — 미탐 technique 탐지룰 작성 (sid 9413001)
+
+      에뮬레이션에서 탐지되지 않은(gap) technique 을 잡는 Suricata 룰(**sid 9413001**)을 `local.rules`
+      에 작성한다.
+
+      ### 권장 룰 (참고)
+      ```
+      alert http any any -> any any (msg:"ATK W13 emulated technique"; http.user_agent; content:"sqlmap"; nocase; sid:9413001; rev:1;)
+      ```
+      📌 채점: local.rules 에 미탐 technique 탐지룰(sid 9413001)이 작성됐는지.
+      ✅ 합격: local.rules 에 9413001 룰이 있다.
+    hint: "탐지 gap technique 룰(sid 9413001) → reload."
+    verify:
+      type: "file_contains"
+      expect: "9413001"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "ips", params: { path: "/etc/suricata/rules/local.rules", pattern: "9413001" } }
+      semantic:
+        intent: "탐지 gap 보완 — 에뮬레이션에서 미탐된 technique 을 룰로. 자동 에뮬레이션이 커버리지 공백을 드러냄."
+        success_criteria: ["local.rules 에 sid 9413001", "미탐 technique 대상", "(설명) gap 을 어떻게 식별했는지"]
+        acceptable_methods: ["local.rules 작성 + reload"]
+        negative_signs: ["문법 오류", "이미 탐지되는 것 중복"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 — 적대자 에뮬레이션의 가치 분석
+
+      Caldera 자동 에뮬레이션의 가치(반복 가능/커버리지 측정/탐지 회귀 테스트)와 한계(실 공격과의
+      차이/환경 의존)를 분석하고, 운영 탐지 검증 파이프라인에 어떻게 통합할지 제안한다.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ 분석은 제출로 검증).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "에뮬레이션 가치/한계 + 탐지 검증 파이프라인 통합안. 채점: wazuh_alert + 분석 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "에뮬레이션 가치 — 반복성/커버리지 측정/탐지 회귀. 한계(실 공격 차이) + CI 통합."
+        success_criteria: ["경보 수집 확인", "(가치/한계) 균형 분석", "(통합) 탐지 검증 파이프라인 제안"]
+        acceptable_methods: ["에뮬레이션 가치 분석 + 통합안"]
+        negative_signs: ["에뮬레이션 맹신/무용론"]

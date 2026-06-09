@@ -1,0 +1,154 @@
+id: "attack-w14"
+category: "attack"
+title: "[공격기법 W14] Caldera+Wazuh Purple Team — 에뮬레이션↔탐지 커버리지 개선"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격기법 14주차 — **Caldera + Wazuh Purple Team 운영**. Red(Caldera 에뮬레이션)와 Blue(Wazuh 탐지)를
+  한 사이클로 돌려 **탐지 커버리지 공백** 을 측정하고 메운다. 에뮬레이션한 ATT&CK technique 마다
+  탐지됐는지 매핑(ATT&CK Navigator)하고, 미탐 technique 의 룰을 보강해 다시 검증하는 **반복 개선**
+  루프가 핵심.
+
+  ▸ 모드: solo(에뮬레이션↔탐지 1인 purple) / duel(상대 에뮬레이션→본인 탐지 보강). 대상=solo 본인 / duel 상대.
+  ▸ 공격자 위치: **망 외부 공격자(attacker-ext)** + 호스트 에뮬레이션. 외부 명령 미수집 → 대상 흔적으로 채점.
+  ▸ Caldera 미설치 → 에뮬레이션은 동등 수동. 마커: 계정 **eduintruder**. 탐지룰은 Wazuh **local_rules.xml**(id **9414001**).
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 — Caldera operation (다중 technique)
+
+      여러 ATT&CK technique(정찰/실행/발견)을 한 operation 으로 에뮬레이션해 Blue 의 탐지 커버리지를
+      측정할 데이터를 만든다.
+
+      ### 권장 (참고 — Caldera operation 또는 동등 수동)
+      ```bash
+      nmap -sV <대상_공개IP>; curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%201"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 WAF/IPS 의 다중 technique 탐지.
+      ✅ 합격: 대상 IPS 에 스캔, WAF 에 익스플로잇 탐지.
+    hint: "Caldera operation/수동 다중 technique. 채점: 대상 Suricata scan + ModSec 942."
+    verify:
+      type: "log_contains"
+      expect: "942"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+        - { id: "red-1-2", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "Caldera operation — 다중 technique 에뮬레이션으로 탐지 커버리지 측정 데이터 생성. 외부 공격자 모델 → 대상 흔적으로 판정."
+        success_criteria: ["대상 WAF+IPS 탐지", "(operation) 몇 개 technique 을 묶었는지", "(목적) 커버리지 측정 의도"]
+        acceptable_methods: ["Caldera operation / 동등 수동 다중 technique"]
+        negative_signs: ["대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 — 탐지 회피 technique (gap 유발)
+
+      일부러 탐지가 약한 technique(은밀한 발견/지속성)을 에뮬레이션해 커버리지 공백을 드러낸다.
+      백도어 계정(**eduintruder**)으로 지속성 산물을 남긴다.
+
+      ### 권장 (참고)
+      ```bash
+      useradd -m -s /bin/bash eduintruder
+      ```
+      📌 채점: 대상 호스트의 /etc/passwd 에 에뮬레이션 산물(eduintruder)이 있는지.
+      ✅ 합격: /etc/passwd 에 eduintruder 가 있다.
+    hint: "탐지 약한 technique 에뮬레이션 → useradd eduintruder. 채점: file_contains passwd eduintruder."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+      semantic:
+        intent: "탐지 gap 유발 — 약한 가시성 technique 에뮬레이션. 커버리지 공백을 의도적으로 노출."
+        success_criteria: ["/etc/passwd 에 eduintruder", "(gap) 어떤 technique 이 탐지 약한지 가설"]
+        acceptable_methods: ["은밀한 발견/지속성 ability / 동등 수동"]
+        negative_signs: ["산물 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 — 에뮬레이션↔탐지 매핑 (커버리지 측정)
+
+      에뮬레이션한 각 technique 이 탐지됐는지 매핑해 **탐지 커버리지**를 측정한다(탐지/미탐 매트릭스).
+      ATT&CK Navigator 로 커버리지를 색칠한다.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(매핑 대상).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "technique별 탐지/미탐 매트릭스 + Navigator 커버리지. 채점: wazuh_alert + 매핑 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "Purple 커버리지 측정 — 에뮬레이션 technique ↔ 탐지 매핑. Navigator 로 공백 가시화."
+        success_criteria: ["경보 수집 확인", "(매트릭스) technique별 탐지/미탐", "(Navigator) 커버리지 색칠"]
+        acceptable_methods: ["탐지 매핑 + ATT&CK Navigator"]
+        negative_signs: ["매핑 없이 경보 나열"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 — 미탐 technique 탐지룰 보강 (id 9414001)
+
+      커버리지 공백(미탐 technique, 예: 은밀한 계정 생성)을 메우는 Wazuh 룰(**id 9414001**)을
+      `local_rules.xml` 에 작성한다.
+
+      ### 권장 형태 (참고)
+      ```xml
+      <rule id="9414001" level="12">
+        <if_sid>5902</if_sid>
+        <match>eduintruder</match>
+        <description>EDU W14 - purple gap account creation</description>
+      </rule>
+      ```
+      📌 채점: local_rules.xml 에 gap 보강 룰(id 9414001)이 작성됐는지.
+      ✅ 합격: local_rules.xml 에 9414001 룰이 있다.
+    hint: "미탐 technique 보강 룰(id 9414001) → restart."
+    verify:
+      type: "file_contains"
+      expect: "9414001"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "9414001" } }
+      semantic:
+        intent: "커버리지 보강 — 미탐 technique 의 룰 추가. purple 루프의 핵심(측정→보강)."
+        success_criteria: ["local_rules.xml 에 rule id 9414001", "미탐 technique 대상", "(루프) 보강 후 재검증 계획"]
+        acceptable_methods: ["local_rules.xml 9414001 + restart"]
+        negative_signs: ["이미 탐지되는 것 중복", "XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 — 반복 개선 + 회귀 검증
+
+      보강 룰 적용 후 같은 operation 을 재실행(stimulate)해 커버리지가 올라갔는지 회귀 검증한다.
+      Purple Team 의 반복 개선 루프(측정→보강→재검증)를 한 사이클 완성한다.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(회귀 검증).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "operation 재실행 → 커버리지 상승 회귀 검증. 채점: wazuh_alert + 검증 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "Purple 반복 개선 — 보강 후 재실행으로 커버리지 상승 검증. 측정→보강→재검증 루프 완성."
+        success_criteria: ["경보 수집 확인", "(회귀) 재실행 시 미탐 technique 이 탐지됨 확인", "(루프) 한 사이클 완성 서술"]
+        acceptable_methods: ["operation 재실행 + 커버리지 비교"]
+        negative_signs: ["보강만 하고 재검증 누락"]

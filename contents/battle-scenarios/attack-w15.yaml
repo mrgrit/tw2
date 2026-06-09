@@ -1,0 +1,156 @@
+id: "attack-w15"
+category: "attack"
+title: "[공격기법 W15] 기말 — PTES 7단계 종합 침투 + 보고서 vs 단계별 탐지·대응(수료)"
+difficulty: "hard"
+time_limit: 3600
+battle_type: "1v1"
+description: |
+  공격기법 15주차 — **기말(수료)**. W01~W14 의 공격 역량을 **PTES 7단계**(사전 협의 → 정보 수집 →
+  위협 모델링 → 취약점 분석 → 익스플로잇 → 포스트 익스플로잇 → 보고)로 통합한다. 공격자는 정찰부터
+  포스트 익스플로잇(권한상승/지속성/유출)까지 전 과정을 수행하고 **침투 보고서** 를 작성한다. 방어자는
+  각 단계를 탐지·대응하며 공격자 관점에서 본 약점을 방어 보고서로 종합한다. 공격기법 과목의 수료.
+
+  ▸ 모드: solo(침투 테스터→방어 1인) / duel(상대 침투→본인 방어). 대상=solo 본인 / duel 상대.
+  ▸ 공격자 위치: **망 외부 공격자(attacker-ext)** + 호스트 포스트익스플로잇. 외부 명령 미수집 → 대상 흔적으로 채점.
+  ▸ 마커: 포스트익스플로잇 산물 계정 **eduintruder**, 채널 **포트 19999**. 탐지룰 Wazuh **local_rules.xml**(id **9415001**).
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [PTES 2~5] — 정보수집 → 취약점분석 → 익스플로잇
+
+      정찰(정보 수집)로 표면을 식별하고, 취약점을 분석해 가장 효과적인 익스플로잇(SQLi/스캐너)으로
+      초기 침투에 성공한다. 위협 모델링으로 공격 경로를 우선순위화한다.
+
+      ### 권장 명령 (참고 — 외부 공격자)
+      ```bash
+      nmap -sV <대상_공개IP>; nikto -h http://<대상_공개IP> -maxtime 60s
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%201"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 IPS(정찰) + WAF(익스플로잇 942) 흔적.
+      ✅ 합격: 대상 IPS 에 스캔, WAF audit 에 SQLi(942) 탐지.
+    hint: "attacker-ext nmap+nikto+SQLi. 채점: 대상 Suricata scan + ModSec 942."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+        - { id: "red-1-2", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+      semantic:
+        intent: "PTES 정보수집→취약점분석→익스플로잇 — 정찰 기반 우선순위화 후 침투. 외부 공격자 모델 → 대상 IPS+WAF 흔적으로 판정."
+        success_criteria: ["대상 IPS 스캔 + WAF 942 탐지", "(PTES) 정보수집→위협모델링→취약점분석→익스플로잇 흐름 서술"]
+        acceptable_methods: ["attacker-ext nmap/nikto + 익스플로잇"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [PTES 6] — 포스트 익스플로잇 (권한상승·지속성·유출)
+
+      발판에서 권한상승→지속성(**eduintruder**)→유출 채널(**포트 19999**)로 포스트 익스플로잇을
+      수행한다. 침투의 영향(impact)을 입증한다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      useradd -m -s /bin/bash eduintruder; nohup ncat -lk 19999 >/dev/null 2>&1 &
+      ```
+      📌 채점: 대상 호스트에 포스트익스플로잇 산물(eduintruder + 포트 19999)이 있는지.
+      ✅ 합격: /etc/passwd 에 eduintruder, 포트 19999 listening.
+    hint: "권한상승→useradd eduintruder + ncat 19999. 채점: file_contains passwd eduintruder + port_listening 19999."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+        - { id: "red-2-2", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "PTES 포스트 익스플로잇 — 권한상승(T1068)+지속성(T1136)+유출(T1041). 침투의 영향 입증."
+        success_criteria: ["eduintruder + 포트 19999", "(영향) 권한상승→지속성→유출 경로와 비즈니스 영향 서술"]
+        acceptable_methods: ["privesc + useradd + 유출 채널"]
+        negative_signs: ["포스트익스플로잇 미수행"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [전 단계 관제] — 침투 단계별 탐지
+
+      PTES 각 단계(정찰→익스플로잇→포스트익스플로잇)를 SIEM 에서 탐지하고 시간순으로 재구성한다.
+      어느 단계가 탐지/차단됐고 어디서 놓쳤는지 판정한다.
+
+      📌 채점: 본인 SIEM 에 다단계 경보가 수집됐는지(관제 대상).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "PTES 단계별 탐지 + 시간순 재구성. 채점: wazuh_alert + 재구성 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "전 단계 관제 — PTES 단계별 탐지 + 타임라인 재구성. 탐지/차단/미탐 판정."
+        success_criteria: ["경보 수집 확인", "(재구성) PTES 단계별 타임라인", "(판정) 단계별 탐지/미탐"]
+        acceptable_methods: ["SIEM 관제 + 단계 재구성"]
+        negative_signs: ["단계 재구성 없이 경보 나열"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [포스트익스플로잇 탐지] — 탐지룰 작성 (id 9415001)
+
+      포스트 익스플로잇(권한상승 백도어 계정/지속성/유출 채널)을 탐지하는 Wazuh 룰(**id 9415001**)을
+      `local_rules.xml` 에 작성한다. 가장 늦게 탐지되기 쉬운 단계를 보강한다.
+
+      ### 권장 형태 (참고)
+      ```xml
+      <rule id="9415001" level="13">
+        <if_sid>5902</if_sid>
+        <match>eduintruder</match>
+        <description>EDU W15 - post-exploitation backdoor</description>
+      </rule>
+      ```
+      📌 채점: local_rules.xml 에 포스트익스플로잇 탐지룰(id 9415001)이 작성됐는지.
+      ✅ 합격: local_rules.xml 에 9415001 룰이 있다.
+    hint: "local_rules.xml 에 포스트익스플로잇 탐지룰(id 9415001) → restart."
+    verify:
+      type: "file_contains"
+      expect: "9415001"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "9415001" } }
+      semantic:
+        intent: "포스트익스플로잇 탐지 — 권한상승/지속성/유출을 룰로. 침투 후반 단계의 가시성 보강."
+        success_criteria: ["local_rules.xml 에 rule id 9415001", "포스트익스플로잇 신호 탐지", "(보강) 미탐 단계 식별"]
+        acceptable_methods: ["local_rules.xml 9415001 + restart"]
+        negative_signs: ["XML 오류", "초기 단계만 탐지"]
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [보고] — PTES 침투/방어 종합 보고서 (수료)
+
+      PTES 전 과정을 종합한 보고서를 작성한다: 공격 경로(킬체인) / 단계별 탐지·차단 근거 / 가장 위험한
+      취약점 / 비즈니스 영향 / 우선순위 권고. 공격자 관점의 약점 → 방어 강화로 환류한다. 수료의 산출물.
+
+      📌 채점: 본인 web modsec audit 에 공격 흔적이 있는지(보고 대상) + apache 보존.
+      ✅ 합격: 본인 WAF audit 에 익스플로잇 탐지가 있다.
+    hint: "PTES 침투/방어 종합 보고서(경로/근거/영향/우선순위). 채점: log_contains web modsec 942100."
+    verify:
+      type: "log_contains"
+      expect: "942"
+      checks:
+        - { id: "blue-3-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+      semantic:
+        intent: "PTES 보고 — 공격 경로/단계별 근거/위험 취약점/비즈니스 영향/우선순위. 공격자 관점→방어 환류. 수료 산출물."
+        success_criteria: ["공격 흔적 확인", "(보고서) 킬체인 + 단계별 탐지·차단 근거 + 위험 취약점 + 영향 + 우선순위", "(환류) 방어 강화 로드맵"]
+        acceptable_methods: ["PTES 종합 보고서 작성"]
+        negative_signs: ["기술 나열만(영향/우선순위 없음)"]
