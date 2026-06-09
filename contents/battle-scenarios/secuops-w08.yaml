@@ -1,0 +1,209 @@
+id: "secuops-w08"
+category: "secuops"
+title: "[보안운영 W8] 중간고사 — 다계층 공격 vs 5종 솔루션 종합 운영(nftables·Suricata·ModSec·Wazuh·osquery)"
+difficulty: "hard"
+time_limit: 3600
+battle_type: "1v1"
+description: |
+  보안운영 8주차 — **중간고사(종합 실기)**. W01~W07 의 5종 보안 솔루션 운영 능력을 한 배틀에서
+  종합 평가한다: ① 방화벽(nftables + HAProxy NAT), ② IDS(Suricata 룰 + flowbits), ③ WAF
+  (ModSecurity CRS + anomaly score), ④ SIEM(Wazuh 통합), ⑤ 호스트 가시화(osquery 헌팅). 공격자가
+  네트워크~웹~호스트 다계층으로 공격하면, 운영자는 각 계층의 도구로 탐지·차단·헌팅하고 SIEM 으로
+  수렴시킨다.
+
+  ▸ 모드: solo(공격자→5종 운영자) / duel(상대 다계층 공격→본인 5종 방어). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** + 호스트 침해 시뮬. 외부 명령 미수집 → 대상 방어층/SIEM 흔적으로 채점.
+  ▸ 각 단계는 독립 채점(=시험 단계). 변경 후 cleanup 권장. 권장 마커: IDS sid **9008001/9008003**,
+    호스트 아티팩트 **포트 19999 / 사용자 eduintruder**.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — 다계층 웹공격 (정찰 → 웹 인젝션)
+
+      스캐너(sqlmap/nikto UA)로 정찰하고 SQLi(UNION)·XSS 를 보낸다. 한 공격이 **IPS(네트워크 문자열)**
+      와 **WAF(HTTP 의미)** 두 계층에 동시에 흔적을 남긴다.
+
+      ### 권장 명령 (참고 — 외부 공격자)
+      ```bash
+      nikto -h http://<대상_공개IP> -maxtime 60s
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%201,2"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 IPS(스캔 탐지) + WAF(SQLi 942) 흔적.
+      ✅ 합격: 대상 IPS 에 스캔 탐지, WAF audit 에 SQLi(942) 탐지.
+    hint: "attacker-ext nikto/sqlmap + UNION. 채점: 대상 Suricata scan + ModSec 942."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+        - { id: "red-1-2", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+      semantic:
+        intent: "다계층 공격 — 한 공격이 IPS(패킷 문자열)와 WAF(HTTP 의미) 두 관점에 흔적. 외부 공격자 모델 → 대상 IPS+WAF 흔적으로 판정."
+        success_criteria: ["대상 IPS 에 스캔/정찰 탐지", "대상 WAF audit 에 SQLi(942) 탐지", "(설명) 같은 공격이 두 계층에 다르게 보이는 점 서술"]
+        acceptable_methods: ["attacker-ext nikto/sqlmap/UNION/XSS"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 — 호스트 침해 시뮬 (persistence)
+
+      웹/네트워크를 넘어 **호스트 persistence** 를 심는다(osquery 헌팅 단계의 표적). 권장 아티팩트:
+      백도어 리스너 **포트 19999**, 백도어 사용자 **eduintruder**.
+
+      ### 권장 명령 (참고)
+      ```bash
+      nohup ncat -lk 19999 >/dev/null 2>&1 &
+      sudo useradd -m -s /bin/bash eduintruder
+      ```
+      📌 채점: 대상 호스트에 백도어 포트(19999) 또는 사용자(eduintruder) persistence.
+      ✅ 합격: 포트 19999 listening 또는 /etc/passwd 에 eduintruder.
+    hint: "ncat -lk 19999 / useradd eduintruder. 채점: port_listening 19999 + file_contains passwd eduintruder."
+    verify:
+      type: "port_listening"
+      expect: "19999"
+      checks:
+        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 19999 } }
+        - { id: "red-2-2", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+      semantic:
+        intent: "MITRE T1571/T1136 — 호스트 persistence(리스너/계정). osquery 헌팅 단계의 표적."
+        success_criteria: ["포트 19999 listening 또는 eduintruder 계정", "(설명) persistence 기법과 정상 대비 식별 신호 서술"]
+        acceptable_methods: ["ncat 리스너 / useradd 백도어 계정 / authorized_keys(대안)"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: fw
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-1 [단계1·2] — 방화벽 정책 + HAProxy NAT 점검 (W01-W03)
+
+      방화벽(nftables) 정책과 HAProxy reverse proxy(공개 80/443 → 내부 web 10.20.32.80) NAT 흐름을
+      점검한다. ext→dmz→int 의 4-tier chained 라우팅과 차단/허용 정책을 확인한다.
+
+      ### 점검 포인트
+      - `/etc/nftables.conf` 의 정책(허용/차단/카운터), conntrack
+      - HAProxy 가 공개 진입점 → 내부 web 으로 프록시(10.20.32.80)
+      📌 채점: fw 에 nftables 정책 파일이 존재하는지(정책 본체).
+      ✅ 합격: fw 에 /etc/nftables.conf 가 존재한다(+ HAProxy 가동).
+    hint: "fw 의 /etc/nftables.conf + HAProxy(공개→10.20.32.80 NAT) 점검."
+    verify:
+      type: "file_exists"
+      expect: "nftables"
+      checks:
+        - { id: "blue-1-1", type: "file_exists", target: "fw", params: { path: "/etc/nftables.conf" } }
+        - { id: "blue-1-2", type: "process_running", target: "fw", params: { name: "haproxy" } }
+      semantic:
+        intent: "방화벽 baseline — nftables 정책(IP/포트, NAT, conntrack, 카운터) + HAProxy reverse proxy(공개→내부 web)."
+        success_criteria: ["nftables.conf 존재 + HAProxy 가동", "(설명) 공개 진입 → HAProxy → web(10.20.32.80) NAT 흐름 서술", "(설명) 4-tier chained 라우팅 이해"]
+        acceptable_methods: ["file_exists nftables.conf / nft list ruleset / haproxy.cfg 확인"]
+        negative_signs: ["NAT/프록시 흐름 미이해", "정책 본체 미확인"]
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [단계3] — Suricata 룰 작성 + flowbits 다단계 (W04-W05)
+
+      sqlmap UA 를 fast_pattern 으로 탐지하는 룰(**sid 9008001**)과, 정찰 후 /admin 접근을 잡는
+      flowbits 다단계 룰(**sid 9008003**, isset)을 `/etc/suricata/rules/local.rules` 에 작성한다.
+
+      ### 권장 룰 (참고)
+      ```
+      alert http any any -> any any (msg:"W08 sqlmap UA"; http.user_agent; content:"sqlmap"; nocase; fast_pattern; classtype:web-application-attack; sid:9008001; rev:1;)
+      alert http any any -> any any (msg:"W08 step2 admin after scan"; http.uri; content:"/admin"; flowbits:isset,fb_w08; classtype:successful-recon; sid:9008003; rev:1;)
+      ```
+      📌 채점: local.rules 에 sid 9008001(또는 9008003)이 작성됐는지.
+      ✅ 합격: local.rules 에 9008001 룰이 있다.
+    hint: "local.rules 에 sqlmap UA fast_pattern(9008001) + flowbits(9008003) 작성."
+    verify:
+      type: "file_contains"
+      expect: "9008001"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "ips", params: { path: "/etc/suricata/rules/local.rules", regex: "9008001|9008003" } }
+      semantic:
+        intent: "IDS 룰 작성 — fast_pattern 성능 + flowbits 다단계 상태 추적(정찰→접근). suricata-update 로딩."
+        success_criteria: ["local.rules 에 sid 9008001/9008003", "fast_pattern + flowbits set/isset", "(설명) 다단계 탐지 의의 서술"]
+        acceptable_methods: ["local.rules 작성 + suricata reload + eve.json 검증"]
+        negative_signs: ["문법 오류 로딩 실패", "flowbits 연결 누락"]
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-3 [단계4] — ModSec WAF anomaly 차단 검증 (W06)
+
+      CRS anomaly score 누적 차단을 검증한다. SQLi/XSS 재현 시 score 가 inbound threshold 를 초과해
+      **949110** 으로 차단되고 audit 에 `Inbound Anomaly Score Exceeded` 가 기록되는지 확인한다.
+
+      📌 채점: web modsec audit 에 anomaly 차단(949110) 흔적.
+      ✅ 합격: audit 에 949110 anomaly 차단 흔적이 있다.
+    hint: "SQLi/XSS 재현 → audit 의 949110 'Inbound Anomaly Score Exceeded'."
+    verify:
+      type: "log_contains"
+      expect: "949110"
+      checks:
+        - { id: "blue-3-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "949110", since_sec: 1800 } }
+      semantic:
+        intent: "WAF anomaly scoring — CRITICAL 누적 → threshold 초과 → 949110 block. 단일 룰 아닌 누적 결정."
+        success_criteria: ["audit 에 949110 / Anomaly Score Exceeded", "(설명) 누적 점수 메커니즘과 threshold 정책 서술"]
+        acceptable_methods: ["공격 재현 후 audit 의 949110 확인"]
+        negative_signs: ["단일 룰 차단 오해", "audit 미확인"]
+
+  - order: 4
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 [단계5] — osquery 호스트 침해 헌팅 (W07)
+
+      RED-2 의 호스트 persistence(백도어 포트/사용자)를 osquery 로 헌팅한다. `listening_ports JOIN
+      processes`(포트 19999), `users`/`/etc/passwd`(eduintruder)로 침해 계정·리스너를 찾아낸다.
+
+      📌 채점: 대상 호스트에 백도어 사용자(eduintruder)가 헌팅으로 확인되는지.
+      ✅ 합격: /etc/passwd 에 eduintruder 가 있고 osquery 로 찾아냈다.
+    hint: "osquery users/listening_ports 헌팅. 채점: file_contains passwd eduintruder."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "blue-4-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+        - { id: "blue-4-2", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "osquery 헌팅 — persistence(계정/리스너) 탐지. users + listening_ports JOIN processes 상관."
+        success_criteria: ["백도어 계정/리스너 확인", "(쿼리) osquery users/listening_ports 헌팅 결과 제시", "(설명) baseline 대비 식별"]
+        acceptable_methods: ["osquery 헌팅 쿼리로 계정/포트 상관"]
+        negative_signs: ["osquery 미사용", "헌팅 누락"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-5 — Wazuh SIEM 통합 관제 (5층 수렴, W09 예고)
+
+      방화벽·IDS·WAF·호스트 5계층의 탐지가 Wazuh(SIEM)로 모여 한 화면에서 상관 분석되는지 확인한다.
+      이것이 중간고사의 종합 — 개별 도구가 아니라 **통합 가시성**.
+
+      📌 채점: 본인 SIEM 에 최근 다계층 경보가 수집됐는지.
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 IDS/WAF/host 경보 수렴 확인."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "통합 관제 — 5계층 탐지의 Wazuh 수렴. 종합 평가의 핵심은 단일 도구가 아닌 통합 가시성."
+        success_criteria: ["본인 Wazuh 에 최근 경보(다계층)", "(설명) 각 계층 탐지가 SIEM 으로 모이는 흐름 서술"]
+        acceptable_methods: ["siem wazuh_alert / 중앙 SIEM 탭"]
+        negative_signs: ["수집 비어있음"]

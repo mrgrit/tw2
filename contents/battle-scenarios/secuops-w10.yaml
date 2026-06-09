@@ -1,0 +1,196 @@
+id: "secuops-w10"
+category: "secuops"
+title: "[보안운영 W10] 다소스 공격 vs Wazuh dashboard 통합 운영(FIM syscheck·Active Response·5소스 수렴)"
+difficulty: "hard"
+time_limit: 3300
+battle_type: "1v1"
+description: |
+  보안운영 10주차 — W09 의 manager 위에 **Wazuh dashboard**(Web UI, OpenSearch indexer)를 얹어
+  통합 운영한다. 5 main panel(Overview/Agents/Modules/Discovery/Rules)로 관제하고, **FIM
+  (syscheck)** 로 파일 변경을 감지하며, **Active Response** 로 위협에 자동 대응한다. 공격자가
+  웹공격 + 호스트 변경(persistence)을 일으키면, 5개 소스(ModSec audit / Suricata eve / osquery /
+  syscheck FIM / 호스트)가 dashboard 한 화면으로 수렴한다.
+
+  ▸ 모드: solo(공격자→dashboard 운영자) / duel(상대 공격→본인 dashboard). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** + 호스트 변경. 외부 명령 미수집 → 대상 SIEM/방어층 흔적으로 채점.
+  ▸ FIM 트리거 권장 아티팩트: 백도어 사용자 **eduintruder**(=/etc/passwd 변경, syscheck 대상).
+    Active Response 와 syscheck 설정은 manager 의 **ossec.conf**.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 — 웹공격 burst (dashboard 소스 1·2 생성)
+
+      XSS/SQLi 를 burst 로 보내 ModSec audit(소스1)와 Suricata eve(소스2)를 만든다. dashboard 의
+      Discovery 패널에서 실시간 유입이 보인다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      for i in $(seq 5); do curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=$i%20UNION%20SELECT%201"; done
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 WAF(modsec) 탐지(dashboard 소스).
+      ✅ 합격: 대상 WAF audit 에 SQLi/XSS 탐지.
+    hint: "attacker-ext SQLi/XSS burst. 채점: 대상 ModSec audit."
+    verify:
+      type: "log_contains"
+      expect: "942"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+      semantic:
+        intent: "dashboard 통합 소스 생성 — 웹공격이 modsec+eve 두 소스로 dashboard Discovery 에 유입. 외부 공격자 모델 → 대상 WAF 흔적으로 판정."
+        success_criteria: ["대상 WAF audit 에 SQLi(942)/XSS 탐지", "(설명) dashboard 의 어느 패널에서 보이는지 서술"]
+        acceptable_methods: ["attacker-ext SQLi/XSS burst"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 — 호스트 변경 (FIM syscheck 트리거)
+
+      민감 파일을 변경해 **FIM(syscheck)** 을 트리거한다. 권장: 백도어 사용자 **eduintruder** 추가
+      (=`/etc/passwd` 변경). syscheck 가 이 변경(delta)을 잡아 dashboard 에 FIM 경보를 올린다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      sudo useradd -m -s /bin/bash eduintruder      # /etc/passwd 변경 → syscheck delta
+      ```
+      📌 채점: 대상 호스트의 /etc/passwd 에 변경(eduintruder)이 발생했는지.
+      ✅ 합격: /etc/passwd 에 eduintruder 가 있다(FIM 트리거).
+    hint: "useradd eduintruder 로 passwd 변경(FIM 대상). 채점: file_contains passwd eduintruder."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+      semantic:
+        intent: "MITRE T1136 + FIM 트리거 — 민감 파일(passwd) 변경으로 syscheck delta 유발. 호스트 변경 소스."
+        success_criteria: ["/etc/passwd 에 eduintruder 변경", "(설명) syscheck 가 이 변경을 어떻게 delta 로 잡는지 서술"]
+        acceptable_methods: ["useradd / 모니터링 경로 파일 변경"]
+        negative_signs: ["변경 미발생"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 — dashboard 접근 + indexer 활성 + 5 panel 인지
+
+      Wazuh dashboard(Web UI)에 접근해 OpenSearch indexer 가 활성이고 경보가 인덱싱되는지 확인한다.
+      5 main panel(Overview/Agents/Modules/Discovery/Rules)의 용도를 파악한다.
+
+      📌 채점: 본인 SIEM 에 경보가 인덱싱돼(dashboard 가 데이터 표시) 있는지.
+      ✅ 합격: 본인 SIEM 에 최근 경보가 인덱싱돼 있다.
+    hint: "dashboard 5 panel + indexer 활성. 채점: wazuh_alert(인덱싱된 데이터)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "dashboard 운영 — OpenSearch indexer + 5 panel(Overview/Agents/Modules/Discovery/Rules). Discovery 로 raw event, Rules 로 룰 검색."
+        success_criteria: ["경보 인덱싱 확인", "(설명) 5 panel 각 용도 서술", "(설명) indexer↔dashboard 관계"]
+        acceptable_methods: ["dashboard 접근 / wazuh_alert 로 인덱싱 확인"]
+        negative_signs: ["panel 빈 화면 원인(filebeat/indexer) 미진단"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-2 — FIM(syscheck) directives + 트리거 검증
+
+      manager 의 `ossec.conf` 의 `<syscheck>` directives(모니터링 디렉토리/주기/realtime)를 점검하고,
+      RED-2 의 `/etc/passwd` 변경이 FIM delta 로 잡혀 alerts.json 에 올라오는지 검증한다.
+
+      📌 채점: siem 의 ossec.conf 에 syscheck(FIM) 설정이 있는지.
+      ✅ 합격: ossec.conf 에 syscheck 설정이 있다.
+    hint: "ossec.conf 의 <syscheck> directives 점검 + passwd 변경 delta 확인. 채점: file_contains ossec.conf syscheck."
+    verify:
+      type: "file_contains"
+      expect: "syscheck"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/ossec.conf", pattern: "syscheck" } }
+      semantic:
+        intent: "FIM(syscheck) — 모니터링 경로/주기/realtime directives. 파일 변경 delta(added/modified/deleted) 탐지."
+        success_criteria: ["ossec.conf 에 syscheck 설정", "(설명) 어떤 경로를 FIM 하는지(/etc, /var/ossec 등) 서술", "(검증) passwd 변경 delta 가 alerts.json 에 오름"]
+        acceptable_methods: ["ossec.conf syscheck 점검 + 변경 트리거 검증"]
+        negative_signs: ["FIM 미설정", "delta 미검증"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-3 — Active Response 설정 + active-responses.log
+
+      위협 탐지 시 **자동 대응(Active Response)** 을 설정한다(예: 특정 룰 트리거 시 IP 차단/명령 실행).
+      `ossec.conf` 의 `<active-response>` + `<command>` 를 점검하고, 트리거 시
+      `/var/ossec/logs/active-responses.log` 에 실행이 기록되는지 확인한다.
+
+      📌 채점: siem 의 ossec.conf 에 active-response 설정이 있는지.
+      ✅ 합격: ossec.conf 에 active-response 설정이 있다.
+    hint: "ossec.conf 의 <active-response>+<command> 점검. 채점: file_contains ossec.conf active-response."
+    verify:
+      type: "file_contains"
+      expect: "active-response"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/ossec.conf", pattern: "active-response" } }
+      semantic:
+        intent: "MITRE D3FEND — Active Response 자동 대응(firewall-drop/명령 실행). command+active-response 매핑 + active-responses.log 검증."
+        success_criteria: ["ossec.conf 에 active-response 설정", "(설명) 어떤 룰/레벨에 어떤 command 를 매핑했는지 서술", "(검증) active-responses.log 기록 확인"]
+        acceptable_methods: ["active-response/command 설정 + 트리거로 로그 확인"]
+        negative_signs: ["대응 액션 미정의", "로그 미검증(오작동 위험 무시)"]
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-4 — 5 소스 dashboard 통합 (modsec+eve+osquery+syscheck+host)
+
+      RED 의 웹공격 + 호스트 변경을 재현한 뒤, **5개 소스**(ModSec audit / Suricata eve / osquery /
+      syscheck FIM / 호스트 이벤트)가 dashboard 한 화면으로 수렴(delta 증가)하는지 통합 추적한다.
+
+      📌 채점: 본인 SIEM 에 최근 다소스 경보가 수렴했는지.
+      ✅ 합격: 본인 SIEM 에 최근 경보가 수렴해 있다.
+    hint: "공격+변경 재현 → 5소스 dashboard delta 통합. 채점: wazuh_alert."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "통합 운영 — 5 소스가 dashboard 로 수렴. 각 소스의 delta 를 한 화면에서 상관."
+        success_criteria: ["다소스 경보 수렴 확인", "(설명) 5 소스를 각각 어느 패널에서 보는지 + 상관 방법 서술"]
+        acceptable_methods: ["공격+변경 재현 후 dashboard/ wazuh_alert 관측"]
+        negative_signs: ["일부 소스만", "수렴 미확인"]
+
+  - order: 5
+    assess_target: self
+    target_vm: web
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-5 — ModSec/osquery ship 통합 (agent localfile)
+
+      web 호스트의 Wazuh agent 가 ModSec audit 와 osquery 결과를 manager 로 ship 하는지 확인한다
+      (agent.conf 의 `<localfile>`). 이로써 호스트 소스가 dashboard 로 들어온다.
+
+      📌 채점: web 호스트에 Wazuh agent(ship 주체)가 가동 중인지.
+      ✅ 합격: web 에 Wazuh agent 프로세스가 running 이다.
+    hint: "agent.conf localfile 로 modsec/osquery ship. 채점: process_running web wazuh."
+    verify:
+      type: "process_running"
+      expect: "wazuh"
+      checks:
+        - { id: "blue-5-1", type: "process_running", target: "web", params: { name: "wazuh" } }
+      semantic:
+        intent: "호스트 소스 ship — agent.conf <localfile> 로 modsec audit/osquery 결과를 manager 로 전송. dashboard 통합의 전제."
+        success_criteria: ["web 의 Wazuh agent 가동", "(설명) localfile 로 어떤 소스를 ship 하는지 서술"]
+        acceptable_methods: ["agent.conf localfile 점검 + agent 가동 확인"]
+        negative_signs: ["agent down → 소스 누락", "ship 경로 미이해"]

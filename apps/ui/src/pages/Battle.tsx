@@ -10,7 +10,16 @@ interface Scenario {
   source: string
   status: string
   time_limit_sec: number
+  category?: string | null
 }
+
+// 시나리오 트랙(카테고리) 라벨/순서 — 카탈로그 그룹핑용
+const CAT_LABEL: Record<string, string> = {
+  'secuops-easy': '보안운영 입문', 'secuops': '보안운영', 'soc': 'SOC 관제', 'attack': '공격기법',
+}
+const CAT_ORDER = ['secuops-easy', 'secuops', 'soc', 'attack']
+function catLabel(c?: string | null) { return c ? (CAT_LABEL[c] || c) : '미분류' }
+function catRank(c: string) { const i = CAT_ORDER.indexOf(c); return i < 0 ? 99 : i }
 
 interface Participant {
   id: number
@@ -125,6 +134,9 @@ export default function Battle() {
 
   // admin: lobby 개설 다이얼로그 상태
   const [lobbyOpen, setLobbyOpen] = useState(false)
+  // 카탈로그 트랙 접기/펼치기 (기본: 모두 접힘 → 스크롤 짧게)
+  const [openCats, setOpenCats] = useState<Set<string>>(new Set())
+  const [histOpen, setHistOpen] = useState(false)  // 완료된 공방전 이력 접기
 
   async function refresh() {
     try {
@@ -255,40 +267,82 @@ export default function Battle() {
           {!loading && scenarios.length === 0 && (
             <div className="card" style={{ color: 'var(--fg-dim)' }}>아직 시나리오 없음.</div>
           )}
-          {scenarios.map(s => (
-            <SoloRow key={s.id} s={s} myInfras={myInfras}
-              onCreated={(b) => { setActiveBattle(b); refresh() }}
-              onErr={setErr} />
-          ))}
-
-          {/* 3. 진행 중·완료 공방전 (관전·이력) */}
-          <h3 style={{ marginTop: 32 }}>📺 진행 중 / 완료된 공방전</h3>
-          {myActiveBattles.length === 0 && <div className="card" style={{ color: 'var(--fg-dim)' }}>없음.</div>}
-          {myActiveBattles.map(b => (
-            <div key={b.id} className="card">
-              <div className="row">
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 2 }}>
-                    {b.scenario_title || `시나리오 #${b.scenario_id ?? '-'}`}
+          {!loading && (() => {
+            const cats = Array.from(new Set(scenarios.map(s => s.category || '')))
+              .sort((a, b) => catRank(a) - catRank(b))
+            return cats.map(c => {
+              const items = scenarios.filter(s => (s.category || '') === c)
+                .sort((a, b) => a.id - b.id)
+              const open = openCats.has(c)
+              return (
+                <div key={c || 'none'} style={{ marginBottom: 8 }}>
+                  <div onClick={() => setOpenCats(p => {
+                    const n = new Set(p); n.has(c) ? n.delete(c) : n.add(c); return n
+                  })} className="row" style={{
+                    cursor: 'pointer', alignItems: 'center', padding: '8px 12px',
+                    border: '1px solid var(--border)', borderRadius: 6, fontWeight: 600,
+                  }}>
+                    <span style={{ marginRight: 8, color: 'var(--primary)' }}>{open ? '▼' : '▶'}</span>
+                    {catLabel(c)}
+                    <span style={{ fontSize: 12, color: 'var(--fg-dim)', marginLeft: 8 }}>· {items.length}개</span>
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
-                    <span className="badge blue">{b.mode}</span>
-                    {b.cohort_name && <span style={{ marginLeft: 6 }}>· {b.cohort_name}</span>}
-                    <span style={{ marginLeft: 6 }}>· #{b.id}</span>
-                    <span style={{ marginLeft: 6 }}>· 채점 <span className={b.monitor === 'claude' ? '' : ''}>{b.monitor === 'claude' ? 'AI(Claude)' : 'Bastion'}</span></span>
-                    {b.hint_enabled && <span className="badge yellow" style={{ marginLeft: 6 }}>hint</span>}
-                    {b.target_apps?.length > 0 && <span style={{ marginLeft: 6 }}>· targets: {b.target_apps.join(', ')}</span>}
-                  </div>
+                  {open && (
+                    <div style={{ marginTop: 6 }}>
+                      {items.map(s => (
+                        <SoloRow key={s.id} s={s} myInfras={myInfras}
+                          onCreated={(b) => { setActiveBattle(b); refresh() }}
+                          onErr={setErr} />
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <span className={`badge ${b.status === 'active' ? 'green' : 'blue'}`}>
-                  {b.status}
-                </span>
-                <button className="ghost" onClick={() => loadBattle(b.id)}>
-                  {b.status === 'active' ? '관전/참여' : '열기'}
-                </button>
+              )
+            })
+          })()}
+
+          {/* 3. 진행 중·완료 공방전 (관전·이력) — 진행중은 항상, 완료는 접이식 */}
+          {(() => {
+            const battleCard = (b: BattleSummary) => (
+              <div key={b.id} className="card">
+                <div className="row">
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                      {b.scenario_title || `시나리오 #${b.scenario_id ?? '-'}`}
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
+                      <span className="badge blue">{b.mode}</span>
+                      {b.cohort_name && <span style={{ marginLeft: 6 }}>· {b.cohort_name}</span>}
+                      <span style={{ marginLeft: 6 }}>· #{b.id}</span>
+                      <span style={{ marginLeft: 6 }}>· 채점 {b.monitor === 'claude' ? 'AI(Claude)' : 'Bastion'}</span>
+                      {b.hint_enabled && <span className="badge yellow" style={{ marginLeft: 6 }}>hint</span>}
+                      {b.target_apps?.length > 0 && <span style={{ marginLeft: 6 }}>· targets: {b.target_apps.join(', ')}</span>}
+                    </div>
+                  </div>
+                  <span className={`badge ${b.status === 'active' ? 'green' : 'blue'}`}>{b.status}</span>
+                  <button className="ghost" onClick={() => loadBattle(b.id)}>
+                    {b.status === 'active' ? '관전/참여' : '열기'}
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            )
+            const active = myActiveBattles.filter(b => b.status === 'active')
+            const completed = myActiveBattles.filter(b => b.status === 'completed')
+            return (
+              <>
+                <h3 style={{ marginTop: 32 }}>📺 진행 중인 공방전 <span style={{ fontSize: 13, color: 'var(--fg-dim)' }}>({active.length})</span></h3>
+                {active.length === 0 && <div className="card" style={{ color: 'var(--fg-dim)' }}>진행 중인 공방전 없음.</div>}
+                {active.map(battleCard)}
+
+                <h3 style={{ marginTop: 24, cursor: 'pointer' }} onClick={() => setHistOpen(o => !o)}>
+                  <span style={{ color: 'var(--primary)', marginRight: 6 }}>{histOpen ? '▼' : '▶'}</span>
+                  ✅ 완료된 공방전 이력 <span style={{ fontSize: 13, color: 'var(--fg-dim)' }}>({completed.length})</span>
+                </h3>
+                {histOpen && (completed.length === 0
+                  ? <div className="card" style={{ color: 'var(--fg-dim)' }}>완료된 공방전 없음.</div>
+                  : completed.map(battleCard))}
+              </>
+            )
+          })()}
         </>
       )}
 

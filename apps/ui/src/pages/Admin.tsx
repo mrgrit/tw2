@@ -496,6 +496,7 @@ function ScenariosTab({ onChange }: { onChange: () => void }) {
   const [scenarios, setScenarios] = useState<Draft[]>([])
   const [graders, setGraders] = useState<Grader[]>([])
   const [catFilter, setCatFilter] = useState('')
+  const [openCats, setOpenCats] = useState<Set<string>>(new Set())  // 트랙 그룹 접기/펼치기
   const refresh = async () => {
     const all = await api<Draft[]>('/scenarios')
     const drafts = await api<Draft[]>('/admin/scenarios/drafts')
@@ -578,14 +579,24 @@ function ScenariosTab({ onChange }: { onChange: () => void }) {
           </span>
         ))}
       </div>
-      {shown.map(c => (
-        <div key={c || 'none'} style={{ marginBottom: 18 }}>
-          <div style={{ borderBottom: '2px solid var(--border)', paddingBottom: 4, marginBottom: 10, fontWeight: 700 }}>
-            {catLabel(c)} <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>· {counts[c]}개</span>
+      {shown.map(c => {
+        // 필터로 단일 트랙만 보일 땐 자동 펼침, 아니면 토글 상태(기본 접힘)
+        const open = !!catFilter || openCats.has(c)
+        return (
+          <div key={c || 'none'} style={{ marginBottom: 18 }}>
+            <div onClick={() => setOpenCats(p => {
+              const n = new Set(p); n.has(c) ? n.delete(c) : n.add(c); return n
+            })} style={{
+              cursor: 'pointer', borderBottom: '2px solid var(--border)',
+              paddingBottom: 4, marginBottom: 10, fontWeight: 700,
+            }}>
+              <span style={{ color: 'var(--primary)', marginRight: 6 }}>{open ? '▼' : '▶'}</span>
+              {catLabel(c)} <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>· {counts[c]}개</span>
+            </div>
+            {open && scenarios.filter(s => (s.category || '') === c).sort((a, b) => a.id - b.id).map(card)}
           </div>
-          {scenarios.filter(s => (s.category || '') === c).sort((a, b) => a.id - b.id).map(card)}
-        </div>
-      ))}
+        )
+      })}
     </>
   )
 }

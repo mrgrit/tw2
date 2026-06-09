@@ -1,0 +1,199 @@
+id: "soc-w09"
+category: "soc"
+title: "[SOC관제 W9] 침해 사고 vs 인시던트 대응 절차(탐지·분류·격리·제거·복구·교훈)"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  SOC 관제 9주차 — **인시던트 대응(IR) 절차**. 경보 분석을 넘어, 사고가 발생했을 때의 **표준 절차**
+  (Identify 식별 → Contain 격리 → Eradicate 제거 → Recover 복구 → Lessons 교훈)를 수행한다. 공격자가
+  침해와 persistence 를 남기면, 대응자는 사고를 식별·분류하고, 공격 출발지를 격리(차단룰)하며,
+  persistence 를 제거하고, 서비스를 복구한 뒤 교훈을 정리한다.
+
+  ▸ 모드: solo(공격자 → IR 대응자) / duel(상대 침해 → 본인 IR). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** + 호스트 침해. 외부 명령 미수집 → 대상 흔적으로 채점.
+  ▸ 격리 차단룰은 Suricata **local.rules**(sid **9009001+**) 또는 방화벽 정책. 권장 침해 마커:
+    사용자 **eduintruder**, 리스너 **포트 19999**.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — 침해 사고 유발 (다벡터 공격)
+
+      정찰+웹침투+스캐너로 명확한 침해 사고 경보를 만든다. IR 대응자가 식별·분류해야 할 사건이다.
+
+      ### 권장 명령 (참고 — 외부 공격자)
+      ```bash
+      nmap -sV <대상_공개IP>; curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%201"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Wazuh 에 침해 경보 수집.
+      ✅ 합격: 대상 SIEM 에 경보가 수집된다.
+    hint: "attacker-ext 다벡터 공격. 채점: 대상 Wazuh 경보."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "red-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "침해 사고 유발 — IR 의 Identify 단계 표적. 외부 공격자 모델 → 대상 Wazuh 경보로 판정."
+        success_criteria: ["대상 Wazuh 경보 수집", "(설명) 어떤 침해 벡터인지 서술"]
+        acceptable_methods: ["attacker-ext nmap+sqlmap+nikto"]
+        negative_signs: ["대상 경보 없음", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 — 호스트 persistence (제거 대상)
+
+      침해 후 **백도어 계정(eduintruder)** + **리스너(포트 19999)** 로 지속성을 확보한다. IR 의
+      Eradicate(제거) 단계 표적이다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      sudo useradd -m -s /bin/bash eduintruder; nohup ncat -lk 19999 >/dev/null 2>&1 &
+      ```
+      📌 채점: 대상 호스트에 persistence(eduintruder/포트 19999)가 생겼는지.
+      ✅ 합격: /etc/passwd 에 eduintruder 또는 포트 19999 listening.
+    hint: "useradd eduintruder + ncat 19999. 채점: file_contains passwd eduintruder + port_listening 19999."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+        - { id: "red-2-2", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "MITRE T1136/T1571 — persistence. IR Eradicate 단계 표적."
+        success_criteria: ["eduintruder 또는 포트 19999", "(설명) persistence 기법 서술"]
+        acceptable_methods: ["useradd / ncat 리스너"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-1 [Identify] — 사고 식별 + 분류 (심각도/범위)
+
+      경보를 분석해 사고를 식별하고, 심각도(P1~P4)와 영향 범위(어떤 자산/계정)를 분류한다. IR 의
+      출발점 — "무슨 일이 일어났는가".
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(식별 대상).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "사고 식별 + 심각도/범위 분류. 채점: wazuh_alert + 분류 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "IR Identify — 사고 식별 + 심각도/범위 분류. 대응의 출발점."
+        success_criteria: ["경보 수집 확인", "(식별) 무슨 사고인지 + 영향 범위(자산/계정)", "(분류) 심각도 P1~P4"]
+        acceptable_methods: ["경보 분석 + 사고 분류"]
+        negative_signs: ["범위/심각도 미분류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [Contain] — 격리 (공격 출발지 차단룰, sid 9009001)
+
+      공격 출발지를 **격리** 한다. Suricata `local.rules` 에 출발지/패턴 차단(drop)룰(**sid 9009001**)을
+      작성하거나 방화벽으로 차단해 추가 피해를 막는다. 증거 보존을 위해 무분별한 종료는 피한다.
+
+      ### 권장 룰 (참고)
+      ```
+      drop ip <공격IP> any -> any any (msg:"IR W09 contain attacker"; sid:9009001; rev:1;)
+      ```
+      📌 채점: local.rules 에 격리 차단룰(sid 9009001)이 작성됐는지.
+      ✅ 합격: local.rules 에 9009001 룰이 있다.
+    hint: "local.rules 에 출발지 drop/차단룰(sid 9009001) 작성 → reload."
+    verify:
+      type: "file_contains"
+      expect: "9009001"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "ips", params: { path: "/etc/suricata/rules/local.rules", pattern: "9009001" } }
+      semantic:
+        intent: "IR Contain — 공격 출발지 격리(drop/방화벽). 증거 보존하며 추가 피해 차단."
+        success_criteria: ["local.rules 에 sid 9009001 차단룰", "(설명) 격리 범위(출발지/패턴) + 증거 보존 고려", "(원칙) 성급한 종료 회피"]
+        acceptable_methods: ["local.rules drop 룰 / 방화벽 차단"]
+        negative_signs: ["증거 파괴", "격리 범위 과도/부족"]
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [Eradicate] — persistence 식별 + 제거
+
+      RED 의 persistence(백도어 계정 eduintruder, 리스너 19999)를 식별하고 제거한다. 모든 발판을
+      찾아 근절해야 재침투를 막는다(하나라도 남으면 실패).
+
+      📌 채점: 대상 호스트에서 persistence(eduintruder)가 식별되는지(제거 대상 확인).
+      ✅ 합격: persistence(eduintruder)를 식별했다(이후 제거).
+    hint: "osquery 로 persistence 전수 식별(계정/리스너/cron/SSH키) → 제거. 채점: file_contains passwd eduintruder(식별)."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+        - { id: "blue-3-2", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "IR Eradicate — 모든 persistence 발판 식별 후 제거. 하나라도 남으면 재침투. 전수 조사가 핵심."
+        success_criteria: ["persistence 식별 확인", "(전수) 계정/리스너/cron/SSH키 모두 점검", "(제거) 각 발판 제거 절차 서술"]
+        acceptable_methods: ["osquery 전수 헌팅 → userdel/포트 종료/cron 제거"]
+        negative_signs: ["일부 발판만 제거(재침투 가능)", "전수 조사 누락"]
+
+  - order: 4
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 [Recover] — 서비스 복구 + 정상성 검증
+
+      제거 후 서비스를 정상 상태로 복구하고 검증한다. 웹 서버(Apache)가 정상 가동되고, 변경된 설정이
+      안전한 baseline 으로 돌아왔는지 확인한다.
+
+      📌 채점: web 서버(Apache)가 정상 가동 중인지(복구 검증).
+      ✅ 합격: web 의 apache2 가 running 이다(정상 복구).
+    hint: "서비스 복구 + 정상성 검증. 채점: process_running web apache2."
+    verify:
+      type: "process_running"
+      expect: "apache"
+      checks:
+        - { id: "blue-4-1", type: "process_running", target: "web", params: { name: "apache2" } }
+      semantic:
+        intent: "IR Recover — 서비스 정상 복구 + baseline 검증. 침해 전 정상 상태로 안전 복귀."
+        success_criteria: ["apache2 가동(복구) 확인", "(검증) 설정이 안전 baseline 으로 복귀", "(모니터링) 재침투 감시 강화"]
+        acceptable_methods: ["서비스 재기동 + 정상성/baseline 검증"]
+        negative_signs: ["취약 상태로 복구(재침투 위험)"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-5 [Lessons] — 교훈 정리 + IR 보고서
+
+      사고 전체를 타임라인으로 정리하고, 근본 원인과 재발 방지책(탐지룰 추가/패치/정책)을 담은 IR
+      보고서를 작성한다. 교훈을 운영 개선으로 환류한다.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ 보고서는 제출로 검증).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "타임라인 + 근본원인 + 재발방지 IR 보고서. 채점: wazuh_alert + 보고서 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "IR Lessons — 타임라인 + 근본 원인 + 재발 방지. 교훈을 탐지룰/패치/정책으로 환류."
+        success_criteria: ["경보 수집 확인", "(보고서) 타임라인 + 근본 원인 + 재발 방지책", "(환류) 운영 개선 항목 제시"]
+        acceptable_methods: ["IR 보고서 작성"]
+        negative_signs: ["근본 원인 누락", "재발 방지책 없음"]

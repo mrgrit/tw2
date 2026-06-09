@@ -1,0 +1,215 @@
+id: "secuops-w12"
+category: "secuops"
+title: "[보안운영 W12] 알려진 IOC 공격 vs 위협 인텔(STIX/TAXII) → Wazuh CDB list 매칭 탐지"
+difficulty: "hard"
+time_limit: 3300
+battle_type: "1v1"
+description: |
+  보안운영 12주차 — **CTI(위협 인텔리전스)** 의 표준 **STIX 2.1**(indicator/malware/attack-pattern/
+  relationship 4 핵심 객체) + 교환 프로토콜 **TAXII 2.1**(client/server, collection)을 배우고, 외부
+  IOC 를 **Wazuh CDB list**(Constant Database)로 들여와 탐지에 연결한다. 공격자가 **알려진 악성
+  IOC**(소스 IP / 악성 User-Agent / 도메인)로 공격하면, 운영자는 CDB list + custom 룰(sid 100100)로
+  IOC 를 매칭해 경보를 격상한다.
+
+  ▸ 모드: solo(IOC 공격→인텔 운영자) / duel(상대 IOC 공격→본인 CDB 매칭). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 방어층/SIEM 흔적으로 채점.
+  ▸ 주의: 이 6v6 에 OpenCTI 는 **미설치** — STIX/TAXII 객체 작성과 Stream Connector 는 설계/시뮬로
+    학습하고, **실 적용은 Wazuh CDB list + 룰 100100** 으로 한다. CDB list 는 `/var/ossec/etc/lists/`,
+    custom 룰은 `/var/ossec/etc/rules/local_rules.xml`.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 — 알려진 악성 IOC 에서 공격 (소스 기반 IOC)
+
+      알려진 악성 출발지(스캐너 인프라)에서 정찰·웹공격을 보낸다. 이 출발지 IP/행위가 곧 IOC 이며,
+      BLUE 의 CDB list 매칭 표적이 된다.
+
+      ### 권장 명령 (참고 — 외부 공격자)
+      ```bash
+      nikto -h http://<대상_공개IP> -maxtime 60s
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%201"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 IPS(스캔)/WAF 흔적(IOC 활동).
+      ✅ 합격: 대상 IPS 에 스캔 탐지(IOC 출발지 활동).
+    hint: "attacker-ext 스캔/공격(=IOC 활동). 채점: 대상 Suricata scan."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "알려진 IOC(소스 IP/행위) 기반 공격. 외부 공격자 모델 → 대상 IPS/WAF 흔적으로 IOC 활동 판정."
+        success_criteria: ["대상 IPS 에 스캔/공격 탐지", "(설명) 어떤 속성(IP/UA/행위)이 IOC 로 쓰일 수 있는지 서술"]
+        acceptable_methods: ["attacker-ext 스캔/웹공격"]
+        negative_signs: ["대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 — 악성 시그니처 IOC (User-Agent / 페이로드)
+
+      악성 도구 시그니처(sqlmap/nikto UA, 알려진 페이로드)를 노출하는 공격을 보낸다. 이 시그니처가
+      indicator(STIX)로 표현될 수 있는 IOC 다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%20user,password%20FROM%20users"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 WAF audit 의 스캐너/공격 시그니처 탐지.
+      ✅ 합격: 대상 WAF audit 에 스캐너 시그니처(IOC) 탐지.
+    hint: "attacker-ext sqlmap/nikto UA(=IOC 시그니처). 채점: 대상 ModSec scanner."
+    verify:
+      type: "log_contains"
+      expect: "scanner"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "scanner", since_sec: 1800 } }
+      semantic:
+        intent: "시그니처 IOC — 악성 UA/페이로드. STIX indicator(pattern)로 표현 가능. 대상 WAF audit 흔적으로 판정."
+        success_criteria: ["대상 WAF audit 에 스캐너/시그니처 탐지", "(설명) 이 시그니처를 STIX indicator pattern 으로 어떻게 표현하는지 서술"]
+        acceptable_methods: ["attacker-ext sqlmap/nikto UA + 페이로드"]
+        negative_signs: ["대상 미도달"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 — STIX 2.1 4 핵심 객체 + ATT&CK 매핑
+
+      위협 인텔의 표준 STIX 2.1 을 이해한다. **indicator**(탐지 패턴), **malware/attack-pattern**
+      (위협 기술, ATT&CK 매핑), **relationship**(객체 연결) 4 핵심 객체로 RED 의 공격을 표현한다.
+
+      ### 참고 (STIX indicator 예)
+      ```json
+      {"type":"indicator","pattern":"[network-traffic:src_ref.value='10.20.30.254']","pattern_type":"stix"}
+      ```
+      📌 채점: 인텔→SIEM 파이프라인의 manager(analysisd)가 가동 중인지(적용 기반).
+      ✅ 합격: siem 에 wazuh-analysisd 가 running 이다.
+    hint: "STIX 4객체(indicator/malware/attack-pattern/relationship) + ATT&CK 매핑 작성. 채점: process_running siem wazuh-analysisd."
+    verify:
+      type: "process_running"
+      expect: "analysisd"
+      checks:
+        - { id: "blue-1-1", type: "process_running", target: "siem", params: { name: "wazuh-analysisd" } }
+      semantic:
+        intent: "STIX 2.1 표준 — indicator(pattern)/malware/attack-pattern(ATT&CK)/relationship. RED 공격을 STIX 객체로 모델링."
+        success_criteria: ["(작성) RED 공격의 STIX indicator + ATT&CK 매핑 제시", "manager 가동(적용 기반)", "(설명) 4 객체의 관계 서술"]
+        acceptable_methods: ["STIX JSON 작성 + ATT&CK technique 매핑"]
+        negative_signs: ["IOC 를 STIX 로 구조화하지 못함"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 — Wazuh CDB list 작성 + custom 룰 100100 (IOC 실 적용)
+
+      이번 주 핵심 실습 — IOC 를 **CDB list**(`/var/ossec/etc/lists/`)에 넣고, 그 list 를 참조하는
+      **custom 룰(sid 100100)** 을 `local_rules.xml` 에 작성해 IOC 매칭 시 경보를 격상한다.
+
+      ### 권장 형태 (참고)
+      ```
+      # /var/ossec/etc/lists/edu-ioc   (key:value)
+      10.20.30.254:malicious-scanner
+      ```
+      ```xml
+      <rule id="100100" level="12">
+        <if_sid>86601</if_sid>
+        <list field="srcip" lookup="address_match_key">etc/lists/edu-ioc</list>
+        <description>EDU W12 - known IOC matched (CDB)</description>
+      </rule>
+      ```
+      ossec.conf 의 `<list>` 등록 + `wazuh-control restart`.
+      📌 채점: local_rules.xml 에 IOC 매칭 룰(sid 100100)이 작성됐는지.
+      ✅ 합격: local_rules.xml 에 100100 룰이 있다.
+    hint: "CDB list(/var/ossec/etc/lists/) + local_rules.xml 의 <list> 참조 룰(id 100100) 작성 → restart."
+    verify:
+      type: "file_contains"
+      expect: "100100"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "100100" } }
+      semantic:
+        intent: "MITRE D3FEND — IOC 운영화. CDB list(key:value) + <list lookup> 룰로 IOC 매칭 시 level 격상. ossec.conf <list> 등록 필수."
+        success_criteria: ["local_rules.xml 에 rule id 100100", "CDB list 파일 작성 + <list> 참조", "(설명) address_match_key/lookup 동작 서술"]
+        acceptable_methods: ["CDB list + local_rules.xml 100100 + ossec.conf <list> 등록 + restart"]
+        negative_signs: ["list 미참조(단순 match 만)", "ossec.conf <list> 등록 누락으로 미적용"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 — TAXII 2.1 수집 모델 + 외부 source 매트릭스
+
+      TAXII 2.1(client/server, collection)로 외부에서 IOC 를 받아오는 모델을 설계한다. 외부 source
+      5종(예: MITRE ATT&CK / AlienVault OTX / abuse.ch / …)의 신뢰도·갱신주기·형식을 매트릭스로 정리하고,
+      CDB list 로 들여올 우선순위를 정한다.
+
+      📌 채점: siem 에 CDB list 인프라(`/var/ossec/etc/lists`)가 갖춰져 있는지.
+      ✅ 합격: siem 에 CDB list 디렉토리가 존재한다(수집 대상).
+    hint: "TAXII collection 모델 + 외부 source 5종 매트릭스 → CDB 로 수집. 채점: file_exists /var/ossec/etc/lists."
+    verify:
+      type: "file_exists"
+      expect: "lists"
+      checks:
+        - { id: "blue-3-1", type: "file_exists", target: "siem", params: { path: "/var/ossec/etc/lists" } }
+      semantic:
+        intent: "TAXII 2.1 — client/server + collection 으로 IOC 교환. 외부 source 신뢰도/갱신주기/형식 매트릭스 → CDB 수집 우선순위."
+        success_criteria: ["CDB list 인프라 확인", "(작성) 외부 source 5종 매트릭스(신뢰도/주기/형식)", "(설명) TAXII collection→CDB 흐름 서술"]
+        acceptable_methods: ["TAXII 모델 설계 + source 매트릭스 + CDB 매핑"]
+        negative_signs: ["source 신뢰도/주기 고려 없음"]
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 — IOC 매칭 검증 (공격 재현 → 룰 100100 → alert 격상)
+
+      RED 의 IOC 공격을 재현하고, CDB 룰(100100)이 IOC 를 매칭해 경보가 상위 level 로 격상되는지
+      Wazuh 에서 검증한다(Suricata 4751 등 base alert → CDB 매칭 → 100100 격상).
+
+      📌 채점: 본인 SIEM 에 최근 경보(IOC 매칭 포함)가 수집됐는지.
+      ✅ 합격: 본인 SIEM 에 최근 경보가 수집돼 있다.
+    hint: "공격 재현 → 룰 100100 매칭 → level 격상 확인. 채점: wazuh_alert."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "IOC 운영 검증 — base alert 가 CDB 매칭으로 level 격상. 인텔이 탐지에 실제 영향을 주는지 확인."
+        success_criteria: ["최근 경보 수집", "(검증) IOC 매칭 시 룰 100100 으로 level 격상 확인", "(설명) 격상 전/후 우선순위 차이"]
+        acceptable_methods: ["공격 재현 후 alerts.json 에서 100100 매칭 확인 / wazuh_alert"]
+        negative_signs: ["룰 미트리거", "격상 미확인"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-5 — Stream Connector 설계 (OpenCTI → CDB 자동 sync)
+
+      수동 IOC 관리를 넘어 **자동화** 를 설계한다. OpenCTI(미설치 — 설계/시뮬)의 Stream Connector 가
+      신규 indicator 를 실시간으로 Wazuh CDB list 에 sync 하고 룰이 즉시 반영되는 파이프라인을 그린다.
+
+      📌 채점: siem 에 CDB list 예시 파일이 존재하는지(sync 대상 인프라).
+      ✅ 합격: siem 에 CDB list 파일이 존재한다.
+    hint: "OpenCTI Stream → CDB list 자동 sync 파이프라인 설계. 채점: file_exists /var/ossec/etc/lists/audit-keys."
+    verify:
+      type: "file_exists"
+      expect: "lists"
+      checks:
+        - { id: "blue-5-1", type: "file_exists", target: "siem", params: { path: "/var/ossec/etc/lists/audit-keys" } }
+      semantic:
+        intent: "IOC 자동화 — OpenCTI Stream Connector 가 indicator→CDB list 실시간 sync. 수동 관리의 한계 극복."
+        success_criteria: ["CDB list 인프라 확인", "(설계) Stream Connector → CDB sync → 룰 반영 파이프라인 제시", "(설명) 실시간성·중복/만료 처리"]
+        acceptable_methods: ["Stream Connector 설계 + CDB sync 워크플로우"]
+        negative_signs: ["수동 관리만(자동화 미설계)"]

@@ -1,0 +1,203 @@
+id: "soc-w12"
+category: "soc"
+title: "[SOC관제 W12] 내부 위협(권한 남용·계정·데이터 유출) vs 인시던트 대응 실습(3) — UEBA·증거 보전"
+difficulty: "hard"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  SOC 관제 12주차 — **인시던트 대응 실습(3) 내부 위협**. 외부 침입과 달리 **인가된 사용자** 가 권한을
+  남용하는 사고를 대응한다. 내부자는 정상 자격으로 백도어 계정·SSH 키를 만들고, 민감 데이터를
+  스테이징·유출한다. 대응자는 **UEBA**(평소와 다른 행위) 관점으로 비정상을 식별하고, 권한 남용 흔적을
+  헌팅하며, 계정을 격리하고, **증거 보전**(chain of custody)을 지키며 HR/법무와 협업한다.
+
+  ▸ 모드: solo(내부자 → 내부위협 IR) / duel(상대 내부 침해 → 본인 IR). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **내부자(insider)** 권한 남용 — 명령 로그 신뢰 제한 → 대상 호스트/SIEM 흔적으로 채점.
+  ▸ 마커: 백도어 계정 **eduintruder**(권한 남용), 데이터 유출 채널 **포트 19999**. 탐지룰은 Wazuh
+    **local_rules.xml**(sid **9012001**).
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — 권한 남용 (백도어 계정/SSH 키)
+
+      인가된 접근을 남용해 백도어 계정(**eduintruder**)이나 비인가 SSH 키를 추가한다(은밀한 지속
+      접근). 정상 작업처럼 보이지만 UEBA 로는 이상 신호다.
+
+      ### 권장 명령 (참고 — 내부자)
+      ```bash
+      sudo useradd -m -s /bin/bash eduintruder        # 또는 authorized_keys 추가
+      ```
+      📌 채점: 대상 호스트의 /etc/passwd 에 권한 남용 계정(eduintruder)이 추가됐는지.
+      ✅ 합격: /etc/passwd 에 eduintruder 가 있다.
+    hint: "useradd eduintruder / SSH 키 추가. 채점: file_contains passwd eduintruder."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "red-1-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+      semantic:
+        intent: "T1078/T1136 — 내부자 권한 남용(백도어 계정/SSH 키). 정상처럼 보이나 UEBA 이상 신호."
+        success_criteria: ["/etc/passwd 에 eduintruder", "(설명) 정상 작업 대비 무엇이 이상한지(시점/권한/패턴) 서술"]
+        acceptable_methods: ["useradd / authorized_keys / sudo 권한 추가"]
+        negative_signs: ["흔적 미생성"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 — 데이터 스테이징/유출 채널 (포트 19999)
+
+      민감 데이터를 모아 외부로 빼낼 채널을 연다(유출 리스너/스테이징 포트 **19999**). 대응자의 DLP/
+      유출 탐지 표적이다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      nohup ncat -lk 19999 >/dev/null 2>&1 &      # 유출 채널 모사
+      ```
+      📌 채점: 대상 호스트에 데이터 유출 채널(19999)이 열렸는지.
+      ✅ 합격: 대상 호스트에서 포트 19999 가 listening 이다.
+    hint: "ncat -lk 19999 (유출 채널). 채점: port_listening 19999."
+    verify:
+      type: "port_listening"
+      expect: "19999"
+      checks:
+        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "T1041/T1074 — 데이터 스테이징/유출 채널. DLP/유출 탐지 표적."
+        success_criteria: ["포트 19999 listening", "(설명) 스테이징→유출 경로 서술"]
+        acceptable_methods: ["ncat 채널 / 대용량 전송 모사"]
+        negative_signs: ["채널 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-1 [Identify] — UEBA 관점 비정상 식별
+
+      **UEBA**(User & Entity Behavior Analytics) 관점으로 비정상을 식별한다. 평소 baseline 대비 새
+      계정/권한 상승/비정상 시간 접근/대용량 전송 등 행위 이탈을 찾는다.
+
+      📌 채점: 대상 호스트에 권한 남용 계정(eduintruder)이 식별되는지.
+      ✅ 합격: /etc/passwd 에 eduintruder 가 있고 비정상으로 식별했다.
+    hint: "baseline 대비 새 계정/권한/시간/전송 이탈 식별. 채점: file_contains passwd eduintruder."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+      semantic:
+        intent: "UEBA — baseline 대비 행위 이탈(새 계정/권한 상승/비정상 시간/대용량 전송)로 내부 위협 식별."
+        success_criteria: ["권한 남용 계정 식별", "(UEBA) baseline 대비 무엇이 이탈했는지", "(맥락) 내부자 vs 외부 침입 구분"]
+        acceptable_methods: ["osquery users + 접근 로그 baseline 비교"]
+        negative_signs: ["외부 침입 기준으로만 봄(내부자 특성 무시)"]
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [Hunt] — 권한 남용 + 유출 흔적 헌팅
+
+      권한 남용의 전모를 헌팅한다. 추가된 계정/SSH 키/sudo 권한, 데이터 스테이징/유출 채널(19999),
+      접근한 민감 자원을 모두 찾는다.
+
+      📌 채점: 대상 호스트에 유출 채널(19999) + 권한 남용 계정(eduintruder)이 헌팅되는지.
+      ✅ 합격: 포트 19999 listening 또는 /etc/passwd 에 eduintruder.
+    hint: "계정/SSH키/sudo/유출채널 전수 헌팅. 채점: port_listening 19999 + file_contains passwd eduintruder."
+    verify:
+      type: "port_listening"
+      expect: "19999"
+      checks:
+        - { id: "blue-2-1", type: "port_listening", target: "web", params: { port: 19999 } }
+        - { id: "blue-2-2", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+      semantic:
+        intent: "권한 남용 헌팅 — 계정/SSH키/sudo/유출채널/민감자원 접근 전수 조사. 내부 위협의 전모 파악."
+        success_criteria: ["유출 채널 + 권한 남용 흔적 확인", "(전수) 계정/키/권한/채널/접근 점검", "(범위) 유출 데이터 범위 추정"]
+        acceptable_methods: ["osquery 계정/키/sudo + 네트워크 채널 헌팅"]
+        negative_signs: ["일부만 확인", "유출 범위 미추정"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [Contain] — 계정 격리 + 재생성 탐지룰 (sid 9012001)
+
+      내부자 계정을 격리(비활성화/세션 종료)하고, 동일 백도어 계정 재생성을 즉시 탐지하는 Wazuh 룰
+      (**sid 9012001**)을 `local_rules.xml` 에 작성한다. 증거 보전을 위해 데이터는 보존한다.
+
+      ### 권장 형태 (참고)
+      ```xml
+      <rule id="9012001" level="12">
+        <if_sid>5902</if_sid>
+        <match>eduintruder</match>
+        <description>EDU W12 - insider backdoor account recreated</description>
+      </rule>
+      ```
+      📌 채점: local_rules.xml 에 내부자 탐지룰(sid 9012001)이 작성됐는지.
+      ✅ 합격: local_rules.xml 에 9012001 룰이 있다.
+    hint: "계정 비활성화 + local_rules.xml 에 재생성 탐지룰(id 9012001) → restart."
+    verify:
+      type: "file_contains"
+      expect: "9012001"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "9012001" } }
+      semantic:
+        intent: "IR Contain(내부) — 계정 격리 + 재생성 탐지룰. 증거 보전(chain of custody) 하며 권한 차단."
+        success_criteria: ["local_rules.xml 에 rule id 9012001", "(격리) 계정 비활성화/세션 종료", "(보전) 증거 보존 + HR/법무 협업 절차"]
+        acceptable_methods: ["계정 잠금 + 탐지룰 작성"]
+        negative_signs: ["증거 파괴(데이터 즉시 삭제)", "재생성 탐지 누락"]
+
+  - order: 4
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 [Eradicate+Recover] — 비인가 접근 제거 + 정상 복구
+
+      비인가 계정/SSH 키/권한/유출 채널을 모두 제거하고 정상 상태로 복구한다. 권한 검토(최소 권한)로
+      재발을 방지한다.
+
+      📌 채점: web 서버(Apache)가 정상 가동 중인지(복구 검증).
+      ✅ 합격: web 의 apache2 가 running 이다.
+    hint: "비인가 계정/키/권한/채널 제거 + apache 복구. 채점: process_running web apache2."
+    verify:
+      type: "process_running"
+      expect: "apache"
+      checks:
+        - { id: "blue-4-1", type: "process_running", target: "web", params: { name: "apache2" } }
+      semantic:
+        intent: "IR Eradicate+Recover(내부) — 비인가 접근 전수 제거 + 정상 복구 + 최소 권한 재검토."
+        success_criteria: ["apache2 가동(복구)", "(제거) 계정/키/권한/채널 전수 제거", "(예방) 최소 권한 원칙 재적용"]
+        acceptable_methods: ["비인가 접근 제거 + 권한 검토"]
+        negative_signs: ["일부 잔존", "권한 재검토 누락"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-5 [Report] — 내부 위협 IR 보고서 (증거 보전·법무 협업)
+
+      사고를 타임라인으로 정리하되, 내부 위협 특유의 **증거 보전(chain of custody)** 과 HR/법무 협업,
+      개인정보 처리 주의를 포함한 보고서를 작성한다.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ 보고서는 제출로 검증).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "내부위협 IR 보고서(증거보전+HR/법무 협업+개인정보). 채점: wazuh_alert + 보고서 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "내부 위협 IR 보고서 — 타임라인 + 증거 보전(chain of custody) + HR/법무 협업 + 개인정보 주의."
+        success_criteria: ["경보 수집 확인", "(보고서) 타임라인 + 유출 범위 + 근본 원인", "(절차) 증거 보전 + HR/법무 협업 + 개인정보 처리"]
+        acceptable_methods: ["내부 위협 IR 보고서 작성"]
+        negative_signs: ["증거 보전 절차 누락", "법무/HR 협업 미고려"]

@@ -1,0 +1,202 @@
+id: "secuops-w13"
+category: "secuops"
+title: "[보안운영 W13] IOC 공격 vs 위협 인텔 운영(enrichment·Stream Connector 자동화·alert 격상)"
+difficulty: "hard"
+time_limit: 3300
+battle_type: "1v1"
+description: |
+  보안운영 13주차 — W12 의 STIX/TAXII·CDB 위에서 **CTI 운영** 을 다룬다. 외부 **Connector**(MITRE/
+  abuse.ch 등)로 IOC 를 수집하고, **enrichment Connector**(GeoIP/VirusTotal/Shodan)로 경보에 맥락을
+  더하며, **Python Stream Connector** 로 OpenCTI→Wazuh CDB 를 자동 sync 한다. 공격자가 IOC 기반으로
+  공격하면, 운영자는 단순 매칭을 넘어 **enrichment → alert 격상** 으로 우선순위를 자동 조정한다.
+
+  ▸ 모드: solo(IOC 공격→인텔 운영자) / duel(상대 IOC 공격→본인 enrichment 격상). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 방어층/SIEM 흔적으로 채점.
+  ▸ OpenCTI 미설치 → Connector/enrichment 는 설계/시뮬, **실 적용은 Wazuh CDB list + 격상 룰(sid
+    100200)**. CDB list `/var/ossec/etc/lists/`, 룰 `/var/ossec/etc/rules/local_rules.xml`.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 — 평판 불량 IOC 공격 (enrichment 표적)
+
+      알려진 악성 출발지/도구로 웹공격을 보낸다. 이 출발지는 GeoIP(국가)·평판(VirusTotal/abuse.ch)
+      enrichment 의 표적 — BLUE 가 이 맥락으로 경보를 격상한다.
+
+      ### 권장 명령 (참고 — 외부 공격자)
+      ```bash
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%201"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 WAF audit 의 공격/스캐너 탐지(enrichment 대상 경보).
+      ✅ 합격: 대상 WAF audit 에 스캐너/공격 탐지.
+    hint: "attacker-ext sqlmap 공격(=enrichment 표적 IOC). 채점: 대상 ModSec scanner."
+    verify:
+      type: "log_contains"
+      expect: "scanner"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "scanner", since_sec: 1800 } }
+      semantic:
+        intent: "평판 불량 IOC 공격 — 출발지/도구가 GeoIP/평판 enrichment 의 표적. 외부 공격자 모델 → 대상 WAF 흔적으로 판정."
+        success_criteria: ["대상 WAF audit 에 공격/스캐너 탐지", "(설명) 이 경보에 어떤 enrichment(GeoIP/평판)를 붙일지 서술"]
+        acceptable_methods: ["attacker-ext sqlmap/nikto/웹공격"]
+        negative_signs: ["대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: ips
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 — 반복 정찰 (빈도 기반 격상 표적)
+
+      반복적인 정찰(스캔)으로 빈도 신호를 만든다. BLUE 는 enrichment(평판) + 빈도를 결합해 경보를
+      자동 격상한다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      for i in $(seq 3); do nmap -sT -p 80,443,8080 <대상_공개IP>; done
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 Suricata 의 스캔 탐지(빈도 신호).
+      ✅ 합격: 대상 IPS 에 스캔 탐지.
+    hint: "attacker-ext 반복 스캔(빈도 신호). 채점: 대상 Suricata scan."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: "빈도 신호 — 반복 정찰. enrichment(평판)+빈도 결합 격상의 표적. 대상 Suricata 흔적으로 판정."
+        success_criteria: ["대상 IPS 에 스캔 탐지", "(설명) 빈도+평판을 어떻게 결합해 격상할지 서술"]
+        acceptable_methods: ["attacker-ext 반복 스캔/정찰"]
+        negative_signs: ["대상 미도달"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 — 외부 Connector + enrichment Connector 활용 설계
+
+      OpenCTI 의 **외부 Connector**(MITRE ATT&CK / abuse.ch / AlienVault OTX 등)로 IOC 를 수집하고,
+      **enrichment Connector**(GeoIP / VirusTotal / Shodan) 3종으로 경보에 맥락(국가/평판/노출)을 더하는
+      운영 워크플로우를 설계한다.
+
+      📌 채점: 인텔→SIEM 파이프라인의 manager 가 가동 중인지(적용 기반).
+      ✅ 합격: siem 에 wazuh-analysisd 가 running 이다.
+    hint: "외부 Connector(수집) + enrichment Connector(GeoIP/VT/Shodan) 워크플로우 설계. 채점: process_running siem wazuh-analysisd."
+    verify:
+      type: "process_running"
+      expect: "analysisd"
+      checks:
+        - { id: "blue-1-1", type: "process_running", target: "siem", params: { name: "wazuh-analysisd" } }
+      semantic:
+        intent: "CTI 운영 — 외부 Connector(IOC 수집) + enrichment Connector(GeoIP/VT/Shodan 맥락). 수집과 enrichment 의 역할 구분."
+        success_criteria: ["(설계) 외부 Connector + enrichment Connector 3종 워크플로우", "manager 가동", "(설명) enrichment 가 트리아지에 주는 가치 서술"]
+        acceptable_methods: ["Connector 워크플로우 설계 + enrichment 매핑"]
+        negative_signs: ["수집/enrichment 구분 못함"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 — enrichment 기반 alert 격상 룰 (sid 100200)
+
+      enrichment(평판 불량 IOC)와 빈도를 결합해 경보를 자동 격상하는 **custom 룰(sid 100200)** 을
+      작성한다. CDB list(평판 불량 IP/도메인) 매칭 + frequency 로 level 을 올린다.
+
+      ### 권장 형태 (참고)
+      ```xml
+      <rule id="100200" level="13" frequency="3" timeframe="120">
+        <if_matched_sid>100100</if_matched_sid>
+        <description>EDU W13 - enriched IOC repeated -> escalate</description>
+      </rule>
+      ```
+      📌 채점: local_rules.xml 에 격상 룰(sid 100200)이 작성됐는지.
+      ✅ 합격: local_rules.xml 에 100200 룰이 있다.
+    hint: "local_rules.xml 에 if_matched_sid+frequency 격상 룰(id 100200) 작성 → restart."
+    verify:
+      type: "file_contains"
+      expect: "100200"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "100200" } }
+      semantic:
+        intent: "MITRE D3FEND — enrichment+빈도 기반 자동 격상. if_matched_sid/frequency/timeframe 으로 반복 IOC 매칭 시 level 상향."
+        success_criteria: ["local_rules.xml 에 rule id 100200", "if_matched_sid/frequency 결합", "(설명) enrichment 맥락이 격상에 반영되는 방식 서술"]
+        acceptable_methods: ["local_rules.xml 100200 격상 룰 + CDB 연계 + restart"]
+        negative_signs: ["단순 매칭만(격상 로직 없음)", "frequency/timeframe 미사용"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 — Python Stream Connector (OpenCTI → Wazuh CDB 자동 sync)
+
+      신규 indicator 가 OpenCTI 에 들어오면 **Python Stream Connector** 가 실시간으로 Wazuh CDB list 에
+      반영하는 자동화를 설계/시뮬한다(중복/만료/TLP 필터 포함). 수동 CDB 관리의 한계를 극복한다.
+
+      📌 채점: siem 에 CDB list 인프라(sync 대상)가 갖춰져 있는지.
+      ✅ 합격: siem 에 CDB list 디렉토리가 존재한다.
+    hint: "Python Stream Connector → CDB sync(중복/만료/TLP 필터) 설계. 채점: file_exists /var/ossec/etc/lists."
+    verify:
+      type: "file_exists"
+      expect: "lists"
+      checks:
+        - { id: "blue-3-1", type: "file_exists", target: "siem", params: { path: "/var/ossec/etc/lists" } }
+      semantic:
+        intent: "IOC 자동화 — Stream Connector 가 indicator→CDB 실시간 sync. 중복/만료/TLP 필터로 품질 유지."
+        success_criteria: ["CDB 인프라 확인", "(설계) Stream Connector sync 로직(중복/만료/TLP) 제시", "(설명) 실시간성과 CDB reload 반영"]
+        acceptable_methods: ["Python Stream Connector 설계 + CDB sync 워크플로우"]
+        negative_signs: ["만료/중복 처리 누락"]
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 — enrichment → 격상 검증 (R/B/P)
+
+      RED 의 반복 IOC 공격을 재현하고, enrichment+빈도 격상 룰(100200)이 경보를 상위 level 로 올리는지
+      Wazuh 에서 검증한다. 격상 전(평범한 스캔)과 후(평판 불량 반복 → 고위험)의 우선순위 차이를 본다.
+
+      📌 채점: 본인 SIEM 에 최근 경보(격상 포함)가 수집됐는지.
+      ✅ 합격: 본인 SIEM 에 최근 경보가 수집돼 있다.
+    hint: "반복 IOC 공격 재현 → 100200 격상 확인. 채점: wazuh_alert."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "운영 검증 — enrichment+빈도 격상이 실제 우선순위에 반영. 평판 불량 IOC 반복 시 고위험으로 자동 상향."
+        success_criteria: ["최근 경보 수집", "(검증) 격상 전후 level 차이 확인", "(설명) 분석가 트리아지에 주는 효과"]
+        acceptable_methods: ["반복 공격 재현 후 alerts.json 의 격상 확인 / wazuh_alert"]
+        negative_signs: ["격상 미확인"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-5 — 운영 사고 분석 + MITRE Navigator 커버리지
+
+      IOC 운영의 실 사고(오탐 IOC / 만료 IOC / 잘못된 enrichment)를 분석하고 근본 해결을 정리한다.
+      또한 탐지 룰을 **MITRE ATT&CK Navigator** 로 매핑해 커버리지 공백을 시각화한다.
+
+      📌 채점: siem 에 CDB list 예시 파일(운영 대상)이 존재하는지.
+      ✅ 합격: siem 에 CDB list 파일이 존재한다.
+    hint: "오탐/만료 IOC 사고 분석 + ATT&CK Navigator 커버리지. 채점: file_exists /var/ossec/etc/lists/audit-keys."
+    verify:
+      type: "file_exists"
+      expect: "lists"
+      checks:
+        - { id: "blue-5-1", type: "file_exists", target: "siem", params: { path: "/var/ossec/etc/lists/audit-keys" } }
+      semantic:
+        intent: "운영 성숙 — IOC 사고(오탐/만료/잘못된 enrichment) 근본 해결 + ATT&CK Navigator 로 커버리지 공백 가시화."
+        success_criteria: ["CDB 운영 대상 확인", "(분석) IOC 운영 사고 3 사례 + 근본 해결", "(매핑) ATT&CK Navigator 커버리지 공백 식별"]
+        acceptable_methods: ["사고 분석 + Navigator 커버리지 매핑"]
+        negative_signs: ["증상 대응만(근본 원인 누락)"]

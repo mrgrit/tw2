@@ -1,0 +1,338 @@
+id: "secuops-easy-w06"
+category: "secuops-easy"
+title: "[보안운영입문 W6] WAF 침해대응 룰(transform·@pm·deny/pass) + 3장비 종합(방화벽·IPS·WAF)"
+difficulty: "easy"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  보안운영 입문 6주차 — 최종. WAF(ModSecurity) 의 무기를 끝까지 휘두른다. **transform**(인코딩·대소문자
+  우회 무력화), **@pm**(여러 스캐너 시그니처를 한 룰로), **deny vs pass**(신규 룰은 탐지→관찰→차단의
+  안전한 도입 순서) 를 직접 작성·적용한다. 그리고 6주의 마무리로 **같은 공격 하나가 방화벽·IPS·WAF
+  세 장비에서 어떻게 다르게 보이고 막히는지** 를 SIEM 한 화면에서 종합한다(capstone).
+
+  ▸ 모드
+    • solo : 외부 공격자(웹 공격) → WAF 운영자(transform·@pm·pass 룰, 3장비 종합)를 한 학생이 차례로 수행. 대상=본인 인프라.
+    • duel : Red 가 상대 웹에 공격, Blue 는 본인 WAF 로 transform/@pm 차단 + 3장비 종합. 대상=상대 인프라.
+
+  ▸ 공격자 위치(중요): Red 는 **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은
+    대상 WAF(ModSecurity) audit·IPS·SIEM 탐지 흔적으로 한다(command_ran(attacker-ext) 불신뢰).
+
+  ▸ 이번 주 핵심 — WAF 의 진짜 힘은 **변환(transform)** 에 있다. `%3Cscript%3E`(인코딩)·`UnIoN`(대소문자)
+    우회는 `t:urlDecodeUni`/`t:lowercase` 로 먼저 정규화해야 잡힌다. 커스텀 SecRule 의 차단 증거는
+    **modsec audit 의 고유 msg 마커(EDU …)+403** 이며, 이는 Wazuh(SIEM) 로도 모인다.
+
+# ───────────────────────── RED (외부 공격자: 웹 공격) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — SQLi(UNION) + 우회 변형 시도
+
+      대상 웹앱에 **UNION 기반 SQL 인젝션** 을 보낸다. 단순 `union select` 뿐 아니라 대소문자
+      변형(`UnIoN SeLeCt`)·URL 인코딩(`%55nion`) 같은 **우회 변형** 도 섞어, WAF 의 transform 이
+      없으면 빠져나가는 공격을 재현한다. WAF 가 제대로 막으면 이 요청들은 탐지/차단된다.
+
+      ### 권장 명령 (참고 — 외부 공격자는 공개 진입점 + Host 헤더)
+      ```bash
+      # 평문
+      curl -s -A "Mozilla/5.0" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?id=1%20UNION%20SELECT%20user,password%20FROM%20users"
+      # 대소문자 우회
+      curl -s -A "Mozilla/5.0" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?id=1%20UnIoN%20SeLeCt%201,2"
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → **대상 WAF(ModSecurity) audit 의 SQLi 탐지/차단** 흔적으로 채점.
+
+      ### ✅ 합격 기준
+      대상 WAF audit 에 UNION/SQLi 공격 탐지(또는 403 차단) 흔적이 남는다.
+    hint: "attacker-ext 에서 UNION + 대소문자/인코딩 변형. 채점: 대상 ModSecurity audit 의 SQLi 탐지."
+    verify:
+      type: "log_contains"
+      expect: "SQL"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "union", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE T1190 / OWASP A03 Injection — UNION SQLi 와 우회 변형. 외부 공격자 모델 → 대상
+          ModSecurity audit(SQLi/CRS 942 계열)·차단 흔적으로 판정(command_ran(attacker-ext) 불신뢰).
+        success_criteria:
+          - "대상 ModSecurity audit 에 UNION/SQLi 탐지 또는 403 차단 흔적(최근)"
+          - "(설명) 어떤 파라미터에 어떤 UNION 구문/우회 변형을 넣었는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 curl 로 union select / UnIoN SeLeCt / %55nion"
+          - "sqlmap 등 자동화 도구(대안)"
+        negative_signs:
+          - "대상 WAF audit 에 탐지 흔적 없음(미도달)"
+          - "command_ran(attacker-ext) 의존"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 — 스캐너 다중 공격 + 인코딩 경로탐색
+
+      자동화 스캐너(또는 반복 curl)로 다수 페이로드를 보낸다. 스캐너 User-Agent(sqlmap/nikto) 와
+      함께 **인코딩된 경로탐색**(`..%2f..%2f`)·XSS(`%3Cscript%3E`) 같은 우회 변형을 섞는다. 이 공격은
+      BLUE 가 만들 **@pm 다중 스캐너 룰** 과 **transform 룰** 의 표적이 된다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      nikto -h http://<대상_공개IP> -maxtime 60s     # 스캐너 UA 노출
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?file=..%2f..%2f..%2fetc%2fpasswd"
+      curl -s -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?q=%3Cscript%3Ealert(1)%3C/script%3E"
+      ```
+      ### 📌 채점
+      외부 명령 미수집 → 대상 WAF audit(스캐너/공격 탐지) 또는 IPS(suricata) 스캔 탐지 흔적으로 채점.
+
+      ### ✅ 합격 기준
+      대상 WAF audit 또는 IPS 에 스캐너/다중 공격 탐지 흔적이 남는다.
+    hint: "attacker-ext 에서 nikto/sqlmap + 인코딩 경로탐색·XSS. 채점: 대상 WAF audit / IPS 탐지."
+    verify:
+      type: "log_contains"
+      expect: "ModSecurity"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "scanner", since_sec: 1800 } }
+        - { id: "red-2-2", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: |
+          스캐너 다중 공격 + 인코딩 우회 — CRS 누적 점수/스캐너 UA 탐지. 외부 공격자 모델 → 대상
+          WAF audit 또는 IPS 흔적으로 판정. 둘 중 한쪽이라도 탐지되면 인정.
+        success_criteria:
+          - "대상 ModSecurity audit 에 공격/스캐너 탐지 트랜잭션, 또는 IPS 에 스캔 탐지(최근)"
+          - "(설명) 어떤 도구/인코딩으로 어떤 표면을 공격했는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 nikto/sqlmap/반복 curl + 인코딩 변형"
+        negative_signs:
+          - "대상 WAF audit·IPS 양쪽 모두 흔적 없음"
+
+# ───────────────────────── BLUE (WAF 운영자: self) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 — @pm 으로 다수 스캐너를 한 룰에 (실제 403 확인)
+
+      여러 스캐너(sqlmap/nikto/nmap/gobuster)를 **한 룰** 로 고속 차단한다. `@pm`(phrase match)은
+      여러 문구를 한 번에 매칭해 스캐너 목록 관리에 적합하다. User-Agent 를 보고 차단하므로 `phase:1`
+      (헤더 단계)에서 조기 차단한다.
+
+      ### 권장 형태 (참고 — 고유 msg 마커 'EDU pm' 필수)
+      ```
+      SecRule REQUEST_HEADERS:User-Agent "@pm sqlmap nikto nmap gobuster" \
+        "id:9000013,phase:1,t:lowercase,deny,status:403,log,msg:'EDU pm scanners',severity:'CRITICAL'"
+      ```
+      적용은 **configtest 통과 후 reload**(잘못된 룰은 거부되어 웹서버 보존). 적용 후 스캐너 UA 로
+      접속하면 **403** 이 떨어지고 audit 에 `EDU pm` 마커가 기록된다.
+
+      ### 📌 채점
+      modsec audit 에 **`EDU pm` 마커 + 차단** 흔적이 남았는지로 '본인 @pm 룰이 실제 차단' 했음을 확인.
+
+      ### ✅ 합격 기준
+      WAF audit 에 `EDU pm` 마커가 있고, 스캐너 UA 접속이 403 으로 차단된다.
+    hint: "REQUEST_HEADERS:User-Agent @pm sqlmap nikto nmap gobuster + deny + msg:'EDU pm scanners' → configtest+reload → 스캐너 UA 접속 시 audit 에 EDU pm."
+    verify:
+      type: "log_contains"
+      expect: "EDU pm"
+      checks:
+        - { id: "blue-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "EDU pm", since_sec: 1800 } }
+      semantic:
+        intent: |
+          연산자 선택 — @pm(phrase match)으로 다중 스캐너 시그니처를 한 룰로. '작성'이 아니라 '실제
+          차단'이 핵심 — modsec audit 에 EDU pm 마커 + 403 이 남아야 인정.
+        success_criteria:
+          - "ModSecurity audit 에 'EDU pm' 마커가 있는 차단 트랜잭션(최근)"
+          - "(설명) @pm 이 @contains 를 여러 번 쓰는 것보다 나은 이유 서술"
+        acceptable_methods:
+          - "User-Agent @pm ... deny 룰 작성 → configtest+reload → 스캐너 UA 로 403 확인"
+          - "waf-gui 의 SecRule 폼(@pm) 으로 작성·적용"
+        negative_signs:
+          - "룰만 작성하고 403/EDU pm audit 미확인"
+          - "@contains 4개로 따로 작성(연산자 선택 학습 미달 — 단 차단되면 부분 인정)"
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-2 — transform 으로 인코딩·대소문자 우회 차단 (이번 주 핵심)
+
+      WAF 의 진짜 힘 — **변환(transform)**. 공격자가 `%3Cscript%3E`(URL 인코딩)·`UnIoN`(대소문자)으로
+      우회해도, `t:urlDecodeUni`(디코딩) + `t:lowercase`(소문자화)로 **먼저 정규화** 한 뒤 매칭하면
+      잡힌다. 변환을 **순서대로 2개** 적용하는 룰을 작성한다.
+
+      ### 권장 형태 (참고 — 고유 msg 마커 'EDU enc' 필수)
+      ```
+      SecRule ARGS "@contains <script" \
+        "id:9000028,phase:2,t:urlDecodeUni,t:lowercase,deny,status:403,log,msg:'EDU enc bypass',severity:'CRITICAL'"
+      ```
+      적용 후, **인코딩된** XSS(`?q=%3Cscript%3E…`)로 접속하면 디코딩 후 매칭돼 **403** 이 되고 audit 에
+      `EDU enc` 마커가 남는다. (변환이 없으면 같은 요청이 빠져나간다 — 직접 비교해 본다.)
+
+      ### 📌 채점
+      modsec audit 에 **`EDU enc` 마커 + 차단** 흔적이 있는지로 'transform 으로 우회를 실제로 막았음'을 확인.
+
+      ### ✅ 합격 기준
+      WAF audit 에 `EDU enc` 마커가 있고, 인코딩된 우회 공격이 403 으로 차단된다.
+    hint: "ARGS @contains <script + t:urlDecodeUni + t:lowercase + deny + msg:'EDU enc bypass' → reload → %3Cscript%3E 로 접속 → audit 에 EDU enc."
+    verify:
+      type: "log_contains"
+      expect: "EDU enc"
+      checks:
+        - { id: "blue-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "EDU enc", since_sec: 1800 } }
+      semantic:
+        intent: |
+          MITRE D3FEND D3-WAF — transform(t:urlDecodeUni/t:lowercase)으로 인코딩·대소문자 우회를
+          정규화 후 차단. WAF 가 IPS 와 다른 핵심 능력. audit 에 EDU enc + 403 이 남아야 인정.
+        success_criteria:
+          - "ModSecurity audit 에 'EDU enc' 마커가 있는 차단 트랜잭션(최근)"
+          - "변환(urlDecodeUni/lowercase)이 룰에 포함됨"
+          - "(설명) 변환 없는 룰과의 차이(인코딩 우회 통과 vs 차단)를 서술"
+        acceptable_methods:
+          - "ARGS/REQUEST_URI @contains + t:urlDecodeUni(+t:lowercase) deny → 인코딩 공격 재현으로 403 확인"
+          - "waf-gui 에서 변환 2개 체크 후 적용"
+        negative_signs:
+          - "변환 없이 평문만 매칭(인코딩 우회 미차단)"
+          - "룰만 작성하고 EDU enc audit 미확인"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 — deny vs pass: 신규 룰의 안전한 도입(탐지 우선)
+
+      운영 신뢰성의 핵심 — 새 룰을 바로 `deny`(차단)하면 오탐으로 정상 사용자를 막을 수 있다. 그래서
+      신규 룰은 먼저 **`pass`(탐지/로그만)** 로 넣어 audit 를 관찰하고, 오탐이 없음을 확인한 뒤 `deny`
+      로 전환한다. 이번엔 `pass` 모드 룰을 작성해 **차단 없이 로그만** 남는 것을 확인한다.
+
+      ### 권장 형태 (참고 — 고유 msg 마커 'EDU detect', action=pass)
+      ```
+      SecRule ARGS "@contains edu_probe_xyz" \
+        "id:9000027,phase:2,t:none,pass,log,msg:'EDU detect only',severity:'NOTICE'"
+      ```
+      적용 후 `?x=edu_probe_xyz` 로 접속하면 **요청은 통과(200)** 하지만 audit 에 `EDU detect` 가
+      기록된다(차단 아님, 관찰용).
+
+      ### 📌 채점
+      modsec audit 에 **`EDU detect` 마커** 가 있는지로 'pass(탐지) 모드를 이해·적용했음'을 확인.
+
+      ### ✅ 합격 기준
+      WAF audit 에 `EDU detect` 마커가 남고(차단이 아닌 탐지 로그), 해당 요청은 통과한다.
+    hint: "ARGS @contains edu_probe_xyz + action=pass + log + msg:'EDU detect only' → reload → 그 패턴 접속(통과) → audit 에 EDU detect."
+    verify:
+      type: "log_contains"
+      expect: "EDU detect"
+      checks:
+        - { id: "blue-3-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "EDU detect", since_sec: 1800 } }
+      semantic:
+        intent: |
+          안전한 룰 도입 절차 — pass(탐지)→관찰→deny(차단). 신규 룰을 곧장 차단하지 않고 오탐을
+          먼저 관찰하는 운영 규율. audit 에 EDU detect 가 남되 요청은 차단되지 않아야 정확.
+        success_criteria:
+          - "ModSecurity audit 에 'EDU detect' 마커(최근)"
+          - "action 이 pass(탐지/로그)이며 해당 요청은 통과함을 이해"
+          - "(설명) 왜 신규 룰을 pass 로 먼저 넣는지(오탐 관찰) 서술"
+        acceptable_methods:
+          - "action=pass, log 룰 작성 → 패턴 접속(200) → audit 에 EDU detect 확인"
+          - "waf-gui 에서 action=pass 선택 후 적용"
+        negative_signs:
+          - "deny 로 작성해 차단해버림(탐지 우선 원칙 미이해)"
+          - "EDU detect audit 미확인"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-4 — 종합 capstone: 한 공격, 세 장비의 흔적을 SIEM 에서 종합
+
+      6주의 마무리. 같은 공격 하나(**sqlmap UA + SQLi(UNION)**)를 보내고, **세 장비** 가 각각 어떻게
+      보는지 한 화면(SIEM)에서 종합한다.
+      - **방화벽**: IP·포트만 보므로 정상 80/443 웹 요청은 통과(연결 conntrack 기록).
+      - **IPS(Suricata)**: 패킷/스트림에서 sqlmap UA·UNION 문자열을 발견 → eve.json alert.
+      - **WAF(ModSecurity)**: HTTP 구조를 이해 → SQLi/스캐너 룰로 audit 에 403 차단.
+      - **SIEM(Wazuh, 10.20.32.100)**: 위 흔적들이 모두 모여 분석가가 한 시간선에서 상관분석.
+
+      세 장비는 **같은 공격을 다른 관점** 으로 본다(IPS=네트워크 문자열, WAF=HTTP 의미). 겹치는
+      웹 구간은 이중으로 막고, 안 겹치는 구간은 서로 보완한다 — 이것이 심층 방어다.
+
+      ### 권장 절차 (참고)
+      ```bash
+      # 1) 공격을 한 번 흘려보낸다(외부 공격자 또는 본인이 재현)
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<공개IP>/?id=1%20UNION%20SELECT%201,2" -o /dev/null
+      # 2) 세 곳 흔적 확인: IPS eve(alert) / WAF audit(403) / SIEM(Wazuh)에 수렴했는지
+      ```
+      ### 📌 채점
+      본인 **SIEM(Wazuh)** 에 이 웹/IDS 공격 경보가 수집됐는지(=세 장비 흔적의 수렴)로 확인한다.
+      보조로 IPS(suricata) 탐지도 본다.
+
+      ### ✅ 합격 기준
+      본인 SIEM 에 최근 웹공격/IDS 관련 경보가 수집돼 있다(세 장비 흔적이 SIEM 으로 모임).
+    hint: "공격 1회 재현 → IPS eve alert + WAF audit 403 + Wazuh 경보 수렴 확인. 채점: 본인 wazuh_alert(ids/web)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+        - { id: "blue-4-2", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "alert", since_sec: 1800 } }
+      semantic:
+        intent: |
+          심층 방어 종합(6주 finale) — 한 공격을 방화벽/IPS/WAF 세 관점에서 추적하고 SIEM 으로
+          수렴시켜 상관분석. 한 겹이 놓쳐도 다음 겹이 잡고, 모든 겹이 기록을 남긴다.
+        success_criteria:
+          - "본인 Wazuh 에 최근 웹공격/IDS 관련 경보(세 장비 흔적의 수렴)"
+          - "(설명) 같은 공격을 IPS(네트워크 문자열)와 WAF(HTTP 의미)가 어떻게 다르게 보는지 서술"
+          - "(설명) 방화벽은 왜 정상 80포트 요청을 통과시키는지 서술"
+        acceptable_methods:
+          - "공격 1회 재현 → siem 에서 wazuh_alert / IPS eve / WAF audit 세 흔적 확인"
+          - "중앙 SIEM 탭에서 상관 확인"
+        negative_signs:
+          - "SIEM 수집이 비어있음"
+          - "세 장비의 관점 차이를 설명하지 못함"
+
+  - order: 5
+    assess_target: self
+    target_vm: web
+    points: 10
+    instruction: |
+      ## 🛡️ BLUE-5 — 실습 룰 정리 + 웹서버 보존 (cleanup, 최종)
+
+      특강 종료 — 실습으로 추가한 커스텀 SecRule(EDU …)을 모두 삭제해 운영 위생을 지킨다. CRS/기본
+      보호 룰은 유지한다. 잘못된 룰 적용 시 configtest 가 거부해 웹서버가 보존되는 안전장치 덕분에,
+      정리 후에도 Apache/ModSecurity 는 정상 가동 중이어야 한다.
+
+      ### ✅ 합격 기준
+      실습 EDU 룰이 정리되고, 웹 서버(Apache)가 정상 가동 중이다(보존됨).
+    hint: "waf-gui 에서 EDU 룰 일괄 삭제(CRS 유지) → apache2 가동 확인."
+    verify:
+      type: "process_running"
+      expect: "apache"
+      checks:
+        - { id: "blue-5-1", type: "process_running", target: "web",
+            params: { name: "apache2" } }
+      semantic:
+        intent: "운영 위생 + 안전장치 — 실습 룰 정리 후에도 웹서버 보존(configtest 가 손상 방지)."
+        success_criteria:
+          - "web 의 apache2 프로세스 running(보존됨)"
+          - "(설명) EDU 실습 룰을 정리하고 CRS 는 유지했음을 서술"
+        acceptable_methods:
+          - "waf-gui 의 룰 삭제 → process_running apache2 확인"
+        negative_signs:
+          - "정리 중 잘못된 룰로 웹서버 다운(안전장치 미이해)"
+          - "EDU 실습 룰을 남겨둠(위생 미흡)"

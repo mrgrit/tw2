@@ -1,0 +1,150 @@
+id: "attack-w07"
+category: "attack"
+title: "[공격기법 W7] SSRF·파일 업로드·Path Traversal(OWASP A10·A05·A03) vs 탐지·차단 분석"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격기법 7주차 — OWASP **A10 SSRF** + **A05 보안 설정 오류(파일 업로드)** + **A03 인젝션(Path
+  Traversal/LFI)**. 공격자는 경로탐색으로 임의 파일을 읽고, 악성 파일을 업로드해 실행을 노리며, SSRF 로
+  내부 자원(클라우드 메타데이터 등)에 접근한다. 방어자는 이 시도를 탐지·차단(WAF/IPS)하고 분석한다.
+
+  ▸ 모드: solo(공격자→탐지 1인) / duel(Red 가 상대에 공격, Blue 가 본인 방어층으로 탐지/분석). 대상=solo 본인 / duel 상대.
+  ▸ 공격자 위치: **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은 대상 WAF(ModSec CRS 930/933/934) 흔적으로.
+  ▸ 차단룰은 Suricata **local.rules**(교육용 sid **9407001+**).
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 — Path Traversal / LFI (A03)
+
+      `../../etc/passwd` 류 경로탐색으로 웹 루트 밖 임의 파일을 읽으려 시도한다(인코딩 우회 `..%2f`
+      포함). CRS 930(LFI/Traversal) 탐지 대상.
+
+      ### 권장 명령 (참고 — 외부 공격자)
+      ```bash
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?file=..%2f..%2f..%2fetc%2fpasswd"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 ModSec audit 의 Path Traversal/LFI(930) 탐지.
+      ✅ 합격: 대상 WAF audit 에 Traversal/LFI 탐지.
+    hint: "attacker-ext ../etc/passwd (인코딩 포함). 채점: 대상 ModSec 930 Traversal."
+    verify:
+      type: "log_contains"
+      expect: "Traversal"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "Traversal", since_sec: 1800 } }
+        - { id: "red-1-2", type: "log_contains", target: "web", params: { log: "modsec", pattern: "930", since_sec: 1800 } }
+      semantic:
+        intent: "OWASP A03 / MITRE T1083 — Path Traversal/LFI. 외부 공격자 모델 → 대상 ModSec CRS 930 탐지로 판정. 인코딩 우회(t:urlDecodeUni 무력화 여부)도 관찰."
+        success_criteria: ["대상 ModSec audit 에 Traversal/LFI(930) 탐지(최근)", "(설명) 평문 vs 인코딩 우회 결과 차이 서술"]
+        acceptable_methods: ["attacker-ext ../etc/passwd / ..%2f 인코딩"]
+        negative_signs: ["대상 WAF 흔적 없음", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 — SSRF / 악성 파일 업로드 (A10·A05)
+
+      SSRF 로 내부/메타데이터(`169.254.169.254`)에 접근하거나, 악성 확장자(.php) 업로드로 실행을
+      노린다. CRS 933(PHP)/934(SSRF) 탐지 대상.
+
+      ### 권장 명령 (참고)
+      ```bash
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?url=http://169.254.169.254/latest/meta-data/"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 ModSec audit 의 SSRF/업로드(933/934) 탐지.
+      ✅ 합격: 대상 WAF audit 에 SSRF/업로드 탐지.
+    hint: "attacker-ext SSRF(169.254) / .php 업로드. 채점: 대상 ModSec 933/934."
+    verify:
+      type: "log_contains"
+      expect: "934"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "934", since_sec: 1800 } }
+        - { id: "red-2-2", type: "log_contains", target: "web", params: { log: "modsec", pattern: "933", since_sec: 1800 } }
+      semantic:
+        intent: "OWASP A10 SSRF / A05 업로드 — MITRE T1190. 외부 공격자 모델 → 대상 ModSec CRS 933/934 탐지로 판정."
+        success_criteria: ["대상 ModSec audit 에 SSRF(934) 또는 업로드(933) 탐지(최근)", "(설명) SSRF 로 노린 내부 자원 / 업로드 우회 시도 서술"]
+        acceptable_methods: ["attacker-ext SSRF(169.254/내부IP) / 악성 확장자 업로드"]
+        negative_signs: ["대상 WAF 흔적 없음"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 — Traversal/SSRF/업로드 탐지 분석
+
+      세 공격(Traversal/SSRF/업로드)의 WAF·SIEM 경보를 분석해 어떤 자원을 노렸는지, 차단됐는지를
+      판정한다. 인코딩 우회가 WAF transform 으로 막혔는지 확인한다.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(분석 대상).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "Traversal/SSRF/업로드 경보 분석(노린 자원/차단여부/인코딩 우회). 채점: wazuh_alert + 분석 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "탐지 분석 — Traversal(노린 파일)/SSRF(노린 내부자원)/업로드(확장자) 판정 + 차단 여부 + 인코딩 우회 방어."
+        success_criteria: ["경보 수집 확인", "(분석) 각 공격이 노린 자원 + 차단 여부", "(우회) urlDecodeUni 로 인코딩 우회 차단 확인"]
+        acceptable_methods: ["WAF audit/SIEM 분석"]
+        negative_signs: ["차단/우회 여부 미판정"]
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 — SSRF/Traversal 차단룰 작성 (sid 9407001)
+
+      SSRF(내부 IP/메타데이터 접근)와 Path Traversal(`../`)을 탐지하는 Suricata 룰(**sid 9407001**)을
+      `local.rules` 에 작성한다.
+
+      ### 권장 룰 (참고)
+      ```
+      alert http any any -> any any (msg:"ATK W07 SSRF metadata"; http.uri; content:"169.254.169.254"; sid:9407001; rev:1;)
+      ```
+      📌 채점: local.rules 에 SSRF/Traversal 차단룰(sid 9407001)이 작성됐는지.
+      ✅ 합격: local.rules 에 9407001 룰이 있다.
+    hint: "local.rules 에 SSRF(169.254)/Traversal(../) 탐지룰(sid 9407001) → reload."
+    verify:
+      type: "file_contains"
+      expect: "9407001"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "ips", params: { path: "/etc/suricata/rules/local.rules", pattern: "9407001" } }
+      semantic:
+        intent: "차단룰 — SSRF(내부 IP/169.254) + Traversal(../) 탐지. content + 인코딩 정규화 고려."
+        success_criteria: ["local.rules 에 sid 9407001", "SSRF/Traversal 탐지 로직", "(설명) 인코딩 우회 대응"]
+        acceptable_methods: ["local.rules 작성 + reload"]
+        negative_signs: ["문법 오류", "인코딩 우회 미대응"]
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 — 방어 강화 권고 (입력검증·업로드 정책·egress 통제)
+
+      근본 강화를 권고한다: 경로 정규화/화이트리스트(Traversal), 확장자·MIME·실행권한 제거(업로드),
+      egress 차단/메타데이터 보호(SSRF). WAF 즉시 완화책도 제시한다.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ 권고는 제출로 검증).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "입력검증/업로드정책/egress 통제 권고. 채점: wazuh_alert + 권고 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "강화 권고 — 경로 정규화/화이트리스트, 업로드 확장자·실행권한 통제, SSRF egress/메타데이터 보호."
+        success_criteria: ["경보 수집 확인", "(권고) 세 공격별 근본 방어", "(완화) WAF 즉시 차단"]
+        acceptable_methods: ["분석 + 강화 권고"]
+        negative_signs: ["블랙리스트만(우회 가능)"]

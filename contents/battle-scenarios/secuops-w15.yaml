@@ -1,0 +1,204 @@
+id: "secuops-w15"
+category: "secuops"
+title: "[보안운영 W15] 기말 — APT 5단계 킬체인 vs 5종 솔루션 종합 대응 + 인텔 운영·IR 보고(수료)"
+difficulty: "hard"
+time_limit: 3600
+battle_type: "1v1"
+description: |
+  보안운영 15주차 — **기말(수료)**. W01~W14 를 **APT 5 단계 킬체인** 으로 통합한다: ① Recon(정찰)
+  → ② Initial Access(최초 침투) → ③ Execution + Lateral(실행/측면 이동) → ④ C2 + Exfiltration
+  (지휘통제/유출) → ⑤ Response + Reporting + Cleanup(대응/보고/정리). 공격자가 5 단계를 진행하면,
+  운영자는 방화벽·IDS·WAF·호스트가시화·SIEM·위협인텔의 **6종 역량** 을 모두 동원해 각 단계를 탐지·
+  차단·헌팅·격상하고, 최종 **IR 보고서** 로 종합한다.
+
+  ▸ 모드: solo(APT 공격자→종합 대응자) / duel(상대 APT→본인 종합 방어). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** + 호스트 침해. 외부 명령 미수집 → 대상 방어층/SIEM 흔적으로 채점.
+  ▸ 각 단계 독립 채점. 권장 마커: IDS sid **9015001**, IOC 룰 sid **9015100**, 호스트 아티팩트
+    **포트 19999 / 사용자 eduintruder**. 단계 5 에서 일괄 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [단계1·2] — Recon → Initial Access
+
+      ① nmap + 스캐너로 정찰(서비스/표면 식별), ② 식별한 웹 취약점으로 최초 침투(SQLi/스캐너 UA).
+      한 흐름이 IPS(정찰)와 WAF(침투) 두 계층에 흔적을 남긴다.
+
+      ### 권장 명령 (참고 — 외부 공격자)
+      ```bash
+      nmap -sT -p 80,443,8080 <대상_공개IP>
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%20user,password%20FROM%20users"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 IPS(정찰) + WAF(침투 SQLi 942) 흔적.
+      ✅ 합격: 대상 IPS 에 스캔, WAF audit 에 SQLi(942) 탐지.
+    hint: "attacker-ext nmap 정찰 + SQLi 침투. 채점: 대상 Suricata scan + ModSec 942."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+        - { id: "red-1-2", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+      semantic:
+        intent: "APT 단계1·2 — Recon(T1595) → Initial Access(T1190). 정찰이 침투로 이어지는 킬체인. 외부 공격자 모델 → 대상 IPS+WAF 흔적으로 판정."
+        success_criteria: ["대상 IPS 에 정찰 탐지", "대상 WAF audit 에 SQLi(942) 탐지", "(설명) 정찰→침투 단계 연결 서술"]
+        acceptable_methods: ["attacker-ext nmap/스캐너 + 웹 exploit"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [단계3·4] — Execution + Lateral → C2 + Exfil
+
+      ③ 발판에서 실행/측면 이동을 모사해 **백도어 계정(eduintruder)** 으로 지속성을 확보하고, ④
+      **C2 리스너(포트 19999)** 로 지휘통제/유출 채널을 연다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      sudo useradd -m -s /bin/bash eduintruder        # 단계3 persistence
+      nohup ncat -lk 19999 >/dev/null 2>&1 &           # 단계4 C2 채널
+      ```
+      📌 채점: 대상 호스트에 persistence(eduintruder) + C2(포트 19999)가 생겼는지.
+      ✅ 합격: /etc/passwd 에 eduintruder, 포트 19999 listening.
+    hint: "useradd eduintruder + ncat 19999. 채점: file_contains passwd eduintruder + port_listening 19999."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+        - { id: "red-2-2", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "APT 단계3·4 — Execution/Lateral(T1136 계정) + C2/Exfil(T1571 채널). 발판 이후 지속성·유출 채널 구축."
+        success_criteria: ["eduintruder 계정 + 포트 19999", "(설명) persistence 와 C2 채널 기법 서술"]
+        acceptable_methods: ["useradd + ncat 리스너 / authorized_keys + 외부 연결"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 [단계1 대응] — 정찰 탐지 룰 (Suricata sid 9015001)
+
+      APT 의 정찰 단계를 탐지하는 Suricata 룰(**sid 9015001**)을 `local.rules` 에 작성한다. 스캐너 UA/
+      포트스캔을 fast_pattern 으로 잡는다.
+
+      ### 권장 룰 (참고)
+      ```
+      alert http any any -> any any (msg:"W15 APT recon scanner"; http.user_agent; content:"sqlmap"; nocase; fast_pattern; classtype:attempted-recon; sid:9015001; rev:1;)
+      ```
+      📌 채점: local.rules 에 정찰 탐지 룰(sid 9015001)이 작성됐는지.
+      ✅ 합격: local.rules 에 9015001 룰이 있다.
+    hint: "local.rules 에 정찰 탐지 룰(sid 9015001) 작성 → reload."
+    verify:
+      type: "file_contains"
+      expect: "9015001"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips", params: { path: "/etc/suricata/rules/local.rules", pattern: "9015001" } }
+      semantic:
+        intent: "APT 단계1 대응 — 정찰 탐지(Suricata). 킬체인 조기 단계 가시화."
+        success_criteria: ["local.rules 에 sid 9015001", "fast_pattern/적절한 버퍼", "(설명) 정찰 탐지의 조기 경보 가치 서술"]
+        acceptable_methods: ["local.rules 작성 + reload + eve.json 검증"]
+        negative_signs: ["문법 오류 로딩 실패"]
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [단계2 대응] — 초기침투 차단 (WAF anomaly 949110)
+
+      Initial Access 의 웹 익스플로잇을 WAF 가 anomaly score 누적으로 차단(949110)하는지 검증한다.
+
+      📌 채점: web modsec audit 에 anomaly 차단(949110) 흔적.
+      ✅ 합격: audit 에 949110 anomaly 차단 흔적이 있다.
+    hint: "SQLi 재현 → audit 의 949110 'Inbound Anomaly Score Exceeded'."
+    verify:
+      type: "log_contains"
+      expect: "949110"
+      checks:
+        - { id: "blue-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "949110", since_sec: 1800 } }
+      semantic:
+        intent: "APT 단계2 대응 — WAF anomaly 차단으로 초기침투 저지. CRS 누적 점수 메커니즘."
+        success_criteria: ["audit 에 949110 차단", "(설명) anomaly 누적→차단 흐름 서술"]
+        acceptable_methods: ["공격 재현 후 audit 949110 확인"]
+        negative_signs: ["차단 미확인"]
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [단계3 대응] — Execution/Lateral 헌팅 (persistence 발견)
+
+      osquery/호스트 가시화로 RED 의 persistence(백도어 계정 eduintruder, C2 리스너 19999)를 헌팅해
+      측면 이동·실행 흔적을 찾아낸다.
+
+      📌 채점: 대상 호스트에 persistence(eduintruder + 포트 19999)가 헌팅으로 확인되는지.
+      ✅ 합격: /etc/passwd 에 eduintruder, 포트 19999 listening.
+    hint: "osquery users/listening_ports 헌팅. 채점: file_contains passwd eduintruder + port_listening 19999."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+        - { id: "blue-3-2", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "APT 단계3 대응 — 호스트 헌팅으로 persistence/lateral 흔적 발견. 네트워크가 못 보는 호스트 내부."
+        success_criteria: ["persistence(계정/리스너) 발견", "(쿼리) osquery 헌팅 결과 제시", "(설명) 측면 이동 단서 서술"]
+        acceptable_methods: ["osquery users/listening_ports JOIN processes"]
+        negative_signs: ["헌팅 누락"]
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 [단계4 대응] — C2/Exfil 인텔 격상 (IOC CDB 룰 sid 9015100)
+
+      C2/유출 단계의 IOC(출발지 IP / C2 시그니처)를 CDB list 에 넣고, 매칭 시 경보를 격상하는 custom
+      룰(**sid 9015100**)을 `local_rules.xml` 에 작성한다.
+
+      📌 채점: local_rules.xml 에 IOC 격상 룰(sid 9015100)이 작성됐는지.
+      ✅ 합격: local_rules.xml 에 9015100 룰이 있다.
+    hint: "CDB list + local_rules.xml 의 IOC 격상 룰(id 9015100) 작성 → restart."
+    verify:
+      type: "file_contains"
+      expect: "9015100"
+      checks:
+        - { id: "blue-4-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "9015100" } }
+      semantic:
+        intent: "APT 단계4 대응 — C2/Exfil IOC 를 CDB+룰로 격상. 위협 인텔이 탐지 우선순위에 반영."
+        success_criteria: ["local_rules.xml 에 rule id 9015100", "CDB list 매칭 + level 격상", "(설명) C2/Exfil 단계 IOC 운영화"]
+        acceptable_methods: ["CDB list + local_rules.xml 9015100 + restart"]
+        negative_signs: ["IOC 미운영화", "격상 로직 없음"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-5 [단계5] — Response + IR 보고서 + Cleanup (수료)
+
+      APT 5 단계 전체를 SIEM 한 화면으로 종합하고, **IR 보고서**(타임라인 / 각 단계 탐지·차단 근거 /
+      ATT&CK 매핑 / 권고)를 작성한다. 마지막으로 실습 룰·호스트 아티팩트(eduintruder/19999/IDS·IOC
+      룰)를 **일괄 cleanup** 한다. 이것이 14주 보안운영의 종합이자 수료다.
+
+      📌 채점: 본인 SIEM 에 APT 다단계 경보가 수렴했는지(+ 보고서/cleanup 은 제출로 검증).
+      ✅ 합격: 본인 SIEM 에 최근 다단계 경보가 수렴해 있다.
+    hint: "APT 5단계 SIEM 수렴 + IR 보고서 + 일괄 cleanup. 채점: wazuh_alert."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "APT 단계5 — Response/Reporting/Cleanup. 5단계를 SIEM 으로 종합 + IR 보고서(타임라인/ATT&CK/권고) + 운영 위생(cleanup)."
+        success_criteria: ["다단계 경보 수렴 확인", "(보고서) APT 5단계 타임라인 + 각 단계 탐지·차단 근거 + ATT&CK 매핑 + 권고", "(cleanup) 실습 룰/아티팩트 일괄 정리 서술"]
+        acceptable_methods: ["SIEM 수렴 확인 + IR 보고서 작성 + cleanup"]
+        negative_signs: ["보고서 없이 단편 대응만", "cleanup 미완(룰/계정/리스너 잔존)"]

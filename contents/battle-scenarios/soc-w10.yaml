@@ -1,0 +1,196 @@
+id: "soc-w10"
+category: "soc"
+title: "[SOC관제 W10] 웹 침해(SQLi→웹쉘) vs 인시던트 대응 실습(1) — 웹 로그 포렌식·웹쉘 헌팅·격리"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  SOC 관제 10주차 — **인시던트 대응 실습(1) 웹 공격**. 외부 공격자가 SQLi 로 침투해 **웹쉘** 로
+  발판을 만드는 전형적 웹 침해를 대응한다. 대응자는 ModSec audit·접근로그로 침투 경로를 **포렌식**
+  하고, 웹쉘(콜백 리스너)을 헌팅하며, WAF 차단룰로 출발지를 격리하고, 웹쉘을 제거해 서비스를 복구한다.
+
+  ▸ 모드: solo(공격자 → 웹 IR) / duel(상대 웹 침해 → 본인 IR). 대상=solo 본인 / duel 상대.
+  ▸ Red 는 **망 외부 공격자(attacker-ext)** + 웹쉘. 외부 명령 미수집 → 대상 WAF/호스트 흔적으로 채점.
+  ▸ 웹쉘 콜백 마커: 리스너 **포트 19999**. WAF 차단룰은 modsec audit 의 고유 msg 마커(**EDU ir**).
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 — SQLi 침투 (웹 익스플로잇)
+
+      UNION SQLi 로 DB 정보를 끌어내며 침투한다. ModSec audit 에 침투 경로의 명확한 흔적을 남긴다
+      (대응자의 포렌식 시작점).
+
+      ### 권장 명령 (참고 — 외부 공격자)
+      ```bash
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%20user,password%20FROM%20users"
+      ```
+      📌 채점: 외부 명령 미수집 → 대상 WAF audit 의 SQLi(942) 탐지.
+      ✅ 합격: 대상 WAF audit 에 SQLi(942) 탐지.
+    hint: "attacker-ext UNION SQLi. 채점: 대상 ModSec 942."
+    verify:
+      type: "log_contains"
+      expect: "942"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+      semantic:
+        intent: "T1190 — SQLi 침투. 대응자 포렌식의 시작점. 외부 공격자 모델 → 대상 WAF audit 흔적으로 판정."
+        success_criteria: ["대상 WAF audit 942 탐지", "(설명) 침투 경로(파라미터/페이로드) 서술"]
+        acceptable_methods: ["attacker-ext UNION SQLi / sqlmap"]
+        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 — 웹쉘 콜백 (포트 19999)
+
+      침투 후 웹쉘/리버스 콜백으로 발판을 만든다(콜백 리스너 포트 **19999**). 대응자의 웹쉘 헌팅
+      표적이다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      nohup ncat -lk 19999 >/dev/null 2>&1 &     # 웹쉘 콜백 모사
+      ```
+      📌 채점: 대상 호스트에 웹쉘 콜백 리스너(19999)가 열렸는지.
+      ✅ 합격: 대상 호스트에서 포트 19999 가 listening 이다.
+    hint: "ncat -lk 19999 (웹쉘 콜백). 채점: port_listening 19999."
+    verify:
+      type: "port_listening"
+      expect: "19999"
+      checks:
+        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "T1505.003 — 웹쉘/콜백 발판. 대응자의 헌팅 표적."
+        success_criteria: ["포트 19999 listening", "(설명) 웹쉘 발판 기법 서술"]
+        acceptable_methods: ["ncat 리스너 / 웹쉘 업로드 모사"]
+        negative_signs: ["발판 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-1 [Identify] — 웹 로그 포렌식 (침투 경로 복원)
+
+      ModSec audit·접근로그를 포렌식해 침투 경로를 복원한다. 어떤 파라미터에 어떤 SQLi 페이로드가
+      들어왔고, 응답 코드/데이터 추출 정황은 무엇인지 판정한다.
+
+      📌 채점: 본인 web modsec audit 에 침투 흔적(942)이 있는지(포렌식 대상).
+      ✅ 합격: 본인 WAF audit 에 SQLi(942) 탐지가 있다.
+    hint: "modsec audit + 접근로그로 침투 경로 복원. 채점: log_contains web modsec 942100."
+    verify:
+      type: "log_contains"
+      expect: "942"
+      checks:
+        - { id: "blue-1-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+      semantic:
+        intent: "웹 포렌식 — audit/접근로그로 침투 경로(파라미터/페이로드/응답) 복원. 사고의 전말 파악."
+        success_criteria: ["침투 흔적 확인", "(복원) 파라미터+페이로드+응답코드+추출 정황", "(타임라인) 침투 시점"]
+        acceptable_methods: ["modsec audit + 접근로그 포렌식"]
+        negative_signs: ["경로 복원 없이 경보만 확인"]
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [Hunt] — 웹쉘 헌팅 (콜백 리스너 + 의심 프로세스)
+
+      웹쉘 발판을 헌팅한다. 비표준 리스너(19999)와 그 프로세스, 최근 생성된 의심 파일(webroot)을
+      찾아 발판의 정체를 규명한다.
+
+      📌 채점: 대상 호스트에 웹쉘 콜백 리스너(19999)가 탐지되는지.
+      ✅ 합격: 포트 19999 가 listening 이며 프로세스까지 상관했다.
+    hint: "listening_ports JOIN processes 로 19999 + webroot 의심파일 헌팅. 채점: port_listening 19999."
+    verify:
+      type: "port_listening"
+      expect: "19999"
+      checks:
+        - { id: "blue-2-1", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "웹쉘 헌팅 — 비표준 리스너+프로세스+webroot 의심파일 상관으로 발판 규명."
+        success_criteria: ["콜백 리스너 19999 + 프로세스 상관", "(헌팅) webroot 의 최근 생성/수정 파일 점검", "(규명) 웹쉘 정체"]
+        acceptable_methods: ["ss/osquery 포트+프로세스, find 로 webroot 의심파일"]
+        negative_signs: ["포트만, 프로세스/파일 상관 누락"]
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [Contain] — WAF 차단룰로 출발지/패턴 격리 (EDU ir 마커)
+
+      추가 피해를 막기 위해 공격 출발지/패턴을 WAF 로 격리한다. 고유 msg 마커 `EDU ir` 를 단 SecRule
+      을 적용해 그 패턴을 403 차단하고 audit 에 본인 룰 동작이 기록되게 한다.
+
+      ### 권장 형태 (참고)
+      ```
+      SecRule REQUEST_HEADERS:User-Agent "@contains sqlmap" "id:9010300,phase:1,deny,status:403,log,msg:'EDU ir contain'"
+      ```
+      📌 채점: web modsec audit 에 `EDU ir` 마커(본인 차단룰 동작)가 남았는지.
+      ✅ 합격: WAF audit 에 EDU ir 마커가 있다.
+    hint: "SecRule msg:'EDU ir contain' + deny → 패턴 접속 → audit 에 EDU ir."
+    verify:
+      type: "log_contains"
+      expect: "EDU ir"
+      checks:
+        - { id: "blue-3-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "EDU ir", since_sec: 1800 } }
+      semantic:
+        intent: "IR Contain — WAF 차단룰로 출발지/패턴 격리. 증거 보존하며 추가 피해 차단. audit 에 EDU ir + 403."
+        success_criteria: ["audit 에 'EDU ir' 마커 + 차단", "(격리) 출발지/패턴 한정", "(원칙) 증거 보존"]
+        acceptable_methods: ["SecRule deny + EDU ir 마커 → 재현으로 확인"]
+        negative_signs: ["룰만 작성·미발동", "격리 과도(정상 차단)"]
+
+  - order: 4
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 [Eradicate+Recover] — 웹쉘 제거 + 서비스 복구
+
+      웹쉘/콜백 발판을 제거하고(리스너 종료, 악성 파일 삭제, 침해 계정 정리) 웹 서비스를 정상
+      복구한다. 모든 발판을 근절해야 재침투를 막는다.
+
+      📌 채점: web 서버(Apache)가 정상 가동 중인지(복구 검증).
+      ✅ 합격: web 의 apache2 가 running 이다.
+    hint: "웹쉘/리스너 제거 + apache 정상 복구. 채점: process_running web apache2."
+    verify:
+      type: "process_running"
+      expect: "apache"
+      checks:
+        - { id: "blue-4-1", type: "process_running", target: "web", params: { name: "apache2" } }
+      semantic:
+        intent: "IR Eradicate+Recover — 웹쉘/발판 전수 제거 + 서비스 정상 복구. 하나라도 남으면 재침투."
+        success_criteria: ["apache2 가동(복구)", "(제거) 웹쉘/리스너/악성파일/계정 전수 제거 서술", "(검증) 정상성"]
+        acceptable_methods: ["발판 제거 + 서비스 복구"]
+        negative_signs: ["일부 발판 잔존", "취약 상태 복구"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-5 [Report] — 웹 침해 IR 보고서
+
+      침투(SQLi)→발판(웹쉘)→대응의 전 과정을 타임라인으로 정리하고, 근본 원인(취약 파라미터)과 재발
+      방지책(입력검증/WAF룰/패치)을 담은 IR 보고서를 작성한다.
+
+      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ 보고서는 제출로 검증).
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "웹 침해 타임라인 + 근본원인 + 재발방지 IR 보고서. 채점: wazuh_alert + 보고서 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "웹 IR 보고서 — 침투→웹쉘→대응 타임라인 + 근본 원인 + 재발 방지(입력검증/WAF/패치)."
+        success_criteria: ["경보 수집 확인", "(보고서) 타임라인 + 근본 원인(취약 파라미터) + 재발 방지", "(환류) WAF룰/패치 권고"]
+        acceptable_methods: ["IR 보고서 작성"]
+        negative_signs: ["근본 원인 누락"]

@@ -1,0 +1,218 @@
+id: "secuops-w07"
+category: "secuops"
+title: "[보안운영 W7] 호스트 침해 흔적(백도어 리스너·사용자·persistence) vs osquery 헌팅(OS as SQL)"
+difficulty: "medium"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  보안운영 7주차 — **osquery 5.23.0**("OS as SQL")로 호스트를 SQL 테이블(158개)로 추상화해 침해
+  흔적을 헌팅한다. ps/ss/find/last 의 제각각 출력 시절은 끝 — 하나의 SQL syntax 로 process/user/
+  network/file/cron 을 동일하게 추출한다. 공격자가 호스트에 **persistence**(백도어 리스너·백도어
+  사용자·cron)를 심으면, 운영자는 osquery 의 헌팅 쿼리(`processes JOIN listening_ports`, `users`,
+  `crontab`, `authorized_keys`)로 찾아내고 FIM + Wazuh ship 으로 자동화한다.
+
+  ▸ 모드: solo(공격자 침해 시뮬→osquery 헌터) / duel(상대 호스트 침해→본인 osquery 헌팅).
+  ▸ 이 주차는 **R/B/P 시뮬레이션** — 채점 가능한 고정 마커 아티팩트를 심고(Red), 같은 아티팩트를
+    osquery 로 헌팅(Blue)한다. 권장 아티팩트: **리스너 포트 19999**, **백도어 사용자 `eduintruder`**.
+  ▸ osquery 는 snapshot 도구(W11 sysmon 의 event stream 과 보완). 헌팅 쿼리·발견 결과를 제출에 서술.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 — 백도어 리스너 심기 (network persistence)
+
+      호스트에 의심스러운 **리스닝 포트**(백도어/C2 비콘 모사)를 연다. osquery 의
+      `listening_ports JOIN processes` 헌팅의 표적이 된다. 권장 포트 **19999**.
+
+      ### 권장 명령 (참고 — 본인/foothold 호스트에서)
+      ```bash
+      nohup ncat -lk 19999 >/dev/null 2>&1 &   # 또는 python -m http.server 19999
+      ```
+      📌 채점: 대상 호스트에 비표준 리스닝 포트(19999)가 열렸는지(osquery 헌팅 대상).
+      ✅ 합격: 대상 호스트에서 포트 19999 가 listening 이다.
+    hint: "ncat -lk 19999 로 백도어 리스너. 채점: port_listening 19999."
+    verify:
+      type: "port_listening"
+      expect: "19999"
+      checks:
+        - { id: "red-1-1", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "MITRE T1571/T1059 — 비표준 포트 리스너로 network persistence/C2 모사. osquery listening_ports 헌팅 대상."
+        success_criteria: ["대상 호스트에 포트 19999 listening", "(설명) 어떤 도구로 어떤 포트를 열었는지, 정상 서비스와 어떻게 구분되는지 서술"]
+        acceptable_methods: ["ncat -lk / python http.server / socat 로 비표준 리스너"]
+        negative_signs: ["리스너 미기동", "정상 서비스 포트로 위장(헌팅 회피 의도 없음 — 단 마커 포트면 인정)"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 — 백도어 사용자 추가 (account persistence)
+
+      호스트에 **백도어 계정** 을 만든다. osquery 의 `users` / `/etc/passwd` 헌팅 표적. 권장 사용자명
+      **eduintruder**(헌팅이 찾을 고정 마커).
+
+      ### 권장 명령 (참고)
+      ```bash
+      sudo useradd -m -s /bin/bash eduintruder    # account persistence
+      ```
+      📌 채점: 대상 호스트의 /etc/passwd 에 백도어 사용자(eduintruder)가 추가됐는지.
+      ✅ 합격: /etc/passwd 에 eduintruder 가 있다.
+    hint: "useradd eduintruder. 채점: file_contains /etc/passwd eduintruder."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+      semantic:
+        intent: "MITRE T1136.001 — 로컬 계정 생성으로 persistence. osquery users 테이블 헌팅 대상(uid/shell/홈)."
+        success_criteria: ["대상 /etc/passwd 에 eduintruder(또는 식별 가능한 백도어 계정)", "(설명) 정상 사용자와 구분되는 신호(uid/생성시점/shell) 서술"]
+        acceptable_methods: ["useradd 로 백도어 계정", "authorized_keys 추가(대안 persistence)"]
+        negative_signs: ["계정 미생성", "흔적 없이 끝남"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 12
+    instruction: |
+      ## 🛡️ BLUE-1 — osquery 가시화 확인 (OS as SQL · 158 테이블)
+
+      osquery 가 설치돼 OS 를 SQL 로 질의할 수 있는지 확인한다. `osqueryi` 로 버전(5.23.0)·테이블
+      목록(158)·핵심 테이블(processes/users/listening_ports/crontab/file)을 가시화한다.
+
+      ### 참고
+      ```bash
+      osqueryi --version
+      osqueryi "SELECT name,version FROM osquery_info;"
+      osqueryi "SELECT pid,name,path FROM processes LIMIT 5;"
+      ```
+      📌 채점: 호스트에 osqueryi(가시화 도구)가 설치돼 있는지.
+      ✅ 합격: /usr/bin/osqueryi 가 존재한다(OS as SQL 가시화 가능).
+    hint: "osqueryi 설치 확인 + processes/listening_ports 쿼리. 채점: file_exists /usr/bin/osqueryi."
+    verify:
+      type: "file_exists"
+      expect: "osqueryi"
+      checks:
+        - { id: "blue-1-1", type: "file_exists", target: "web", params: { path: "/usr/bin/osqueryi" } }
+      semantic:
+        intent: "osquery 'OS as SQL' 추상화 — 158 테이블(process/user/file/network/kernel/package). osqueryi(ad-hoc) vs osqueryd(daemon) 구분."
+        success_criteria: ["osqueryi 설치 확인", "(설명) 158 테이블 카테고리와 6 핵심 테이블 사용 시점 서술", "(예시) processes/listening_ports 쿼리 결과 제시"]
+        acceptable_methods: ["osqueryi --version / SELECT FROM processes", "테이블 카탈로그 설명"]
+        negative_signs: ["osquery 미사용(ps/ss 로만 — OS as SQL 미체득)"]
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 헌팅: 백도어 리스너 (listening_ports JOIN processes)
+
+      RED-1 이 연 의심 리스너(19999)를 osquery SQL JOIN 으로 찾는다. 포트만이 아니라 그 포트를 연
+      **프로세스(경로/사용자)** 까지 한 쿼리로 상관한다.
+
+      ### 헌팅 쿼리 (참고)
+      ```sql
+      SELECT lp.port, p.pid, p.name, p.path, p.uid
+      FROM listening_ports lp JOIN processes p ON lp.pid = p.pid
+      WHERE lp.port NOT IN (22,80,443,53);   -- 비표준 포트 헌팅
+      ```
+      📌 채점: 대상 호스트에 의심 리스너(19999)가 osquery 헌팅으로 확인되는지(아티팩트 존재).
+      ✅ 합격: 포트 19999 가 listening 이며 헌팅으로 프로세스까지 상관했다.
+    hint: "listening_ports JOIN processes 로 19999 + 프로세스 상관. 채점: port_listening 19999."
+    verify:
+      type: "port_listening"
+      expect: "19999"
+      checks:
+        - { id: "blue-2-1", type: "port_listening", target: "web", params: { port: 19999 } }
+      semantic:
+        intent: "MITRE D3FEND — osquery SQL JOIN 헌팅(listening_ports+processes). 포트→프로세스→사용자 상관으로 백도어 식별."
+        success_criteria: ["포트 19999 리스너 확인", "(쿼리) listening_ports JOIN processes 로 포트를 연 프로세스/경로/uid 상관", "(설명) 비표준 포트 헌팅 기준(화이트리스트) 서술"]
+        acceptable_methods: ["osquery JOIN 쿼리로 포트+프로세스 상관", "process_open_sockets 로 outbound 헌팅(대안)"]
+        negative_signs: ["포트만 보고 프로세스 상관 누락", "JOIN 미사용"]
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-3 — 헌팅: 백도어 사용자/persistence (users · crontab · authorized_keys)
+
+      RED-2 의 백도어 계정(eduintruder)과 persistence 흔적을 osquery 로 찾는다. `users`(새 uid/shell),
+      `crontab`(스케줄 백도어), `authorized_keys`(SSH 신뢰) 3 테이블을 헌팅한다.
+
+      ### 헌팅 쿼리 (참고)
+      ```sql
+      SELECT uid, username, shell, directory FROM users WHERE uid >= 1000;
+      SELECT * FROM crontab;
+      SELECT * FROM authorized_keys;
+      ```
+      📌 채점: 대상 /etc/passwd 에 백도어 사용자(eduintruder)가 헌팅으로 확인되는지.
+      ✅ 합격: /etc/passwd 에 eduintruder 가 있고 osquery users 로 찾아냈다.
+    hint: "users/crontab/authorized_keys 헌팅. 채점: file_contains /etc/passwd eduintruder."
+    verify:
+      type: "file_contains"
+      expect: "eduintruder"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+      semantic:
+        intent: "MITRE D3FEND — persistence 헌팅. users(계정)/crontab(스케줄)/authorized_keys(SSH 신뢰) 3 표면 점검."
+        success_criteria: ["백도어 계정 eduintruder 확인", "(쿼리) users/crontab/authorized_keys 헌팅 결과 제시", "(설명) 새 계정을 baseline 과 비교해 식별하는 방법 서술"]
+        acceptable_methods: ["osquery users/crontab/authorized_keys 쿼리", "uid>=1000 + shell 필터"]
+        negative_signs: ["passwd 직접 cat 만(osquery 미사용)", "persistence 3표면 중 일부만"]
+
+  - order: 4
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 — FIM(file_events) + Wazuh agent ship 으로 자동화
+
+      ad-hoc 헌팅을 넘어 **자동화** 한다. osquery `file_paths`+`file_events`(inotify 기반 FIM)로 민감
+      경로 변경을 실시간 감지하고, Wazuh agent 가 결과를 manager 로 ship 하는지 확인한다(W10 통합 예고).
+
+      ### 참고
+      ```bash
+      # osquery.conf 의 file_paths + schedule(file_events)
+      # Wazuh agent (wazuh-logcollector / agentd) 가 osquery 결과 polling
+      ```
+      📌 채점: 호스트에 Wazuh agent(결과 ship 주체)가 가동 중인지.
+      ✅ 합격: 호스트에 Wazuh agent 프로세스가 running 이다.
+    hint: "osquery FIM(file_paths/file_events) + Wazuh agent ship. 채점: process_running wazuh."
+    verify:
+      type: "process_running"
+      expect: "wazuh"
+      checks:
+        - { id: "blue-4-1", type: "process_running", target: "web", params: { name: "wazuh" } }
+      semantic:
+        intent: "헌팅 자동화 — FIM(file_paths+file_events, inotify)로 실시간 변경 감지 + Wazuh agent ship(scheduled query 결과 polling)."
+        success_criteria: ["Wazuh agent 가동 확인", "(설명) file_paths+file_events 로 어떤 경로를 FIM 하는지(authorized_keys/cron/bin) 서술", "(설명) scheduled query(interval/snapshot) 자동화 의의"]
+        acceptable_methods: ["osquery.conf FIM 작성 + Wazuh agent 가동 확인", "scheduled query 결과 log 설명"]
+        negative_signs: ["ad-hoc 헌팅만(자동화 없음)", "Wazuh ship 경로 미이해"]
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 10
+    instruction: |
+      ## 🛡️ BLUE-5 — SIEM 통합: 호스트 헌팅 결과가 Wazuh 로 수렴
+
+      osquery/FIM 결과와 호스트 침해 흔적이 Wazuh(SIEM)로 모여 통합 관제되는지 확인한다. 네트워크
+      장비(IPS/WAF)가 못 보는 **호스트 내부** 가시성을 SIEM 한 화면에 더한다.
+
+      📌 채점: 본인 SIEM 에 최근 경보(호스트/syscheck 포함)가 수집됐는지.
+      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
+    hint: "본인 Wazuh 에서 호스트/syscheck/osquery 관련 경보 수집 확인."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "통합 가시성 — 호스트 헌팅/FIM 이 Wazuh 로 수렴. 네트워크가 못 보는 호스트 내부를 SIEM 에 보강."
+        success_criteria: ["본인 Wazuh 에 최근 경보(호스트/syscheck 포함)", "(설명) osquery snapshot 과 sysmon(W11) event stream 의 보완 관계 서술"]
+        acceptable_methods: ["siem 에서 wazuh_alert / 중앙 SIEM 탭"]
+        negative_signs: ["수집 비어있음"]
