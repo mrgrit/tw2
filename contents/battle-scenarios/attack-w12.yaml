@@ -1,18 +1,19 @@
 id: "attack-w12"
 category: "attack"
-title: "[공격기법 W12] 지속성·안티포렌식(cron·service·로그삭제) vs persistence 헌팅·로그 무결성"
+title: "[공격기법 W12] 숨고 버티기 — 다중 persistence + 안티포렌식 vs 전수 헌팅·로그 무결성"
 difficulty: "hard"
 time_limit: 3000
 battle_type: "1v1"
 description: |
-  공격기법 12주차 — **지속성(Persistence) + 안티포렌식(Anti-Forensics)**. 공격자는 다중 발판(cron/
-  systemd service/SSH 키/계정/SUID)으로 지속성을 확보하고, 로그 삭제·타임스톰핑·히스토리 제거로
-  흔적을 지운다. 방어자는 모든 발판을 전수 헌팅하고, 로그 무결성(원격 전송·immutable)으로
-  안티포렌식을 무력화한다.
+  한 발판은 지워지면 끝이다. 노련한 침입자는 **여러 발판**(계정/cron/systemd service/SSH 키/SUID)으로
+  지속성을 깔고, **안티포렌식**(로그 삭제·타임스톰핑·히스토리 제거)으로 흔적을 지운다 — 분석가의
+  타임라인 복원을 방해한다. 방어자는 모든 발판을 **전수 헌팅**하고, **로그 무결성**(원격 전송·immutable)
+  으로 안티포렌식을 무력화한다.
 
   ▸ 모드: solo(공격자 지속성 시뮬→헌팅 1인) / duel(상대 호스트 지속성→본인 헌팅). 대상=solo 본인 / duel 상대.
-  ▸ Red 는 발판 이후 **호스트 내부** — 명령 로그 신뢰 제한(안티포렌식 가정) → 대상 호스트 아티팩트로 채점.
-  ▸ 마커: 백도어 계정 **eduintruder**, 지속 채널 **포트 19999**. 탐지룰은 Wazuh **local_rules.xml**(id **9412001**).
+
+  ▸ 알아둘 점 — Red는 발판 이후 **호스트 내부** — 안티포렌식 가정으로 명령 로그 신뢰 제한 → 대상 호스트
+    아티팩트로 채점. 마커: 백도어 계정 **`at12bd`**, 지속 채널 **포트 42424**. 탐지룰 Wazuh **id 101412**.
 
 red_missions:
   - order: 1
@@ -22,27 +23,36 @@ red_missions:
     instruction: |
       ## 🎯 RED-1 — 다중 persistence (계정·cron·service)
 
-      재부팅·로그아웃에도 살아남도록 여러 발판을 심는다: 백도어 계정(**eduintruder**), cron, systemd
-      service, SSH 키. 하나가 지워져도 다른 게 살아남게 한다.
+      ### 상황
+      재부팅·로그아웃에도 살아남도록 여러 발판을 심는다: 백도어 계정(**at12bd**), cron, systemd service,
+      SSH 키. 하나가 지워져도 다른 게 살아남게 한다.
 
-      ### 권장 명령 (참고 — 발판 이후)
+      ### 할 일
       ```bash
-      useradd -m -s /bin/bash eduintruder
+      useradd -m -s /bin/bash at12bd
       (crontab -l; echo "*/5 * * * * /tmp/.bd") | crontab -    # cron 백도어
       ```
-      📌 채점: 대상 호스트의 /etc/passwd 에 백도어 계정(eduintruder)이 추가됐는지.
-      ✅ 합격: /etc/passwd 에 eduintruder 가 있다.
-    hint: "useradd + cron/service/SSH키 다중 발판. 채점: file_contains passwd eduintruder."
+
+      ### 채점 방법
+      대상 호스트 `/etc/passwd`에 백도어 계정(at12bd)이 추가됐는지로 채점.
+
+      ### 합격 기준
+      `/etc/passwd`에 `at12bd`가 있다.
+    hint: "useradd + cron/service/SSH키 다중 발판. 채점: file_contains passwd at12bd."
     verify:
       type: "file_contains"
-      expect: "eduintruder"
+      expect: "at12bd"
       checks:
-        - { id: "red-1-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+        - { id: "red-1-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "at12bd" } }
       semantic:
         intent: "MITRE T1136/T1053/T1543 — 다중 persistence(계정/cron/service/SSH키). 중복 발판으로 제거 저항."
-        success_criteria: ["/etc/passwd 에 eduintruder", "(다중성) 몇 가지 발판을 심었는지 + 각 기법 서술"]
-        acceptable_methods: ["useradd / cron / systemd service / authorized_keys / SUID"]
-        negative_signs: ["단일 발판만(제거 시 전멸)"]
+        success_criteria:
+          - "/etc/passwd에 at12bd"
+          - "몇 가지 발판을 심었는지 + 각 기법 서술"
+        acceptable_methods:
+          - "useradd / cron / systemd service / authorized_keys / SUID"
+        negative_signs:
+          - "단일 발판만(제거 시 전멸)"
 
   - order: 2
     assess_target: opponent
@@ -51,27 +61,36 @@ red_missions:
     instruction: |
       ## 🎯 RED-2 — 지속 채널 + 안티포렌식 (로그/타임스톰프)
 
-      지속 접근 채널(**포트 19999**)을 열고, 흔적을 지운다: 로그 삭제/변조, 타임스톰핑(touch -t),
-      셸 히스토리 제거. 분석가의 타임라인 복원을 방해한다.
+      ### 상황
+      지속 접근 채널(**포트 42424**)을 열고, 흔적을 지운다: 로그 삭제/변조, 타임스톰핑(touch -t), 셸
+      히스토리 제거. 분석가의 타임라인 복원을 방해한다.
 
-      ### 권장 명령 (참고)
+      ### 할 일
       ```bash
-      nohup ncat -lk 19999 >/dev/null 2>&1 &
+      nohup ncat -lk 42424 >/dev/null 2>&1 &
       touch -t 202001010000 /tmp/.bd; history -c     # 안티포렌식
       ```
-      📌 채점: 대상 호스트에 지속 채널(포트 19999)이 있는지.
-      ✅ 합격: 대상 호스트에서 포트 19999 가 listening 이다.
-    hint: "ncat 19999 + 로그삭제/타임스톰프. 채점: port_listening 19999."
+
+      ### 채점 방법
+      대상 호스트에 지속 채널(포트 42424)이 있는지로 채점.
+
+      ### 합격 기준
+      대상 호스트에서 포트 42424가 listening이다.
+    hint: "ncat 42424 + 로그삭제/타임스톰프. 채점: port_listening 42424."
     verify:
       type: "port_listening"
-      expect: "19999"
+      expect: "42424"
       checks:
-        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 19999 } }
+        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 42424 } }
       semantic:
         intent: "T1070/T1099 — 안티포렌식(로그 삭제/타임스톰핑/히스토리 제거) + 지속 채널. 타임라인 복원 방해."
-        success_criteria: ["포트 19999 listening", "(안티포렌식) 어떤 흔적을 어떻게 지웠는지 서술"]
-        acceptable_methods: ["ncat 채널 + 로그/타임스탬프/히스토리 조작"]
-        negative_signs: ["채널 미생성"]
+        success_criteria:
+          - "포트 42424 listening"
+          - "어떤 흔적을 어떻게 지웠는지 서술"
+        acceptable_methods:
+          - "ncat 채널 + 로그/타임스탬프/히스토리 조작"
+        negative_signs:
+          - "채널 미생성"
 
 blue_missions:
   - order: 1
@@ -81,55 +100,81 @@ blue_missions:
     instruction: |
       ## 🛡️ BLUE-1 — persistence 전수 헌팅
 
-      모든 발판을 전수 헌팅한다: 계정(eduintruder)/cron/systemd service/SSH 키/SUID/지속 채널(19999).
-      하나라도 놓치면 재침투하므로 빠짐없이 찾는다.
+      ### 상황
+      모든 발판을 전수 헌팅한다: 계정(at12bd)/cron/systemd service/SSH 키/SUID/지속 채널(42424). 하나라도
+      놓치면 재침투하므로 빠짐없이 찾는다.
 
-      📌 채점: 대상 호스트에 백도어 계정(eduintruder)이 헌팅으로 확인되는지.
-      ✅ 합격: /etc/passwd 에 eduintruder 가 있고 헌팅했다.
-    hint: "계정/cron/service/SSH키/SUID/포트 전수 헌팅. 채점: file_contains passwd eduintruder."
+      ### 할 일
+      계정/cron/service/SSH키/SUID/포트를 전수 헌팅한다.
+
+      ### 채점 방법
+      대상 호스트에 백도어 계정(at12bd)이 헌팅으로 확인되는지로 채점.
+
+      ### 합격 기준
+      `/etc/passwd`에 `at12bd`가 있고 헌팅했다.
+    hint: "계정/cron/service/SSH키/SUID/포트 전수 헌팅. 채점: file_contains passwd at12bd + port_listening 42424."
     verify:
       type: "file_contains"
-      expect: "eduintruder"
+      expect: "at12bd"
       checks:
-        - { id: "blue-1-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
-        - { id: "blue-1-2", type: "port_listening", target: "web", params: { port: 19999 } }
+        - { id: "blue-1-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "at12bd" } }
+        - { id: "blue-1-2", type: "port_listening", target: "web", params: { port: 42424 } }
       semantic:
-        intent: "persistence 전수 헌팅 — 계정/cron/service/SSH키/SUID/채널 빠짐없이. osquery + 수동 점검."
-        success_criteria: ["계정 + 채널 확인", "(전수) 6가지 발판 유형 점검", "(완전성) 누락 없음 보장 방법"]
-        acceptable_methods: ["osquery crontab/users/listening_ports + 수동 service/키 점검"]
-        negative_signs: ["일부만(재침투 가능)"]
+        intent: "persistence 전수 헌팅 — 계정/cron/service/SSH키/SUID/채널 빠짐없이. 채점 핵심은 발견+전수조사(도구 실행 증거 비요구)."
+        success_criteria:
+          - "계정 + 채널 확인"
+          - "6가지 발판 유형 점검(음성 결과 포함)"
+          - "누락 없음 보장 방법"
+        acceptable_methods:
+          - "osquery crontab/users/listening_ports + 수동 service/키 점검(도구보다 전수 조사 핵심)"
+        negative_signs:
+          - "일부만(재침투 가능)"
 
   - order: 2
     assess_target: self
     target_vm: siem
     points: 22
     instruction: |
-      ## 🛡️ BLUE-2 — persistence/변조 탐지룰 작성 (id 9412001)
+      ## 🛡️ BLUE-2 — persistence/변조 탐지룰 (id 101412)
 
-      persistence 생성과 로그 변조를 탐지하는 Wazuh 룰(**id 9412001**)을 `local_rules.xml` 에 작성한다
+      ### 상황
+      persistence 생성과 로그 변조를 탐지하는 Wazuh 룰(**id 101412**)을 `local_rules.xml`에 작성한다
       (새 계정/cron/service, 로그 파일 삭제·잘림).
 
-      ### 권장 형태 (참고)
+      ### 할 일
+      `local_rules.xml`에 탐지룰을 추가하고 `wazuh-control restart`한다.
       ```xml
-      <rule id="9412001" level="12">
-        <if_sid>5902</if_sid>
-        <match>eduintruder</match>
-        <description>EDU W12 - persistence/account backdoor</description>
-      </rule>
+      <group name="edu,syscheck,">
+        <rule id="101412" level="12">
+          <if_group>syscheck</if_group>
+          <field name="file">/etc/passwd</field>
+          <description>EDU W12 - persistence/account backdoor or log tamper</description>
+        </rule>
+      </group>
       ```
-      📌 채점: local_rules.xml 에 persistence/변조 탐지룰(id 9412001)이 작성됐는지.
-      ✅ 합격: local_rules.xml 에 9412001 룰이 있다.
-    hint: "local_rules.xml 에 persistence/로그변조 탐지룰(id 9412001) → restart."
+
+      ### 채점 방법
+      `local_rules.xml`에 id 101412 룰이 있는지로 확인.
+
+      ### 합격 기준
+      local_rules.xml에 101412 룰이 있다.
+    hint: "local_rules.xml에 persistence/로그변조 탐지룰(id 101412) → restart."
     verify:
       type: "file_contains"
-      expect: "9412001"
+      expect: "101412"
       checks:
-        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "9412001" } }
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "101412" } }
       semantic:
         intent: "persistence/변조 탐지 — 새 계정/cron/service + 로그 삭제·잘림(anti-forensics) 탐지. 흔적 제거 자체를 신호로."
-        success_criteria: ["local_rules.xml 에 rule id 9412001", "persistence + 로그 변조 탐지", "(설명) 안티포렌식을 어떻게 역탐지"]
-        acceptable_methods: ["local_rules.xml 9412001 + restart"]
-        negative_signs: ["persistence 만(변조 탐지 누락)"]
+        success_criteria:
+          - "local_rules.xml에 rule id 101412"
+          - "persistence + 로그 변조 탐지"
+          - "안티포렌식을 어떻게 역탐지"
+        acceptable_methods:
+          - "local_rules.xml 101412 + restart"
+        negative_signs:
+          - "persistence만(변조 탐지 누락)"
 
   - order: 3
     assess_target: self
@@ -138,12 +183,19 @@ blue_missions:
     instruction: |
       ## 🛡️ BLUE-3 — 로그 무결성 + 안티포렌식 대응 권고
 
-      안티포렌식을 무력화하는 방어를 권고한다: 로그 **원격 전송**(Wazuh agent → manager, 즉시 ship 으로
+      ### 상황
+      안티포렌식을 무력화하는 방어를 권고한다: 로그 **원격 전송**(Wazuh agent → manager, 즉시 ship으로
       로컬 삭제 무력화), immutable(chattr +a), 타임스탬프 무결성, 셸 감사(auditd).
 
-      📌 채점: 본인 SIEM 에 경보가 수집됐는지(원격 보존 증거).
-      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
-    hint: "로그 원격전송/immutable/auditd 로 안티포렌식 무력화 권고. 채점: wazuh_alert + 권고 제출."
+      ### 할 일
+      로그 원격전송/immutable/auditd로 안티포렌식 무력화를 권고한다.
+
+      ### 채점 방법
+      Wazuh에 경보가 있는지(원격 보존 증거) + 권고(제출)로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 경보가 수집돼 있다(+ 권고는 제출로 검증).
+    hint: "로그 원격전송/immutable/auditd로 안티포렌식 무력화 권고. 채점: wazuh_alert + 권고 제출."
     verify:
       type: "wazuh_alert"
       expect: "alert"
@@ -151,6 +203,11 @@ blue_missions:
         - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
         intent: "로그 무결성 — 원격 즉시 ship(로컬 삭제 무력화) + immutable + auditd. 안티포렌식의 근본 대응."
-        success_criteria: ["경보 수집(원격 보존) 확인", "(권고) 원격 전송/immutable/auditd", "(원리) 로컬 삭제가 왜 무력화되는지"]
-        acceptable_methods: ["로그 무결성 방어 권고"]
-        negative_signs: ["로컬 로그에만 의존(삭제 시 증거 소실)"]
+        success_criteria:
+          - "경보 수집(원격 보존) 확인"
+          - "원격 전송/immutable/auditd 권고"
+          - "로컬 삭제가 왜 무력화되는지"
+        acceptable_methods:
+          - "로그 무결성 방어 권고"
+        negative_signs:
+          - "로컬 로그에만 의존(삭제 시 증거 소실)"

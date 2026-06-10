@@ -1,73 +1,103 @@
 id: "soc-w13"
 category: "soc"
-title: "[SOC관제 W13] 알려진 IOC 공격 vs 위협 인텔(CTI) 활용 관제 — IOC 매칭·enrichment 트리아지"
+title: "[SOC관제 W13] 인텔 주도 트리아지 — '알려진 위협'이라는 한마디가 대응을 가속한다"
 difficulty: "medium"
 time_limit: 2700
 battle_type: "1v1"
 description: |
-  SOC 관제 13주차 — **위협 인텔리전스(CTI) 활용**. 분석가는 외부 IOC(악성 IP/도메인/해시/UA)를
-  수집·정규화해 **Wazuh CDB list** 로 들이고, 매칭 룰로 경보를 격상하며, **enrichment**(GeoIP/평판)로
-  트리아지 우선순위를 조정한다. 공격자가 알려진 IOC 로 공격하면, 인텔이 "이건 알려진 위협" 이라는
-  맥락을 더해 대응 속도를 높인다.
+  SOC 관제에서 **위협 인텔(CTI)**의 가치는 단순하다 — 같은 경보라도 "이건 **알려진 악성**(IOC)이다"라는
+  맥락이 붙으면 분석가의 결정이 빨라진다. 모르는 IP를 한참 조사하는 대신, IOC 매칭으로 즉시 우선순위를
+  올린다. 분석가는 외부 IOC를 **Wazuh CDB list**로 들여와 매칭 룰로 경보를 격상하고, enrichment(국가/평판)로
+  맥락을 더해 **인텔 주도 트리아지**를 한다.
 
-  ▸ 모드: solo(IOC 공격 → CTI 분석가) / duel(상대 IOC 공격 → 본인 CTI 관제). 대상=solo 본인 / duel 상대.
-  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 방어층/SIEM 흔적으로 채점.
-  ▸ CDB list `/var/ossec/etc/lists/`, IOC 매칭 룰 `local_rules.xml`(교육용 id **9013001**).
+  ▸ 이야기
+    공격자가 **이미 알려진 악성 도구**(sqlmap 등)로 공격한다. 분석가(너)는 그 시그니처를 IOC로 등록해
+    경보를 격상하고, enrichment로 우선순위를 조정하며, 더 빠르게 대응한다.
+
+  ▸ 모드: solo(IOC 공격→CTI 분석가) / duel(상대 IOC 공격→본인 CTI 관제). 대상=solo 본인 / duel 상대.
+
+  ▸ 알아둘 점 — Red 채점은 대상 WAF audit(태그/913)으로. CDB list `/var/ossec/etc/lists/`, IOC 매칭 룰
+    **id 100713**(`local_rules.xml`). 웹공격 태그 **`ci13r1-<id>`**.
 
 red_missions:
   - order: 1
     assess_target: opponent
-    target_vm: ips
+    target_vm: web
     points: 20
     instruction: |
-      ## 🎯 RED-1 — 알려진 IOC 출발지 공격
+      ## 🎯 RED-1 — 알려진 악성 도구로 공격 (IOC 표적)
 
-      알려진 악성 출발지/도구로 정찰·공격을 보낸다. 이 출발지가 CTI 의 IOC — BLUE 의 CDB 매칭 표적.
+      ### 상황
+      이미 CTI에 등록된 악성 도구(sqlmap, UA에 이름 박힘)로 공격한다 — 이 시그니처가 IOC이고 BLUE의 CDB
+      매칭 표적이다.
 
-      ### 권장 명령 (참고 — 외부 공격자)
+      ### 할 일
+      이 미션 전용 태그 `ci13r1-<id>`를 붙여 sqlmap UA로 공격한다.
       ```bash
-      nmap -sV <대상_공개IP>; nikto -h http://<대상_공개IP> -maxtime 60s
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?id=ci13r1-kim-1"
       ```
-      📌 채점: 외부 명령 미수집 → 대상 Suricata 의 스캔 탐지(IOC 활동).
-      ✅ 합격: 대상 IPS 에 스캔 탐지.
-    hint: "attacker-ext 스캔(=IOC 활동). 채점: 대상 Suricata scan."
+
+      ### 채점 방법
+      대상 WAF audit에 (ci13r1 태그 포함) 스캐너(913) 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit에 ci13r1 태그가 포함된 스캐너 탐지가 남는다.
+    hint: "태그(ci13r1) sqlmap UA. 채점: 대상 modsec audit의 scanner(913) + 태그."
     verify:
       type: "log_contains"
-      expect: "scan"
+      expect: "scanner"
       checks:
-        - { id: "red-1-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "ci13r1", since_sec: 1800 } }
       semantic:
-        intent: "알려진 IOC 출발지 공격. 외부 공격자 모델 → 대상 Suricata 흔적으로 IOC 활동 판정."
-        success_criteria: ["대상 IPS 스캔 탐지", "(설명) 어떤 속성이 IOC 인지 서술"]
-        acceptable_methods: ["attacker-ext 스캔/공격"]
-        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+        intent: "알려진 IOC(도구 시그니처) 공격 — CDB 매칭 표적. 대상 WAF audit으로 판정. 태그 귀속."
+        success_criteria:
+          - "대상 WAF audit에 (ci13r1 태그 포함) 스캐너(913) 탐지(최근)"
+          - "이 도구 시그니처를 IOC로 어떻게 표현하는지 서술"
+        acceptable_methods:
+          - "attacker-ext에서 태그 붙인 sqlmap/nikto UA 공격"
+        negative_signs:
+          - "대상 미도달 / 태그 누락"
 
   - order: 2
     assess_target: opponent
     target_vm: web
     points: 15
     instruction: |
-      ## 🎯 RED-2 — 악성 시그니처 IOC (UA/페이로드)
+      ## 🎯 RED-2 — 반복 공격 (빈도 신호)
 
-      알려진 악성 도구 시그니처(sqlmap/nikto UA)를 노출하는 공격을 보낸다. indicator 로 표현되는 IOC.
+      ### 상황
+      같은 알려진 악성 도구로 반복 공격해 빈도 신호를 만든다(평판+빈도 결합 격상 표적).
 
-      ### 권장 명령 (참고)
+      ### 할 일
+      태그 `ci13r1-<id>`를 붙여 같은 공격을 반복한다.
       ```bash
-      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1"
+      for i in 1 2 3; do curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?id=ci13r1-kim-rep$i"; done
       ```
-      📌 채점: 외부 명령 미수집 → 대상 WAF audit 의 스캐너 시그니처 탐지.
-      ✅ 합격: 대상 WAF audit 에 스캐너 시그니처 탐지.
-    hint: "attacker-ext sqlmap UA(=IOC). 채점: 대상 ModSec scanner."
+
+      ### 채점 방법
+      대상 WAF audit에 (ci13r1 태그 포함) 반복 공격 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit에 ci13r1 태그가 포함된 반복 공격 탐지가 남는다.
+    hint: "태그(ci13r1) 반복 sqlmap. 채점: 대상 modsec audit + 태그."
     verify:
       type: "log_contains"
-      expect: "scanner"
+      expect: "ci13r1"
       checks:
-        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "scanner", since_sec: 1800 } }
+        - { id: "red-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "ci13r1", since_sec: 1800 } }
       semantic:
-        intent: "시그니처 IOC — 악성 UA/페이로드. STIX indicator pattern. 대상 WAF audit 흔적으로 판정."
-        success_criteria: ["대상 WAF audit 스캐너 탐지", "(설명) indicator pattern 표현"]
-        acceptable_methods: ["attacker-ext sqlmap/nikto UA"]
-        negative_signs: ["대상 미도달"]
+        intent: "빈도 신호 — 반복 공격. 평판+빈도 결합 격상 표적. 대상 WAF audit으로 판정. 태그 귀속."
+        success_criteria:
+          - "대상 WAF audit에 (ci13r1 태그 포함) 반복 공격 탐지"
+          - "빈도+평판을 어떻게 결합해 격상할지 서술"
+        acceptable_methods:
+          - "attacker-ext에서 태그 붙인 반복 공격"
+        negative_signs:
+          - "대상 미도달 / 태그 누락"
 
 blue_missions:
   - order: 1
@@ -77,77 +107,116 @@ blue_missions:
     instruction: |
       ## 🛡️ BLUE-1 — IOC 수집 + 정규화
 
-      외부 feed(MITRE/abuse.ch/OTX)에서 IOC 를 수집하고, 유형별(IP/도메인/해시/UA)로 정규화한다.
-      신뢰도·만료를 고려해 관제에 쓸 IOC 를 선별한다.
+      ### 상황
+      외부 feed(MITRE/abuse.ch/OTX)에서 IOC를 수집하고 유형별(IP/도메인/해시/UA)로 정규화한다. 신뢰도·
+      만료를 고려해 관제에 쓸 IOC를 선별한다.
 
-      📌 채점: 본인 SIEM 에 경보가 수집됐는지(관제 기반).
-      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
-    hint: "외부 feed IOC 수집 + 유형별 정규화 + 신뢰도/만료. 채점: wazuh_alert + 정규화 제출."
+      ### 할 일
+      외부 feed IOC를 수집·정규화하고 신뢰도/만료를 관리한다.
+
+      ### 채점 방법
+      Wazuh에 경보가 있는지 + 정규화(제출)로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 경보가 수집돼 있다(+ 정규화는 제출로 검증).
+    hint: "외부 feed IOC 수집+유형별 정규화+신뢰도/만료. 채점: wazuh_alert + 정규화 제출."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "IOC 수집/정규화 — feed 에서 유형별 IOC 추출 + 신뢰도/만료 관리."
-        success_criteria: ["경보 수집 확인", "(정규화) IP/도메인/해시/UA 유형별 정리", "(품질) 신뢰도/만료 고려"]
-        acceptable_methods: ["feed IOC 수집 + 유형 분류"]
-        negative_signs: ["신뢰도/만료 무시"]
+        intent: "IOC 수집/정규화 — feed에서 유형별 IOC 추출 + 신뢰도/만료 관리."
+        success_criteria:
+          - "경보 수집 확인"
+          - "IP/도메인/해시/UA 유형별 정리"
+          - "신뢰도/만료 고려"
+        acceptable_methods:
+          - "feed IOC 수집 + 유형 분류"
+        negative_signs:
+          - "신뢰도/만료 무시"
 
   - order: 2
     assess_target: self
     target_vm: siem
     points: 22
     instruction: |
-      ## 🛡️ BLUE-2 — CDB list + IOC 매칭 룰 (id 9013001)
+      ## 🛡️ BLUE-2 — CDB list + IOC 매칭 룰 (id 100713)
 
-      수집 IOC 를 **CDB list**(`/var/ossec/etc/lists/`)에 넣고, 매칭 시 경보를 격상하는 룰(**id
-      9013001**)을 `local_rules.xml` 에 작성한다.
+      ### 상황
+      수집 IOC를 **CDB list**(`/var/ossec/etc/lists/`)에 넣고, 매칭 시 경보를 격상하는 룰(**id 100713**)을
+      `local_rules.xml`에 작성한다.
 
-      ### 권장 형태 (참고)
+      ### 할 일
+      CDB list 작성 + 매칭 룰을 추가하고 `wazuh-control restart`한다.
       ```xml
-      <rule id="9013001" level="12">
-        <list field="srcip" lookup="address_match_key">etc/lists/edu-soc-ioc</list>
-        <description>EDU W13 - known IOC matched</description>
-      </rule>
+      <group name="edu,web,">
+        <rule id="100713" level="12">
+          <if_group>web</if_group>
+          <match>sqlmap</match>
+          <description>EDU W13 - known IOC matched, escalate</description>
+        </rule>
+      </group>
       ```
-      📌 채점: local_rules.xml 에 IOC 매칭 룰(id 9013001)이 작성됐는지.
-      ✅ 합격: local_rules.xml 에 9013001 룰이 있다.
-    hint: "CDB list + local_rules.xml 의 <list> 매칭 룰(id 9013001) → restart."
+
+      ### 채점 방법
+      `local_rules.xml`에 id 100713 IOC 매칭 룰이 있는지로 확인.
+
+      ### 합격 기준
+      local_rules.xml에 100713 룰이 있다.
+    hint: "CDB list + local_rules.xml의 매칭 룰(id 100713) → restart."
     verify:
       type: "file_contains"
-      expect: "9013001"
+      expect: "100713"
       checks:
-        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "9013001" } }
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "100713" } }
       semantic:
-        intent: "IOC 운영화 — CDB list + <list lookup> 룰로 매칭 시 격상. ossec.conf <list> 등록 필수."
-        success_criteria: ["local_rules.xml 에 rule id 9013001", "CDB list 작성 + <list> 참조", "(설명) lookup 동작"]
-        acceptable_methods: ["CDB list + local_rules.xml 9013001 + ossec.conf <list> + restart"]
-        negative_signs: ["list 미참조", "ossec.conf 등록 누락"]
+        intent: "IOC 운영화 — CDB list + 매칭 룰로 IOC 매칭 시 level 격상."
+        success_criteria:
+          - "local_rules.xml에 rule id 100713"
+          - "CDB list + 매칭 룰 연결"
+          - "IOC 매칭 시 격상 흐름 서술"
+        acceptable_methods:
+          - "CDB list + local_rules.xml 100713 + restart"
+        negative_signs:
+          - "XML 문법 오류로 로딩 실패"
 
   - order: 3
     assess_target: self
     target_vm: siem
     points: 18
     instruction: |
-      ## 🛡️ BLUE-3 — enrichment 트리아지 (GeoIP/평판 우선순위)
+      ## 🛡️ BLUE-3 — enrichment 트리아지 (우선순위 가속)
 
-      매칭된 경보에 enrichment(GeoIP 국가/평판 점수)를 더해 트리아지 우선순위를 조정한다. 평판 불량
-      국가/IP 의 경보를 상위로 올려 분석가의 시선을 집중시킨다.
+      ### 상황
+      매칭된 경보에 enrichment(GeoIP 국가/평판 점수)를 더해 트리아지 우선순위를 조정한다. "알려진 악성
+      + 적대 지역 + 반복"이면 즉시 상위로 올려 분석가 시선을 집중시킨다.
 
-      📌 채점: 본인 SIEM 에 경보가 수집됐는지(enrichment 대상).
-      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
-    hint: "GeoIP/평판 enrichment 로 트리아지 우선순위 조정. 채점: wazuh_alert + 우선순위 제출."
+      ### 할 일
+      GeoIP/평판 enrichment로 트리아지 우선순위를 조정한다.
+
+      ### 채점 방법
+      Wazuh에 경보가 있는지 + 우선순위(제출)로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 경보가 수집돼 있다(+ 우선순위는 제출로 검증).
+    hint: "GeoIP/평판 enrichment로 트리아지 우선순위. 채점: wazuh_alert + 우선순위 제출."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "enrichment 트리아지 — GeoIP/평판으로 경보 우선순위 조정. 같은 경보도 맥락에 따라 우선도가 달라짐."
-        success_criteria: ["경보 수집 확인", "(enrichment) GeoIP/평판 부여", "(우선순위) 맥락 기반 재정렬"]
-        acceptable_methods: ["GeoIP/평판 enrichment 적용"]
-        negative_signs: ["enrichment 없이 평면 분석"]
+        intent: "enrichment 트리아지 — GeoIP/평판으로 경보 우선순위 가속. 이 6v6엔 GeoIP/평판 데이터가 없으므로 채점은 관측값이 아니라 **enrichment 설계의 완성도**(어떤 맥락을 어떻게 결합해 우선순위를 바꾸는가)로 한다."
+        success_criteria:
+          - "경보 수집 확인"
+          - "(설계) 도구 평판 + GeoIP 지역 + 빈도 세 맥락을 결합해 우선순위를 어떻게 올리는지 구체 규칙으로 제시"
+          - "(예시) 격상 전(P3~P4)과 후(P1~P2)의 우선순위 차이를 시나리오로 서술"
+        acceptable_methods:
+          - "enrichment(평판/GeoIP/빈도) 결합 우선순위 규칙 설계(데이터 미보유 환경이라 설계로 평가)"
+        negative_signs:
+          - "enrichment 없이 평면 분석 / 결합 규칙 없이 막연한 서술"
 
   - order: 4
     assess_target: self
@@ -156,11 +225,18 @@ blue_missions:
     instruction: |
       ## 🛡️ BLUE-4 — IOC 매칭 검증
 
-      RED 의 IOC 공격을 재현하고, CDB 룰(9013001)이 매칭해 경보가 격상되는지 Wazuh 에서 검증한다.
+      ### 상황
+      RED의 IOC 공격을 재현하고, CDB 룰(100713)이 매칭해 경보가 격상되는지 Wazuh에서 검증한다.
 
-      📌 채점: 본인 SIEM 에 경보가 수집됐는지(매칭 검증).
-      ✅ 합격: 본인 SIEM 에 최근 경보가 수집돼 있다.
-    hint: "공격 재현 → 9013001 매칭/격상 확인. 채점: wazuh_alert."
+      ### 할 일
+      공격 재현 후 100713 매칭/격상을 확인한다.
+
+      ### 채점 방법
+      Wazuh에 경보가 있는지 + 매칭 검증(제출)으로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 최근 경보가 수집돼 있다.
+    hint: "공격 재현 → 100713 매칭/격상 확인. 채점: wazuh_alert."
     verify:
       type: "wazuh_alert"
       expect: "alert"
@@ -168,9 +244,14 @@ blue_missions:
         - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
         intent: "IOC 검증 — base 경보가 CDB 매칭으로 격상. 인텔이 탐지에 실제 영향."
-        success_criteria: ["경보 수집 확인", "(검증) 매칭 시 격상 확인", "(차이) 격상 전후 우선순위"]
-        acceptable_methods: ["공격 재현 후 매칭 확인"]
-        negative_signs: ["매칭 미확인"]
+        success_criteria:
+          - "경보 수집 확인"
+          - "매칭 시 격상 확인"
+          - "격상 전후 우선순위 차이"
+        acceptable_methods:
+          - "공격 재현 후 매칭 확인"
+        negative_signs:
+          - "매칭 미확인"
 
   - order: 5
     assess_target: self
@@ -179,11 +260,18 @@ blue_missions:
     instruction: |
       ## 🛡️ BLUE-5 — CTI 공유 + 관제 환류
 
-      관제에서 새로 발견한 IOC 를 정리해 커뮤니티(MISP/TLP)와 공유하고, 탐지룰/CDB 로 환류해 다음
-      관제에 활용한다. CTI 의 선순환을 완성한다.
+      ### 상황
+      관제에서 새로 발견한 IOC를 정리해 커뮤니티(MISP/TLP)와 공유하고, 탐지룰/CDB로 환류해 다음 관제에
+      활용한다.
 
-      📌 채점: siem 에 CDB list 인프라가 존재하는지(환류 대상).
-      ✅ 합격: siem 에 CDB list 디렉토리가 존재한다.
+      ### 할 일
+      발견 IOC를 TLP 분류 + MISP 공유 + CDB 환류한다.
+
+      ### 채점 방법
+      siem에 CDB list 인프라가 있는지 + 공유(제출)로 채점.
+
+      ### 합격 기준
+      siem에 CDB list 디렉토리가 존재한다(+ 공유는 제출로 검증).
     hint: "발견 IOC TLP 분류 + MISP 공유 + CDB 환류. 채점: file_exists /var/ossec/etc/lists."
     verify:
       type: "file_exists"
@@ -191,7 +279,12 @@ blue_missions:
       checks:
         - { id: "blue-5-1", type: "file_exists", target: "siem", params: { path: "/var/ossec/etc/lists" } }
       semantic:
-        intent: "CTI 선순환 — 관제 발견 IOC 를 TLP 분류 후 공유 + CDB 환류. 소비자이자 생산자로."
-        success_criteria: ["CDB 인프라 확인", "(공유) TLP 분류 + MISP 공유", "(환류) 신규 IOC 를 CDB/룰로"]
-        acceptable_methods: ["IOC 공유 + CDB 환류"]
-        negative_signs: ["일방적 소비만(생산 없음)"]
+        intent: "CTI 선순환 — 관제 발견 IOC를 TLP 분류 후 공유 + CDB 환류. 소비자이자 생산자로."
+        success_criteria:
+          - "CDB 인프라 확인"
+          - "TLP 분류 + MISP 공유"
+          - "신규 IOC를 CDB/룰로 환류"
+        acceptable_methods:
+          - "IOC 공유 + CDB 환류"
+        negative_signs:
+          - "일방적 소비만(생산 없음)"

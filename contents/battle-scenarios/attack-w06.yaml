@@ -1,45 +1,63 @@
 id: "attack-w06"
 category: "attack"
-title: "[공격기법 W6] 인증·접근제어 공격(OWASP A01·A07) vs 인증/권한 위반 탐지·분석"
+title: "[공격기법 W6] 잠기지 않은 문 — 무차별대입·IDOR·강제 브라우징으로 권한 경계 넘기 (A01·A07)"
 difficulty: "hard"
 time_limit: 3000
 battle_type: "1v1"
 description: |
-  공격기법 6주차 — OWASP **A01 취약한 접근제어** + **A07 인증 실패**. 공격자는 무차별대입·세션 약점으로
-  인증을 뚫고, IDOR·강제 브라우징(forced browsing)으로 권한 경계를 넘는다. 방어자는 인증 공격과
-  접근제어 위반을 탐지·분석하고 강화책을 권고한다.
+  OWASP **A01 취약한 접근제어** + **A07 인증 실패**. 화려한 익스플로잇 없이도 들어갈 수 있다 — 약한
+  인증은 **무차별대입**으로 뚫고, 권한 경계는 **IDOR**(객체 ID 조작)와 **강제 브라우징**(forced
+  browsing)으로 넘는다. "잠기지 않은 문"을 찾는 게 이번 주 공격이다. 방어자는 이 시도를 탐지·분석하고
+  탐지룰을 만든다.
 
-  ▸ 모드: solo(공격자→탐지 1인) / duel(Red 가 상대에 인증·접근 공격, Blue 가 본인 방어층으로 탐지/분석). 대상=solo 본인 / duel 상대.
-  ▸ 공격자 위치: **망 외부 공격자(attacker-ext)**. 외부 명령 미수집 → Red 채점은 대상 SIEM(인증)·WAF(스캐너/강제브라우징) 흔적으로.
+  ▸ 모드: solo(공격자→탐지 1인) / duel(Red가 상대에 인증·접근 공격, Blue가 본인 방어층으로 탐지/분석).
+    대상=solo 본인 / duel 상대.
 
+  ▸ 알아둘 점 — 공격자는 **망 외부(attacker-ext)**, 명령 미수집 → Red 채점은 **대상 WAF audit(태그/스캐너
+    913) 흔적**으로. 자기 공격에 **고유 태그**를 붙여 귀속한다. 웹공격 태그 **`at6r1-<id>`**, 탐지룰
+    Suricata **sid 9406001**.
+
+# ───────────── RED : 공격자 — "잠기지 않은 문을 찾아라" ─────────────
 red_missions:
   - order: 1
     assess_target: opponent
-    target_vm: siem
+    target_vm: web
     points: 22
     instruction: |
-      ## 🎯 RED-1 — 인증 무차별대입 (A07)
+      ## 🎯 RED-1 — 인증 무차별대입 / credential stuffing (A07)
 
-      로그인/SSH 에 무차별대입(credential stuffing 포함)을 시도해 약한 인증을 뚫는다. 대상 SIEM 에
-      인증 실패 폭주 경보가 쌓인다.
+      ### 상황
+      약한 인증을 **무차별대입**으로 뚫는다. 자동화 도구(hydra/스캐너 UA)는 자기 이름을 노출해 WAF에
+      잡힌다.
 
-      ### 권장 명령 (참고 — 외부 공격자)
+      ### 할 일
+      이 미션 전용 태그 `at6r1-<id>`를 붙여, 스캐너/자동화 UA로 로그인 경로를 두드린다.
       ```bash
-      hydra -l admin -P rockyou.txt ssh://<대상_공개IP>:2204
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/login?user=admin&pass=at6r1-kim-test"
       ```
-      📌 채점: 외부 명령 미수집 → 대상 Wazuh 의 인증 실패/무차별대입 경보.
-      ✅ 합격: 대상 SIEM 에 인증 관련 경보가 수집된다.
-    hint: "attacker-ext hydra 무차별대입. 채점: 대상 Wazuh 인증 경보."
+
+      ### 채점 방법
+      대상 WAF audit에 (at6r1 태그 포함) 스캐너/자동화 탐지(913)가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit에 at6r1 태그가 포함된 자동화/스캐너 탐지가 남는다.
+    hint: "태그(at6r1) hydra/스캐너 UA 무차별대입. 채점: 대상 modsec audit의 913 + 태그."
     verify:
-      type: "wazuh_alert"
-      expect: "alert"
+      type: "log_contains"
+      expect: "scanner"
       checks:
-        - { id: "red-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "at6r1", since_sec: 1800 } }
       semantic:
-        intent: "OWASP A07 / MITRE T1110 — 무차별대입. 외부 공격자 모델 → 대상 Wazuh 인증 경보로 판정(command_ran(attacker-ext) 불신뢰)."
-        success_criteria: ["대상 Wazuh 에 인증/무차별대입 경보", "(설명) 어떤 계정·사전·속도로 시도했는지 서술"]
-        acceptable_methods: ["attacker-ext hydra/medusa/credential stuffing"]
-        negative_signs: ["대상 경보 없음", "command_ran(attacker-ext) 의존"]
+        intent: "OWASP A07 / MITRE T1110 — 무차별대입/credential stuffing. 외부 공격자 모델 → 대상 WAF audit(913 scanner)으로 판정. 태그 귀속."
+        success_criteria:
+          - "대상 WAF audit에 (at6r1 태그 포함) 자동화/스캐너 탐지(최근)"
+          - "어떤 계정·사전·도구로 시도했는지 서술"
+        acceptable_methods:
+          - "attacker-ext에서 태그 붙인 hydra/스캐너 UA로 로그인 무차별대입"
+        negative_signs:
+          - "대상 미도달 / 태그 누락"
 
   - order: 2
     assess_target: opponent
@@ -48,80 +66,116 @@ red_missions:
     instruction: |
       ## 🎯 RED-2 — 강제 브라우징 / IDOR (A01)
 
-      디렉토리 brute(gobuster/dirb)로 관리 경로(/admin)를 찾고, IDOR 로 객체 ID 를 바꿔 타 사용자
-      자원에 접근한다. 스캐너성 다중 요청이 WAF 에 잡힌다.
+      ### 상황
+      디렉토리 brute(gobuster/dirb)로 숨은 관리 경로(/admin)를 찾고, IDOR로 객체 ID를 바꿔 타 사용자
+      자원에 접근한다. 스캐너성 다중 요청이 WAF에 잡힌다.
 
-      ### 권장 명령 (참고)
+      ### 할 일
+      태그 `at6r1-<id>`를 붙여 디렉토리 brute / IDOR를 시도한다.
       ```bash
-      gobuster dir -u http://<대상_공개IP> -w wordlist.txt
-      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/account?id=1001"   # IDOR
+      curl -s -A "gobuster/3" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/admin?probe=at6r1-kim"
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/account?id=at6r1-kim-1001"
       ```
-      📌 채점: 외부 명령 미수집 → 대상 WAF audit 의 스캐너/강제브라우징 탐지.
-      ✅ 합격: 대상 WAF audit 에 스캐너/다중 탐색 탐지.
-    hint: "attacker-ext gobuster/dirb + IDOR. 채점: 대상 ModSec scanner."
+
+      ### 채점 방법
+      대상 WAF audit에 (at6r1 태그 포함) 스캐너/탐색 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit에 at6r1 태그가 포함된 탐색 탐지가 남는다.
+    hint: "태그(at6r1) gobuster/IDOR. 채점: 대상 modsec audit의 scanner/탐색 + 태그."
     verify:
       type: "log_contains"
-      expect: "scanner"
+      expect: "at6r1"
       checks:
-        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "scanner", since_sec: 1800 } }
+        - { id: "red-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "at6r1", since_sec: 1800 } }
       semantic:
-        intent: "OWASP A01 — 강제 브라우징 + IDOR. 외부 공격자 모델 → 대상 WAF audit(913 scanner)·접근로그 흔적으로 판정."
-        success_criteria: ["대상 WAF audit 에 스캐너/탐색 탐지", "(설명) IDOR 로 어떤 객체 경계를 넘었는지 서술"]
-        acceptable_methods: ["attacker-ext gobuster/dirb + IDOR 파라미터 조작"]
-        negative_signs: ["대상 미도달"]
+        intent: "OWASP A01 — 강제 브라우징 + IDOR. 외부 공격자 모델 → 대상 WAF audit(913 scanner)·접근로그로 판정. 태그 귀속."
+        success_criteria:
+          - "대상 WAF audit에 (at6r1 태그 포함) 탐색/스캐너 탐지(최근)"
+          - "IDOR로 어떤 객체 경계를 넘으려 했는지 서술"
+        acceptable_methods:
+          - "attacker-ext에서 태그 붙인 gobuster/dirb + IDOR 파라미터 조작"
+        negative_signs:
+          - "대상 미도달 / 태그 누락"
 
+# ───────────── BLUE : 방어자 — "탐지하고 막아라" ─────────────
 blue_missions:
   - order: 1
     assess_target: self
     target_vm: siem
     points: 20
     instruction: |
-      ## 🛡️ BLUE-1 — 인증 공격 탐지 분석
+      ## 🛡️ BLUE-1 — 인증·접근 공격 탐지 분석
 
-      인증 실패 폭주를 분석해 무차별대입의 출발지·대상 계정·성공 여부를 판정한다. lockout/MFA 같은
-      방어 부재를 식별한다.
+      ### 상황
+      인증 무차별대입과 강제 브라우징/IDOR의 WAF·SIEM 경보를 분석해 출발지·대상·성공 여부를 판정하고,
+      lockout/MFA 같은 방어 부재를 식별한다.
 
-      📌 채점: 본인 SIEM 에 인증/경보가 수집됐는지(분석 대상).
-      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
-    hint: "인증 실패 폭주 분석(출발지/계정/성공). 채점: wazuh_alert + 분석 제출."
+      ### 할 일
+      인증/접근 공격 경보를 분석해 출발지/대상/성공 여부 + 방어 부재를 판정한다.
+
+      ### 채점 방법
+      Wazuh에 경보가 있는지 + 분석(제출)으로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 경보가 수집돼 있다(+ 분석은 제출로 검증).
+    hint: "인증/접근 공격 분석(출발지/대상/성공/방어부재). 채점: wazuh_alert + 분석 제출."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "인증 공격 탐지 — 무차별대입의 출발지/계정/성공 여부 판정 + 방어 부재(lockout/MFA) 식별."
-        success_criteria: ["경보 수집 확인", "(분석) 출발지+대상 계정+성공 여부", "(권고) lockout/MFA/속도제한"]
-        acceptable_methods: ["인증 경보 분석"]
-        negative_signs: ["성공 여부 미판정"]
+        intent: "인증·접근 공격 탐지 — 무차별대입/IDOR의 출발지/대상/성공 판정 + 방어 부재(lockout/MFA) 식별."
+        success_criteria:
+          - "경보 수집 확인"
+          - "출발지 + 대상 + 성공 여부 판정"
+          - "lockout/MFA/속도제한 등 방어 권고"
+        acceptable_methods:
+          - "경보 분석 + 방어 부재 식별"
+        negative_signs:
+          - "성공 여부 미판정"
 
   - order: 2
     assess_target: self
     target_vm: ips
     points: 22
     instruction: |
-      ## 🛡️ BLUE-2 — 접근제어 위반 탐지룰 작성 (sid 9006001)
+      ## 🛡️ BLUE-2 — 접근제어 위반 탐지룰 (sid 9406001)
 
-      강제 브라우징/IDOR 패턴을 탐지하는 Suricata 룰(**sid 9006001**)을 `local.rules` 에 작성한다
-      (관리 경로 접근 폭주, 비정상 ID 시퀀스).
+      ### 상황
+      강제 브라우징/IDOR 패턴을 탐지하는 Suricata 룰(**sid 9406001**)을 `local.rules`에 작성한다(관리
+      경로 접근, 스캐너 UA).
 
-      ### 권장 룰 (참고)
+      ### 할 일
       ```
-      alert http any any -> any any (msg:"ATK W06 forced browsing /admin"; http.uri; content:"/admin"; threshold:type threshold, track by_src, count 5, seconds 30; sid:9006001; rev:1;)
+      alert http any any -> any any (msg:"ATK W06 forced browsing/scanner"; http.user_agent; content:"gobuster"; nocase; fast_pattern; sid:9406001; rev:1;)
       ```
-      📌 채점: local.rules 에 접근제어 탐지룰(sid 9006001)이 작성됐는지.
-      ✅ 합격: local.rules 에 9006001 룰이 있다.
-    hint: "local.rules 에 강제브라우징 탐지룰(sid 9006001, threshold) → reload."
+      작성 후 reload하고 eve.json에서 트리거를 확인한다.
+
+      ### 채점 방법
+      ips의 `local.rules`에 sid 9406001 탐지룰이 있는지로 확인.
+
+      ### 합격 기준
+      local.rules에 9406001 룰이 있다.
+    hint: "local.rules에 강제브라우징/스캐너 탐지룰(sid 9406001) → reload."
     verify:
       type: "file_contains"
-      expect: "9006001"
+      expect: "9406001"
       checks:
-        - { id: "blue-2-1", type: "file_contains", target: "ips", params: { path: "/etc/suricata/rules/local.rules", pattern: "9006001" } }
+        - { id: "blue-2-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9406001" } }
       semantic:
-        intent: "접근제어 위반 탐지 — 강제 브라우징(관리 경로 폭주)/IDOR(ID 시퀀스) 패턴 룰화. threshold 로 탐색 행위 포착."
-        success_criteria: ["local.rules 에 sid 9006001", "강제브라우징/IDOR 탐지 로직", "(설명) 정상 탐색과 구분 기준"]
-        acceptable_methods: ["local.rules 작성 + threshold + reload"]
-        negative_signs: ["문법 오류", "정상 트래픽 과탐"]
+        intent: "접근제어 위반 탐지 — 강제 브라우징(관리 경로)/스캐너 UA 패턴 룰화."
+        success_criteria:
+          - "local.rules에 sid 9406001"
+          - "강제브라우징/스캐너 탐지 로직"
+          - "정상 탐색과 구분 기준"
+        acceptable_methods:
+          - "local.rules 작성 + reload"
+        negative_signs:
+          - "문법 오류 / 정상 트래픽 과탐"
 
   - order: 3
     assess_target: self
@@ -130,19 +184,31 @@ blue_missions:
     instruction: |
       ## 🛡️ BLUE-3 — 접근제어/인증 강화 권고
 
-      분석을 종합해 접근제어(서버측 권한 검증/최소 권한)와 인증(MFA/lockout/세션 강화) 강화책을
-      권고한다. WAF 로 즉시 완화 가능한 부분도 제시한다.
+      ### 상황
+      분석을 종합해 접근제어(서버측 권한 검증/최소 권한)와 인증(MFA/lockout/세션 강화) 강화책을 권고한다.
 
-      📌 채점: 본인 web modsec audit 에 탐색/공격 흔적이 있는지(분석 대상).
-      ✅ 합격: 본인 WAF audit 에 스캐너/탐색 탐지가 있다.
+      ### 할 일
+      접근제어(서버측 검증)+인증(MFA/lockout) 강화 + WAF 즉시 완화를 권고한다.
+
+      ### 채점 방법
+      본인 web modsec audit에 탐색/공격 흔적이 있는지 + 권고(제출)로 채점.
+
+      ### 합격 기준
+      본인 WAF audit에 스캐너/탐색 탐지가 있다.
     hint: "접근제어(서버측 검증)+인증(MFA/lockout) 강화 권고. 채점: log_contains web modsec scanner."
     verify:
       type: "log_contains"
       expect: "scanner"
       checks:
-        - { id: "blue-3-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "scanner", since_sec: 1800 } }
+        - { id: "blue-3-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "scanner", since_sec: 1800 } }
       semantic:
         intent: "강화 권고 — 접근제어(서버측 권한 검증/최소 권한) + 인증(MFA/lockout/세션). 근본 + WAF 즉시 완화."
-        success_criteria: ["탐색/공격 흔적 확인", "(권고) 서버측 권한 검증 + MFA/lockout", "(완화) WAF 즉시 차단 방안"]
-        acceptable_methods: ["audit 분석 + 강화 권고"]
-        negative_signs: ["클라이언트측 통제만 권고(우회 가능)"]
+        success_criteria:
+          - "탐색/공격 흔적 확인"
+          - "서버측 권한 검증 + MFA/lockout 권고"
+          - "WAF 즉시 차단 방안"
+        acceptable_methods:
+          - "audit 분석 + 강화 권고"
+        negative_signs:
+          - "클라이언트측 통제만 권고(우회 가능)"

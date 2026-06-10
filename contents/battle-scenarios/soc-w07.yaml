@@ -1,75 +1,101 @@
 id: "soc-w07"
 category: "soc"
-title: "[SOC관제 W7] 공격 탐지 vs SIGMA 룰 작성·Wazuh/Suricata 변환·검증"
+title: "[SOC관제 W7] 한 번 쓰면 어디서나 — SIGMA로 쓰고 Wazuh·Suricata 두 곳에 이식하기"
 difficulty: "medium"
 time_limit: 2700
 battle_type: "1v1"
 description: |
-  SOC 관제 7주차 — **SIGMA** 룰 작성. SIGMA 는 벤더 중립의 탐지 룰 표준(logsource + detection +
-  condition)이다. 분석가는 공격 패턴을 SIGMA 로 기술하고, 이를 **Wazuh 룰**(local_rules.xml) 또는
-  **Suricata 룰**(local.rules)로 변환해 실제 탐지에 적용한다. 한 번 쓴 탐지 로직을 여러 SIEM 으로
-  옮길 수 있는 이식성이 핵심.
+  같은 탐지 로직을 SIEM마다 다른 문법으로 다시 짜는 건 낭비다. **SIGMA**는 그 문제를 푼다 — 벤더 중립
+  탐지 언어(**logsource + detection + condition**)로 **한 번** 쓰면, 변환기로 **Wazuh 룰**로도
+  **Suricata 룰**로도 옮겨진다. 한 탐지 아이디어를 여러 백엔드로 **이식**하는 게 이번 주의 핵심.
 
-  ▸ 모드: solo(공격자 → SIGMA 작성 분석가) / duel(상대 공격 → 본인 SIGMA 탐지). 대상=solo 본인 / duel 상대.
-  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 SIEM/방어층 경보로 채점.
-  ▸ 변환 룰: Wazuh **local_rules.xml**(교육용 id **9007001+**), Suricata **local.rules**(sid **9007002+**).
+  ▸ 이야기
+    공격자가 탐지 표적이 될 패턴(스캐너 UA·SQLi)으로 공격한다. 분석가(너)는 그 패턴을 SIGMA로 기술하고,
+    같은 SIGMA를 Wazuh(SIEM)와 Suricata(IDS) 두 백엔드로 변환해 적용한 뒤, 오탐을 튜닝한다.
+
+  ▸ 모드: solo(공격자→SIGMA 작성 분석가) / duel(상대 공격→본인 SIGMA 탐지). 대상=solo 본인 / duel 상대.
+
+  ▸ 알아둘 점 — Red 채점은 대상 WAF audit(태그/913/942)으로. 변환 룰: Wazuh **id 100701**
+    (`local_rules.xml`), Suricata **sid 9507001**(`local.rules`). 웹공격 태그 **`sg7r1-<id>`**.
 
 red_missions:
   - order: 1
     assess_target: opponent
-    target_vm: siem
+    target_vm: web
     points: 20
     instruction: |
-      ## 🎯 RED-1 — 탐지 표적 공격 (SIGMA detection 대상)
+      ## 🎯 RED-1 — 탐지 표적: 스캐너 UA (SIGMA detection 대상)
 
-      스캐너 UA + 무차별 대입성 반복 요청으로 명확한 탐지 패턴을 만든다. 분석가가 SIGMA 로 기술할
-      표적이다.
+      ### 상황
+      자기 이름을 User-Agent에 노출하는 스캐너로 공격한다 — 이 UA 패턴이 곧 SIGMA detection의 대상이다.
 
-      ### 권장 명령 (참고 — 외부 공격자)
+      ### 할 일
+      이 미션 전용 태그 `sg7r1-<id>`를 붙여, 스캐너 UA로 공격한다.
       ```bash
-      nikto -h http://<대상_공개IP> -maxtime 60s
-      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1"
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?id=sg7r1-kim-1"
       ```
-      📌 채점: 외부 명령 미수집 → 대상 Wazuh 에 스캐너/공격 경보.
-      ✅ 합격: 대상 SIEM 에 경보가 수집된다.
-    hint: "attacker-ext nikto/sqlmap UA. 채점: 대상 Wazuh 경보."
+
+      ### 채점 방법
+      대상 WAF audit에 (sg7r1 태그 포함) 스캐너(913) 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit에 sg7r1 태그가 포함된 스캐너 탐지가 남는다.
+    hint: "태그(sg7r1) sqlmap UA. 채점: 대상 modsec audit의 scanner(913) + 태그."
     verify:
-      type: "wazuh_alert"
-      expect: "alert"
+      type: "log_contains"
+      expect: "scanner"
       checks:
-        - { id: "red-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sg7r1", since_sec: 1800 } }
       semantic:
-        intent: "탐지 표적 — 스캐너/공격 패턴. SIGMA detection 으로 기술할 대상. 외부 공격자 모델 → 대상 Wazuh 경보로 판정."
-        success_criteria: ["대상 Wazuh 경보 수집", "(설명) 어떤 패턴(UA/빈도)이 SIGMA detection 이 되는지 서술"]
-        acceptable_methods: ["attacker-ext nikto/sqlmap/반복 요청"]
-        negative_signs: ["대상 경보 없음", "command_ran(attacker-ext) 의존"]
+        intent: "탐지 표적 — 스캐너 UA(T1595.002). SIGMA detection(c-useragent)으로 기술할 대상. 대상 WAF audit으로 판정. 태그 귀속."
+        success_criteria:
+          - "대상 WAF audit에 (sg7r1 태그 포함) 스캐너(913) 탐지(최근)"
+          - "이 UA 패턴을 SIGMA detection으로 어떻게 기술하는지 서술"
+        acceptable_methods:
+          - "attacker-ext에서 태그 붙인 스캐너 UA 공격"
+        negative_signs:
+          - "대상 미도달 / 태그 누락"
 
   - order: 2
     assess_target: opponent
     target_vm: web
     points: 15
     instruction: |
-      ## 🎯 RED-2 — 웹공격 시그니처 (logsource=web)
+      ## 🎯 RED-2 — 웹 인젝션 (logsource=webserver detection 대상)
 
-      SQLi/스캐너 시그니처를 WAF audit 에 남긴다(SIGMA logsource: webserver 의 detection 대상).
+      ### 상황
+      SQLi를 보내 WAF audit에 명확한 인젝션 시그니처를 남긴다(SIGMA logsource: webserver의 detection 대상).
 
-      ### 권장 명령 (참고)
+      ### 할 일
+      태그 `sg7r1-<id>`를 붙여 SQLi를 보낸다.
       ```bash
-      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%201"
+      curl -s -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?id=sg7r1-kim-1%20UNION%20SELECT%201"
       ```
-      📌 채점: 외부 명령 미수집 → 대상 WAF audit 의 스캐너/공격 탐지.
-      ✅ 합격: 대상 WAF audit 에 스캐너 시그니처 탐지.
-    hint: "attacker-ext sqlmap UA. 채점: 대상 ModSec scanner."
+
+      ### 채점 방법
+      대상 WAF audit에 (sg7r1 태그 포함) SQLi(942) 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit에 sg7r1 태그가 포함된 SQLi 탐지가 남는다.
+    hint: "태그(sg7r1) SQLi. 채점: 대상 modsec audit의 942 + 태그."
     verify:
       type: "log_contains"
-      expect: "scanner"
+      expect: "942"
       checks:
-        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "scanner", since_sec: 1800 } }
+        - { id: "red-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
       semantic:
-        intent: "웹 로그소스 시그니처 — SIGMA logsource(webserver). 대상 WAF audit 흔적으로 판정."
-        success_criteria: ["대상 WAF audit 스캐너 탐지", "(설명) logsource 와 detection field 매핑 서술"]
-        acceptable_methods: ["attacker-ext sqlmap/nikto UA"]
-        negative_signs: ["대상 미도달"]
+        intent: "웹 로그소스 시그니처 — SQLi(T1190). SIGMA logsource(webserver). 대상 WAF audit으로 판정."
+        success_criteria:
+          - "대상 WAF audit에 (sg7r1 태그 포함) SQLi(942) 탐지"
+          - "logsource와 detection field 매핑 서술"
+        acceptable_methods:
+          - "attacker-ext에서 태그 붙인 SQLi"
+        negative_signs:
+          - "대상 미도달 / 태그 누락"
 
 blue_missions:
   - order: 1
@@ -77,12 +103,14 @@ blue_missions:
     target_vm: siem
     points: 15
     instruction: |
-      ## 🛡️ BLUE-1 — SIGMA 포맷 이해 + 작성 (logsource/detection/condition)
+      ## 🛡️ BLUE-1 — SIGMA로 기술 (logsource/detection/condition)
 
-      RED 의 공격을 SIGMA 룰로 기술한다. **logsource**(product/service), **detection**(selection
-      필드), **condition**(selection 조합) 3 요소로 벤더 중립 탐지를 작성한다.
+      ### 상황
+      RED의 공격을 벤더 중립 언어 SIGMA로 기술한다 — **logsource**(product/service/category),
+      **detection**(selection 필드), **condition**(selection 조합) 3 요소.
 
-      ### 권장 형태 (참고)
+      ### 할 일
+      RED의 스캐너 UA 공격을 SIGMA 룰로 작성한다.
       ```yaml
       title: EDU scanner UA
       logsource: { category: webserver }
@@ -91,51 +119,74 @@ blue_missions:
         condition: sel
       level: high
       ```
-      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ SIGMA 작성은 제출로 검증).
-      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
-    hint: "logsource/detection/condition 으로 SIGMA 작성. 채점: wazuh_alert + SIGMA 제출."
+
+      ### 채점 방법
+      본인 SIEM에 경보가 수집됐는지 + SIGMA 작성(제출)으로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 경보가 수집돼 있다(+ SIGMA는 제출로 검증).
+    hint: "logsource/detection/condition으로 SIGMA 작성. 채점: wazuh_alert + SIGMA 제출."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "SIGMA 표준 — logsource/detection/condition. 벤더 중립 탐지 기술의 이식성."
-        success_criteria: ["경보 수집 확인", "(작성) RED 공격의 SIGMA 룰(logsource/detection/condition) 제시", "(설명) SIGMA 이식성의 가치"]
-        acceptable_methods: ["SIGMA YAML 작성"]
-        negative_signs: ["3 요소 누락", "벤더 종속 표현"]
+        intent: "SIGMA 표준 — logsource/detection/condition. 벤더 중립 탐지의 이식성."
+        success_criteria:
+          - "경보 수집 확인"
+          - "RED 공격의 SIGMA 룰(logsource/detection/condition) 제시"
+          - "SIGMA 이식성의 가치 서술"
+        acceptable_methods:
+          - "SIGMA YAML 작성"
+        negative_signs:
+          - "3 요소 누락 / 벤더 종속 표현"
 
   - order: 2
     assess_target: self
     target_vm: siem
     points: 24
     instruction: |
-      ## 🛡️ BLUE-2 — SIGMA → Wazuh 룰 변환 적용 (local_rules.xml, id 9007001)
+      ## 🛡️ BLUE-2 — SIGMA → Wazuh 룰 변환 적용 (id 100701)
 
-      작성한 SIGMA 를 **Wazuh 룰** 로 변환해 `local_rules.xml` 에 적용한다(`sigmac` 또는 수동 변환).
-      교육용 **rule id 9007001**. SIGMA 의 detection field 가 Wazuh 의 match/field 로 매핑된다.
+      ### 상황
+      작성한 SIGMA를 **Wazuh 룰**로 변환해 `local_rules.xml`에 적용한다(`sigmac` 또는 수동 변환).
+      SIGMA의 detection field가 Wazuh의 match/field로 매핑된다. 교육용 **id 100701**.
 
-      ### 권장 형태 (참고)
+      ### 할 일
+      `local_rules.xml`에 변환 룰을 추가하고 `wazuh-control restart`한다.
       ```xml
-      <rule id="9007001" level="10">
-        <if_group>web</if_group>
-        <match>sqlmap</match>
-        <description>EDU W07 - SIGMA converted scanner UA</description>
-      </rule>
+      <group name="edu,web,">
+        <rule id="100701" level="10">
+          <if_group>web</if_group>
+          <match>sqlmap</match>
+          <description>EDU W07 - SIGMA converted scanner UA</description>
+        </rule>
+      </group>
       ```
-      📌 채점: local_rules.xml 에 변환 룰(id 9007001)이 작성됐는지.
-      ✅ 합격: local_rules.xml 에 9007001 룰이 있다.
-    hint: "SIGMA → Wazuh 룰 변환 → local_rules.xml(id 9007001) → restart."
+
+      ### 채점 방법
+      `local_rules.xml`에 id 100701 변환 룰이 있는지로 확인.
+
+      ### 합격 기준
+      local_rules.xml에 100701 룰이 있다.
+    hint: "SIGMA → Wazuh 룰 변환 → local_rules.xml(id 100701) → restart."
     verify:
       type: "file_contains"
-      expect: "9007001"
+      expect: "100701"
       checks:
-        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "9007001" } }
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "100701" } }
       semantic:
         intent: "SIGMA→Wazuh 변환 — detection field → match/field 매핑. 표준 탐지의 실 적용."
-        success_criteria: ["local_rules.xml 에 rule id 9007001", "SIGMA detection→Wazuh match 매핑 정확", "(설명) sigmac/수동 변환 과정 서술"]
-        acceptable_methods: ["sigmac 변환 또는 수동 변환 + local_rules.xml + restart"]
-        negative_signs: ["변환 매핑 오류", "XML 문법 오류 로딩 실패"]
+        success_criteria:
+          - "local_rules.xml에 rule id 100701"
+          - "SIGMA detection→Wazuh match 매핑 정확"
+          - "sigmac/수동 변환 과정 서술"
+        acceptable_methods:
+          - "sigmac 변환 또는 수동 변환 + local_rules.xml + restart"
+        negative_signs:
+          - "변환 매핑 오류 / XML 문법 오류"
 
   - order: 3
     assess_target: self
@@ -144,12 +195,18 @@ blue_missions:
     instruction: |
       ## 🛡️ BLUE-3 — 변환 룰 검증 (공격 재현 → 매치)
 
-      변환한 Wazuh 룰(9007001)이 RED 의 공격을 실제로 탐지하는지 공격 재현 후 alerts.json 에서
-      확인한다.
+      ### 상황
+      변환한 Wazuh 룰(100701)이 RED의 공격을 실제로 탐지하는지 공격 재현 후 확인한다.
 
-      📌 채점: 본인 SIEM 에 경보가 수집됐는지(작성 룰 동작 검증).
-      ✅ 합격: 본인 SIEM 에 최근 경보가 수집돼 있다.
-    hint: "공격 재현 → alerts.json 에서 9007001 매치 확인. 채점: wazuh_alert."
+      ### 할 일
+      공격을 재현하고 alerts.json에서 변환 룰이 트리거됐는지 확인한다.
+
+      ### 채점 방법
+      본인 SIEM에 경보가 수집됐는지(작성 룰 동작 검증)로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 최근 경보가 수집돼 있다.
+    hint: "공격 재현 → alerts.json에서 100701 매치 확인. 채점: wazuh_alert."
     verify:
       type: "wazuh_alert"
       expect: "alert"
@@ -157,54 +214,87 @@ blue_missions:
         - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
         intent: "룰 검증 — 작성한 SIGMA→Wazuh 룰이 재현 공격을 실제 탐지. '작성'이 아닌 '동작' 확인."
-        success_criteria: ["경보 수집 확인", "(검증) 9007001 룰이 재현 공격에서 트리거됨", "(설명) 재현→탐지 과정"]
-        acceptable_methods: ["공격 재현 후 alerts.json/wazuh_alert 확인"]
-        negative_signs: ["작성만 하고 미검증"]
+        success_criteria:
+          - "경보 수집 확인"
+          - "100701 룰이 재현 공격에서 트리거됨"
+          - "재현→탐지 과정 서술"
+        acceptable_methods:
+          - "공격 재현 후 alerts.json/wazuh_alert 확인"
+        negative_signs:
+          - "작성만 하고 미검증"
 
   - order: 4
     assess_target: self
     target_vm: ips
     points: 16
     instruction: |
-      ## 🛡️ BLUE-4 — SIGMA → Suricata 변환 (이식성, local.rules sid 9007002)
+      ## 🛡️ BLUE-4 — SIGMA → Suricata 변환 (이식성, sid 9507001)
 
-      같은 탐지 의도를 **Suricata 룰** 로도 변환해 `local.rules` 에 적용한다(**sid 9007002**). 한 SIGMA
-      가 SIEM(Wazuh)과 IDS(Suricata) 두 곳으로 이식됨을 체험한다.
+      ### 상황
+      같은 탐지 의도를 **Suricata 룰**로도 변환해 `local.rules`에 적용한다(**sid 9507001**). 한 SIGMA가
+      SIEM(Wazuh)과 IDS(Suricata) 두 곳으로 이식됨을 체험한다.
 
-      📌 채점: ips 의 local.rules 에 변환 룰(sid 9007002)이 작성됐는지.
-      ✅ 합격: local.rules 에 9007002 룰이 있다.
-    hint: "SIGMA → Suricata 변환 → local.rules(sid 9007002) → reload."
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"EDU W07 SIGMA scanner UA"; http.user_agent; content:"sqlmap"; nocase; fast_pattern; sid:9507001; rev:1;)
+      ```
+      작성 후 reload하고 eve.json에서 트리거를 확인한다.
+
+      ### 채점 방법
+      ips의 `local.rules`에 sid 9507001 변환 룰이 있는지로 확인.
+
+      ### 합격 기준
+      local.rules에 9507001 룰이 있다.
+    hint: "SIGMA → Suricata 변환 → local.rules(sid 9507001) → reload."
     verify:
       type: "file_contains"
-      expect: "9007002"
+      expect: "9507001"
       checks:
-        - { id: "blue-4-1", type: "file_contains", target: "ips", params: { path: "/etc/suricata/rules/local.rules", pattern: "9007002" } }
+        - { id: "blue-4-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9507001" } }
       semantic:
-        intent: "SIGMA 이식성 — 같은 탐지를 Suricata 로도 변환. detection → http.user_agent content 매핑."
-        success_criteria: ["local.rules 에 sid 9007002", "SIGMA detection→Suricata buffer/content 매핑", "(설명) 한 SIGMA 의 다중 백엔드 이식 가치"]
-        acceptable_methods: ["SIGMA → Suricata 변환 + local.rules + reload"]
-        negative_signs: ["이식 매핑 오류", "문법 오류"]
+        intent: "SIGMA 이식성 — 같은 탐지를 Suricata로도 변환. detection → http.user_agent content 매핑."
+        success_criteria:
+          - "local.rules에 sid 9507001"
+          - "SIGMA detection→Suricata buffer/content 매핑"
+          - "한 SIGMA의 다중 백엔드 이식 가치"
+        acceptable_methods:
+          - "SIGMA → Suricata 변환 + local.rules + reload"
+        negative_signs:
+          - "이식 매핑 오류 / 문법 오류"
 
   - order: 5
     assess_target: self
     target_vm: siem
     points: 12
     instruction: |
-      ## 🛡️ BLUE-5 — 오탐 튜닝 (SIGMA 예외/필터)
+      ## 🛡️ BLUE-5 — 오탐 튜닝 (SIGMA filter)
 
-      변환 룰이 정상 트래픽을 오탐하지 않도록 SIGMA 의 **filter**(condition: sel and not filter) 또는
-      Wazuh 의 예외로 튜닝한다. 탐지율과 오탐의 균형을 잡는다.
+      ### 상황
+      변환 룰이 정상 트래픽을 오탐하지 않도록 SIGMA의 **filter**(condition: sel and not filter)로
+      튜닝한다. 탐지율과 오탐의 균형을 잡는다.
 
-      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ 튜닝은 제출로 검증).
-      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
-    hint: "SIGMA filter(not) 또는 Wazuh 예외로 오탐 튜닝. 채점: wazuh_alert + 튜닝 제출."
+      ### 할 일
+      정상 트래픽을 제외하는 filter를 추가한 SIGMA를 제시한다.
+
+      ### 채점 방법
+      본인 SIEM에 경보가 수집됐는지 + 튜닝(제출)으로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 경보가 수집돼 있다(+ 튜닝은 제출로 검증).
+    hint: "SIGMA filter(not)로 오탐 튜닝. 채점: wazuh_alert + 튜닝 제출."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "오탐 튜닝 — condition 의 filter(not)로 정상 트래픽 제외. 탐지율 vs 오탐 균형."
-        success_criteria: ["경보 수집 확인", "(튜닝) SIGMA filter 또는 Wazuh 예외로 오탐 제거 방법 제시", "(설명) 탐지율-오탐 트레이드오프"]
-        acceptable_methods: ["SIGMA filter / Wazuh 예외 작성"]
-        negative_signs: ["오탐 고려 없음", "룰 전체 비활성(과도)"]
+        intent: "오탐 튜닝 — condition의 filter(not)로 정상 트래픽 제외. 탐지율 vs 오탐 균형."
+        success_criteria:
+          - "경보 수집 확인"
+          - "SIGMA filter로 오탐 제거 방법 제시"
+          - "탐지율-오탐 트레이드오프 서술"
+        acceptable_methods:
+          - "SIGMA filter 작성"
+        negative_signs:
+          - "오탐 고려 없음 / 룰 전체 비활성(과도)"

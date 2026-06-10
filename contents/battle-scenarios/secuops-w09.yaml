@@ -1,211 +1,297 @@
 id: "secuops-w09"
 category: "secuops"
-title: "[보안운영 W9] 다계층 공격 ingest vs Wazuh manager 운영(11 daemon·decoder·custom rule·alerts.json)"
+title: "[보안운영 W9] SIEM의 두뇌 — 흩어진 로그를 Wazuh가 어떻게 한 평결로 모으나"
 difficulty: "hard"
 time_limit: 3300
 battle_type: "1v1"
 description: |
-  보안운영 9주차 — **Wazuh manager 4.10.0**(6v6-siem) 본격 운영. 11 daemon(analysisd/remoted/
-  logcollector …) + 3 agent + decoder/rule 파이프라인 + 통합 ingest 를 다룬다. 공격자가 웹~네트워크
-  다계층으로 공격하면, 각 계층의 로그(ModSec audit / Suricata eve.json)가 Wazuh 로 ingest 되어
-  **alerts.json** 으로 정규화된다. 운영자는 decoder 매핑을 점검하고 **커스텀 룰** 을 작성해 탐지를
-  고도화한다.
+  지금까지는 장비마다 따로 로그를 봤다. 이번 주는 그 모든 로그를 한 곳으로 모으는 **SIEM의 두뇌** —
+  **Wazuh manager 4.10.0**(6v6-siem)다. 핵심 통찰: raw 로그는 그대로는 쓸모가 적다. **decoder**가
+  파싱해 필드를 뽑고, **rule**이 심각도를 매겨, **alerts.json**이라는 한 평결로 정규화돼야 비로소
+  관제가 된다.
+
+  ▸ 이야기
+    공격자가 웹(ModSec audit)과 네트워크(Suricata eve.json) 두 갈래로 흔적을 흩뿌린다. 운영자(너)는
+    ① manager의 11 daemon이 살아있는지(특히 decoder/rule 엔진인 analysisd), ② decoder가 그 로그들을
+    제대로 파싱하는지(`wazuh-logtest`), ③ 기본 룰을 넘어 **커스텀 룰**로 특정 위협을 상위 레벨로 격상,
+    ④ 두 소스가 alerts.json으로 수렴하는 ingest를 추적, ⑤ agent가 무엇을 수집하는지 점검한다.
 
   ▸ 모드: solo(공격자→Wazuh 운영자) / duel(상대 공격→본인 Wazuh). 대상=solo 본인 / duel 상대.
-  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 SIEM ingest/탐지 흔적으로 채점.
-  ▸ ingest 흐름: web modsec_audit.log + ips eve.json → Wazuh logcollector → decoder → analysisd
-    → alerts.json. 커스텀 룰은 **/var/ossec/etc/rules/local_rules.xml**, 교육용 sid **9009001+**.
 
+  ▸ 알아둘 점 — 공격자는 망 외부(명령 미수집). Red 채점은 **대상 ingest 소스(WAF/IPS) 흔적**으로.
+    웹공격 태그 **`wz9r1-<id>`**, 커스텀 Wazuh 룰 **id 100901**(`/var/ossec/etc/rules/local_rules.xml`).
+
+# ───────────── RED : 공격자 — "두 갈래로 로그를 흩뿌려라" ─────────────
 red_missions:
   - order: 1
     assess_target: opponent
     target_vm: web
     points: 18
     instruction: |
-      ## 🎯 RED-1 — 웹공격 burst (Wazuh ingest 유발)
+      ## 🎯 RED-1 — 웹공격 burst (ingest 소스 1: ModSec audit)
 
-      XSS/SQLi 를 연속(burst)으로 보낸다. ModSec audit(403/anomaly)와 Suricata eve.json 두 소스가
-      Wazuh 로 ingest 되어 alerts.json 에 정규화된 경보로 쌓인다.
+      ### 상황
+      웹공격을 연속으로 보내 ModSec audit에 탐지를 쌓는다. 이 audit가 Wazuh가 빨아들일 **첫 번째 ingest
+      소스**다.
 
-      ### 권장 명령 (참고 — 외부 공격자)
+      ### 할 일
+      이 미션 전용 태그 `wz9r1-<id>`를 붙인 XSS/SQLi를 여러 번 보낸다.
       ```bash
-      for i in $(seq 5); do curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?q=%3Cscript%3Ealert($i)%3C/script%3E"; done
+      for i in 1 2 3; do curl -s -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?q=wz9r1-kim-%3Cscript%3Ealert($i)%3C/script%3E"; done
       ```
-      📌 채점: 외부 명령 미수집 → 대상 WAF(modsec) ingest 소스 흔적.
-      ✅ 합격: 대상 WAF audit 에 XSS 다발 탐지(ingest 소스).
-    hint: "attacker-ext XSS burst. 채점: 대상 ModSec audit XSS(Wazuh ingest 소스)."
+
+      ### 채점 방법
+      대상 WAF audit에 (태그 포함) 웹공격 탐지가 남았는지로 채점. 이 로그가 어떻게 Wazuh로 ingest되는지 서술.
+
+      ### 합격 기준
+      대상 WAF audit에 wz9r1 태그가 포함된 웹공격 탐지가 남는다.
+    hint: "태그(wz9r1) XSS burst. 채점: 대상 modsec audit의 XSS + 태그."
     verify:
       type: "log_contains"
       expect: "XSS"
       checks:
-        - { id: "red-1-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "XSS", since_sec: 1800 } }
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "XSS", since_sec: 1800 } }
       semantic:
-        intent: "ingest 소스 생성 — 웹공격이 modsec audit → Wazuh logcollector → alerts.json 으로 정규화되는 첫 단계. 외부 공격자 모델 → 대상 WAF 흔적으로 판정."
-        success_criteria: ["대상 WAF audit 에 XSS 다발 탐지(최근)", "(설명) 이 로그가 어떻게 Wazuh 로 ingest 되는지 서술"]
-        acceptable_methods: ["attacker-ext XSS/SQLi burst"]
-        negative_signs: ["대상 미도달", "command_ran(attacker-ext) 의존"]
+        intent: "ingest 소스 1 — 웹공격이 modsec audit → Wazuh logcollector → alerts.json. 대상 WAF로 판정. 태그 귀속."
+        success_criteria:
+          - "대상 WAF audit에 (wz9r1 태그 포함) 웹공격 탐지(최근)"
+          - "이 로그가 어떻게 Wazuh로 ingest되는지 서술"
+        acceptable_methods:
+          - "attacker-ext에서 태그 붙인 XSS/SQLi burst"
+        negative_signs:
+          - "대상 미도달 / 태그 누락"
 
   - order: 2
     assess_target: opponent
-    target_vm: ips
+    target_vm: siem
     points: 17
     instruction: |
-      ## 🎯 RED-2 — 스캐너 정찰 (eve.json ingest 유발)
+      ## 🎯 RED-2 — 네트워크 정찰로 IPS→Wazuh 파이프라인 깨우기 (ingest 소스 2)
 
-      스캐너(nikto/sqlmap UA)로 정찰해 Suricata eve.json 에 alert 를 만든다. 이 eve.json 이 Wazuh 의
-      두 번째 ingest 소스다.
+      ### 상황
+      웹(WAF audit) 말고 **네트워크 계층** ingest 소스도 흐른다. 포트 스캔은 Suricata에 alert를 만들고,
+      그게 eve.json → Wazuh decoder → **alerts.json의 `ids` 그룹 경보**로 정규화된다. 이 미션의 목적은
+      특정 스캔을 콕 집는 게 아니라 **IPS→Wazuh ingest 파이프라인이 실제로 도는지**를 보이는 것이다.
 
-      ### 권장 명령 (참고)
+      ### 할 일
       ```bash
-      nikto -h http://<대상_공개IP> -maxtime 60s
+      nmap -sS -p 1-1000 <대상_공개IP> -T4
       ```
-      📌 채점: 외부 명령 미수집 → 대상 Suricata(eve.json) 스캔 탐지(ingest 소스).
-      ✅ 합격: 대상 IPS 에 스캔/정찰 탐지(ingest 소스).
-    hint: "attacker-ext nikto. 채점: 대상 Suricata scan(eve.json → Wazuh ingest)."
-    verify:
-      type: "log_contains"
-      expect: "scan"
-      checks:
-        - { id: "red-2-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
-      semantic:
-        intent: "두 번째 ingest 소스 — Suricata eve.json. 외부 공격자 모델 → 대상 IPS 흔적으로 판정."
-        success_criteria: ["대상 IPS 에 스캔 탐지(최근)", "(설명) eve.json → Wazuh decoder 흐름 서술"]
-        acceptable_methods: ["attacker-ext nikto/sqlmap/반복 정찰"]
-        negative_signs: ["대상 미도달"]
 
+      ### 채점 방법
+      본인/대상 SIEM(Wazuh)에 **`ids` 그룹 경보**가 ingest돼 있는지로 채점한다(=eve.json→Wazuh 파이프라인
+      동작). 제출 글에 eve.json → decoder → alerts.json의 ids 그룹 흐름을 서술한다.
+
+      ### 합격 기준
+      Wazuh에 ids 그룹 경보가 ingest돼 있다(IPS 파이프라인 동작 확인).
+    hint: "nmap 포트스캔 → eve.json → Wazuh ids 그룹. 채점: wazuh_alert(ids) + 파이프라인 서술."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "red-2-1", type: "wazuh_alert", target: "siem",
+            params: { groups: "ids", since_sec: 1800 } }
+      semantic:
+        intent: |
+          ingest 소스 2 — IPS(Suricata eve.json) → Wazuh decoder → alerts.json ids 그룹. 이 미션은 특정
+          스캔 귀속이 아니라 **파이프라인 동작 입증**이 목적(generic ips scan은 앰비언트 노이즈라 귀속
+          불가하므로, 파이프라인 결과물인 Wazuh ids 그룹 경보로 판정).
+        success_criteria:
+          - "Wazuh에 ids 그룹 경보가 ingest됨(파이프라인 동작)"
+          - "eve.json → decoder → alerts.json(ids 그룹) 흐름을 서술"
+        acceptable_methods:
+          - "attacker-ext에서 nmap 포트 스캔 → Wazuh ids 그룹 경보 확인"
+        negative_signs:
+          - "Wazuh에 ids 그룹 ingest가 전혀 없음"
+
+# ───────────── BLUE : Wazuh 운영자 — "decoder·rule로 평결을 만들어라" ─────────────
 blue_missions:
   - order: 1
     assess_target: self
     target_vm: siem
     points: 12
     instruction: |
-      ## 🛡️ BLUE-1 — manager 11 daemon + 3 agent baseline
+      ## 🛡️ BLUE-1 — manager의 심장이 뛰는가 (11 daemon)
 
-      Wazuh manager 가 정상 가동 중인지 확인한다. 핵심 daemon(**analysisd**: 룰/디코더 엔진, remoted:
-      agent 통신, logcollector: 로그 수집)과 등록 agent, 버전(4.10.0)을 점검한다.
+      ### 상황
+      Wazuh manager는 11개 daemon으로 돈다. 그중 **analysisd**가 decoder→rule을 돌리는 심장이다(remoted:
+      agent 통신, logcollector: 로그 수집). 이게 멈추면 평결이 안 나온다.
 
-      ### 참고
-      ```bash
-      /var/ossec/bin/wazuh-control status
-      /var/ossec/bin/agent_control -l
-      ```
-      📌 채점: siem 에 wazuh-analysisd(룰/디코더 엔진)가 가동 중인지.
-      ✅ 합격: siem 에 wazuh-analysisd 가 running 이다.
-    hint: "wazuh-control status 로 11 daemon. 채점: process_running siem wazuh-analysisd."
+      ### 할 일
+      `/var/ossec/bin/wazuh-control status`로 daemon들을, `agent_control -l`로 등록 agent를 확인한다.
+
+      ### 채점 방법
+      siem에 `wazuh-analysisd`가 가동 중인지로 확인.
+
+      ### 합격 기준
+      siem에 wazuh-analysisd가 running이다.
+    hint: "wazuh-control status. 채점: process_running siem wazuh-analysisd."
     verify:
       type: "process_running"
       expect: "analysisd"
       checks:
         - { id: "blue-1-1", type: "process_running", target: "siem", params: { name: "wazuh-analysisd" } }
       semantic:
-        intent: "manager baseline — 11 daemon(analysisd/remoted/logcollector/…) + 3 agent. analysisd 가 decoder→rule 엔진의 심장."
-        success_criteria: ["wazuh-analysisd 가동", "(설명) analysisd/remoted/logcollector 역할 + 3 agent 등록 상태 서술"]
-        acceptable_methods: ["wazuh-control status / agent_control -l", "process_running wazuh-analysisd"]
-        negative_signs: ["daemon 역할 미이해", "manager down"]
+        intent: "manager baseline — analysisd(decoder→rule 엔진)가 심장. remoted/logcollector 역할 + 3 agent."
+        success_criteria:
+          - "wazuh-analysisd 가동"
+          - "analysisd/remoted/logcollector 역할 + agent 등록 상태 서술"
+        acceptable_methods:
+          - "wazuh-control status / agent_control -l"
+        negative_signs:
+          - "daemon 역할 미이해 / manager down"
 
   - order: 2
     assess_target: self
     target_vm: siem
-    points: 20
+    points: 22
     instruction: |
-      ## 🛡️ BLUE-2 — 커스텀 룰 작성 (local_rules.xml, sid 9009001)
+      ## 🛡️ BLUE-2 — 커스텀 룰로 위협을 격상 (id 100901)
 
-      ingest 된 이벤트에 대해 탐지를 고도화하는 **커스텀 룰** 을 `/var/ossec/etc/rules/local_rules.xml`
-      에 작성한다. 예: Suricata/ModSec 경보를 상위 레벨로 승격하거나 상관시키는 룰. 교육용 **sid 9009001**.
+      ### 상황
+      기본 CRS/Suricata 경보는 평범한 레벨로 들어온다. 운영자는 **상관·문맥**을 더해 특정 위협을 상위
+      레벨로 **격상**한다 — 예: "스캐너 UA가 잡힌 경보"를 더 높은 우선순위로. `local_rules.xml`에
+      `if_sid` 체이닝과 `match`로 커스텀 룰(**id 100901**)을 쓴다.
 
-      ### 권장 형태 (참고)
+      ### 할 일
+      `/var/ossec/etc/rules/local_rules.xml`에 격상 룰을 추가하고 `wazuh-control restart`한다.
       ```xml
       <group name="edu,web,">
-        <rule id="9009001" level="10">
-          <if_sid>86601</if_sid>
+        <rule id="100901" level="11">
+          <if_group>web|ids</if_group>
           <match>sqlmap</match>
-          <description>EDU W09 - scanner UA escalated</description>
+          <description>EDU W9 - scanner UA escalated to high</description>
         </rule>
       </group>
       ```
-      적용 후 `wazuh-control restart` 또는 reload.
-      📌 채점: local_rules.xml 에 sid 9009001 커스텀 룰이 작성됐는지.
-      ✅ 합격: local_rules.xml 에 9009001 룰이 있다.
-    hint: "local_rules.xml 에 if_sid/match 기반 커스텀 룰(id 9009001) 작성 → restart."
+
+      ### 채점 방법
+      `local_rules.xml`에 id 100901 커스텀 룰이 있는지로 확인.
+
+      ### 합격 기준
+      local_rules.xml에 100901 룰이 있다.
+    hint: "local_rules.xml에 if_group/match 격상 룰(id 100901) → restart."
     verify:
       type: "file_contains"
-      expect: "9009001"
+      expect: "100901"
       checks:
-        - { id: "blue-2-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "9009001" } }
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "100901" } }
       semantic:
-        intent: "MITRE D3FEND — Wazuh 커스텀 룰(if_sid 체이닝 + match/field)로 탐지 고도화. local_rules.xml 의 group/rule/level 구조."
-        success_criteria: ["local_rules.xml 에 rule id 9009001", "if_sid/match 또는 field 기반 로직", "(설명) level 승격/상관 의도 서술"]
-        acceptable_methods: ["local_rules.xml 에 커스텀 rule 작성 + restart", "wazuh-logtest 로 검증"]
-        negative_signs: ["XML 문법 오류로 analysisd 로딩 실패", "if_sid 체이닝 미이해"]
+        intent: "MITRE D3FEND — Wazuh 커스텀 룰(if_sid/if_group 체이닝 + match)로 탐지 격상. group/rule/level 구조."
+        success_criteria:
+          - "local_rules.xml에 rule id 100901"
+          - "if_group/if_sid 체이닝 + match/field 로직"
+          - "level 격상 의도 서술"
+        acceptable_methods:
+          - "local_rules.xml에 커스텀 rule 작성 + restart + wazuh-logtest 검증"
+        negative_signs:
+          - "XML 문법 오류로 analysisd 로딩 실패"
 
   - order: 3
     assess_target: self
     target_vm: siem
     points: 18
     instruction: |
-      ## 🛡️ BLUE-3 — decoder 매핑 점검 (Suricata → alerts.json)
+      ## 🛡️ BLUE-3 — decoder가 제대로 파싱하나 (wazuh-logtest)
 
-      Suricata eve.json 이 Wazuh decoder 로 올바르게 파싱돼 alerts.json 으로 정규화되는지 점검한다.
-      `wazuh-logtest` 로 샘플 로그의 decoder 매핑·rule 매치를 디버그한다.
+      ### 상황
+      raw 로그가 alerts.json이 되려면 decoder가 필드를 정확히 뽑아야 한다. `wazuh-logtest`로 Suricata
+      eve.json 샘플을 넣어 decoder 매핑과 rule 매치를 디버그한다.
 
-      📌 채점: siem 에 ids(Suricata) 계열 경보가 ingest 됐는지(decoder 매핑 동작).
-      ✅ 합격: 본인 SIEM 에 ids 계열 경보가 있다.
-    hint: "wazuh-logtest 로 Suricata decoder 매핑 디버그. 채점: wazuh_alert(ids)."
+      ### 할 일
+      `wazuh-logtest`에 샘플 로그를 넣어 어떤 decoder가 잡고 어떤 rule에 매치되는지 확인한다.
+
+      ### 채점 방법
+      siem에 ids(Suricata) 계열 경보가 ingest됐는지로 확인(decoder 매핑 동작).
+
+      ### 합격 기준
+      본인 SIEM에 ids 계열 경보가 있다.
+    hint: "wazuh-logtest로 Suricata decoder 매핑 디버그. 채점: wazuh_alert(ids)."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { groups: "ids", since_sec: 1800 } }
       semantic:
-        intent: "decoder 파이프라인 — eve.json → logcollector → decoder → analysisd → alerts.json. wazuh-logtest 로 매핑 검증."
-        success_criteria: ["ids 계열 경보 ingest 확인", "(설명) decoder→rule→alerts.json 단계 서술", "(도구) wazuh-logtest 사용 서술"]
-        acceptable_methods: ["wazuh-logtest 디버그", "wazuh_alert(ids) 확인"]
-        negative_signs: ["decoder 매핑 미점검", "ingest 비어있음"]
+        intent: "decoder 파이프라인 — eve.json → logcollector → decoder → analysisd → alerts.json. wazuh-logtest로 검증."
+        success_criteria:
+          - "ids 계열 경보 ingest 확인"
+          - "decoder→rule→alerts.json 단계 서술 + wazuh-logtest 사용"
+        acceptable_methods:
+          - "wazuh-logtest 디버그 / wazuh_alert(ids)"
+        negative_signs:
+          - "decoder 매핑 미점검 / ingest 비어있음"
 
   - order: 4
     assess_target: self
     target_vm: siem
     points: 20
     instruction: |
-      ## 🛡️ BLUE-4 — 4-tier ingest 추적 (web modsec + ips eve → alerts.json)
+      ## 🛡️ BLUE-4 — 두 소스가 한 평결로 (ingest 추적)
 
-      RED 의 공격(XSS burst + 정찰)을 재현한 뒤, **두 소스(ModSec audit + Suricata eve.json)** 가
-      Wazuh 로 ingest 되어 alerts.json 에 통합되는 흐름을 끝까지 추적한다. ingest delta(증가량)를 확인.
+      ### 상황
+      RED-1(WAF audit)과 RED-2(Suricata eve)를 재현한 뒤, **두 소스가 모두 alerts.json으로 수렴**하는
+      흐름을 끝까지 추적한다.
 
-      📌 채점: 본인 SIEM 에 최근 통합 경보(web/ids)가 ingest 됐는지.
-      ✅ 합격: 본인 SIEM 에 최근 경보가 ingest 돼 있다.
-    hint: "공격 재현 → alerts.json 의 ingest delta(web modsec + ips eve 통합) 확인. 채점: wazuh_alert."
+      ### 할 일
+      공격 재현 후 alerts.json에서 web/ids 두 출처의 경보가 늘어나는지(ingest delta) 확인한다.
+
+      ### 채점 방법
+      본인 SIEM에 최근 통합 경보가 수집됐는지로 확인.
+
+      ### 합격 기준
+      본인 SIEM에 최근 경보가 수집돼 있다.
+    hint: "공격 재현 → alerts.json의 web+ids 수렴(ingest delta). 채점: wazuh_alert."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "통합 ingest — 2 소스(modsec+eve)가 alerts.json 으로 수렴. ingest delta 로 실시간성 확인."
-        success_criteria: ["최근 통합 경보 ingest", "(설명) 두 소스가 alerts.json 으로 모이는 4-tier 흐름 서술", "(관측) ingest delta(증가량) 서술"]
-        acceptable_methods: ["공격 재현 후 alerts.json 관측 / wazuh_alert"]
-        negative_signs: ["단일 소스만", "ingest 미확인"]
+        intent: "통합 ingest — 2 소스(modsec+eve)가 alerts.json으로 수렴. ingest delta로 실시간성 확인."
+        success_criteria:
+          - "최근 통합 경보 ingest"
+          - "두 소스가 alerts.json으로 모이는 흐름 서술 + ingest delta 관측"
+        acceptable_methods:
+          - "공격 재현 후 alerts.json 관측 / wazuh_alert"
+        negative_signs:
+          - "단일 소스만 / ingest 미확인"
 
   - order: 5
     assess_target: self
     target_vm: siem
     points: 12
     instruction: |
-      ## 🛡️ BLUE-5 — agent 통합 점검 (ossec.conf localfile + 3 agent)
+      ## 🛡️ BLUE-5 — agent는 무엇을 수집하나 (localfile)
 
-      manager 의 `ossec.conf` 와 agent 의 `agent.conf` 가 어떤 로그를 수집하는지(`<localfile>`) 점검하고,
-      3 agent(fw/ips/web 등)의 등록·연결 상태를 확인한다. W10 의 dashboard 통합 운영으로 이어진다.
+      ### 상황
+      manager가 받는 로그는 agent가 보낸다. `ossec.conf`/`agent.conf`의 `<localfile>`이 어떤 로그(modsec/
+      eve/syslog)를 수집하는지 점검한다.
 
-      📌 채점: siem 의 ossec.conf 에 localfile(로그 수집) 설정이 있는지.
-      ✅ 합격: ossec.conf 에 localfile 설정이 있다.
-    hint: "ossec.conf 의 <localfile> + agent.conf 점검. 채점: file_contains ossec.conf localfile."
+      ### 할 일
+      siem의 `ossec.conf`에서 `<localfile>` 설정을 확인하고, 어떤 소스를 수집하는지 정리한다.
+
+      ### 채점 방법
+      siem의 ossec.conf에 localfile 설정이 있는지로 확인.
+
+      ### 합격 기준
+      ossec.conf에 localfile 설정이 있다.
+    hint: "ossec.conf의 <localfile>. 채점: file_contains ossec.conf localfile."
     verify:
       type: "file_contains"
       expect: "localfile"
       checks:
-        - { id: "blue-5-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/ossec.conf", pattern: "localfile" } }
+        - { id: "blue-5-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/ossec.conf", pattern: "localfile" } }
       semantic:
-        intent: "agent 통합 — ossec.conf/agent.conf 의 <localfile> 로 수집 소스 정의. 3 agent 등록·연결 점검."
-        success_criteria: ["ossec.conf 에 localfile 설정", "(설명) 어떤 로그(modsec/eve/syslog)를 수집하는지 서술", "(설명) agent 등록·disconnected 대응"]
-        acceptable_methods: ["ossec.conf/agent.conf 점검", "agent_control -l"]
-        negative_signs: ["수집 소스 미파악"]
+        intent: "agent 수집 — <localfile>로 수집 소스 정의. 3 agent 등록·연결 점검."
+        success_criteria:
+          - "ossec.conf에 localfile 설정"
+          - "어떤 로그(modsec/eve/syslog)를 수집하는지 서술"
+        acceptable_methods:
+          - "ossec.conf/agent.conf 점검"
+        negative_signs:
+          - "수집 소스 미파악"

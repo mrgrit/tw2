@@ -1,221 +1,334 @@
 id: "secuops-w06"
 category: "secuops"
-title: "[보안운영 W6] 웹 다중공격(XSS·SQLi·LFI·RCE) vs ModSecurity/CRS 운영(anomaly score·audit 분석·예외)"
+title: "[보안운영 W6] WAF 운영자의 포렌식 — anomaly score는 어떻게 차단을 결정하나 + 오탐 외과수술"
 difficulty: "hard"
 time_limit: 3300
 battle_type: "1v1"
 description: |
-  보안운영 6주차 — 6v6-web 의 **Apache 2.4 + mod_security2 + OWASP CRS 3.3.2** 를 운영 관점으로
-  해부한다. Suricata(W04-W05)의 passive sniff 와 달리 ModSec 은 **inline + 차단** 이다. 외부
-  공격자가 XSS·SQLi·LFI·RCE 다중 공격을 보내면, 운영자는 ① 정책 본체(SecRuleEngine 3모드·5 phase),
-  ② **anomaly score 누적**(CRITICAL=5 누적 → inbound threshold 도달 시 949110 block), ③ audit log
-  JSON(`audit_data.messages[]`)에서 매칭 룰 ID 추출, ④ 오탐 **예외/튜닝 룰** 을 좁은 범위로 작성한다.
+  6v6-web의 **Apache + ModSecurity + OWASP CRS 3.3.2**를 운영자 관점으로 해부한다. 이번 주의 깨달음은
+  "CRS는 **단일 룰**이 아니라 **누적 점수(anomaly score)**로 차단을 결정한다"는 것이다.
 
-  ▸ 모드: solo(외부 공격자→WAF 운영자) / duel(상대 공격→본인 WAF). 대상=solo 본인 / duel 상대.
-  ▸ Red 는 **망 외부 공격자(attacker-ext)** — 외부 명령 미수집 → 대상 WAF audit·SIEM 흔적으로 채점.
-  ▸ anomaly scoring: XSS `<script>alert(1)</script>` = 941100+941110+941160(CRITICAL ×3)= score 15
-    → 949110 inbound block + 980130 correlation. 커스텀 룰/예외의 증거는 audit 의 고유 msg 마커(EDU …).
+  ▸ 이야기
+    침투 테스터가 한 요청에 여러 공격을 욱여넣어 **점수를 폭격**하고, 또 여러 카테고리(XSS·SQLi·LFI·
+    RCE)를 섞어 audit을 어지럽힌다. 운영자(너)는 ① 점수가 임계를 넘어 949110으로 차단되는 메커니즘을
+    **수치로 입증**하고, ② audit JSON의 `messages[]`를 파싱해 각 공격을 **어떤 CRS 룰이 잡았는지** 귀속하며,
+    ③ 정상 업무가 걸리는 오탐을 **룰 전체를 끄지 않고** `LocationMatch`+`SecRuleRemoveById`로 **외과 수술**하고,
+    ④ reverse proxy 뒤에서 **진짜 공격자 IP**를 X-Forwarded-For로 찾아낸다.
 
+  ▸ 모드: solo(공격자→WAF 운영자) / duel(상대 공격→본인 WAF). 대상=solo 본인 / duel 상대.
+
+  ▸ 알아둘 점
+    • 공격자는 **망 외부(attacker-ext)** — 명령 미수집. Red 채점은 **대상 WAF audit 흔적**으로. 자동 스캐너
+      노이즈와 섞이지 않도록 **자기 공격에 고유 표식**(아래 RED 미션의 태그)을 붙인다.
+    • anomaly scoring 실측: XSS `<script>alert(1)</script>` = 941100+941110+941160 (CRITICAL=5 ×3) = **score 15**
+      → inbound 임계(5) 초과 → **949110**으로 차단 + 980130 correlation summary.
+    • Blue의 외과 예외 검증 표식: **`EDU-SW6-TUNE`**.
+
+# ───────────── RED : 침투 테스터 — "점수를 폭격하고 audit을 어지럽혀라" ─────────────
 red_missions:
   - order: 1
     assess_target: opponent
     target_vm: web
-    points: 18
+    points: 20
     instruction: |
-      ## 🎯 RED-1 — 반사형 XSS (anomaly score 유발)
+      ## 🎯 RED-1 — anomaly score 폭격 (한 요청, 여러 룰)
 
-      대상 웹앱 입력에 `<script>alert(1)</script>` 류 XSS 를 주입한다. CRS 941 계열(XSS)의 CRITICAL
-      룰 여러 개가 매치돼 anomaly score 가 누적되고, threshold 도달 시 차단된다.
+      ### 상황
+      단일 룰 하나만 건드리면 점수가 모자라 통과할 수도 있다. 그래서 **한 페이로드가 여러 CRS 룰을
+      동시에 매치**하도록 만들어 점수를 임계 너머로 밀어 차단(949110)을 강제로 유발한다 — 운영자가
+      "왜 차단됐나"를 수치로 설명하게 만드는 게 목적이다.
 
-      ### 권장 명령 (참고 — 외부 공격자: 공개 진입점 + Host 헤더)
+      ### 할 일
+      XSS 페이로드(여러 941 룰을 동시에 때리는 `<script>…</script>`)를 보내되, 자동 스캐너 및 **다른
+      미션의 공격과도** 구분되게 **이 미션 전용 고유 표식**을 붙인다(예: 파라미터 값 앞에 `aw6r1-<본인식별>`
+      — RED-1 전용 태그).
       ```bash
-      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?q=%3Cscript%3Ealert(1)%3C/script%3E"
+      curl -s -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?q=aw6r1-kim-%3Cscript%3Ealert(document.cookie)%3C/script%3E"
       ```
-      📌 채점: 외부 명령 미수집 → 대상 WAF(ModSecurity) audit 의 XSS(941) 탐지.
-      ✅ 합격: 대상 WAF audit 에 XSS 탐지 흔적.
-    hint: "attacker-ext 에서 <script> XSS. 채점: 대상 ModSecurity audit 의 XSS(941) 탐지."
+
+      ### 채점 방법
+      대상 WAF audit에 **anomaly 차단(949110 / "Inbound Anomaly Score Exceeded")**과 너의 고유 표식이
+      함께 남았는지로 채점한다. 제출 글에 어떤 페이로드·표식을 보냈고 왜 점수가 임계를 넘었는지 적는다.
+
+      ### 합격 기준
+      대상 WAF audit에 너의 표식이 포함된 요청이 anomaly score 초과로 949110 차단된다.
+    hint: "고유 표식 붙인 <script> XSS → 941 다중 매치 → 949110. 채점: 대상 modsec audit의 949110 + 표식."
     verify:
       type: "log_contains"
-      expect: "XSS"
+      expect: "949110"
       checks:
-        - { id: "red-1-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "XSS", since_sec: 1800 } }
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "949110", since_sec: 1800 } }
       semantic:
-        intent: "MITRE T1059.007 / OWASP A03 — 반사형 XSS. 외부 공격자 모델 → 대상 ModSecurity audit(941 XSS)·anomaly 누적으로 판정(command_ran(attacker-ext) 불신뢰)."
-        success_criteria: ["대상 ModSecurity audit 에 XSS(941) 탐지(최근)", "(설명) 어떤 파라미터에 어떤 스크립트를 주입했는지 서술"]
-        acceptable_methods: ["attacker-ext 에서 curl 로 인코딩된 <script> XSS", "이벤트 핸들러(onerror=) 변형(대안)"]
-        negative_signs: ["대상 WAF audit 에 흔적 없음(미도달)", "command_ran(attacker-ext) 의존"]
+        intent: |
+          OWASP XSS / MITRE T1059.007 — 한 페이로드로 941 다중 룰 매치 → anomaly score 누적 → 949110 차단.
+          외부 공격자 모델 → 대상 WAF audit으로 판정. 고유 표식으로 자동 스캐너 노이즈와 구분해 귀속.
+        success_criteria:
+          - "대상 modsec audit에 949110(Inbound Anomaly Score Exceeded) 차단이 최근 존재"
+          - "학생의 고유 표식이 그 차단 요청에 포함돼 자기 공격으로 귀속됨"
+          - "왜 점수가 임계를 넘었는지(여러 룰 동시 매치) 서술"
+        acceptable_methods:
+          - "attacker-ext에서 고유 표식 붙인 <script> XSS"
+        negative_signs:
+          - "표식 없이 노이즈와 구분 불가"
+          - "대상 WAF audit에 949110 흔적 없음"
 
   - order: 2
     assess_target: opponent
     target_vm: web
-    points: 17
+    points: 15
     instruction: |
-      ## 🎯 RED-2 — SQLi(UNION) + LFI 다중 공격 (anomaly block 유발)
+      ## 🎯 RED-2 — 카테고리 폭격 (XSS·SQLi·LFI·RCE 섞어 쏘기)
 
-      UNION 기반 SQLi(942 libinjection 매치)와 경로탐색/LFI(`../../etc/passwd`)를 함께 보내 anomaly
-      score 를 끌어올린다. CRS 942/930 계열이 매치되며 threshold 도달 시 949110 으로 차단된다.
+      ### 상황
+      운영자가 audit 포렌식으로 "무엇이 들어왔나"를 분류해야 하도록, **서로 다른 카테고리** 공격을
+      섞어 쏟아붓는다. 각 공격은 서로 다른 CRS 룰군(941/942/930/932)에 걸린다.
 
-      ### 권장 명령 (참고)
+      ### 할 일
+      SQLi(UNION) + LFI(`../etc/passwd`) + RCE(`;id`)를 보낸다(이 미션 전용 태그 `aw6r2-<본인식별>` 동반).
       ```bash
-      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=1%20UNION%20SELECT%20user,password%20FROM%20users"
-      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?file=..%2f..%2f..%2fetc%2fpasswd"
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?id=aw6r2-kim-1%20UNION%20SELECT%20user,password%20FROM%20users"
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?file=aw6r2-kim-..%2f..%2f..%2fetc%2fpasswd"
       ```
-      📌 채점: 외부 명령 미수집 → 대상 WAF audit 의 SQLi(942) 탐지 또는 anomaly 차단.
-      ✅ 합격: 대상 WAF audit 에 SQLi(942) 탐지 또는 anomaly 차단 흔적.
-    hint: "attacker-ext 에서 UNION SQLi + LFI. 채점: 대상 ModSecurity audit 의 942/anomaly."
+
+      ### 채점 방법
+      대상 WAF audit에 **SQLi(942) 등 다중 카테고리 탐지**가 남았는지로 채점한다.
+
+      ### 합격 기준
+      대상 WAF audit에 SQLi(942) 탐지가 (가능하면 다른 카테고리와 함께) 남는다.
+    hint: "SQLi+LFI+RCE 섞어 쏘기(표식 동반). 채점: 대상 modsec audit의 942 등 다중 카테고리."
     verify:
       type: "log_contains"
       expect: "942"
       checks:
-        - { id: "red-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
-        - { id: "red-2-2", type: "log_contains", target: "web", params: { log: "modsec", pattern: "Anomaly Score Exceeded", since_sec: 1800 } }
+        - { id: "red-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
       semantic:
-        intent: "MITRE T1190 + T1083 — UNION SQLi + LFI. 외부 공격자 모델 → 대상 WAF audit(942 libinjection / 949110 anomaly block)로 판정. 둘 중 하나라도 탐지면 인정."
-        success_criteria: ["대상 ModSecurity audit 에 942(SQLi) 매치 또는 Anomaly Score Exceeded(차단)(최근)", "(설명) 어떤 SQLi/LFI 페이로드를 보냈는지 서술"]
-        acceptable_methods: ["attacker-ext 에서 UNION SQLi + 인코딩 LFI", "sqlmap --technique=U(대안)"]
-        negative_signs: ["대상 WAF audit 에 흔적 없음", "command_ran(attacker-ext) 의존"]
+        intent: |
+          MITRE T1190 + T1083 — 다중 카테고리(SQLi 942 / LFI 930 / RCE 932) 폭격. 운영자의 audit 포렌식
+          표적. 대상 WAF audit으로 판정.
+        success_criteria:
+          - "대상 modsec audit에 SQLi(942) 등 탐지가 최근 존재"
+          - "어떤 카테고리들을 섞었는지 + 고유 표식 서술"
+        acceptable_methods:
+          - "attacker-ext에서 UNION SQLi + LFI + RCE (표식 동반)"
+        negative_signs:
+          - "대상 미도달 / 단일 카테고리만"
 
+# ───────────── BLUE : WAF 운영자 — "메커니즘을 입증하고, 오탐을 외과수술하라" ─────────────
 blue_missions:
   - order: 1
     assess_target: self
     target_vm: web
     points: 15
     instruction: |
-      ## 🛡️ BLUE-1 — 정책 본체 점검 (SecRuleEngine 차단모드 + CRS + JSON audit)
+      ## 🛡️ BLUE-1 — 운영 인수: 정책 본체 30초 점검
 
-      운영 인수 첫 점검. ModSec 이 **차단(On)** 인지(DetectionOnly 면 로그만), CRS 3.3.2 가 로드됐는지,
-      audit format 이 **JSON**(Wazuh decoder 호환)인지 확인한다. production WAF 의 minimum bar.
+      ### 상황
+      운영을 넘겨받으면 30초 안에 정책 본체를 확인해야 한다. WAF가 **차단(On)**인지, CRS가 로드됐는지,
+      audit 형식이 **JSON**(Wazuh decoder 호환)인지.
 
-      ### 점검 포인트
-      - `SecRuleEngine On`(차단) / `SecRequestBodyAccess On` / `SecAuditLogFormat JSON`
-      - CRS 30+ 룰 파일, 941(XSS)/942(SQLi)/949(anomaly)/980(correlation)
+      ### 할 일
+      web의 `/etc/modsecurity/modsecurity.conf`에서 `SecRuleEngine On`, `SecAuditLogFormat JSON`, CRS
+      로드를 확인한다.
 
-      📌 채점: web 의 modsecurity.conf 가 차단 모드(SecRuleEngine On)인지.
-      ✅ 합격: modsecurity.conf 에 SecRuleEngine On.
-    hint: "web 의 /etc/modsecurity/modsecurity.conf 에 SecRuleEngine On 확인 + JSON audit format."
+      ### 채점 방법
+      modsecurity.conf에 `SecRuleEngine On`이 있는지로 확인(차단 모드).
+
+      ### 합격 기준
+      modsecurity.conf에 `SecRuleEngine On`.
+    hint: "modsecurity.conf의 SecRuleEngine On + JSON audit + CRS 로드 점검."
     verify:
       type: "file_contains"
       expect: "SecRuleEngine On"
       checks:
-        - { id: "blue-1-1", type: "file_contains", target: "web", params: { path: "/etc/modsecurity/modsecurity.conf", pattern: "SecRuleEngine On" } }
+        - { id: "blue-1-1", type: "file_contains", target: "web",
+            params: { path: "/etc/modsecurity/modsecurity.conf", pattern: "SecRuleEngine On" } }
       semantic:
-        intent: "정책 본체 점검 — On(차단) vs DetectionOnly(로그만), JSON audit(Wazuh 호환), CRS 로드. production minimum bar."
-        success_criteria: ["modsecurity.conf 에 SecRuleEngine On", "(설명) On/DetectionOnly/Off 3모드 + JSON audit 의미 서술"]
-        acceptable_methods: ["file_contains modsecurity.conf / waf-gui 정책 화면", "apache2ctl -M | grep security2"]
-        negative_signs: ["DetectionOnly 인데 차단으로 오해", "audit format 이 JSON 아님(Wazuh decoder 부적합)"]
+        intent: "운영 인수 점검 — On(차단)/DetectionOnly/Off + JSON audit(Wazuh 호환) + CRS 로드. production minimum bar."
+        success_criteria:
+          - "modsecurity.conf에 SecRuleEngine On"
+          - "On/DetectionOnly 차이와 JSON audit의 의미(decoder 호환) 서술"
+        acceptable_methods:
+          - "file_contains modsecurity.conf / apache2ctl -M | grep security2"
+        negative_signs:
+          - "DetectionOnly를 차단으로 오해"
 
   - order: 2
     assess_target: self
     target_vm: web
     points: 22
     instruction: |
-      ## 🛡️ BLUE-2 — anomaly score 누적 → 949110 inbound block 추적
+      ## 🛡️ BLUE-2 — "왜 차단됐나"를 수치로 입증 (anomaly score, 이번 주 핵심)
 
-      이번 주 핵심 — CRS 는 단일 룰이 아니라 **anomaly score 누적** 으로 차단을 결정한다. XSS
-      `<script>alert(1)</script>` 는 941100+941110+941160(CRITICAL=5 ×3)= **score 15** → inbound
-      threshold(기본 5) 초과 → **949110** 으로 차단되고 audit 에 `Inbound Anomaly Score Exceeded`
-      가 기록된다. 공격을 재현해 이 누적·차단 흐름을 audit 에서 확인한다.
+      ### 상황
+      초보 운영자는 "룰 하나가 막았다"고 오해한다. 진실은 **여러 룰의 점수가 누적**돼 임계를 넘으면
+      949110이 차단한다는 것이다. RED-1의 공격으로 이 메커니즘을 **수치로** 입증한다.
 
-      📌 채점: web modsec audit 에 anomaly 차단(949110 / Anomaly Score Exceeded) 흔적.
-      ✅ 합격: audit 에 anomaly score 초과 차단 흔적이 있다.
-    hint: "XSS/SQLi 재현 → audit 에서 949110 'Inbound Anomaly Score Exceeded' 확인. 누적 점수 메커니즘."
+      ### 할 일
+      RED-1 공격 후 audit에서 **`Inbound Anomaly Score Exceeded` / 949110 차단**을 찾고, 그 한 요청에
+      누적된 941 계열 룰들(예: 941100+941110+941160)과 합산 점수(15)를 읽어 "단일 룰이 아니라 누적
+      결정"임을 보인다.
+
+      ### 채점 방법
+      web modsec audit에 anomaly 차단(949110) 흔적이 있는지 + 학생이 누적 메커니즘을 정확히 설명했는지로 채점.
+
+      ### 합격 기준
+      audit에 949110 anomaly 차단이 있고, 누적 점수 메커니즘을 수치로 설명한다.
+    hint: "RED-1 재현 → audit의 949110 + 누적된 941 룰들 + score 합산(15) 읽기. 단일 룰 아닌 누적 결정."
     verify:
       type: "log_contains"
       expect: "949110"
       checks:
-        - { id: "blue-2-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "949110", since_sec: 1800 } }
+        - { id: "blue-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "949110", since_sec: 1800 } }
       semantic:
-        intent: "anomaly scoring 수학 — CRITICAL=5/ERROR=4/WARNING=3 누적 → threshold 도달 시 949110 block. 단일 룰이 아닌 누적 결정 메커니즘 이해."
-        success_criteria: ["audit 에 949110 / Inbound Anomaly Score Exceeded(최근)", "(설명) XSS=15(941100+941110+941160) 누적 → block 흐름 서술", "(설명) threshold(inbound 5) 정책 의미"]
-        acceptable_methods: ["공격 재현 후 audit 의 949110 확인", "audit_data.messages[] 에서 누적 룰 추출"]
-        negative_signs: ["단일 룰 차단으로 오해(누적 메커니즘 미이해)", "audit 미확인"]
+        intent: |
+          anomaly scoring 수학 — CRITICAL=5/ERROR=4/WARNING=3 누적 → inbound 임계(5) 초과 시 949110 차단.
+          단일 룰이 아닌 누적 결정 메커니즘을 수치로 입증하는 게 핵심.
+        success_criteria:
+          - "audit에 949110 / Inbound Anomaly Score Exceeded(최근)"
+          - "한 요청에 누적된 941 계열 룰들과 합산 점수(예: 15)를 구체적으로 제시"
+          - "단일 룰 차단이 아니라 점수 누적 결정임을 설명"
+        acceptable_methods:
+          - "공격 재현 후 audit의 949110 + 누적 룰 + score 분석"
+        negative_signs:
+          - "단일 룰이 막았다고 오해(누적 메커니즘 미이해)"
+          - "audit 미확인"
 
   - order: 3
     assess_target: self
     target_vm: web
     points: 20
     instruction: |
-      ## 🛡️ BLUE-3 — 5공격 차단 검증 + audit 에서 매칭 룰 ID 추출
+      ## 🛡️ BLUE-3 — audit 포렌식: 공격을 룰 ID로 귀속
 
-      XSS/SQLi/LFI/RCE/PHP 다중 공격을 재현하고, audit log JSON 의 `audit_data.messages[]`(embedded
-      metadata 단일 string 배열)에서 **각 공격이 어떤 CRS 룰 ID 에 걸렸는지** 추출한다. 예: SQLi(UNION)
-      → **942100**(libinjection). 이는 IR 의 source of truth.
+      ### 상황
+      사고 분석의 source of truth는 audit log의 `audit_data.messages[]`다. 다만 이건 깔끔한 JSON 객체가
+      아니라 `[id "942100"] [msg "..."]` 형식이 **하나의 문자열**에 박혀 있어, 단순 `.messages[].id`로는
+      못 뽑는다. 각 공격을 **어떤 CRS 룰이 잡았는지** 귀속한다.
 
-      ### 참고 (jq 추출)
-      ```bash
-      # messages[] 에서 id/msg 패턴 추출 (운영자 IR 절차)
-      ```
-      📌 채점: web modsec audit 에 SQLi 매칭 룰(942100) 흔적.
-      ✅ 합격: audit 에 942100(SQLi libinjection) 등 매칭 룰 ID 가 확인된다.
-    hint: "5공격 재현 → audit messages[] 에서 매칭 룰 ID 추출. SQLi=942100."
+      ### 할 일
+      RED-2의 다중 카테고리 공격을 audit에서 찾아, SQLi→**942100**(libinjection) 처럼 각 공격을 매치
+      룰 ID로 분류한다.
+
+      ### 채점 방법
+      web modsec audit에 SQLi 매치 룰(942100) 등 귀속 가능한 룰 ID가 있는지 + 학생이 messages[] 파싱
+      방법과 분류를 설명했는지로 채점.
+
+      ### 합격 기준
+      audit에 942100 등 매치 룰 ID가 확인되고, messages[] 파싱·분류를 설명한다.
+    hint: "audit_data.messages[] (embedded string)에서 룰 ID 추출. SQLi=942100, LFI=930, RCE=932."
     verify:
       type: "log_contains"
       expect: "942100"
       checks:
-        - { id: "blue-3-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
+        - { id: "blue-3-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "942100", since_sec: 1800 } }
       semantic:
-        intent: "audit log JSON IR — messages[] 가 IR 의 source of truth. 공격마다 매칭 룰 ID 추출(942 SQLi / 941 XSS / 930 LFI 등)."
-        success_criteria: ["audit 에 942100(또는 다른 매칭 CRS 룰 ID)(최근)", "(설명) audit_data.messages[] 구조와 룰 ID 추출 방법 서술", "(설명) 5공격별 매칭 룰 분류"]
-        acceptable_methods: ["5공격 재현 후 audit jq 파싱", "log_contains 942100/941xxx 등"]
-        negative_signs: ["audit 구조 미이해(messages[] 파싱 실패)", "재현·확인 누락"]
+        intent: |
+          audit 포렌식 — messages[]가 IR의 source of truth. embedded string 구조를 이해하고 각 공격을 CRS
+          룰 ID로 귀속(942 SQLi / 930 LFI / 932 RCE / 941 XSS).
+        success_criteria:
+          - "audit에 942100(또는 다른 매치 CRS 룰 ID)이 최근 존재"
+          - "messages[]가 단일 string에 [id \"…\"] 형식으로 박혀 있어 단순 추출이 안 됨을 이해·서술"
+          - "각 공격 카테고리를 매치 룰 ID로 분류"
+        acceptable_methods:
+          - "audit jq/grep 파싱으로 룰 ID 추출·분류"
+        negative_signs:
+          - "messages[] 구조 미이해(파싱 실패)"
 
   - order: 4
     assess_target: self
     target_vm: web
-    points: 15
+    points: 18
     instruction: |
-      ## 🛡️ BLUE-4 — 오탐 예외/튜닝 룰을 좁은 범위로 작성 (EDU 마커)
+      ## 🛡️ BLUE-4 — 오탐 외과수술 (룰을 끄지 말고 좁게 예외)
 
-      운영에서 정상 트래픽이 CRS 에 걸리는 **오탐(false-positive)** 은 불가피하다. 전체 룰을 끄지 말고
-      **좁은 범위** 로 예외/튜닝한다(`<LocationMatch>` + `SecRuleRemoveById`, 또는 특정 파라미터만
-      `SecRuleUpdateTargetById`). 검증을 위해 고유 msg 마커 `EDU tune` 를 단 커스텀 탐지룰을 함께
-      넣어 audit 에 본인 룰 동작이 기록되게 한다.
+      ### 상황
+      정상 업무 트래픽이 어떤 CRS 룰에 오탐될 때, 그 룰을 **전역으로 끄면** 보안 구멍이 뚫린다. 옳은
+      방법은 **딱 그 경로·그 룰만** 예외 처리하는 것 — `<LocationMatch>` + `SecRuleRemoveById`.
 
-      ### 권장 형태 (참고 — 좁은 예외 + EDU 마커 검증룰)
-      ```
-      # 예외: 특정 경로의 942100 오탐만 제거 (전체 비활성화 금지)
+      ### 할 일
+      web의 `/etc/modsecurity/zzz-edu-custom.conf`에 **좁은 예외**를 쓰고, 예외가 의도대로 적용됐음을
+      검증할 **고유 마커 탐지 룰**을 함께 넣는다(표식 **`EDU-SW6-TUNE`**). configtest 통과 후 graceful.
+      ```apache
+      # 좁은 예외: /report/upload 경로의 942100 오탐만 제거 (전역 비활성화 금지)
       <LocationMatch "^/report/upload">
         SecRuleRemoveById 942100
       </LocationMatch>
-      # 검증용 커스텀 탐지룰(고유 마커)
-      SecRule ARGS "@contains edu_probe_xyz" "id:9006004,phase:2,pass,log,msg:'EDU tune marker'"
+      # 검증용 마커 룰: 예외 작업을 했다는 증거
+      SecRule ARGS "@contains edu_tune_w6" \
+        "id:9116004,phase:2,pass,log,msg:'EDU-SW6-TUNE surgical exception applied',severity:'NOTICE'"
       ```
-      적용 후 그 패턴으로 접속하면 audit 에 `EDU tune` 가 남는다.
+      적용 후 `?x=edu_tune_w6`로 접속하면 audit에 `EDU-SW6-TUNE`이 남는다.
 
-      📌 채점: web modsec audit 에 `EDU tune` 마커(본인 커스텀 룰 동작).
-      ✅ 합격: audit 에 EDU tune 마커가 기록된다(좁은 예외 + 검증룰 적용).
-    hint: "LocationMatch+SecRuleRemoveById 로 좁은 예외 + msg:'EDU tune' 검증룰 → 패턴 접속 → audit 에 EDU tune."
+      ### 채점 방법
+      web modsec audit에 `EDU-SW6-TUNE` 표식이 있는지 + 학생이 "왜 전역 비활성화 대신 좁은 예외인지"를
+      설명했는지로 채점.
+
+      ### 합격 기준
+      audit에 `EDU-SW6-TUNE` 표식이 남고, 좁은 예외의 이유를 설명한다.
+    hint: "LocationMatch+SecRuleRemoveById 좁은 예외 + msg:'EDU-SW6-TUNE…' 마커 룰 → graceful → edu_tune_w6 접속 → audit에 EDU-SW6-TUNE."
     verify:
       type: "log_contains"
-      expect: "EDU tune"
+      expect: "EDU-SW6-TUNE"
       checks:
-        - { id: "blue-4-1", type: "log_contains", target: "web", params: { log: "modsec", pattern: "EDU tune", since_sec: 1800 } }
+        - { id: "blue-4-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "EDU-SW6-TUNE", since_sec: 1800 } }
       semantic:
-        intent: "MITRE D3FEND — FP 예외를 좁은 범위로(룰 전체 비활성화 금지). LocationMatch/RemoveById/UpdateTargetById 3패턴 + 검증 마커."
-        success_criteria: ["audit 에 'EDU tune' 마커(최근)", "(설명) 예외를 좁게 한정한 방법(LocationMatch/특정 파라미터) 서술", "(설명) 전체 비활성화의 위험"]
-        acceptable_methods: ["좁은 예외(LocationMatch+RemoveById) + EDU 마커 검증룰 → 패턴 접속으로 확인"]
-        negative_signs: ["룰 전체 비활성화(과도한 예외)", "EDU tune audit 미확인"]
+        intent: |
+          MITRE D3FEND — FP 외과수술. LocationMatch/SecRuleRemoveById/SecRuleUpdateTargetById로 좁은 범위만
+          예외. 전역 비활성화는 보안 구멍. 마커로 작업 검증.
+        success_criteria:
+          - "audit에 'EDU-SW6-TUNE' 표식(최근)"
+          - "예외를 경로·룰 단위로 좁게 한정한 방법(LocationMatch) 서술"
+          - "전역 비활성화의 위험을 설명"
+        acceptable_methods:
+          - "좁은 예외(LocationMatch+RemoveById) + EDU-SW6-TUNE 마커 룰 → 접속으로 확인"
+        negative_signs:
+          - "룰 전역 비활성화(과도한 예외)"
+          - "EDU-SW6-TUNE audit 미확인"
 
   - order: 5
     assess_target: self
-    target_vm: siem
-    points: 10
+    target_vm: web
+    points: 15
     instruction: |
-      ## 🛡️ BLUE-5 — WAF audit 가 Wazuh(SIEM)로 수렴하는지 검증
+      ## 🛡️ BLUE-5 — reverse proxy 뒤의 진짜 공격자 IP
 
-      ModSec audit(JSON)가 Wazuh decoder 로 파싱돼 SIEM 에 모이는지 확인한다(W10 의 통합 관제 예고).
-      JSON audit format 이 핵심 — Wazuh 가 룰 ID·anomaly score 를 구조적으로 인덱싱한다.
+      ### 상황
+      6v6는 attacker → fw → ips → web 구조라, web의 ModSecurity가 보는 `remote_address`는 바로 앞단
+      (ips 10.20.32.1)이지 진짜 공격자가 아니다. 진짜 공격자 IP는 **X-Forwarded-For** 헤더에 있다. 이걸
+      혼동하면 엉뚱한 IP를 차단·신고하게 된다.
 
-      📌 채점: 본인 SIEM 에 최근 웹/공격 관련 경보가 수집됐는지.
-      ✅ 합격: 본인 SIEM 에 웹공격/WAF 관련 경보가 있다.
-    hint: "본인 Wazuh 에서 WAF/웹공격 경보 수집 확인(중앙 SIEM 탭에서도 보임)."
+      ### 할 일
+      audit에서 한 공격 트랜잭션의 `remote_address`(내부 ips)와 `x-forwarded-for`(진짜 공격자)를 비교해,
+      차단/신고에 써야 할 **진짜 IP**를 식별한다. (XFF 신뢰는 신뢰 가능한 프록시 뒤에서만 유효함도 안다.)
+
+      ### 채점 방법
+      web modsec audit에 X-Forwarded-For 기록이 있는지 + 학생이 remote_address와 XFF의 차이로 진짜
+      공격자를 식별·설명했는지로 채점.
+
+      ### 합격 기준
+      audit에서 remote_address ≠ XFF를 확인하고, 차단에 써야 할 진짜 공격자 IP를 올바로 식별한다.
+    hint: "audit의 remote_address(내부 ips 10.20.32.1) vs x-forwarded-for(진짜 공격자). 차단은 XFF 기준."
     verify:
-      type: "wazuh_alert"
-      expect: "alert"
+      type: "log_contains"
+      expect: "x-forwarded-for"
       checks:
-        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+        - { id: "blue-5-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "x-forwarded-for", since_sec: 1800 } }
       semantic:
-        intent: "통합 가시성 — ModSec audit(JSON)가 Wazuh 로 수렴. JSON format 이 구조적 인덱싱의 전제."
-        success_criteria: ["본인 Wazuh 에 최근 웹공격/WAF 관련 경보", "(설명) JSON audit → Wazuh decoder 수집 흐름 서술"]
-        acceptable_methods: ["siem 에서 wazuh_alert / 중앙 SIEM 탭"]
-        negative_signs: ["수집 비어있음", "audit format 이 JSON 아니라 decoder 미작동"]
+        intent: |
+          reverse proxy 출처 식별 — remote_address(직전 프록시 ips)≠ 진짜 공격자. X-Forwarded-For로 실제
+          출처 식별. XFF 신뢰는 신뢰 가능한 프록시 체인 뒤에서만 유효.
+        success_criteria:
+          - "audit에 x-forwarded-for 기록 확인"
+          - "remote_address(내부 ips)와 XFF(진짜 공격자)를 비교해 진짜 IP 식별"
+          - "XFF 신뢰의 전제(신뢰 가능한 프록시) 서술"
+        acceptable_methods:
+          - "audit 트랜잭션의 remote_address vs x-forwarded-for 비교"
+        negative_signs:
+          - "remote_address(프록시 IP)를 공격자로 오인"
