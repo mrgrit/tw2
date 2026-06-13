@@ -308,8 +308,14 @@ async def add_event(
     points: int,
     detail: dict,
     reasoning: str | None = None,
+    enforce_time_limit: bool = True,
 ) -> BattleEvent:
-    """이벤트 추가 + actor 점수 반영 + 시간 만료 시 자동 종료."""
+    """이벤트 추가 + actor 점수 반영 + (옵션) 시간 만료 시 자동 종료.
+
+    enforce_time_limit=False: 백그라운드 채점처럼 *비동기로 늦게 도착*하는 시스템 기록
+    이벤트가 배틀을 소급 종료시키지 않게 한다(학생이 다음 미션 작업 중인데 채점 완료
+    순간 제출 폼이 사라지는 문제 방지). 종료는 실시간 타이머/수동/auto-monitor 가 담당.
+    """
     b = await session.get(Battle, battle_id)
     if not b:
         raise ValueError(f"battle {battle_id} not found")
@@ -339,7 +345,7 @@ async def add_event(
             part.score = (part.score or 0) + points
 
     started = _aware(b.started_at)
-    if started and b.time_limit_sec > 0:
+    if enforce_time_limit and started and b.time_limit_sec > 0:
         elapsed = (_now() - started).total_seconds()
         if elapsed >= b.time_limit_sec:
             b.status = "completed"

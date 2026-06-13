@@ -611,6 +611,9 @@ async def grade_submission(submission_id: int) -> None:
                     session, battle_id=battle.id, actor_user_id=sub.user_id,
                     event_type=sub.event_type, target=sub.target, description=sub.description,
                     points=awarded, detail=detail, reasoning=analysis.reasoning,
+                    # 채점은 제출보다 늦게(비동기) 도착 — 이 이벤트가 배틀을 소급 종료시키지
+                    # 않게 한다(채점 완료 순간 학생의 제출 폼이 사라지는 문제 방지).
+                    enforce_time_limit=False,
                 )
                 event_id = ev.id
             except ValueError:
