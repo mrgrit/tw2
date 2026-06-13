@@ -794,15 +794,27 @@ function ReportForm({ battleId, mission, onSubmitted, onErr }: {
   const [whatHappened, setWhatHappened] = useState('')
   const [desc, setDesc] = useState('')
   const [busy, setBusy] = useState(false)
-  const [flash, setFlash] = useState<string | null>(null)
+  // 성공·실패 모두 이 카드에 인라인 표시(상단 배너로 보내면 어느 미션인지 헷갈림).
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
+
+  // 백엔드 스키마 한도 — 초과 시 백엔드가 422 로 거절하므로 제출 전에 안내.
+  const MAX_CMD = 4000, MAX_RES = 4000, MAX_DESC = 2000
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     if (busy) return
     if (!whatDid.trim() && !desc.trim()) {
-      onErr('최소한 "사용한 명령/페이로드" 또는 "한 줄 요약" 중 하나는 적어주세요.')
+      setNotice({ ok: false, text: '최소한 "사용한 명령/페이로드" 또는 "한 줄 요약" 중 하나는 적어주세요.' })
       return
     }
+    // 길이 사전검증 — 초과분을 알려주고 입력은 보존(잘라서 다시 제출).
+    const over = (label: string, v: string, max: number) =>
+      v.length > max ? `${label}이(가) 너무 깁니다 — 최대 ${max}자, 현재 ${v.length}자 (${v.length - max}자 초과). 줄여서 다시 제출하세요.` : null
+    const lenErr = over('사용한 명령/페이로드', whatDid, MAX_CMD)
+      || over('결과/응답', whatHappened, MAX_RES)
+      || over('한 줄 요약', desc.trim(), MAX_DESC)
+    if (lenErr) { setNotice({ ok: false, text: lenErr }); return }
+
     const payload: any = {
       event_type: mission.side === 'red' ? 'exploit' : 'detect',
       target: mission.target_vm || '',
@@ -816,14 +828,16 @@ function ReportForm({ battleId, mission, onSubmitted, onErr }: {
       client_token: (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`),
     }
     setBusy(true)
-    setFlash(null)
+    setNotice(null)
     try {
       await api(`/battles/${battleId}/events`, { method: 'POST', json: payload })
       setWhatDid(''); setWhatHappened(''); setDesc('')
-      setFlash('✅ 제출 저장됨 — 채점은 백그라운드에서 제출 순서대로 진행됩니다. 기다리지 말고 다음 미션을 진행하세요. (결과는 잠시 후 이 카드와 “내 워크북”에 표시)')
+      setNotice({ ok: true, text: '✅ 제출 저장됨 — 채점은 백그라운드에서 제출 순서대로 진행됩니다. 기다리지 말고 다음 미션을 진행하세요. (결과는 잠시 후 이 카드와 “내 워크북”에 표시)' })
       onSubmitted()
     } catch (e: any) {
-      onErr(`제출 실패: ${e.message}`)
+      // 실패 시 입력 보존 — 인라인으로 사유 표시(상단 배너에도 한 번 더).
+      setNotice({ ok: false, text: `제출 실패: ${e.message}` })
+      onErr(`미션 #${mission.order} 제출 실패: ${e.message}`)
     } finally {
       setBusy(false)
     }
@@ -840,28 +854,51 @@ function ReportForm({ battleId, mission, onSubmitted, onErr }: {
         placeholder="① 사용한 명령 / 페이로드 (분석의 핵심 — 비우면 채점 정확도 낮음)"
         value={whatDid}
         onChange={e => setWhatDid(e.target.value)}
-        style={{ fontFamily: 'monospace', fontSize: 12, width: '100%', boxSizing: 'border-box' }}
+        style={{ fontFamily: 'monospace', fontSize: 12, width: '100%', boxSizing: 'border-box',
+                 borderColor: whatDid.length > MAX_CMD ? 'var(--red)' : undefined }}
       />
+      <CharCount n={whatDid.length} max={MAX_CMD} />
       <textarea
         rows={2}
         placeholder="② 결과 / 응답 발췌 (출력·로그 라인·에러 메시지 등)"
         value={whatHappened}
         onChange={e => setWhatHappened(e.target.value)}
-        style={{ fontFamily: 'monospace', fontSize: 12, width: '100%', boxSizing: 'border-box', marginTop: 6 }}
+        style={{ fontFamily: 'monospace', fontSize: 12, width: '100%', boxSizing: 'border-box', marginTop: 6,
+                 borderColor: whatHappened.length > MAX_RES ? 'var(--red)' : undefined }}
       />
+      <CharCount n={whatHappened.length} max={MAX_RES} />
       <input
         placeholder="③ 한 줄 요약 (선택)"
         value={desc}
         onChange={e => setDesc(e.target.value)}
-        style={{ width: '100%', boxSizing: 'border-box', marginTop: 6 }}
+        style={{ width: '100%', boxSizing: 'border-box', marginTop: 6,
+                 borderColor: desc.trim().length > MAX_DESC ? 'var(--red)' : undefined }}
       />
       <div className="row" style={{ marginTop: 8, alignItems: 'center' }}>
         <button type="submit" disabled={busy}>
           {busy ? '제출 중…' : '제출 → 다음 미션'}
         </button>
-        {flash && <span style={{ fontSize: 12, color: '#1f6f3c', lineHeight: 1.5, flex: 1 }}>{flash}</span>}
+        {notice && (
+          <span style={{ fontSize: 12, lineHeight: 1.5, flex: 1,
+                         color: notice.ok ? '#1f6f3c' : 'var(--red)' }}>
+            {notice.text}
+          </span>
+        )}
       </div>
     </form>
+  )
+}
+
+// 글자수 카운터 — 한도 근접/초과 시 색 변화로 422(스키마 거절) 예방.
+function CharCount({ n, max }: { n: number; max: number }) {
+  if (n === 0) return null
+  const over = n > max
+  const near = !over && n > max * 0.9
+  return (
+    <div style={{ textAlign: 'right', fontSize: 11, marginTop: 2,
+                  color: over ? 'var(--red)' : near ? 'var(--yellow)' : 'var(--fg-dim)' }}>
+      {n.toLocaleString()} / {max.toLocaleString()}자{over ? ` · ${(n - max).toLocaleString()}자 초과` : ''}
+    </div>
   )
 }
 
