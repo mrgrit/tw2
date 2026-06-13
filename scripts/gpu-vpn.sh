@@ -53,9 +53,13 @@ case "${1:-help}" in
       echo "[gpu-vpn] 이미 연결됨 (pid $(cat "$VPNPID"))"; gpu_test; exit 0
     fi
     echo "[gpu-vpn] GlobalProtect 연결: $VPN_USER@$VPN_PORTAL ..."
+    # 서버 인증서가 자체서명이면 핀 고정(헤드리스). 최초 1회는 openconnect 가 핀을 알려준다:
+    #   "--servercert pin-sha256:..." → 그 값을 .env VPN_SERVERCERT 에 넣으면 이후 무인 재연결.
+    cert_opt=()
+    [ -n "${VPN_SERVERCERT:-}" ] && cert_opt=(--servercert "$VPN_SERVERCERT")
     # GP 프로토콜, 비밀번호는 stdin 으로(프로세스 목록 노출 방지), 백그라운드 데몬화.
     printf '%s\n' "$VPN_PASS" | sudo openconnect --protocol=gp --user="$VPN_USER" \
-      --passwd-on-stdin --background --pid-file="$VPNPID" "$VPN_PORTAL"
+      --passwd-on-stdin "${cert_opt[@]}" --background --pid-file="$VPNPID" "$VPN_PORTAL"
     sleep 5
     echo "[gpu-vpn] 상태:"; ip -o link show 2>/dev/null | grep -iE "tun|gpd" || echo "  tun 인터페이스 없음"
     gpu_test
