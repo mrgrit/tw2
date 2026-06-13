@@ -829,6 +829,9 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
   const [hintCool, setHintCool] = useState(0)
   const [hintSide, setHintSide] = useState<'red' | 'blue' | 'any'>('any')
   const [hintNote, setHintNote] = useState('')
+  // 제출 진행 상태 — 채점은 백그라운드라 제출 자체는 빨리 끝나지만, 그 사이 중복 클릭 방지 + 안내.
+  const [submitting, setSubmitting] = useState(false)
+  const [submitMsg, setSubmitMsg] = useState<string | null>(null)
 
   // join 다이얼로그 — 로비에서 BattleView 직접 열린 경우
   const [joinRole, setJoinRole] = useState<'red' | 'blue' | 'free'>(b.battle.mode === 'duel' ? 'red' : 'free')
@@ -842,6 +845,7 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
 
   async function submitEvent(e: React.FormEvent) {
     e.preventDefault()
+    if (submitting) return                       // 진행 중 재클릭 가드(더블 제출 방지)
     // 백엔드 schema 와 일치하는 payload 만 전달 (mission_side null 이면 백엔드가 event_type 으로 추정)
     const payload: any = {
       event_type: eventForm.event_type,
@@ -850,14 +854,24 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
       points: eventForm.points,
       what_i_did: eventForm.what_i_did,
       what_happened: eventForm.what_happened,
+      // 멱등키 — 혹시 전송이 두 번 나가도 백엔드가 같은 제출로 처리(중복 채점 금지).
+      client_token: (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`),
     }
     if (eventForm.mission_order) payload.mission_order = eventForm.mission_order
     if (eventForm.mission_side)  payload.mission_side  = eventForm.mission_side
-    await api(`/battles/${b.battle.id}/events`, { method: 'POST', json: payload })
-    setEventForm({
-      ...eventForm, description: '', what_i_did: '', what_happened: '',
-    })
-    onRefresh()
+    setSubmitting(true)
+    setSubmitMsg(null)
+    try {
+      await api(`/battles/${b.battle.id}/events`, { method: 'POST', json: payload })
+      // 제출 즉시 저장됨. 채점은 백그라운드 — 기다리지 말고 다음 미션으로.
+      setEventForm({ ...eventForm, description: '', what_i_did: '', what_happened: '' })
+      setSubmitMsg('✅ 제출 저장됨 — 채점은 백그라운드에서 진행됩니다. 기다리지 말고 다음 미션을 입력하세요. 결과·피드백은 “내 워크북”에서 확인할 수 있어요.')
+      onRefresh()
+    } catch (e: any) {
+      onErr(`제출 실패: ${e.message}`)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   async function joinHere() {
@@ -1163,7 +1177,14 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
             style={{ fontFamily: 'monospace', fontSize: 12 }}
           />
 
-          <button type="submit">이벤트 push (채점 분석 자동 생성)</button>
+          <button type="submit" disabled={submitting}>
+            {submitting ? '제출 중…' : '제출 (채점은 백그라운드 — 바로 다음 미션 진행 가능)'}
+          </button>
+          {submitMsg && (
+            <div style={{ fontSize: 12, color: '#1f6f3c', marginTop: 6, lineHeight: 1.5 }}>
+              {submitMsg}
+            </div>
+          )}
         </form>
       )}
 
