@@ -15,6 +15,8 @@ const proxy = {
   '/cohorts':     API,
   '/feedback':    API,
   '/monitoring':  API,
+  '/me':          API,   // 내 워크북/제출 — 누락 시 SPA fallback(index.html)이 반환돼 깨짐
+  '/llm':         API,   // 드래그-질문 AI 튜터(모델/설정/ask)
   '/battles':   { target: API, changeOrigin: false, ws: false },
   '/health':      API,
 }
