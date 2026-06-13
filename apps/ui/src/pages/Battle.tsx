@@ -598,6 +598,83 @@ function LobbyCard({ b, myInfras, onJoined, onView, onErr }: {
 // ──────────────────────────────────────────────────────
 // 미션 카드 — 학생이 보는 핵심 UI
 // ──────────────────────────────────────────────────────
+// ── 경량 마크다운 렌더러 (의존성 없음) — 미션 instruction 용 ──
+function mdInline(s: string): React.ReactNode[] {
+  const out: React.ReactNode[] = []
+  const re = /(\*\*([^*]+)\*\*|`([^`]+)`)/g
+  let last = 0
+  let k = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(s)) !== null) {
+    if (m.index > last) out.push(s.slice(last, m.index))
+    if (m[2] !== undefined) out.push(<strong key={k++}>{m[2]}</strong>)
+    else if (m[3] !== undefined) out.push(
+      <code key={k++} style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 5px', borderRadius: 4, fontSize: '0.88em' }}>{m[3]}</code>)
+    last = m.index + m[0].length
+  }
+  if (last < s.length) out.push(s.slice(last))
+  return out
+}
+
+function Markdown({ text }: { text: string }) {
+  const lines = (text || '').replace(/\r\n/g, '\n').split('\n')
+  const blocks: React.ReactNode[] = []
+  let i = 0
+  let key = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    // 코드 블록 ``` ... ```
+    if (line.trimStart().startsWith('```')) {
+      const code: string[] = []
+      i++
+      while (i < lines.length && !lines[i].trimStart().startsWith('```')) { code.push(lines[i]); i++ }
+      i++ // 닫는 ``` 스킵
+      blocks.push(
+        <pre key={key++} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          background: 'rgba(0,0,0,0.35)', padding: '8px 10px', borderRadius: 6,
+          fontSize: 14, lineHeight: 1.45, margin: '6px 0' }}><code>{code.join('\n')}</code></pre>)
+      continue
+    }
+    // 헤딩 ## / ###
+    const h = line.match(/^(#{1,6})\s+(.*)$/)
+    if (h) {
+      const level = h[1].length
+      const size = level <= 2 ? 20 : level === 3 ? 17 : 15
+      blocks.push(
+        <div key={key++} style={{ fontWeight: 700, fontSize: size,
+          margin: level <= 2 ? '14px 0 6px' : '10px 0 3px',
+          color: level <= 3 ? 'var(--fg)' : 'var(--fg-dim)' }}>{mdInline(h[2])}</div>)
+      i++
+      continue
+    }
+    // 리스트 - / 1.
+    if (/^\s*([-*]|\d+\.)\s+/.test(line)) {
+      const items: string[] = []
+      while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*([-*]|\d+\.)\s+/, '')); i++
+      }
+      blocks.push(
+        <ul key={key++} style={{ margin: '4px 0 4px 22px', padding: 0 }}>
+          {items.map((it, j) => <li key={j} style={{ margin: '2px 0' }}>{mdInline(it)}</li>)}
+        </ul>)
+      continue
+    }
+    // 빈 줄
+    if (line.trim() === '') { i++; continue }
+    // 문단 (연속 일반 줄을 모아 줄바꿈 보존)
+    const para: string[] = []
+    while (i < lines.length && lines[i].trim() !== ''
+      && !lines[i].trimStart().startsWith('```')
+      && !/^(#{1,6})\s+/.test(lines[i])
+      && !/^\s*([-*]|\d+\.)\s+/.test(lines[i])) { para.push(lines[i]); i++ }
+    blocks.push(
+      <p key={key++} style={{ margin: '4px 0', lineHeight: 1.55 }}>
+        {para.map((p, j) => <React.Fragment key={j}>{mdInline(p)}{j < para.length - 1 ? <br /> : null}</React.Fragment>)}
+      </p>)
+  }
+  return <>{blocks}</>
+}
+
 function MissionCard({ m }: { m: Mission }) {
   const [open, setOpen] = useState(false)
   const sideColor = m.side === 'red' ? 'red' : 'blue'
@@ -619,8 +696,8 @@ function MissionCard({ m }: { m: Mission }) {
           </button>
         )}
       </div>
-      <div style={{ marginTop: 8, fontSize: 21, lineHeight: 1.5 }}>
-        <b>할 일:</b> {m.instruction}
+      <div style={{ marginTop: 8, fontSize: 16, lineHeight: 1.55 }}>
+        <Markdown text={m.instruction} />
       </div>
       {open && (
         <div style={{ marginTop: 8, padding: 12, background: 'rgba(255,255,255,0.04)',
