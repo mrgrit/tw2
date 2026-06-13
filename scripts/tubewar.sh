@@ -147,15 +147,24 @@ cmd_install() {
   log "[1/5] 시스템 의존성 점검"
   local need_sys=()
   command -v python3 >/dev/null || need_sys+=("python3")
-  python3 -c 'import venv' 2>/dev/null || need_sys+=("python3-venv")
+  # ⚠️ 'import venv' 성공만으론 불충분 — venv *생성*엔 ensurepip(=python3-venv 패키지)이 필요하다.
+  #    minimal Ubuntu 는 venv 모듈은 있어도 ensurepip 가 없어 'python3 -m venv' 가 실패한다.
+  #    따라서 ensurepip import 로 정확히 탐지한다.
+  python3 -c 'import ensurepip' 2>/dev/null || need_sys+=("python3-venv")
   command -v curl >/dev/null || need_sys+=("curl")
 
   if [ "${#need_sys[@]}" -gt 0 ]; then
     log "  apt 로 설치: ${need_sys[*]}"
+    # 버전별 venv 패키지(python3.10-venv 등)까지 함께 — 메타패키지만으론 부족한 배포판 대응.
+    local pyver; pyver="$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
     sudo apt-get update -qq
-    sudo apt-get install -y -qq python3 python3-venv python3-pip curl ca-certificates
+    sudo apt-get install -y -qq python3 python3-venv "python${pyver}-venv" python3-pip curl ca-certificates \
+      || sudo apt-get install -y -qq python3 python3-venv python3-pip curl ca-certificates
+    # 설치 후에도 ensurepip 가 안 잡히면 명확히 안내하고 중단(애매한 venv 실패 방지).
+    python3 -c 'import ensurepip' 2>/dev/null \
+      || die "python3-venv(ensurepip) 설치 실패 — 'sudo apt-get install python${pyver}-venv' 후 재시도하세요."
   else
-    c_grn "  python3/venv/curl OK"
+    c_grn "  python3/venv(ensurepip)/curl OK"
   fi
 
   # node/npm — 없으면 NodeSource(LTS) 설치
@@ -169,7 +178,13 @@ cmd_install() {
 
   # 2) python venv + 의존성 (aiosqlite 포함된 [dev] 익스트라)
   log "[2/5] python venv + API 의존성"
-  [ -d "$VENV" ] || python3 -m venv "$VENV"
+  # 부분 생성된(activate/python 없는) venv 잔재가 있으면 깨끗이 재생성 — '-d' 검사만으론
+  # 실패한 이전 시도의 빈 디렉토리를 venv 로 오인해 activate 단계에서 깨진다.
+  if [ ! -x "$VENV/bin/python" ]; then
+    rm -rf "$VENV"
+    python3 -m venv "$VENV" \
+      || die "venv 생성 실패 — python3-venv(ensurepip) 미설치일 수 있습니다. 'sudo apt-get install python3-venv' 후 재시도."
+  fi
   # shellcheck disable=SC1091
   . "$VENV/bin/activate"
   python -m pip install -U pip wheel >/dev/null
