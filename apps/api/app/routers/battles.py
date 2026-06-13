@@ -50,6 +50,34 @@ def _spawn(coro) -> None:
     t.add_done_callback(_bg_tasks.discard)
 
 
+# ── 채점 큐 — 학생은 제출 즉시 다음 미션으로, 채점은 단일 워커가 **제출 순서대로** 처리.
+#    동시 채점을 막아 (1) 같은 인프라에 assessor 점검이 몰리는 충돌, (2) AI 호출 폭주를 방지.
+#    제출(verbatim)은 이미 영속화돼 있어 큐가 밀려도 입력은 안전. 워커는 첫 제출 때 lazily 기동.
+_grade_queue: "asyncio.Queue[int] | None" = None
+
+
+async def _grade_worker() -> None:
+    assert _grade_queue is not None
+    while True:
+        sub_id = await _grade_queue.get()
+        try:
+            await grade_submission(sub_id)
+        except Exception:                       # 한 건 실패가 큐를 멈추지 않도록 흡수.
+            import logging
+            logging.getLogger("tubewar.grading").exception("grade_submission(%s) failed", sub_id)
+        finally:
+            _grade_queue.task_done()
+
+
+def _enqueue_grade(sub_id: int) -> None:
+    """채점 작업을 FIFO 큐에 적재(차례대로 단일 처리). 워커가 없으면 기동."""
+    global _grade_queue
+    if _grade_queue is None:
+        _grade_queue = asyncio.Queue()
+        _spawn(_grade_worker())
+    _grade_queue.put_nowait(sub_id)
+
+
 def _solved_orders(events: list, side_marker: str) -> set[int]:
     """auto-monitor(Assessor) 가 매칭한 미션 order 집합.
 
@@ -493,7 +521,7 @@ async def post_event(
         await grade_submission(sub_id)     # 테스트/동기 모드 — 인라인 채점
         await session.refresh(sub)
     else:
-        _spawn(grade_submission(sub_id))   # 운영 — 비차단(학생은 바로 다음 미션)
+        _enqueue_grade(sub_id)             # 운영 — 비차단·차례대로(학생은 바로 다음 미션)
     return StudentSubmissionOut.model_validate(sub)
 
 

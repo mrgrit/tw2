@@ -675,19 +675,47 @@ function Markdown({ text }: { text: string }) {
   return <>{blocks}</>
 }
 
-function MissionCard({ m }: { m: Mission }) {
+const VERDICT_BADGE: Record<string, string> = { pass: 'green', partial: 'yellow', fail: 'red', review: 'yellow' }
+const VERDICT_LABEL: Record<string, string> = { pass: 'AI 통과', partial: 'AI 부분', fail: 'AI 불인정', review: '검토 대기' }
+
+// 미션 카드 — 지시문 + (내 미션이면) 바로 아래 인라인 보고 폼 + 최신 채점 결과.
+function MissionCard({ m, battleId, meId, events, canSubmit, onSubmitted, onErr }: {
+  m: Mission
+  battleId: number
+  meId: number
+  events: BattleEvent[]
+  canSubmit: boolean
+  onSubmitted: () => void
+  onErr: (msg: string) => void
+}) {
   const [open, setOpen] = useState(false)
   const sideColor = m.side === 'red' ? 'red' : 'blue'
+
+  // 이 미션에 대한 내 채점 결과 이력 (최신 id 우선). 제출→백그라운드 채점 완료 시 이벤트로 나타남.
+  const myGraded = events
+    .filter(e => e.actor_user_id === meId
+      && e.detail?.report?.mission_order === m.order
+      && e.detail?.report?.mission_side === m.side
+      && e.detail?.grading)
+    .sort((a, b) => b.id - a.id)
+  const last = myGraded[0]
+  const lastVerdict: string | undefined = last?.detail?.grading?.verdict
+
   return (
     <div className="card" style={{ padding: 12,
       borderLeft: `4px solid var(--${sideColor})`,
-      opacity: m.solved ? 0.7 : 1,
+      opacity: m.solved ? 0.85 : 1,
     }}>
       <div className="row" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
         <span className={`badge ${sideColor}`} style={{ fontSize: 16 }}>{m.side === 'red' ? '🔴 RED' : '🔵 BLUE'} #{m.order}</span>
         {m.target_vm && <span style={{ fontSize: 18, color: 'var(--fg-dim)' }}>target: <code>{m.target_vm}</code></span>}
         {m.points > 0 && <span className="badge green" style={{ fontSize: 16 }}>+{m.points}점</span>}
         {m.solved && <span className="badge green" style={{ fontSize: 16 }}>✓ 자동 검증 통과</span>}
+        {!m.solved && lastVerdict && (
+          <span className={`badge ${VERDICT_BADGE[lastVerdict] || 'yellow'}`} style={{ fontSize: 16 }}>
+            {VERDICT_LABEL[lastVerdict] || lastVerdict} {last.points > 0 ? `(+${last.points})` : ''}
+          </span>
+        )}
         <div style={{ flex: 1 }} />
         {(m.hint || m.semantic_intent || m.success_criteria.length > 0 || m.verify_expect) && (
           <button className="ghost" style={{ fontSize: 15, padding: '4px 12px' }}
@@ -729,7 +757,111 @@ function MissionCard({ m }: { m: Mission }) {
           )}
         </div>
       )}
+
+      {/* 최신 채점 결과 — 피드백/근거 (있으면) */}
+      {last && (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: 'pointer', fontSize: 14, color: 'var(--fg-dim)' }}>
+            🧮 최근 채점: <b style={{ color: `var(--${VERDICT_BADGE[lastVerdict || 'review']})` }}>
+              {VERDICT_LABEL[lastVerdict || 'review']}</b> (+{last.points}점)
+            {myGraded.length > 1 ? ` · 제출 ${myGraded.length}회` : ''}
+          </summary>
+          {last.reasoning && (
+            <div style={{ marginTop: 6, padding: 10, background: 'rgba(255,255,255,0.04)',
+                          borderRadius: 6, fontSize: 13, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+              {last.reasoning}
+            </div>
+          )}
+        </details>
+      )}
+
+      {/* 인라인 보고 폼 — 내 미션이고 진행 중일 때만. 미션 선택 불필요(이 카드에 종속). */}
+      {canSubmit && (
+        <ReportForm battleId={battleId} mission={m} onSubmitted={onSubmitted} onErr={onErr} />
+      )}
     </div>
+  )
+}
+
+// 미션에 종속된 인라인 보고 폼 — 제출 즉시 입력 비우고 "다음 미션으로" 안내. 채점은 백그라운드 큐.
+function ReportForm({ battleId, mission, onSubmitted, onErr }: {
+  battleId: number
+  mission: Mission
+  onSubmitted: () => void
+  onErr: (msg: string) => void
+}) {
+  const [whatDid, setWhatDid] = useState('')
+  const [whatHappened, setWhatHappened] = useState('')
+  const [desc, setDesc] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [flash, setFlash] = useState<string | null>(null)
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (busy) return
+    if (!whatDid.trim() && !desc.trim()) {
+      onErr('최소한 "사용한 명령/페이로드" 또는 "한 줄 요약" 중 하나는 적어주세요.')
+      return
+    }
+    const payload: any = {
+      event_type: mission.side === 'red' ? 'exploit' : 'detect',
+      target: mission.target_vm || '',
+      description: desc.trim() || `미션 #${mission.order}`,
+      points: mission.points,
+      what_i_did: whatDid,
+      what_happened: whatHappened,
+      mission_order: mission.order,
+      mission_side: mission.side,
+      // 멱등키 — 더블클릭/재전송 무해화(중복 채점 금지).
+      client_token: (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`),
+    }
+    setBusy(true)
+    setFlash(null)
+    try {
+      await api(`/battles/${battleId}/events`, { method: 'POST', json: payload })
+      setWhatDid(''); setWhatHappened(''); setDesc('')
+      setFlash('✅ 제출 저장됨 — 채점은 백그라운드에서 제출 순서대로 진행됩니다. 기다리지 말고 다음 미션을 진행하세요. (결과는 잠시 후 이 카드와 “내 워크북”에 표시)')
+      onSubmitted()
+    } catch (e: any) {
+      onErr(`제출 실패: ${e.message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} style={{ marginTop: 10, paddingTop: 10, borderTop: '1px dashed var(--border)' }}>
+      <div style={{ fontSize: 13, color: 'var(--fg-dim)', marginBottom: 6, lineHeight: 1.5 }}>
+        📝 <b>내가 한 일 보고</b> → 제출하면 <b>AI가 너의 인프라를 직접 점검</b>해 success_criteria 기준으로 채점합니다.
+        점수는 AI가 결정. (앰비언트 상태만으로는 통과 안 되니, 직접 실행한 명령을 정확히 적어 주세요.)
+      </div>
+      <textarea
+        rows={3}
+        placeholder="① 사용한 명령 / 페이로드 (분석의 핵심 — 비우면 채점 정확도 낮음)"
+        value={whatDid}
+        onChange={e => setWhatDid(e.target.value)}
+        style={{ fontFamily: 'monospace', fontSize: 12, width: '100%', boxSizing: 'border-box' }}
+      />
+      <textarea
+        rows={2}
+        placeholder="② 결과 / 응답 발췌 (출력·로그 라인·에러 메시지 등)"
+        value={whatHappened}
+        onChange={e => setWhatHappened(e.target.value)}
+        style={{ fontFamily: 'monospace', fontSize: 12, width: '100%', boxSizing: 'border-box', marginTop: 6 }}
+      />
+      <input
+        placeholder="③ 한 줄 요약 (선택)"
+        value={desc}
+        onChange={e => setDesc(e.target.value)}
+        style={{ width: '100%', boxSizing: 'border-box', marginTop: 6 }}
+      />
+      <div className="row" style={{ marginTop: 8, alignItems: 'center' }}>
+        <button type="submit" disabled={busy}>
+          {busy ? '제출 중…' : '제출 → 다음 미션'}
+        </button>
+        {flash && <span style={{ fontSize: 12, color: '#1f6f3c', lineHeight: 1.5, flex: 1 }}>{flash}</span>}
+      </div>
+    </form>
   )
 }
 
@@ -810,28 +942,11 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
   const canPostEvent = isParticipant
   const isLobby = b.battle.status === 'pending'
 
-  const [eventForm, setEventForm] = useState<{
-    event_type: string
-    target: string
-    description: string
-    points: number
-    mission_order: number | null
-    mission_side: 'red' | 'blue' | null
-    what_i_did: string
-    what_happened: string
-  }>({
-    event_type: 'attack', target: '', description: '', points: 0,
-    mission_order: null, mission_side: null,
-    what_i_did: '', what_happened: '',
-  })
   const [hint, setHint] = useState<HintOut | null>(null)
   const [hintBusy, setHintBusy] = useState(false)
   const [hintCool, setHintCool] = useState(0)
   const [hintSide, setHintSide] = useState<'red' | 'blue' | 'any'>('any')
   const [hintNote, setHintNote] = useState('')
-  // 제출 진행 상태 — 채점은 백그라운드라 제출 자체는 빨리 끝나지만, 그 사이 중복 클릭 방지 + 안내.
-  const [submitting, setSubmitting] = useState(false)
-  const [submitMsg, setSubmitMsg] = useState<string | null>(null)
 
   // join 다이얼로그 — 로비에서 BattleView 직접 열린 경우
   const [joinRole, setJoinRole] = useState<'red' | 'blue' | 'free'>(b.battle.mode === 'duel' ? 'red' : 'free')
@@ -842,37 +957,6 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
     const t = setTimeout(() => setHintCool(c => Math.max(0, c - 1)), 1000)
     return () => clearTimeout(t)
   }, [hintCool])
-
-  async function submitEvent(e: React.FormEvent) {
-    e.preventDefault()
-    if (submitting) return                       // 진행 중 재클릭 가드(더블 제출 방지)
-    // 백엔드 schema 와 일치하는 payload 만 전달 (mission_side null 이면 백엔드가 event_type 으로 추정)
-    const payload: any = {
-      event_type: eventForm.event_type,
-      target: eventForm.target,
-      description: eventForm.description,
-      points: eventForm.points,
-      what_i_did: eventForm.what_i_did,
-      what_happened: eventForm.what_happened,
-      // 멱등키 — 혹시 전송이 두 번 나가도 백엔드가 같은 제출로 처리(중복 채점 금지).
-      client_token: (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`),
-    }
-    if (eventForm.mission_order) payload.mission_order = eventForm.mission_order
-    if (eventForm.mission_side)  payload.mission_side  = eventForm.mission_side
-    setSubmitting(true)
-    setSubmitMsg(null)
-    try {
-      await api(`/battles/${b.battle.id}/events`, { method: 'POST', json: payload })
-      // 제출 즉시 저장됨. 채점은 백그라운드 — 기다리지 말고 다음 미션으로.
-      setEventForm({ ...eventForm, description: '', what_i_did: '', what_happened: '' })
-      setSubmitMsg('✅ 제출 저장됨 — 채점은 백그라운드에서 진행됩니다. 기다리지 말고 다음 미션을 입력하세요. 결과·피드백은 “내 워크북”에서 확인할 수 있어요.')
-      onRefresh()
-    } catch (e: any) {
-      onErr(`제출 실패: ${e.message}`)
-    } finally {
-      setSubmitting(false)
-    }
-  }
 
   async function joinHere() {
     try {
@@ -998,11 +1082,22 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
         </div>
       )}
 
-      {/* 🎯 미션 패널 — 핵심 신규 UI */}
+      {/* 🎯 미션 패널 — 미션마다 바로 아래 인라인 보고 폼 (제출→다음, 채점은 백그라운드) */}
       {b.my_missions.length > 0 && (
         <div style={{ marginTop: 16 }}>
           <h3>🎯 내 미션 ({b.my_role})</h3>
-          {b.my_missions.map(m => <MissionCard key={`${m.side}-${m.order}`} m={m} />)}
+          {canPostEvent && b.battle.status === 'active' && (
+            <div style={{ fontSize: 13, color: 'var(--fg-dim)', marginBottom: 8, lineHeight: 1.5 }}>
+              각 미션 아래에 한 일을 적고 <b>제출</b>하면 바로 다음 미션으로 넘어갈 수 있습니다 —
+              채점은 <b>제출 순서대로 백그라운드</b>에서 자동 처리되니 기다릴 필요 없습니다.
+            </div>
+          )}
+          {b.my_missions.map(m => (
+            <MissionCard key={`${m.side}-${m.order}`} m={m}
+              battleId={b.battle.id} meId={meId} events={b.events}
+              canSubmit={canPostEvent && b.battle.status === 'active'}
+              onSubmitted={onRefresh} onErr={onErr} />
+          ))}
         </div>
       )}
       {b.opponent_missions.length > 0 && (
@@ -1011,7 +1106,11 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
             👀 상대편 미션 ({b.opponent_missions.length}개) — {isParticipant ? '관전 시야 (공격 정보)' : '관전 모드'}
           </summary>
           <div style={{ marginTop: 8 }}>
-            {b.opponent_missions.map(m => <MissionCard key={`${m.side}-${m.order}`} m={m} />)}
+            {b.opponent_missions.map(m => (
+              <MissionCard key={`${m.side}-${m.order}`} m={m}
+                battleId={b.battle.id} meId={meId} events={b.events}
+                canSubmit={false} onSubmitted={onRefresh} onErr={onErr} />
+            ))}
           </div>
         </details>
       )}
@@ -1085,107 +1184,6 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
             </div>
           )}
         </div>
-      )}
-
-      {canPostEvent && b.battle.status === 'active' && (
-        <form onSubmit={submitEvent} className="card col" style={{ marginTop: 16 }}>
-          <h3 style={{ marginTop: 0, fontSize: 22 }}>📝 내가 한 일 보고 → AI 채점 요청</h3>
-          <div style={{ fontSize: 15, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
-            ① 어느 미션? ② 어떤 명령/페이로드를 썼는가? ③ 결과/응답은 무엇이었는가?<br />
-            제출하면 <b>AI 채점기가 너의 인프라를 직접 점검</b>(실제 실행한 명령·상태)해서 success_criteria
-            기준으로 채점합니다. <b>점수는 AI 가 결정</b>하며, 아래 점수 칸은 참고용 신청값일 뿐입니다.
-            (앰비언트 상태만으로는 통과되지 않으니, 네가 직접 한 명령을 정확히 적어 주세요.)
-          </div>
-
-          {/* ① 미션 선택 — my_missions 에서 골라 자동 채움 */}
-          <label style={{ fontSize: 15, color: 'var(--fg-dim)', marginTop: 4 }}>
-            ① 미션 선택
-          </label>
-          <select
-            value={eventForm.mission_order ? `${eventForm.mission_side}-${eventForm.mission_order}` : ''}
-            onChange={e => {
-              const v = e.target.value
-              if (!v) {
-                setEventForm({ ...eventForm, mission_order: null, mission_side: null })
-                return
-              }
-              const [side, orderStr] = v.split('-')
-              const order = parseInt(orderStr, 10)
-              const m = b.my_missions.find(x => x.side === side && x.order === order)
-              if (!m) return
-              setEventForm({
-                ...eventForm,
-                mission_order: order,
-                mission_side: side as 'red' | 'blue',
-                event_type: side === 'red' ? 'exploit' : 'detect',
-                target: m.target_vm || eventForm.target,
-                points: m.points,
-                description: eventForm.description ||
-                  `미션 #${m.order} — ${m.instruction.slice(0, 80)}`,
-              })
-            }}>
-            <option value="">— 일반 보고 (미션 무관) —</option>
-            {b.my_missions.map(m => (
-              <option key={`${m.side}-${m.order}`} value={`${m.side}-${m.order}`}>
-                {m.side === 'red' ? '🔴' : '🔵'} #{m.order} (+{m.points}점, {m.target_vm || '-'})
-                {m.solved ? ' ✓' : ''} — {m.instruction.slice(0, 60)}
-              </option>
-            ))}
-          </select>
-
-          <div className="row" style={{ marginTop: 8 }}>
-            <select value={eventForm.event_type}
-              onChange={e => setEventForm({ ...eventForm, event_type: e.target.value })}
-              style={{ flex: 1 }}>
-              {['attack', 'exploit', 'defend', 'detect', 'block', 'alert', 'score'].map(t => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-            <input style={{ flex: 1 }} placeholder="target (예: juiceshop)" value={eventForm.target}
-              onChange={e => setEventForm({ ...eventForm, target: e.target.value })} />
-            <input type="number" style={{ width: 130 }} placeholder="신청점수(참고)"
-              title="참고용 신청값 — 실제 점수는 AI 가 결정합니다"
-              value={eventForm.points}
-              onChange={e => setEventForm({ ...eventForm, points: parseInt(e.target.value || '0', 10) })} />
-          </div>
-
-          <input placeholder="한 줄 설명 (요약)"
-            value={eventForm.description}
-            onChange={e => setEventForm({ ...eventForm, description: e.target.value })} required />
-
-          {/* ② 학생이 한 행위 — 분석의 핵심 입력 */}
-          <label style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>
-            ② 사용한 명령 / 페이로드 (분석의 핵심 — 비워두면 채점 정확도 낮음)
-          </label>
-          <textarea
-            rows={4}
-            placeholder="예) hydra -l admin -P rockyou.txt 10.20.30.80 http-get-form '...:H=Cookie: security=low; PHPSESSID=...'"
-            value={eventForm.what_i_did}
-            onChange={e => setEventForm({ ...eventForm, what_i_did: e.target.value })}
-            style={{ fontFamily: 'monospace', fontSize: 12 }}
-          />
-
-          {/* ③ 결과/응답 */}
-          <label style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>
-            ③ 결과 / 응답 발췌 (출력, 로그 라인, 에러 메시지 등)
-          </label>
-          <textarea
-            rows={3}
-            placeholder="예) [80][http-get-form] host: 10.20.30.80   login: admin   password: password"
-            value={eventForm.what_happened}
-            onChange={e => setEventForm({ ...eventForm, what_happened: e.target.value })}
-            style={{ fontFamily: 'monospace', fontSize: 12 }}
-          />
-
-          <button type="submit" disabled={submitting}>
-            {submitting ? '제출 중…' : '제출 (채점은 백그라운드 — 바로 다음 미션 진행 가능)'}
-          </button>
-          {submitMsg && (
-            <div style={{ fontSize: 12, color: '#1f6f3c', marginTop: 6, lineHeight: 1.5 }}>
-              {submitMsg}
-            </div>
-          )}
-        </form>
       )}
 
       <h3 style={{ marginTop: 16 }}>이벤트 타임라인</h3>
