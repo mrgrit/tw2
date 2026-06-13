@@ -244,3 +244,32 @@ async def test_me_submissions_portfolio(monkeypatch):
         # scenario_id 필터
         f = (await client.get(f"/me/submissions?scenario_id={scn}", headers=h)).json()
         assert len(f) == 1
+
+
+@pytest.mark.asyncio
+async def test_me_workbook_download_filled(monkeypatch):
+    """내 제출이 워크북(.docx) 칸에 자동으로 채워져 다운로드된다."""
+    import io
+    from docx import Document
+    async with await _new() as client:
+        tok, uid = await _signup(client, "alice@example.com", "Alice")
+        h = {"authorization": f"Bearer {tok}"}
+        bid, maxp = await _solo_active(client, h, uid)
+        _mock_grade(monkeypatch, awarded="max", verdict="pass")
+        sub = (await client.post(f"/battles/{bid}/events", headers=h, json={
+            "event_type": "exploit", "mission_order": 1, "mission_side": "red",
+            "points": 0, "what_i_did": "WORKBOOK_CMD_42",
+            "what_happened": "RESULT_OUT_7", "description": "내 분석 메모"})).json()
+        scn = sub["scenario_id"]
+        r = await client.get(f"/me/workbook/{scn}", headers=h)
+        assert r.status_code == 200
+        assert "wordprocessingml" in r.headers["content-type"]
+        doc = Document(io.BytesIO(r.content))
+        text = "\n".join(p.text for p in doc.paragraphs)
+        for t in doc.tables:
+            for row in t.rows:
+                for c in row.cells:
+                    text += "\n" + c.text
+        assert "WORKBOOK_CMD_42" in text       # 명령 칸 자동 채움
+        assert "RESULT_OUT_7" in text          # 결과 칸
+        assert "내 분석 메모" in text            # 설명 칸
