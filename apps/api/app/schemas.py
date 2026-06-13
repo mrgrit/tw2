@@ -213,6 +213,8 @@ class BattleEventIn(BaseModel):
     what_happened: str = Field(default="", max_length=4000)
     # legacy / 자유 detail (자동 모니터가 사용)
     detail: dict[str, Any] = Field(default_factory=dict)
+    # 멱등키 — 프런트가 제출마다 발급. 더블클릭/재전송이 중복 채점을 만들지 않게.
+    client_token: str | None = Field(default=None, max_length=64)
 
 
 class BattleEventOut(BaseModel):
@@ -225,6 +227,36 @@ class BattleEventOut(BaseModel):
     reasoning: str | None = None
     points: int
     ts: dt.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class StudentSubmissionOut(BaseModel):
+    """학생 제출 저널 한 건 — verbatim 입력 + (있으면) 채점 결과. 포트폴리오/워크북의 원천."""
+    id: int
+    user_id: int
+    battle_id: int | None = None
+    scenario_id: int | None = None
+    mission_side: str | None = None
+    mission_order: int | None = None
+    event_type: str
+    target: str
+    what_i_did: str
+    what_happened: str
+    description: str
+    claimed_points: int
+    mission_snapshot: dict[str, Any] = Field(default_factory=dict)
+    grade_status: str                       # pending | graded | failed
+    verdict: str | None = None
+    awarded_points: int | None = None
+    max_points: int | None = None
+    feedback: str | None = None
+    criteria_met: list[Any] = Field(default_factory=list)
+    criteria_missing: list[Any] = Field(default_factory=list)
+    grader_model: str | None = None
+    battle_event_id: int | None = None
+    submitted_at: dt.datetime
+    graded_at: dt.datetime | None = None
 
     model_config = {"from_attributes": True}
 

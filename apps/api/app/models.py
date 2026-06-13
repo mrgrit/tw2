@@ -369,3 +369,54 @@ class ScrapPost(Base):
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class StudentSubmission(Base):
+    """학생 제출 저널 — append-only. '내가 한 일' 보고를 제출 즉시 **verbatim** 보존하고,
+    AI 채점 결과(verdict/점수/피드백)를 나중에 같은 행에 비동기로 붙인다.
+
+    설계 의도:
+    - battle/scenario 가 삭제돼도(SET NULL) **학생 소유 기록은 생존** → 복습·포트폴리오·워크북의 단일 원천.
+    - 입력(what_i_did/what_happened/description/claimed)은 절대 수정·절삭하지 않는다(워크북 빈칸과 1:1).
+    - `mission_snapshot`: 제출 당시 학생이 본 미션 지시문 사본(시나리오가 나중에 바뀌어도 맥락 보존).
+    - `grade_status`: pending → graded | failed. 채점 지연/실패와 무관하게 입력은 항상 남는다.
+    - `client_token`: 프런트 발급 멱등키 — 더블클릭/재전송이 중복 채점 잡을 만들지 않게.
+    - `battle_events` 가 점수의 '권위' 기록, 이 테이블은 학생 학습 관점의 영속 저널(상호 보완).
+    """
+    __tablename__ = "student_submissions"
+    __table_args__ = (UniqueConstraint("client_token", name="uq_submission_client_token"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    battle_id: Mapped[int | None] = mapped_column(
+        ForeignKey("battles.id", ondelete="SET NULL"), index=True, nullable=True)
+    scenario_id: Mapped[int | None] = mapped_column(
+        ForeignKey("scenarios.id", ondelete="SET NULL"), index=True, nullable=True)
+    cohort_id: Mapped[int | None] = mapped_column(
+        ForeignKey("cohorts.id", ondelete="SET NULL"), nullable=True)
+    # ── 미션 좌표 + 학생 입력 (verbatim, 불변) ──
+    mission_side: Mapped[str | None] = mapped_column(String(8), nullable=True)    # red | blue | None
+    mission_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event_type: Mapped[str] = mapped_column(String(24), default="", nullable=False)
+    target: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    what_i_did: Mapped[str] = mapped_column(Text, default="", nullable=False)        # ▶ 실행한 명령/페이로드
+    what_happened: Mapped[str] = mapped_column(Text, default="", nullable=False)     # ▶ 실행 결과
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)        # ▶ 설명/분석
+    claimed_points: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    mission_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)  # {title,instruction,points,target_vm}
+    # ── 채점 결과 (나중에 비동기로 붙음) ──
+    grade_status: Mapped[str] = mapped_column(String(12), default="pending", nullable=False)  # pending|graded|failed
+    verdict: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    awarded_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_points: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    feedback: Mapped[str | None] = mapped_column(Text, nullable=True)                 # AI 채점 근거(markdown)
+    criteria_met: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    criteria_missing: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    grader_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    battle_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("battle_events.id", ondelete="SET NULL"), nullable=True)          # 점수 권위 event 연결
+    client_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    submitted_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False)
+    graded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

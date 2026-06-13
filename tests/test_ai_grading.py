@@ -80,8 +80,8 @@ async def test_pass_awards_ai_points_not_claimed(monkeypatch):
             "event_type": "exploit", "mission_order": 1, "mission_side": "red",
             "points": 200, "what_i_did": "sqlmap -u ...", "what_happened": "is vulnerable"})
         assert ev.status_code == 201
-        g = ev.json()["detail"]["grading"]
-        assert g["ai_decided"] is True
+        g = ev.json()                            # 응답 = StudentSubmissionOut(동기 채점 완료)
+        assert g["grade_status"] == "graded"
         assert g["awarded_points"] == maxp
         assert g["claimed_points"] == 200       # 기록은 됨
         det = (await client.get(f"/battles/{bid}", headers=h)).json()
@@ -98,7 +98,7 @@ async def test_fail_verdict_awards_zero(monkeypatch):
         ev = await client.post(f"/battles/{bid}/events", headers=h, json={
             "event_type": "exploit", "mission_order": 1, "mission_side": "red",
             "points": 100, "what_i_did": "아무것도 안 함"})
-        assert ev.json()["detail"]["grading"]["awarded_points"] == 0
+        assert ev.json()["awarded_points"] == 0
         det = (await client.get(f"/battles/{bid}", headers=h)).json()
         assert det["participants"][0]["score"] == 0
 
@@ -112,7 +112,7 @@ async def test_award_clamped_to_mission_max(monkeypatch):
         _mock_grade(monkeypatch, awarded=9999, verdict="pass")   # AI 가 과도하게 줘도
         ev = await client.post(f"/battles/{bid}/events", headers=h, json={
             "event_type": "exploit", "mission_order": 1, "mission_side": "red", "points": 0})
-        assert ev.json()["detail"]["grading"]["awarded_points"] == maxp   # 미션 최대로 clamp
+        assert ev.json()["awarded_points"] == maxp   # 미션 최대로 clamp
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_no_mission_student_gets_zero(monkeypatch):
         # 미션 미지정 + 일반 event_type → AI 채점 대상 아님 → 학생은 0
         ev = await client.post(f"/battles/{bid}/events", headers=h, json={
             "event_type": "note", "points": 50, "description": "그냥 메모"})
-        assert ev.json()["detail"]["grading"]["awarded_points"] == 0
+        assert ev.json()["awarded_points"] == 0
         det = (await client.get(f"/battles/{bid}", headers=h)).json()
         assert det["participants"][0]["score"] == 0
 
@@ -143,7 +143,7 @@ async def test_admin_manual_points_for_non_mission(monkeypatch):
         # admin 이 미션 외 수동 보정 점수 (운영 override)
         ev = await client.post(f"/battles/{bid}/events", headers=ah, json={
             "event_type": "system", "points": 7, "description": "admin 보정"})
-        assert ev.json()["detail"]["grading"]["awarded_points"] == 7
+        assert ev.json()["awarded_points"] == 7
 
 
 @pytest.mark.asyncio
@@ -159,5 +159,88 @@ async def test_review_pending_when_ai_unavailable(monkeypatch):
         monkeypatch.setattr(ea, "grade", unavailable)
         ev = await client.post(f"/battles/{bid}/events", headers=h, json={
             "event_type": "exploit", "mission_order": 1, "mission_side": "red", "points": 50})
-        g = ev.json()["detail"]["grading"]
+        g = ev.json()
         assert g["verdict"] == "review" and g["awarded_points"] == 0   # 보류 — 자동 점수 금지
+
+
+@pytest.mark.asyncio
+async def test_submission_journal_persists_verbatim(monkeypatch):
+    """제출 즉시 학생 입력이 verbatim 저널로 보존되고, 미션 지시문 스냅샷도 함께 남는다."""
+    async with await _new() as client:
+        tok, uid = await _signup(client, "alice@example.com", "Alice")
+        h = {"authorization": f"Bearer {tok}"}
+        bid, maxp = await _solo_active(client, h, uid)
+        _mock_grade(monkeypatch, awarded="max", verdict="pass")
+        ev = await client.post(f"/battles/{bid}/events", headers=h, json={
+            "event_type": "exploit", "mission_order": 1, "mission_side": "red",
+            "points": 10, "what_i_did": "nmap -sS 10.20.32.0/24",
+            "what_happened": "5 hosts up", "description": "외부 정찰"})
+        j = ev.json()
+        assert j["what_i_did"] == "nmap -sS 10.20.32.0/24"     # 절삭/변형 없이 보존
+        assert j["what_happened"] == "5 hosts up"
+        assert j["description"] == "외부 정찰"
+        assert j["mission_side"] == "red" and j["mission_order"] == 1
+        assert j["mission_snapshot"].get("instruction")        # 제출 당시 지시문 사본 존재
+        assert j["grade_status"] == "graded" and j["verdict"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_idempotent_client_token_no_double_grade(monkeypatch):
+    """같은 client_token 재전송(더블클릭)은 같은 제출을 반환하고 점수를 중복 부여하지 않는다."""
+    async with await _new() as client:
+        tok, uid = await _signup(client, "alice@example.com", "Alice")
+        h = {"authorization": f"Bearer {tok}"}
+        bid, maxp = await _solo_active(client, h, uid)
+        _mock_grade(monkeypatch, awarded="max", verdict="pass")
+        payload = {"event_type": "exploit", "mission_order": 1, "mission_side": "red",
+                   "points": 0, "client_token": "tok-double-click-1"}
+        a = (await client.post(f"/battles/{bid}/events", headers=h, json=payload)).json()
+        b = (await client.post(f"/battles/{bid}/events", headers=h, json=payload)).json()
+        assert a["id"] == b["id"]                               # 같은 제출(중복 생성 안 함)
+        det = (await client.get(f"/battles/{bid}", headers=h)).json()
+        assert det["participants"][0]["score"] == maxp          # 점수 1회만(2*maxp 아님)
+
+
+@pytest.mark.asyncio
+async def test_grade_failure_preserves_input(monkeypatch):
+    """채점기가 터져도 학생 입력은 저널에 보존되고 grade_status='failed' 로 표시(강사 검토)."""
+    async with await _new() as client:
+        tok, uid = await _signup(client, "alice@example.com", "Alice")
+        h = {"authorization": f"Bearer {tok}"}
+        bid, maxp = await _solo_active(client, h, uid)
+
+        async def boom(*, report, mission, scenario, evidence_text="", max_points=0, **kw):
+            raise RuntimeError("grader down")
+        monkeypatch.setattr(ea, "grade", boom)
+        ev = await client.post(f"/battles/{bid}/events", headers=h, json={
+            "event_type": "exploit", "mission_order": 1, "mission_side": "red",
+            "points": 0, "what_i_did": "내 소중한 명령 기록"})
+        j = ev.json()
+        assert j["grade_status"] == "failed"
+        assert j["what_i_did"] == "내 소중한 명령 기록"          # 입력은 절대 잃지 않음
+        det = (await client.get(f"/battles/{bid}", headers=h)).json()
+        assert det["participants"][0]["score"] == 0             # 점수 미반영
+
+
+@pytest.mark.asyncio
+async def test_me_submissions_portfolio(monkeypatch):
+    """내 제출이 /me/submissions 에 보이고(복습 포트폴리오), 본인 것만·시나리오 필터 동작."""
+    async with await _new() as client:
+        tok, uid = await _signup(client, "alice@example.com", "Alice")
+        h = {"authorization": f"Bearer {tok}"}
+        bid, maxp = await _solo_active(client, h, uid)
+        _mock_grade(monkeypatch, awarded="max", verdict="pass")
+        await client.post(f"/battles/{bid}/events", headers=h, json={
+            "event_type": "exploit", "mission_order": 1, "mission_side": "red",
+            "points": 0, "what_i_did": "submission ONE"})
+        mine = (await client.get("/me/submissions", headers=h)).json()
+        assert len(mine) == 1 and mine[0]["what_i_did"] == "submission ONE"
+        scn = mine[0]["scenario_id"]
+        # 다른 학생은 내 제출을 못 본다(user 스코프)
+        tok2, _ = await _signup(client, "bob@example.com", "Bob")
+        other = (await client.get("/me/submissions",
+                                  headers={"authorization": f"Bearer {tok2}"})).json()
+        assert other == []
+        # scenario_id 필터
+        f = (await client.get(f"/me/submissions?scenario_id={scn}", headers=h)).json()
+        assert len(f) == 1

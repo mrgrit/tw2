@@ -109,8 +109,8 @@ async def test_solo_battle_full_lifecycle(monkeypatch) -> None:
             "what_i_did": "sqlmap -u ... --batch", "what_happened": "is vulnerable", "points": 200,
         })
         assert ev.status_code == 201, ev.text
-        assert ev.json()["detail"]["grading"]["ai_decided"] is True
-        assert ev.json()["detail"]["grading"]["awarded_points"] == maxp   # claim(200) 아님
+        assert ev.json()["grade_status"] == "graded"        # 동기 채점 완료(StudentSubmissionOut)
+        assert ev.json()["awarded_points"] == maxp          # claim(200) 아님
 
         # 6) detail 확인 — AI 점수 반영
         det = await client.get(f"/battles/{battle_id}", headers=h)

@@ -21,3 +21,6 @@ os.environ.setdefault("TUBEWAR_JWT_SECRET", "test-secret-32-chars-please-not-sho
 
 # pytest 가 어떤 test module 을 먼저 import 해도 limiter 가 꺼진 상태로 기동.
 os.environ.setdefault("TUBEWAR_RATE_LIMIT_DISABLE", "1")
+
+# 제출 채점을 인라인(동기)으로 — 테스트 결정론. 운영은 미설정(비동기 백그라운드).
+os.environ.setdefault("TUBEWAR_GRADE_SYNC", "1")

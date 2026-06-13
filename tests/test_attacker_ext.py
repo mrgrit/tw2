@@ -19,10 +19,10 @@ class FakeInfra:
 
 def test_smoke_includes_attacker_ext_port():
     assert six_smoke.DEFAULT_PORTS["attacker_ext_ssh"] == 2203
-    keys = {k for _, k, _ in six_smoke.PORT_SPEC}
+    keys = {k for _, k, _, _ in six_smoke.PORT_SPEC}
     assert "attacker_ext_ssh" in keys
     # 옵셔널(required=False) 이어야 — SKIP_ATTACKER_EXT 가능
-    spec = {k: req for _, k, req in six_smoke.PORT_SPEC}
+    spec = {k: req for _, k, req, _ in six_smoke.PORT_SPEC}
     assert spec["attacker_ext_ssh"] is False
     # 기존 attacker(insider) 는 유지
     assert six_smoke.DEFAULT_PORTS["attacker_ssh"] == 2202
