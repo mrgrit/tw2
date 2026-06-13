@@ -9,6 +9,7 @@ import MyWork from './pages/MyWork.tsx'
 import Leaderboard from './pages/Leaderboard.tsx'
 import Admin from './pages/Admin.tsx'
 import Profile from './pages/Profile.tsx'
+import AskAI from './components/AskAI.tsx'
 import { getUser, isAdmin, isAuthed, logout } from './auth.ts'
 
 function NavBar() {
@@ -70,6 +71,7 @@ export default function App() {
           <Route path="/admin"       element={<RequireAdmin><Admin /></RequireAdmin>} />
         </Routes>
       </main>
+      <AskAI />
     </>
   )
 }

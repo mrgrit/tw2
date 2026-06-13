@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { api } from '../api.ts'
 import { getToken, getUser, login as saveAuth } from '../auth.ts'
 
@@ -89,6 +89,8 @@ export default function Profile() {
         <button type="submit" disabled={busy !== null || name.trim() === me.name}>저장</button>
       </form>
 
+      <LlmSettingsCard />
+
       <form onSubmit={changePw} className="card col">
         <h3 style={{ marginTop: 0 }}>비밀번호 변경</h3>
         <label style={{ fontSize: 12, color: 'var(--fg-dim)' }}>현재 비밀번호</label>
@@ -111,5 +113,120 @@ export default function Profile() {
         <button type="submit" disabled={busy !== null}>비밀번호 변경</button>
       </form>
     </>
+  )
+}
+
+// ──────────────────────────────────────────────────────
+// AI 모델 (GPU 서버) — Ollama 연결 → 모델 선택 → 저장.
+// 저장하면 드래그-질문 AI 튜터가 이 서버/모델로 동작한다.
+// ──────────────────────────────────────────────────────
+interface LlmSettings { url: string | null; model: string | null }
+interface LlmModelsResp { connected: boolean; url: string; models: string[]; error?: string }
+
+// 저장된 url(http://ip:port) → {ip, port} 로 역분해 (입력칸 프리필용)
+function splitUrl(url: string | null): { ip: string; port: string } {
+  if (!url) return { ip: '', port: '' }
+  const m = url.replace(/^https?:\/\//, '').match(/^([^:/]+)(?::(\d+))?/)
+  return { ip: m?.[1] || '', port: m?.[2] || '' }
+}
+
+function LlmSettingsCard() {
+  const [ip, setIp] = useState('')
+  const [port, setPort] = useState('')
+  const [models, setModels] = useState<string[]>([])
+  const [model, setModel] = useState('')
+  const [savedModel, setSavedModel] = useState<string | null>(null)
+  const [connecting, setConnecting] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  // 기존 설정 프리필
+  useEffect(() => {
+    api<LlmSettings>('/llm/settings').then(s => {
+      const { ip, port } = splitUrl(s.url)
+      setIp(ip); setPort(port)
+      if (s.model) { setModel(s.model); setSavedModel(s.model); setModels([s.model]) }
+    }).catch(() => {})
+  }, [])
+
+  const url = () => `http://${ip.trim()}:${(port || '11434').trim()}`
+
+  async function connect() {
+    if (!ip.trim()) { setMsg({ ok: false, text: 'GPU 서버 IP를 입력하세요.' }); return }
+    setConnecting(true); setMsg(null)
+    try {
+      const d = await api<LlmModelsResp>('/llm/models', { method: 'POST', json: { url: url() } })
+      if (!d.connected) {
+        setModels([])
+        setMsg({ ok: false, text: `연결 실패 — ${d.error || '응답 없음'}. (VPN 연결/주소 확인)` })
+        return
+      }
+      setModels(d.models)
+      setMsg({ ok: true, text: `연결됨 — 모델 ${d.models.length}개. 모델을 고르고 저장하세요.` })
+      if (d.models.length > 0 && !d.models.includes(model)) setModel(d.models[0])
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message })
+    } finally { setConnecting(false) }
+  }
+
+  async function save() {
+    if (!ip.trim() || !model) { setMsg({ ok: false, text: '연결 후 모델을 선택하세요.' }); return }
+    setSaving(true); setMsg(null)
+    try {
+      const s = await api<LlmSettings>('/llm/settings', { method: 'POST', json: { url: url(), model } })
+      setSavedModel(s.model)
+      setMsg({ ok: true, text: `저장 완료 — 이제 어느 페이지에서든 텍스트를 드래그해 "AI에게 질문"할 수 있습니다.` })
+    } catch (e: any) {
+      setMsg({ ok: false, text: e.message })
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="card col">
+      <h3 style={{ marginTop: 0 }}>AI 모델 (GPU 서버) 🤖</h3>
+      <div style={{ fontSize: 13, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
+        개인 GPU(Ollama) 서버를 연결하면, 어느 페이지에서든 <b>텍스트를 드래그 → "AI에게 질문"</b>으로
+        현재 페이지 맥락과 선택한 내용을 근거로 한 답변을 받을 수 있습니다.
+        <br />※ 서버가 VPN 너머라면 먼저 VPN을 연결해야 합니다.
+      </div>
+      <div className="row" style={{ alignItems: 'flex-end', flexWrap: 'wrap', gap: 8 }}>
+        <div className="col" style={{ flex: 2, minWidth: 180, gap: 2 }}>
+          <label style={{ fontSize: 12, color: 'var(--fg-dim)' }}>GPU 서버 IP</label>
+          <input placeholder="211.170.162.139" value={ip} onChange={e => setIp(e.target.value)} />
+        </div>
+        <div className="col" style={{ flex: 1, minWidth: 90, gap: 2 }}>
+          <label style={{ fontSize: 12, color: 'var(--fg-dim)' }}>포트</label>
+          <input placeholder="11434" value={port} onChange={e => setPort(e.target.value)} />
+        </div>
+        <button type="button" onClick={connect} disabled={connecting}>
+          {connecting ? '연결 중…' : '연결'}
+        </button>
+      </div>
+
+      {models.length > 0 && (
+        <div className="row" style={{ alignItems: 'flex-end', gap: 8, marginTop: 4 }}>
+          <div className="col" style={{ flex: 1, gap: 2 }}>
+            <label style={{ fontSize: 12, color: 'var(--fg-dim)' }}>모델 선택 (ollama list)</label>
+            <select value={model} onChange={e => setModel(e.target.value)}>
+              {models.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          <button type="button" onClick={save} disabled={saving || !model}>
+            {saving ? '저장 중…' : '저장'}
+          </button>
+        </div>
+      )}
+
+      {savedModel && (
+        <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
+          현재 저장된 모델: <b style={{ color: 'var(--primary)' }}>{savedModel}</b>
+        </div>
+      )}
+      {msg && (
+        <div style={{ color: msg.ok ? 'var(--green)' : 'var(--red)', fontSize: 13, lineHeight: 1.5 }}>
+          {msg.text}
+        </div>
+      )}
+    </div>
   )
 }

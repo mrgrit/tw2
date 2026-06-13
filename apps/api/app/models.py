@@ -30,6 +30,9 @@ class User(Base):
     # 인증 출처 — local(이메일/비번) | google. 구글 연결 시 google_sub 채움.
     auth_provider: Mapped[str] = mapped_column(String(16), default="local", nullable=False)
     google_sub: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    # 개인 GPU(Ollama) 서버 — 드래그-질문 AI 튜터가 사용. url 예: http://1.2.3.4:11434
+    llm_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

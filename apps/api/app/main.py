@@ -15,7 +15,7 @@ from .config import get_settings
 from .db import Base, SessionLocal, engine
 from .models import Battle, User
 from .routers import (
-    admin, auth, cohorts, feedback, graders, infras, battles, leaderboard, me, monitoring,
+    admin, auth, cohorts, feedback, graders, infras, battles, leaderboard, llm, me, monitoring,
     scenarios, users,
 )
 from .schema_upgrade import ensure_added_columns
@@ -119,3 +119,4 @@ app.include_router(monitoring.router)
 app.include_router(graders.router)
 app.include_router(admin.router)
 app.include_router(me.router)
+app.include_router(llm.router)

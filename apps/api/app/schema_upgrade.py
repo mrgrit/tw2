@@ -23,6 +23,9 @@ _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     # 구글 로그인 — 기존 users 테이블에 추가. NOT NULL 은 DEFAULT 동반(기존 행 보강).
     ("users", "auth_provider", "VARCHAR(16) DEFAULT 'local' NOT NULL"),
     ("users", "google_sub", "VARCHAR(64)"),
+    # 개인 GPU(Ollama) 서버 설정 — 드래그-질문 AI 튜터.
+    ("users", "llm_url", "VARCHAR(255)"),
+    ("users", "llm_model", "VARCHAR(120)"),
 ]
 
 
