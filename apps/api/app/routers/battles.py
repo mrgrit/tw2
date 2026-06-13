@@ -263,8 +263,9 @@ async def start_battle(
     # (옵션) 룰 무장 — 기본 skip(no-op).
     await provisioner.arm_battle_rules(session, battle_id)
     # (옵션) 백그라운드 실습 모니터 — 기본 OFF(env TUBEWAR_LAB_MONITOR=1 일 때만).
+    # 피드백은 틱에서 자동 생성하지 않는다(폭주 방지) — 학생 제출 시에만 트리거(post_event).
     if lab_monitor.autostart_enabled():
-        lab_monitor.start(battle_id, feedback_cb=fb_svc.bottleneck_feedback_cb)
+        lab_monitor.start(battle_id)
     return await _serialize_with_missions(session, b, viewer_user_id=user.id)
 
 
@@ -626,6 +627,16 @@ async def grade_submission(submission_id: int) -> None:
                 await siem_export.export_events(siem_export.default_client(), [grade_doc], chain)
             except Exception:
                 pass  # SIEM 전송 실패는 채점을 막지 않음(best-effort)
+
+        # ── 학생 제출 트리거 피드백 — struggling(미통과) 일 때만, (user,battle) 쿨다운으로 폭주 방지.
+        #    (주기 틱 자동생성을 폐지하고 제출 이벤트로 이동: "학생이 제출했을 때만 피드백 작동") ──
+        if (mission_ctx is not None and battle is not None
+                and getattr(analysis, "verdict", "") in ("fail", "partial", "review")):
+            try:
+                await fb_svc.maybe_submission_feedback(
+                    session, user_id=sub.user_id, battle_id=battle.id, cohort_id=battle.cohort_id)
+            except Exception:
+                pass  # 피드백 실패는 채점을 막지 않음(best-effort)
 
 
 @router.post("/{battle_id}/end", response_model=BattleDetail)

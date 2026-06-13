@@ -24,3 +24,6 @@ os.environ.setdefault("TUBEWAR_RATE_LIMIT_DISABLE", "1")
 
 # 제출 채점을 인라인(동기)으로 — 테스트 결정론. 운영은 미설정(비동기 백그라운드).
 os.environ.setdefault("TUBEWAR_GRADE_SYNC", "1")
+
+# 제출 트리거 피드백은 기본 off — 테스트가 claude CLI 서브프로세스를 띄우지 않게(개별 테스트가 opt-in).
+os.environ.setdefault("TUBEWAR_SUBMISSION_FEEDBACK", "0")

@@ -55,7 +55,8 @@ async def lifespan(app: FastAPI):
         if lab_monitor.autostart_enabled():
             active = (await s.scalars(select(Battle).where(Battle.status == "active"))).all()
             for b in active:
-                lab_monitor.start(b.id, feedback_cb=fb_svc.bottleneck_feedback_cb)
+                # 피드백은 더 이상 주기 틱에서 자동 생성하지 않는다(폭주 방지) — 학생 제출 시에만 트리거.
+                lab_monitor.start(b.id)
             if active:
                 log.info("lab-monitor resumed for %d active battle(s)", len(active))
     log.info("tubewar API ready on %s:%s", settings.api_host, settings.api_port)

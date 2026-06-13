@@ -142,11 +142,44 @@ async def generate_feedback(
 
 async def bottleneck_feedback_cb(session: AsyncSession, battle_id: int, user_id: int,
                                  progress: dict) -> None:
-    """lab_monitor 의 stuck 학생 콜백 — 병목 트리거 피드백 작성."""
+    """lab_monitor 의 stuck 학생 콜백 — 병목 트리거 피드백 작성.
+
+    주의: 더 이상 주기 틱에서 자동 호출하지 않는다(폭주 방지). 피드백은 학생 제출 시
+    `maybe_submission_feedback` 로만 트리거한다. (강사 on-demand 경로는 별도 유지.)
+    """
     from ..models import Battle
     b = await session.get(Battle, battle_id)
     cohort_id = b.cohort_id if b else None
     await generate_feedback(
         session, user_id=user_id, battle_id=battle_id, cohort_id=cohort_id,
         scope="lab", trigger="bottleneck", delivered_to="both",
+    )
+
+
+# ── 제출 트리거 피드백 (틱 자동생성 대체) ──
+# 끄려면 TUBEWAR_SUBMISSION_FEEDBACK=0. (user,battle) 당 쿨다운으로 폭주 재발 방지.
+_SUBMISSION_FEEDBACK = os.getenv("TUBEWAR_SUBMISSION_FEEDBACK", "1") == "1"
+_FB_COOLDOWN_SEC = float(os.getenv("TUBEWAR_FEEDBACK_COOLDOWN_SEC", "600"))   # 기본 10분
+_fb_cooldown: dict[tuple[int, int], float] = {}
+
+
+async def maybe_submission_feedback(
+    session: AsyncSession, *, user_id: int, battle_id: int, cohort_id: int | None = None,
+) -> "StudentFeedback | None":
+    """학생 제출 시 호출 — struggling 학생에게만(호출부 게이팅) 피드백을 1건 작성한다.
+
+    동일 (user, battle) 은 `_FB_COOLDOWN_SEC` 동안 1건으로 제한 → 자동 루프/연타 제출이
+    피드백을 폭주시키지 못하게 한다. 비활성: TUBEWAR_SUBMISSION_FEEDBACK=0.
+    """
+    if not _SUBMISSION_FEEDBACK:
+        return None
+    import time as _time
+    key = (int(user_id), int(battle_id))
+    now = _time.monotonic()
+    if now - _fb_cooldown.get(key, -1e9) < _FB_COOLDOWN_SEC:
+        return None
+    _fb_cooldown[key] = now            # 생성 전에 찍어 쿨다운 보장(연타 차단)
+    return await generate_feedback(
+        session, user_id=user_id, battle_id=battle_id, cohort_id=cohort_id,
+        scope="lab", trigger="submission", delivered_to="both",
     )

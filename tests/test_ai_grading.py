@@ -273,3 +273,42 @@ async def test_me_workbook_download_filled(monkeypatch):
         assert "WORKBOOK_CMD_42" in text       # 명령 칸 자동 채움
         assert "RESULT_OUT_7" in text          # 결과 칸
         assert "내 분석 메모" in text            # 설명 칸
+
+
+@pytest.mark.asyncio
+async def test_submission_feedback_only_on_submit_with_cooldown(monkeypatch):
+    """피드백은 주기 틱이 아니라 **제출 시에만** + struggling(미통과) + (user,battle) 쿨다운 1건."""
+    from sqlalchemy import func, select
+    from app.services import feedback as fb
+    from app.models import StudentFeedback
+    monkeypatch.setattr(fb, "_SUBMISSION_FEEDBACK", True)   # 이 테스트만 on
+    fb._fb_cooldown.clear()
+    async def fake_claude(payload):                         # claude CLI 서브프로세스 회피
+        return ("결정론 스텁 피드백", "test-model", 0.0)
+    monkeypatch.setattr(fb, "_claude_feedback", fake_claude)
+
+    async def count_fb(uid):
+        async with SessionLocal() as s:
+            return await s.scalar(select(func.count()).select_from(StudentFeedback)
+                                  .where(StudentFeedback.user_id == uid))
+
+    async with await _new() as client:
+        tok, uid = await _signup(client, "alice@example.com", "Alice")
+        h = {"authorization": f"Bearer {tok}"}
+        bid, maxp = await _solo_active(client, h, uid)
+
+        # 통과 제출 → 피드백 없음(struggling 아님)
+        _mock_grade(monkeypatch, awarded="max", verdict="pass")
+        await client.post(f"/battles/{bid}/events", headers=h, json={
+            "event_type": "exploit", "mission_order": 1, "mission_side": "red", "points": 0})
+        assert await count_fb(uid) == 0
+
+        # 미통과 제출 → 피드백 1건
+        _mock_grade(monkeypatch, awarded=0, verdict="fail")
+        await client.post(f"/battles/{bid}/events", headers=h, json={
+            "event_type": "exploit", "mission_order": 1, "mission_side": "red", "points": 0})
+        assert await count_fb(uid) == 1
+        # 곧바로 또 미통과 제출(쿨다운 내) → 추가 안 됨(폭주 방지)
+        await client.post(f"/battles/{bid}/events", headers=h, json={
+            "event_type": "exploit", "mission_order": 1, "mission_side": "red", "points": 0})
+        assert await count_fb(uid) == 1
