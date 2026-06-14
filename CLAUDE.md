@@ -74,6 +74,15 @@ curl -X POST http://127.0.0.1:9200/auth/login \
   -d '{"email":"alice@test","password":"alice1234"}'
 ```
 
+## 관제 (학생 행동 모니터링)
+
+"관제 시작 / 관제해줘" → `gwanje` 스킬, 또는 직접:
+`.venv/bin/python scripts/monitor/gwanje.py` (무료 deterministic 기본, 읽기전용·한 줄로 끝).
+- 에이전트 선택: `--agent deterministic|local|claude` (+`--model`). claude=과금 → 기본 차단(`--allow-billed` 필요). 목록 `--agents`.
+- 스마트 트리거(cron 금지): `salience>=5` | heartbeat≥25분 | 이상징후 즉시일 때만 보고.
+- 점검: cohort_id NULL(코호트 SIEM 미적재)·고아배틀(active>6h)·grade_fail/assess_bad·새 기능(워크북·AI피드백) 정확성.
+- 상세: `scripts/monitor/README.md`, 스킬 `.claude/skills/gwanje/SKILL.md`.
+
 ## 현재 Phase
 
 **Phase 1 — 골격**. 다음 단계는 `docs/roadmap.md` 참고.
