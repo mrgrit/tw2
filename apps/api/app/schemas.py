@@ -131,6 +131,27 @@ class CohortMoveIn(BaseModel):
     role: str | None = Field(default=None, pattern=_MEMBER_ROLE)
 
 
+# ── Initiative 게시판 ─────────────────────────────────
+class PostOut(BaseModel):
+    id: int
+    board: str
+    title: str
+    body: str
+    author_id: int | None = None
+    author_name: str
+    pinned: bool
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PostIn(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    body: str = Field(default="", max_length=200_000)
+    pinned: bool = False
+
+
 # ── Battle / Scenario (Phase 1 placeholder) ──────────
 class ScenarioOut(BaseModel):
     id: int

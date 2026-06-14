@@ -374,6 +374,24 @@ class ScrapPost(Base):
     )
 
 
+class Post(Base):
+    """게시판 글 — 'initiative' 등 보드별 마크다운 게시물. 관리자 작성, 인증 사용자 열람."""
+    __tablename__ = "posts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    board: Mapped[str] = mapped_column(String(40), index=True, default="initiative", nullable=False)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str] = mapped_column(Text, default="", nullable=False)  # 마크다운 본문
+    author_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    author_name: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
 class StudentSubmission(Base):
     """학생 제출 저널 — append-only. '내가 한 일' 보고를 제출 즉시 **verbatim** 보존하고,
     AI 채점 결과(verdict/점수/피드백)를 나중에 같은 행에 비동기로 붙인다.

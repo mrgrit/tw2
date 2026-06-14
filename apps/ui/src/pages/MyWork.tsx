@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.ts'
 import { getToken } from '../auth.ts'
+import Markdown from '../components/Markdown.tsx'
 
 // 백엔드 StudentSubmissionOut 와 1:1
 interface Submission {
@@ -142,7 +143,16 @@ export default function MyWork() {
                 {s.what_happened && <Field label="실행 결과" value={s.what_happened} mono />}
                 {s.description && <Field label="설명/분석" value={s.description} />}
                 {s.grade_status === 'graded' && s.feedback && (
-                  <Field label="AI 피드백" value={s.feedback} />
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginBottom: 2 }}>AI 피드백</div>
+                    <div style={{
+                      fontSize: 14, lineHeight: 1.65, color: 'var(--fg)',
+                      background: 'var(--bg)', border: '1px solid var(--border)',
+                      borderRadius: 6, padding: '10px 12px',
+                    }}>
+                      <Markdown text={s.feedback} />
+                    </div>
+                  </div>
                 )}
               </div>
             ))}
@@ -158,10 +168,13 @@ function Field({ label, value, mono }: { label: string; value: string; mono?: bo
     <div style={{ marginTop: 4 }}>
       <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{label}</div>
       <div style={{
-        whiteSpace: 'pre-wrap', fontSize: 13,
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13.5, lineHeight: 1.5,
         fontFamily: mono ? 'monospace' : 'inherit',
-        background: mono ? 'var(--code-bg, #f6f8fa)' : 'transparent',
-        padding: mono ? '6px 8px' : 0, borderRadius: mono ? 6 : 0,
+        color: 'var(--fg)',
+        background: mono ? 'var(--code-bg, #1c2128)' : 'transparent',
+        border: mono ? '1px solid var(--border)' : 'none',
+        padding: mono ? '8px 10px' : 0, borderRadius: mono ? 6 : 0,
+        overflowX: 'auto',
       }}>{value}</div>
     </div>
   )
