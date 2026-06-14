@@ -1,0 +1,176 @@
+id: "compliance-w14"
+category: "compliance"
+title: "[컴플라이언스 W14] 보안 교육/인식 — 피싱 캠페인 vs 인식 통제·피싱 탐지"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  컴플라이언스 14주차 — **보안 교육/인식 프로그램**. 피싱 모의훈련과 인식 통제를 점검한다. 공격자는 피싱
+  캠페인으로 사용자 약점을 노리고, 감사자(너)는 피싱 탐지·인식 통제를 구현하고 프로그램 효과를 증적으로 입증한다.
+
+  ▸ 이야기: 공격자가 피싱 링크/페이지로 자격증명을 노리고(태그 `co14r1`) 피싱 페이로드(`/tmp/.co14phish`)와 계정
+    `compa14` 을 남긴다. 감사자는 ① 피싱 탐지, ② 인식/자격증명 탈취 룰, ③ 교육 프로그램 종합 점검·증적으로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/피싱 파일·계정).
+  ▸ 마커: 태그 **`co14r1-<본인id>`**, 피싱 페이로드 **`/tmp/.co14phish`**(마커 `co14`), 계정 **`compa14`**,
+    Suricata **sid 9814011**, Wazuh **id 104141**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [피싱 캠페인] — 자격증명 탈취 페이지 유도
+
+      ### 상황
+      교육이 부족하면 피싱이 통한다. 너는 태그 `co14r1-<본인id>` 로 피싱 자격증명 수집 요청을 보낸다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "co14r1-kim-phish" -H "Host: dvwa.6v6.lab" \
+        --data "user=victim&pass=stolen&campaign=co14r1-kim" "http://<대상_공개IP>/login"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `co14r1` 흔적 시 인정.
+    hint: "태그(co14r1) 피싱 자격증명 수집 → 대상 modsec audit. 채점: log_contains modsec co14r1."
+    verify:
+      type: "log_contains"
+      expect: "co14r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "co14r1", since_sec: 1800 } }
+      semantic:
+        intent: "피싱(T1566) — 자격증명 수집 캠페인. 인식 부족 입증. 태그(co14r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 co14r1 태그", "피싱 캠페인 방식 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 피싱 요청"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [피싱 페이로드] — 가짜 페이지/문서 + 계정
+
+      ### 상황
+      피싱 페이로드(가짜 로그인/악성 매크로)를 남긴다. 너는 피싱 페이로드 **`/tmp/.co14phish`**(마커 `co14`)과 계정 **`compa14`** 을 남긴다.
+
+      ### 할 일
+      ```bash
+      printf 'co14 phishing kit: fake-login.html harvests creds to attacker' > /tmp/.co14phish
+      sudo useradd -m -s /bin/bash compa14
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.co14phish`(마커 `co14`) 또는 `compa14` 존재 시 인정.
+    hint: "피싱 페이로드 /tmp/.co14phish (마커 co14) + useradd compa14. 채점: file_contains phish co14 + file_contains passwd compa14."
+    verify:
+      type: "file_contains"
+      expect: "co14"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.co14phish", pattern: "co14" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "compa14" } }
+      semantic:
+        intent: "피싱 키트(T1566.001) + 계정(T1136) — 자격증명 수집 페이로드."
+        success_criteria: ["/tmp/.co14phish(마커 co14) 또는 계정 compa14", "피싱 키트 동작 서술"]
+        acceptable_methods: ["피싱 페이로드 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [피싱 탐지] — Suricata 룰 (sid 9814011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"COMPLIANCE-W14 phishing credential harvest"; flow:to_server; http.user_agent; content:"phish"; nocase; sid:9814011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9814011 룰 존재 시 인정.
+    hint: "피싱 탐지 Suricata 룰(sid 9814011) → reload. 채점: file_contains local.rules 9814011."
+    verify:
+      type: "file_contains"
+      expect: "9814011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9814011" } }
+      semantic:
+        intent: "피싱 탐지(네트워크) — 자격증명 수집 Suricata 룰. 기술적 인식 보완."
+        success_criteria: ["local.rules 에 sid 9814011", "피싱 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [자격증명 탈취 탐지] — Wazuh 룰 (id 104141)
+
+      ### 할 일
+      ```xml
+      <group name="edu,awareness,">
+        <rule id="104141" level="12">
+          <if_group>edu</if_group>
+          <match>compa14</match>
+          <description>COMPLIANCE-W14 - phishing payload / credential harvest / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 104141 룰 존재 시 인정.
+    hint: "피싱/자격증명 Wazuh 룰(id 104141) → restart. 채점: file_contains local_rules.xml 104141."
+    verify:
+      type: "file_contains"
+      expect: "104141"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "104141" } }
+      semantic:
+        intent: "피싱 탐지(호스트) — 피싱 페이로드/계정 Wazuh 룰. 인식 통제 보완."
+        success_criteria: ["local_rules.xml 에 rule id 104141", "피싱 페이로드 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [교육 프로그램 종합 점검·증적]
+
+      ### 할 일
+      보고서에:
+      - 교육/인식 프로그램(피싱 모의훈련 주기/클릭률 KPI/교육 이수율) + 효과 측정 + 증적
+      - 피싱 페이로드(`/tmp/.co14phish`)·계정(compa14) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 교육 프로그램 증적으로 인정.
+    hint: "교육/인식 프로그램(피싱 모의훈련 주기/클릭률/이수율 KPI) + 효과 측정 + 피싱/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "보안 교육/인식 종합·증적 — 프로그램 + 효과 측정(클릭률/이수율). 분석형 — KPI/증적 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "교육 프로그램(주기/KPI/이수율) + 효과 측정 + 증적"
+          - "피싱 페이로드/계정 헌팅"
+        acceptable_methods: ["프로그램 + KPI + 증적 + 헌팅"]
+        negative_signs: ["KPI/증적 누락"]

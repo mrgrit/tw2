@@ -1,0 +1,328 @@
+id: "soc-adv-w07"
+category: "soc-adv"
+title: "[SOC고급 W7] 네트워크 포렌식 — 흔적 남기는 공격 vs 증거 수집·재구성"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 7주차 — **네트워크 포렌식**. 침해 후에는 "무슨 일이 있었는가"를 **네트워크 증거**로 재구성하고,
+  법적 효력을 위해 **무결성(해시)·보관 체인(Chain of Custody)** 을 지킨다. 이번 공방전에서 공격자는 네트워크에
+  뚜렷한 흔적(디렉토리 트래버설·SQLi + 스테이징 파일)을 남기고, 관제팀(너)은 그 증거를 수집·상관·재구성하고
+  무결성을 보장한다.
+
+  ▸ 이야기
+    공격자가 대상 웹서버에 태그 `sa07r1` 를 단 다단계 웹 공격을 보내고, 유출 직전 단계로 스테이징 파일
+    `/tmp/.sa07exfil` 을 만든다. 관제팀은 ① 공격 패턴을 Suricata 룰화, ② 동일 위협을 Wazuh 룰화, ③ 증거를
+    수집해 해시 매니페스트로 무결성을 보장하고, ④ HTTP/DNS 분석으로 공격 타임라인을 재구성하고, ⑤ 법적
+    요건을 갖춘 포렌식 보고서로 종합한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + 포렌식을 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 외부 공격, Blue 는 자기 인프라에서 증거 수집·재구성.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. 외부 명령은 6v6 가 수집 못 하므로 Red 채점은
+    **대상 인프라의 흔적(WAF audit / 스테이징 파일)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    공격 태그 **`sa07r1-<본인id>`**, 스테이징 파일 **`/tmp/.sa07exfil`**(마커 `sa07exfil`), 증거 해시 매니페스트
+    **`/tmp/soc-adv-w07-evidence.sha256`**(마커 `sa07`), Suricata 룰 **sid 9607071**, Wazuh 룰 **id 102071**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [다단계 웹 공격] — 네트워크 증거를 남기는 침투
+
+      ### 상황
+      포렌식 분석가가 재구성할 **네트워크 흔적**을 만든다. 너는 태그 `sa07r1-<본인id>` 를 붙여 디렉토리 트래버설과
+      SQLi 를 차례로 보낸다. 이 패킷/탐지가 타임라인 재구성의 증거가 된다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?file=sa07r1-kim/../../../../etc/passwd"
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa07r1-kim%27%20UNION%20SELECT%201,2--+&Submit=Submit"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `sa07r1` 가 포함된 공격 탐지(트래버설/SQLi)가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `sa07r1` 태그가 포함된 공격 탐지가 남는다.
+    hint: "태그(sa07r1) 디렉토리 트래버설 + SQLi → 대상 modsec audit. 채점: log_contains modsec sa07r1. 타임라인 재구성 증거."
+    verify:
+      type: "log_contains"
+      expect: "sa07r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa07r1", since_sec: 1800 } }
+      semantic:
+        intent: "다단계 웹 공격(T1190/T1083) — 트래버설+SQLi. 네트워크 포렌식 타임라인 재구성의 증거. 태그(sa07r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 sa07r1 태그가 포함된 공격 탐지"
+          - "공격 순서(트래버설→SQLi)와 페이로드 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 붙인 다단계 웹 공격"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [유출 스테이징] — 반출 직전 데이터 모으기
+
+      ### 상황
+      유출의 전 단계는 보통 **스테이징**(반출할 데이터를 한곳에 모음)이다. 너는 대상 호스트에 스테이징 파일
+      **`/tmp/.sa07exfil`**(마커 `sa07exfil`)을 만든다. 포렌식 분석가가 이 아티팩트와 네트워크 전송을 상관시켜야 한다.
+
+      ### 할 일
+      ```bash
+      tar czf /tmp/.sa07exfil /etc/passwd /etc/hostname 2>/dev/null; echo 'sa07exfil staged' >> /tmp/.sa07exfil
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.sa07exfil` 이 있고 마커 `sa07exfil` 을 포함하는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.sa07exfil` 이 존재하고 마커 `sa07exfil` 을 포함한다.
+    hint: "유출 스테이징 파일 /tmp/.sa07exfil (마커 sa07exfil). 채점: file_exists + file_contains sa07exfil."
+    verify:
+      type: "file_exists"
+      expect: "/tmp/.sa07exfil"
+      checks:
+        - { id: "red-2-1", type: "file_exists", target: "web", params: { path: "/tmp/.sa07exfil" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/tmp/.sa07exfil", pattern: "sa07exfil" } }
+      semantic:
+        intent: "유출 스테이징(T1074 Data Staged) — 반출 직전 데이터 집결. 포렌식이 호스트 아티팩트+네트워크 전송으로 상관."
+        success_criteria:
+          - "/tmp/.sa07exfil 존재 + 마커 sa07exfil"
+          - "스테이징의 의미와 다음 단계(유출) 서술"
+        acceptable_methods:
+          - "tar 로 데이터 집결 + 마커"
+        negative_signs:
+          - "파일 부재 / 마커 누락"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [패킷↔IDS 상관 → Suricata 룰] — 트래버설 탐지 (sid 9607071)
+
+      ### 상황
+      네트워크 포렌식의 출발은 "어떤 패킷이 경보를 만들었나"이다. RED-1 의 디렉토리 트래버설을 잡는 Suricata
+      룰(**sid 9607071**)을 만들어, 이후 같은 공격의 원인 패킷을 즉시 특정한다.
+
+      ### 할 일
+      `/etc/suricata/rules/local.rules` 에 추가 후 reload:
+      ```
+      alert http any any -> any any (msg:"SOCADV-W07 directory traversal"; flow:to_server; http.uri; content:"../"; content:"etc/passwd"; nocase; sid:9607071; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9607071 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 디렉토리 트래버설을 보는 sid 9607071 룰이 존재한다.
+    hint: "디렉토리 트래버설 Suricata 룰(sid 9607071, ../ + etc/passwd) → reload. 채점: file_contains local.rules 9607071."
+    verify:
+      type: "file_contains"
+      expect: "9607071"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9607071" } }
+      semantic:
+        intent: "패킷↔IDS 상관 — 트래버설 탐지 Suricata 룰. 경보의 원인 패킷 특정 + 포렌식 증거 생성."
+        success_criteria:
+          - "local.rules 에 sid 9607071 (../ + etc/passwd)"
+          - "Suricata 경보와 패킷 캡처를 상관하는 방법 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [호스트 상관 → Wazuh 룰] — 트래버설/민감파일 접근 (id 102071)
+
+      ### 상황
+      네트워크 증거를 **호스트 로그와 교차**한다. 같은 트래버설/민감 파일 접근을 Wazuh 에서도 잡는 룰(**id 102071**)을 만든다.
+
+      ### 할 일
+      `/var/ossec/etc/rules/local_rules.xml` 에 추가 후 재시작:
+      ```xml
+      <group name="edu,web,forensics,">
+        <rule id="102071" level="11">
+          <if_group>web</if_group>
+          <match>etc/passwd</match>
+          <description>SOCADV-W07 - path traversal / sensitive file access</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102071 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 트래버설/민감파일 접근을 보는 id 102071 룰이 존재한다.
+    hint: "Wazuh 룰(id 102071, etc/passwd 접근) → restart. 네트워크 증거를 호스트 로그와 교차. 채점: file_contains local_rules.xml 102071."
+    verify:
+      type: "file_contains"
+      expect: "102071"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102071" } }
+      semantic:
+        intent: "네트워크↔호스트 교차 — 트래버설/민감파일 접근 Wazuh 룰. 다소스 증거 결합으로 신뢰도 향상."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102071"
+          - "민감파일 접근 탐지 로직"
+          - "네트워크 증거와 호스트 로그 교차 의의 서술"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "교차 개념 누락 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [증거 수집·무결성] — 해시 매니페스트로 보관 체인 보장
+
+      ### 상황
+      포렌식 증거는 **무결성**이 생명이다. RED 가 남긴 흔적(WAF audit, 스테이징 파일 등)을 수집하고, 각 증거의
+      SHA-256 해시를 **매니페스트 `/tmp/soc-adv-w07-evidence.sha256`** 에 기록해 보관 체인(Chain of Custody)을 만든다.
+
+      ### 할 일
+      ```bash
+      sudo sha256sum /tmp/.sa07exfil /var/log/apache2/modsec_audit.log 2>/dev/null | \
+        sudo tee /tmp/soc-adv-w07-evidence.sha256
+      echo "sa07 collected by <분석가> at $(date -u)" | sudo tee -a /tmp/soc-adv-w07-evidence.sha256
+      ```
+
+      ### 채점 방법
+      `/tmp/soc-adv-w07-evidence.sha256` 매니페스트가 있고 마커 `sa07` 을 포함하는지로 확인.
+
+      ### 합격 기준
+      증거 해시 매니페스트가 존재하고 `sa07` 을 포함한다(보관 체인 메모 포함).
+    hint: "sha256sum 으로 증거 해시 매니페스트 /tmp/soc-adv-w07-evidence.sha256 (마커 sa07 + 수집자/시각). 채점: file_exists + file_contains sa07."
+    verify:
+      type: "file_exists"
+      expect: "/tmp/soc-adv-w07-evidence.sha256"
+      checks:
+        - { id: "blue-3-1", type: "file_exists", target: "web", params: { path: "/tmp/soc-adv-w07-evidence.sha256" } }
+        - { id: "blue-3-2", type: "file_contains", target: "web",
+            params: { path: "/tmp/soc-adv-w07-evidence.sha256", pattern: "sa07" } }
+      semantic:
+        intent: "증거 무결성/보관 체인 — SHA-256 해시 매니페스트 + 수집자/시각 기록. 법적 효력의 핵심."
+        success_criteria:
+          - "해시 매니페스트 파일 존재 + 마커 sa07"
+          - "수집한 증거 목록 + 각 해시 + 수집자/시각(보관 체인)"
+          - "무결성 보장이 왜 필요한지 서술"
+        acceptable_methods:
+          - "sha256sum + 매니페스트 작성"
+        negative_signs:
+          - "해시 없음 / 보관 체인 메모 누락"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [타임라인 재구성] — HTTP/DNS 분석 + 공격 시퀀스 복원
+
+      ### 상황
+      흩어진 증거를 **시간순 하나의 이야기**로 묶는다. WAF audit·Suricata·호스트 로그를 시간순으로 정렬해
+      정찰→침투→스테이징→(유출) 시퀀스를 재구성하고, HTTP/DNS 이상 징후를 분석한다.
+
+      ### 할 일
+      보고서에:
+      - 공격 타임라인(시각 + 단계 + 증거 출처): 트래버설 → SQLi → 스테이징
+      - HTTP 분석(공격 페이로드)·DNS 이상(긴 서브도메인/TXT 남용 등) 점검 결과
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 타임라인/HTTP·DNS 분석으로 채점.
+      > 참고: 실재 증거(Suricata IDS rule **86601** 등)를 인용하면 점수가 오른다.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 시간순 공격 타임라인·HTTP/DNS 분석은 제출로 검증).
+    hint: "WAF audit/Suricata/호스트 로그 시간순 → 정찰→침투→스테이징 타임라인 + HTTP/DNS 이상 분석. 실증 증거(86601) 인용. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "공격 타임라인 재구성 — 다소스 증거를 시간순 시퀀스로. HTTP/DNS 이상 분석. 분석형 — 실재 증거 인용 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "시간순 공격 타임라인(단계 + 증거 출처)"
+          - "HTTP 페이로드 분석 + DNS 이상 점검"
+        acceptable_methods:
+          - "로그 시간순 정렬 + 시퀀스 재구성"
+        negative_signs:
+          - "타임라인 없이 단편 / 증거 출처 누락"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — 법적 요건 보고서 + 위생
+
+      ### 상황
+      포렌식의 산출물이다. 캡처 환경, 분석 결과, 공격 타임라인, 추출 증거(+해시), **법적 요건**(무결성/보관 체인/
+      적법 수집)을 갖춘 보고서로 종합하고, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 법적 요건 충족 보고서(캡처 환경 + 타임라인 + 증거 해시 + 보관 체인)
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo rm -f /tmp/.sa07exfil /tmp/soc-adv-w07-evidence.sha256
+      sudo sed -i '/9607071/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102071 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 보고서/법적 요건/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 법적 요건 보고서·회고·cleanup 은 제출로 검증).
+    hint: "법적 요건(무결성/보관체인/적법수집) 갖춘 포렌식 보고서 + R/B/P 회고 + 스테이징/해시/9607071/102071 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "네트워크 포렌식 종합 — 캡처 환경 + 타임라인 + 증거 해시 + 법적 요건 + R/B/P 회고 + cleanup. 포렌식 보고서."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "법적 요건(무결성/보관체인/적법수집) 갖춘 보고서 구조"
+          - "R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "보고서 + 법적 요건 + 회고 + cleanup"
+        negative_signs:
+          - "법적 요건 누락 / cleanup 미완"

@@ -1,0 +1,172 @@
+id: "web-vuln-w09"
+category: "web-vuln"
+title: "[웹취약점 W9] 접근제어 — IDOR/권한상승/인가우회 vs 인가 통제 점검"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 9주차 — **접근제어(IDOR/권한상승/인가우회)**. 공격자는 객체 참조/권한 경계를 우회하고, 점검자(너)는
+  인가 통제를 점검·구현한다.
+
+  ▸ 이야기: 공격자가 IDOR/인가우회(태그 `wv09r1`)로 타인 자원에 접근하고 추출 자원(`/tmp/.wv09idor`)과 계정 `wva09` 를 남긴다.
+    점검자는 ① IDOR 탐지, ② 인가 우회 Wazuh 룰, ③ 접근제어 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/자원 파일·계정).
+  ▸ 마커: 태그 **`wv09r1-<본인id>`**, 추출 자원 **`/tmp/.wv09idor`**(마커 `wv09`), 계정 **`wva09`**,
+    Suricata **sid 9909011**, Wazuh **id 105091**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [IDOR/인가우회] — 객체 참조 조작
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      for id in 1 2 3 1000; do
+        curl -s -A "wv09r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/api/user/$id/profile?probe=wv09r1-kim"
+      done
+      curl -s -A "wv09r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/admin?wv09r1-kim"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv09r1` 흔적 시 인정.
+    hint: "태그(wv09r1) IDOR(객체 id 순회)/인가우회 → 대상 modsec audit. 채점: log_contains modsec wv09r1."
+    verify:
+      type: "log_contains"
+      expect: "wv09r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv09r1", since_sec: 1800 } }
+      semantic:
+        intent: "접근제어 우회(T1190) — IDOR/인가 우회. 태그(wv09r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv09r1 태그", "IDOR/인가우회 방식 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 IDOR/인가우회"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [무단 자원 추출] — 타인 자원 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'wv09 IDOR loot: other users profiles, admin-only data accessed' > /tmp/.wv09idor
+      sudo useradd -m -s /bin/bash wva09
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv09idor`(마커 `wv09`) 또는 `wva09` 존재 시 인정.
+    hint: "추출 자원 /tmp/.wv09idor (마커 wv09) + useradd wva09. 채점: file_contains idor wv09 + file_contains passwd wva09."
+    verify:
+      type: "file_contains"
+      expect: "wv09"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv09idor", pattern: "wv09" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva09" } }
+      semantic:
+        intent: "무단 자원 접근(T1190) + 계정(T1136) — IDOR 로 타인/관리 자원 추출."
+        success_criteria: ["/tmp/.wv09idor(마커 wv09) 또는 계정 wva09", "추출 자원 서술"]
+        acceptable_methods: ["자원 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [IDOR/열거 탐지] — Suricata 룰 (sid 9909011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W09 IDOR object reference enumeration"; flow:to_server; http.uri; content:"/api/user/"; nocase; sid:9909011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9909011 룰 존재 시 인정.
+    hint: "IDOR 열거 Suricata 룰(sid 9909011) → reload. 채점: file_contains local.rules 9909011."
+    verify:
+      type: "file_contains"
+      expect: "9909011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9909011" } }
+      semantic:
+        intent: "접근제어 탐지 — IDOR 객체 열거 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9909011", "IDOR 열거 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [인가우회 탐지] — Wazuh 룰 (id 105091)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105091" level="12">
+          <if_group>edu</if_group>
+          <match>wva09</match>
+          <description>WEBVULN-W09 - IDOR / authorization bypass / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105091 룰 존재 시 인정.
+    hint: "인가우회 Wazuh 룰(id 105091) → restart. 채점: file_contains local_rules.xml 105091."
+    verify:
+      type: "file_contains"
+      expect: "105091"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105091" } }
+      semantic:
+        intent: "접근제어 탐지(호스트) — IDOR/인가우회/계정 Wazuh 룰."
+        success_criteria: ["local_rules.xml 에 rule id 105091", "인가우회 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [접근제어 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - 접근제어 점검(객체 수준 인가/함수 수준 인가/수직·수평 권한 경계) + 방어(서버측 인가/간접 참조) + 위험도
+      - R/B/P 회고 + 추출 자원(`/tmp/.wv09idor`)·계정(wva09) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 접근제어 점검·R/B/P 로 인정.
+    hint: "접근제어 점검(객체/함수 수준 인가, 권한 경계) + 방어(서버측 인가/간접 참조) + R/B/P + 자원/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "접근제어 점검 종합 — 인가 경계 점검 + 방어 + R/B/P. 분석형 — 서버측 인가/간접 참조 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "접근제어 점검(객체/함수 인가/권한 경계) + 방어 + 위험도"
+          - "R/B/P 회고 + 자원/계정 헌팅"
+        acceptable_methods: ["점검 표 + 방어 + 회고 + 헌팅"]
+        negative_signs: ["방어/회고 누락"]

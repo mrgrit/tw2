@@ -1,0 +1,327 @@
+id: "soc-adv-w06"
+category: "soc-adv"
+title: "[SOC고급 W6] 위협 헌팅 — 잠복 위협 은닉 vs 가설 기반 능동 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 6주차 — **위협 헌팅**. 경보를 기다리는 게 아니라, "이런 위협이 이미 들어와 있을 것"이라는
+  **가설을 세우고 능동적으로 찾는다**. 이번 공방전에서 공격자는 경보를 잘 안 울리는 **잠복 위협**(주기적
+  비콘 C2, cron 지속성)을 심고, 관제팀(너)은 가설을 세워 헌팅으로 찾아낸 뒤 그 발견을 탐지 룰로 전환한다.
+
+  ▸ 이야기
+    공격자가 대상 호스트에 비콘 C2 리스너(**포트 54006**)와 cron 지속성(**`/etc/cron.d/sa06persist`**)을 조용히
+    심는다. 단발 경보로는 안 잡힌다. 관제팀은 ① 비콘 가설로 헌팅 후 Suricata 룰화, ② 지속성 가설로 헌팅 후
+    Wazuh 룰화, ③ 실제 잠복 위협을 발견·제거하고, ④ 헌팅 가설 매트릭스(ATT&CK)를 만들고, ⑤ 헌팅 성숙도(HMM)와
+    종합 보고로 마무리한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + 헌팅을 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라에 잠복 위협을 심고, Blue 는 자기 인프라를 헌팅.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. 외부 명령은 6v6 가 수집 못 하므로 Red 채점은
+    **대상 호스트에 남은 잠복 흔적(포트·cron 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    비콘 C2 포트 **54006**, cron 지속성 **`/etc/cron.d/sa06persist`**(마커 `sa06`), 백도어 계정 **`soca06`**,
+    Suricata 비콘룰 **sid 9606061**, Wazuh 지속성룰 **id 102061**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [비콘 C2] — 주기적 비콘으로 잠복 채널 열기
+
+      ### 상황
+      성숙한 C2 는 시끄럽게 한 번 터지지 않고 **주기적으로 조용히** 신호를 보낸다(beaconing). 너는 대상 호스트에
+      비콘 C2 리스너 **포트 54006** 을 열어 잠복 채널을 만든다. 단발 경보가 아니라서 헌팅으로만 잡힌다.
+
+      ### 할 일 (attacker-ext → 발판 후 호스트)
+      ```bash
+      nohup ncat -lk 54006 >/dev/null 2>&1 &    # ncat 없으면: nc -lk 54006 / python3 -m http.server 54006
+      ```
+
+      ### 채점 방법
+      대상 호스트에 포트 54006 이 listening 인지로 채점.
+
+      ### 합격 기준
+      대상 호스트에서 포트 54006 이 listening 이다.
+    hint: "비콘 C2 리스너 포트 54006. 채점: port_listening 54006. 단발 경보 안 울리는 잠복 위협 → 헌팅 표적."
+    verify:
+      type: "port_listening"
+      expect: "54006"
+      checks:
+        - { id: "red-1-1", type: "port_listening", target: "web", params: { port: 54006 } }
+      semantic:
+        intent: "비콘 C2(T1071/T1571) — 주기적 잠복 채널. 단발 탐지를 회피하므로 가설 기반 헌팅의 표적."
+        success_criteria:
+          - "포트 54006 listening"
+          - "비콘(주기적 통신)이 왜 단발 탐지를 회피하는지 서술"
+        acceptable_methods:
+          - "리스너로 54006 개방"
+        negative_signs:
+          - "포트 미개방"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [cron 지속성] — 재부팅에도 살아남는 발판 심기
+
+      ### 상황
+      잠복의 핵심은 **지속성**이다. 너는 cron 으로 주기 실행되는 지속성 메커니즘 **`/etc/cron.d/sa06persist`**
+      을 심고(보조로 계정 `soca06`), 재부팅 후에도 발판이 살아남게 한다.
+
+      ### 할 일
+      ```bash
+      echo '*/10 * * * * root /bin/bash -c "id # sa06 persistence" >/dev/null 2>&1' | sudo tee /etc/cron.d/sa06persist
+      sudo useradd -m -s /bin/bash soca06
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/etc/cron.d/sa06persist` 가 있고 마커 `sa06` 을 포함하거나, `/etc/passwd` 에 `soca06` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/etc/cron.d/sa06persist` 가 존재(마커 `sa06`)하거나 `/etc/passwd` 에 `soca06` 이 있다.
+    hint: "cron 지속성 /etc/cron.d/sa06persist (마커 sa06) + useradd soca06. 채점: file_exists/file_contains cron + file_contains passwd soca06."
+    verify:
+      type: "file_exists"
+      expect: "/etc/cron.d/sa06persist"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/etc/cron.d/sa06persist", pattern: "sa06" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca06" } }
+      semantic:
+        intent: "지속성(T1053.003 Cron + T1136 계정) — 재부팅 생존 발판. 헌팅의 핵심 표적(잠복 메커니즘)."
+        success_criteria:
+          - "/etc/cron.d/sa06persist(마커 sa06) 또는 계정 soca06"
+          - "cron 지속성 메커니즘과 의도 서술"
+        acceptable_methods:
+          - "cron.d 파일 작성 + useradd"
+        negative_signs:
+          - "흔적 미생성 / 마커 누락"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [비콘 가설 → Suricata 룰] — 주기 통신 탐지 (sid 9606061)
+
+      ### 상황
+      **가설**: "내부 호스트가 비표준 포트로 주기적 비콘을 보낸다." 이 가설을 검증하고, 비콘 C2 포트(54006)
+      트래픽을 잡는 Suricata 룰(**sid 9606061**)로 전환한다.
+
+      ### 할 일
+      `/etc/suricata/rules/local.rules` 에 추가 후 reload:
+      ```
+      alert tcp any any -> any 54006 (msg:"SOCADV-W06 beacon C2 port 54006 (hunting->rule)"; flow:to_server; sid:9606061; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      > 헌팅(가설 검증)에서 발견한 비콘 포트를 **재사용 가능한 자동 탐지 룰**로 만드는 것이 핵심.
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9606061 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 비콘 포트(54006)를 보는 sid 9606061 룰이 존재한다.
+    hint: "비콘 가설 검증 → Suricata 룰(sid 9606061, port 54006) → reload. 채점: file_contains local.rules 9606061."
+    verify:
+      type: "file_contains"
+      expect: "9606061"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9606061" } }
+      semantic:
+        intent: "헌팅→탐지 전환(네트워크) — 비콘 가설 검증 후 Suricata 룰화. 1회성 헌팅을 지속 탐지로 운영화."
+        success_criteria:
+          - "local.rules 에 sid 9606061 (port 54006)"
+          - "비콘 가설 + 검증 데이터 소스(통신 간격/표준편차) 서술"
+        acceptable_methods:
+          - "헌팅 + Suricata 룰 작성 + reload"
+        negative_signs:
+          - "가설 없이 룰만 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [지속성 가설 → Wazuh 룰] — cron/계정 변조 탐지 (id 102061)
+
+      ### 상황
+      **가설**: "공격자가 cron 또는 새 계정으로 지속성을 심었다." cron/계정 변조를 탐지하는 Wazuh 룰(**id 102061**)을 만든다.
+
+      ### 할 일
+      `/var/ossec/etc/rules/local_rules.xml` 에 추가 후 재시작:
+      ```xml
+      <group name="edu,persistence,">
+        <rule id="102061" level="12">
+          <if_group>edu</if_group>
+          <match>cron.d</match>
+          <description>SOCADV-W06 - cron persistence artifact detected (hunting->rule)</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      (개념: `/etc/cron.d/` 와 `/etc/passwd` 를 syscheck FIM 대상으로 두면 변조가 경보로 잡힌다.)
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102061 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 cron/지속성 변조를 보는 id 102061 룰이 존재한다.
+    hint: "지속성 가설 → Wazuh 룰(id 102061, cron.d FIM) → restart. 채점: file_contains local_rules.xml 102061."
+    verify:
+      type: "file_contains"
+      expect: "102061"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102061" } }
+      semantic:
+        intent: "헌팅→탐지 전환(호스트) — 지속성 가설 검증 후 Wazuh FIM 룰화. cron.d/passwd 변조 자동 탐지."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102061"
+          - "cron/계정 지속성 탐지 로직 + FIM 대상 설명"
+          - "지속성 가설 + 검증 데이터 소스 서술"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "가설 없이 룰만 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [능동 헌팅] — 잠복 위협 발견 후 제거
+
+      ### 상황
+      이론이 아니라 실제 헌팅이다. 가설(비콘/지속성)을 들고 호스트를 전수 점검해 RED 의 비콘 포트(54006)와
+      cron 지속성(`/etc/cron.d/sa06persist`)을 찾아 격리·제거한다.
+
+      ### 할 일
+      ```bash
+      sudo ss -tlnp | grep 54006              # 비콘 리스너
+      ls -al /etc/cron.d/ ; cat /etc/cron.d/sa06persist 2>/dev/null   # cron 지속성
+      sudo getent passwd | grep soca06        # 비인가 계정
+      ```
+      발견 후 보고서에 "가설 → 발견 → 격리 → 제거 → 복구" 로 적는다.
+
+      ### 채점 방법
+      대상 호스트에서 비콘(포트 54006) 또는 cron 지속성(`/etc/cron.d/sa06persist`)이 헌팅되는지로 채점(발견이 핵심).
+
+      ### 합격 기준
+      포트 54006 listening 또는 `/etc/cron.d/sa06persist` 존재를 식별한다(식별 후 제거 보고).
+    hint: "ss -tlnp 54006 + cron.d 점검 + getent passwd soca06 헌팅 → 제거. 채점: port_listening 54006 + file_contains cron sa06(발견 핵심)."
+    verify:
+      type: "port_listening"
+      expect: "54006"
+      checks:
+        - { id: "blue-3-1", type: "port_listening", target: "web", params: { port: 54006 } }
+        - { id: "blue-3-2", type: "file_contains", target: "web",
+            params: { path: "/etc/cron.d/sa06persist", pattern: "sa06" } }
+      semantic:
+        intent: "능동 헌팅 — 가설 기반으로 비콘/지속성 발견 + IR 제거. 채점 핵심은 발견과 전수조사(도구 실행 증거 비요구)."
+        success_criteria:
+          - "비콘 포트 54006 또는 cron 지속성 식별"
+          - "명시적 가설 + 무엇을 어디서 찾았는지(질의) 제시"
+          - "가설→발견→격리→제거→복구 단계(음성 결과 포함)"
+        acceptable_methods:
+          - "ss/cat/getent/Wazuh 로 발견 — 도구보다 발견·전수조사 핵심"
+        negative_signs:
+          - "잠복 위협 누락 / 가설 없음"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [헌팅 매트릭스] — ATT&CK 기반 가설 매트릭스 설계
+
+      ### 상황
+      헌팅은 즉흥이 아니라 **체계**다. 주요 Tactic 별로 (헌팅 가설 / 데이터 소스 / 분석 기법)을 매핑한 ATT&CK
+      헌팅 매트릭스를 만들고, 이번에 못 본 잠복 영역(횡적이동/유출 등)의 가설도 추가한다.
+
+      ### 할 일
+      보고서에:
+      - Tactic 별 헌팅 매트릭스(최소 4 Tactic: C2/Persistence/Lateral Movement/Exfiltration)
+      - 각 가설의 데이터 소스(Suricata eve.json/Wazuh alerts/ss/cron) + 분석 기법(빈도/표준편차/diff)
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 ATT&CK 헌팅 매트릭스로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ Tactic 별 가설·데이터소스·분석기법 매트릭스는 제출로 검증).
+    hint: "ATT&CK Tactic별(C2/Persistence/Lateral/Exfil) 헌팅 가설+데이터소스+분석기법 매트릭스. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "헌팅 체계화 — ATT&CK Tactic별 가설/데이터소스/분석기법 매트릭스. 분석/설계형 — 구체 데이터 소스 명시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "4+ Tactic 헌팅 매트릭스(가설/데이터소스/분석기법)"
+          - "이번에 발견한 비콘/지속성을 매트릭스에 반영"
+        acceptable_methods:
+          - "ATT&CK 매트릭스 + 데이터 소스 매핑"
+        negative_signs:
+          - "Tactic 매핑 누락 / 데이터소스 없음"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — 헌팅 성숙도(HMM) + 보고서 + 위생
+
+      ### 상황
+      헌팅 캠페인의 산출물이다. 헌팅 가설/결과/발견 위협/생성 룰을 보고서로 종합하고, **Sqrrl HMM**(HM0~HM4)으로
+      현재 헌팅 역량을 평가하고, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 헌팅 결과 종합 + HMM 5단계 자체 평가 + 개선 방안
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo pkill -f 'ncat -lk 54006' 2>/dev/null; sudo rm -f /etc/cron.d/sa06persist; sudo userdel -r soca06 2>/dev/null
+      sudo sed -i '/9606061/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102061 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 헌팅 보고서/HMM/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 헌팅 보고서·HMM 평가·회고·cleanup 은 제출로 검증).
+    hint: "헌팅 결과 종합 + Sqrrl HMM(HM0~HM4) 평가 + R/B/P 회고 + 54006/cron/soca06/9606061/102061 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "헌팅 종합 — 가설/결과/발견/생성룰 + HMM 성숙도 평가 + R/B/P 회고 + cleanup. 위협 헌팅 보고서."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "헌팅 가설/결과/발견 종합 + HMM(HM0~HM4) 자체 평가"
+          - "R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "헌팅 보고서 + HMM + 회고 + cleanup"
+        negative_signs:
+          - "HMM/결과 없이 서술만 / cleanup 미완"

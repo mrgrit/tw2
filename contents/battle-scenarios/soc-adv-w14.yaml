@@ -1,0 +1,325 @@
+id: "soc-adv-w14"
+category: "soc-adv"
+title: "[SOC고급 W14] SOC + AI 융합 — 탐지 우회 vs 하이브리드·UEBA 설계"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 14주차 — **SOC + AI 융합**. AI/ML(UEBA·LLM·자동 분류)은 SOC 를 강화하지만, 공격자도 AI/룰
+  탐지를 **우회**하려 한다(난독화, low-and-slow, UA 스푸핑). 이번 공방전에서 공격자는 단순 시그니처를 피하려
+  애쓰고, 관제팀(너)은 **룰 기반 + 행위 기반(UEBA)** 을 결합한 **하이브리드 탐지**로 우회를 잡아낸다. (lecture 의
+  "AI SOC 의 한계와 인간 분석가의 역할"을 직접 체감하는 주차.)
+
+  ▸ 이야기
+    공격자가 난독화/인코딩으로 시그니처를 피하려는 SQLi(태그 `sa14r1`)를 보내고, 단발 경보를 피하려 저속
+    비콘(C2 포트 `54014`)과 계정 `soca14` 를 만든다. 관제팀은 ① 난독화에 강한 페이로드 기반 Suricata 룰,
+    ② 행위 기반(빈도) UEBA 성격 Wazuh 룰을 만들고, ③ 우회 흔적을 헌팅하고, ④ UEBA/AI 분류/adversarial/LLM/
+    하이브리드/MLOps 를 설계하고, ⑤ AI 성숙도·ROI·리스크·로드맵으로 마무리한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + AI 설계를 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 우회 공격, Blue 는 자기 인프라에서 하이브리드 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. Red 채점은 **대상 인프라의 흔적(WAF audit / C2 포트·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    공격 태그 **`sa14r1-<본인id>`**, 저속 비콘 C2 포트 **54014**, 계정 **`soca14`**,
+    Suricata 룰 **sid 9614141**, Wazuh(UEBA 성격) 룰 **id 102141**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [탐지 우회] — 난독화로 시그니처 피하기
+
+      ### 상황
+      AI/룰 탐지를 피하려는 공격자는 페이로드를 **난독화·인코딩**한다. 너는 태그 `sa14r1-<본인id>` 를 단 SQLi 를
+      대소문자 섞기/주석/인코딩으로 변형해 보낸다(단순 시그니처 회피 시도). 그래도 WAF audit 엔 흔적이 남는다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim) — 난독화 변형:
+      ```bash
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa14r1-kim%27%20uNiOn/**/SeLeCt%201--+&Submit=Submit"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `sa14r1` 가 포함된 공격 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `sa14r1` 태그가 포함된 공격 탐지가 남는다.
+    hint: "태그(sa14r1) 난독화 SQLi(uNiOn/**/SeLeCt) → 대상 modsec audit. 채점: log_contains modsec sa14r1. 시그니처 회피 시도."
+    verify:
+      type: "log_contains"
+      expect: "sa14r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa14r1", since_sec: 1800 } }
+      semantic:
+        intent: "탐지 우회(T1027 난독화 + T1190) — 시그니처 회피 변형 SQLi. 하이브리드 탐지의 표적. 태그(sa14r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 sa14r1 태그가 포함된 공격 탐지"
+          - "어떤 난독화/인코딩으로 회피를 시도했는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 난독화 변형 SQLi"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [저속 비콘] — 단발 경보를 피하는 low-and-slow
+
+      ### 상황
+      행위 기반 탐지를 피하려는 공격자는 **저속(low-and-slow)** 으로 움직인다. 너는 저속 비콘 C2 포트 **54014**
+      를 열고 계정 `soca14` 를 만든다. 단발 룰엔 안 걸려도, 행위 기반(UEBA) 탐지가 이상 패턴으로 잡아야 한다.
+
+      ### 할 일
+      ```bash
+      nohup ncat -lk 54014 >/dev/null 2>&1 &    # 또는 nc -lk 54014 / python3 -m http.server 54014
+      sudo useradd -m -s /bin/bash soca14
+      ```
+
+      ### 채점 방법
+      대상 호스트에 포트 54014 가 listening 이거나 `/etc/passwd` 에 `soca14` 가 있는지로 채점.
+
+      ### 합격 기준
+      포트 54014 가 listening 이거나 `/etc/passwd` 에 `soca14` 가 있다.
+    hint: "저속 비콘 포트 54014 + useradd soca14. 채점: port_listening 54014 + file_contains passwd soca14. 행위 기반 탐지 표적."
+    verify:
+      type: "port_listening"
+      expect: "54014"
+      checks:
+        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 54014 } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca14" } }
+      semantic:
+        intent: "low-and-slow 비콘(T1571) + 계정(T1136) — 단발 탐지 회피. 행위 기반(UEBA) 탐지의 표적."
+        success_criteria:
+          - "포트 54014 listening 또는 계정 soca14"
+          - "저속/이상행위가 단발 룰을 회피하는 이유 서술"
+        acceptable_methods:
+          - "리스너 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [하이브리드: 페이로드 룰] — 난독화에 강한 탐지 (sid 9614141)
+
+      ### 상황
+      난독화 우회를 막으려면 UA/단순 문자열이 아니라 **페이로드 구조**를 봐야 한다. 대소문자 무시·키워드 인접으로
+      `uNiOn/**/SeLeCt` 같은 변형을 잡는 Suricata 룰(**sid 9614141**)을 만든다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"SOCADV-W14 obfuscated SQLi UNION/SELECT"; flow:to_server; http.uri; content:"union"; nocase; content:"select"; nocase; distance:0; within:40; sid:9614141; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9614141 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 난독화 변형을 잡는 sid 9614141 룰이 존재한다.
+    hint: "난독화에 강한 페이로드 룰(sid 9614141, nocase union+select 인접) → reload. 채점: file_contains local.rules 9614141."
+    verify:
+      type: "file_contains"
+      expect: "9614141"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9614141" } }
+      semantic:
+        intent: "하이브리드 탐지(룰 측) — 난독화에 강한 페이로드 구조 기반 Suricata 룰. nocase/인접으로 변형 흡수."
+        success_criteria:
+          - "local.rules 에 sid 9614141 (nocase union+select 인접)"
+          - "왜 UA/단순 문자열보다 페이로드 구조가 우회에 강한지 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "단순 문자열 룰(쉽게 우회) / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [UEBA 성격: 행위 기반] — 빈도 이상 탐지 (id 102141)
+
+      ### 상황
+      AI SOC 의 핵심은 **행위 기반(UEBA)** 이다. 단일 이벤트가 아니라 "평소와 다른 빈도/패턴"을 본다. 동일
+      출발지의 반복 공격을 행위 이상으로 잡는 Wazuh 룰(**id 102141**, frequency)을 만든다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,ueba,">
+        <rule id="102141" level="12" frequency="6" timeframe="300">
+          <if_matched_group>web</if_matched_group>
+          <same_source_ip />
+          <description>SOCADV-W14 - behavioral anomaly: repeated web attack (UEBA-style)</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      > frequency/timeframe 으로 "정상 베이스라인 대비 이상 빈도"를 근사한다(룰 기반 UEBA).
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102141 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 행위 기반(frequency) id 102141 룰이 존재한다.
+    hint: "행위 기반(UEBA 성격) Wazuh 룰(id 102141, frequency same_source_ip) → restart. 채점: file_contains local_rules.xml 102141."
+    verify:
+      type: "file_contains"
+      expect: "102141"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102141" } }
+      semantic:
+        intent: "하이브리드 탐지(행위 측) — frequency/same_source_ip 로 UEBA 성격 이상 빈도 탐지. 룰로 근사한 행위 분석."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102141 (frequency)"
+          - "행위 기반(빈도 이상)이 단발 룰과 어떻게 보완되는지 서술"
+          - "UEBA 베이스라인 개념 언급"
+        acceptable_methods:
+          - "Wazuh frequency 룰 + restart"
+        negative_signs:
+          - "frequency 없는 단순 룰 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [우회 흔적 헌팅] — 저속 비콘·계정 발견
+
+      ### 상황
+      행위 기반 탐지로 의심을 잡았으면 **확증**한다. RED-2 의 저속 비콘 포트(54014)와 계정 `soca14` 를 찾아 제거한다.
+
+      ### 할 일
+      ```bash
+      sudo ss -tlnp | grep 54014 ; sudo getent passwd | grep soca14
+      ```
+      보고서에 "행위 의심 → 확증(헌팅) → 제거" 로 적는다.
+
+      ### 채점 방법
+      대상 호스트에서 비콘(포트 54014) 또는 계정(soca14)이 헌팅되는지로 채점(발견이 핵심).
+
+      ### 합격 기준
+      포트 54014 listening 또는 `/etc/passwd` 의 `soca14` 를 식별한다(식별 후 제거 보고).
+    hint: "ss -tlnp 54014 + getent passwd soca14 헌팅 → 제거. 채점: port_listening 54014 + file_contains passwd soca14(발견 핵심)."
+    verify:
+      type: "port_listening"
+      expect: "54014"
+      checks:
+        - { id: "blue-3-1", type: "port_listening", target: "web", params: { port: 54014 } }
+        - { id: "blue-3-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca14" } }
+      semantic:
+        intent: "행위 의심 확증 — 저속 비콘/계정을 헌팅으로 확인 + 제거. AI 가 의심을 올리면 사람이 확증(인간 역할). 발견 핵심."
+        success_criteria:
+          - "비콘 포트 54014 또는 계정 soca14 식별"
+          - "행위 의심 → 확증 → 제거 흐름 + 가설 제시"
+        acceptable_methods:
+          - "ss/getent/Wazuh 로 발견 — 도구보다 발견·확증 핵심"
+        negative_signs:
+          - "흔적 누락 / 확증 없음"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [AI 설계] — UEBA·AI 분류·adversarial·LLM·하이브리드·MLOps
+
+      ### 상황
+      AI 융합의 설계다. UEBA 베이스라인, AI 경보 분류(오탐/진양성 학습), **적대적 공격(adversarial)** 위험과 대응,
+      **LLM** 활용(로그 요약/보고서 생성), 룰+AI **하이브리드** 아키텍처, MLOps 생명주기를 설계한다.
+
+      ### 할 일
+      보고서에:
+      - UEBA 베이스라인 구축 + AI 경보 분류 아키텍처
+      - adversarial 우회(이번 RED-1 난독화가 예시) + 대응책
+      - LLM 활용 사례 + 룰/AI 하이브리드 + MLOps(학습→배포→모니터링→재학습)
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 AI 설계(UEBA/분류/adversarial/LLM/하이브리드/MLOps)로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ AI 설계 항목들은 제출로 검증).
+    hint: "UEBA 베이스라인 + AI 경보분류 + adversarial(난독화) 대응 + LLM 활용 + 룰/AI 하이브리드 + MLOps 생명주기 설계. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "AI 융합 설계 — UEBA/AI 분류/adversarial/LLM/하이브리드/MLOps. 분석/설계형 — 이번 우회(RED-1)를 adversarial 예시로 연결 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "UEBA + AI 경보분류 + adversarial 대응(난독화 예시)"
+          - "LLM 활용 + 룰/AI 하이브리드 + MLOps 생명주기"
+        acceptable_methods:
+          - "AI 아키텍처/생명주기 설계"
+        negative_signs:
+          - "adversarial/하이브리드 누락 / 추상적 서술"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — AI 성숙도·ROI·리스크·로드맵 + 위생
+
+      ### 상황
+      SOC+AI 의 산출물이다. **AI SOC 성숙도**(Level 0 미도입~Level 4 자율 방어), 도입 **ROI**, **리스크**(모델 오류/
+      적대적 공격/과의존), 3단계 **로드맵**을 종합하고, **AI 의 한계와 인간 분석가의 역할**을 명시한 뒤, R/B/P 회고
+      후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - AI 성숙도(L0~L4) + ROI + 리스크 완화 + 3단계 로드맵 + "AI 한계와 인간 역할"
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo pkill -f 'ncat -lk 54014' 2>/dev/null; sudo userdel -r soca14 2>/dev/null
+      sudo sed -i '/9614141/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102141 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 성숙도/ROI/리스크/로드맵/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ AI 성숙도·ROI·리스크·로드맵·회고·cleanup 은 제출로 검증).
+    hint: "AI 성숙도(L0~L4) + ROI + 리스크(모델오류/adversarial/과의존) + 3단계 로드맵 + AI 한계와 인간 역할 + R/B/P 회고 + 54014/soca14/9614141/102141 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "SOC+AI 종합 — 성숙도/ROI/리스크/로드맵 + AI 한계와 인간 역할 + R/B/P 회고 + cleanup. SOC+AI 보고서."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "AI 성숙도(L0~L4) + ROI + 리스크 완화 + 3단계 로드맵"
+          - "AI 한계와 인간 분석가 역할 명시 + R/B/P 회고 + cleanup"
+        acceptable_methods:
+          - "성숙도/ROI/리스크/로드맵 + 회고 + cleanup"
+        negative_signs:
+          - "인간 역할/리스크 누락 / cleanup 미완"

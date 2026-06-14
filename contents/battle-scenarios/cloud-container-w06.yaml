@@ -1,0 +1,169 @@
+id: "cloud-container-w06"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W6] IAM·접근 제어 — 권한 남용 vs 최소권한 통제"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 6주차 — **IAM·접근 제어**. 과도 권한·역할 남용·권한 상승을 점검한다. 공격자는 과도 권한을
+  악용하고, 점검자(너)는 최소권한·역할 분리를 점검·구현한다.
+
+  ▸ 이야기: 공격자가 과도 권한을 악용해(태그 `cc06r1`) 권한 남용 산출물(`/tmp/.cc06iam`)과 계정 `cca06` 을 남긴다.
+    점검자는 ① 권한 남용 탐지, ② IAM Wazuh 룰, ③ 최소권한 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/IAM 파일·계정).
+  ▸ 마커: 태그 **`cc06r1-<본인id>`**, 권한 남용 **`/tmp/.cc06iam`**(마커 `cc06`), 계정 **`cca06`**,
+    Suricata **sid 9006011**, Wazuh **id 106061**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [권한 남용] — 과도 역할로 접근
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "cc06r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/iam/assume-role?role=admin&probe=cc06r1-kim"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc06r1` 흔적 시 인정.
+    hint: "태그(cc06r1) 과도 역할/권한 남용 → 대상 modsec audit. 채점: log_contains modsec cc06r1."
+    verify:
+      type: "log_contains"
+      expect: "cc06r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc06r1", since_sec: 1800 } }
+      semantic:
+        intent: "IAM 권한 남용(T1078) — 과도 역할 assume. 태그(cc06r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc06r1 태그", "권한 남용 방식 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 권한 남용"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [권한 상승] — 과도 정책 산출물 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc06 IAM abuse: policy *:* attached, role chaining to admin' > /tmp/.cc06iam
+      sudo useradd -m -s /bin/bash cca06
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc06iam`(마커 `cc06`) 또는 `cca06` 존재 시 인정.
+    hint: "권한 남용 /tmp/.cc06iam (마커 cc06) + useradd cca06. 채점: file_contains iam cc06 + file_contains passwd cca06."
+    verify:
+      type: "file_contains"
+      expect: "cc06"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc06iam", pattern: "cc06" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca06" } }
+      semantic:
+        intent: "IAM 권한 상승(T1078.004) + 계정(T1136) — 과도 정책/역할 체이닝."
+        success_criteria: ["/tmp/.cc06iam(마커 cc06) 또는 계정 cca06", "권한 상승 경로 서술"]
+        acceptable_methods: ["권한 산출물 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [권한 남용 탐지] — Suricata 룰 (sid 9006011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W06 IAM role abuse (assume-role admin)"; flow:to_server; http.uri; content:"assume-role"; nocase; sid:9006011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9006011 룰 존재 시 인정.
+    hint: "IAM 권한 남용 Suricata 룰(sid 9006011) → reload. 채점: file_contains local.rules 9006011."
+    verify:
+      type: "file_contains"
+      expect: "9006011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9006011" } }
+      semantic:
+        intent: "IAM 보안 — 권한 남용 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9006011", "권한 남용 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [IAM 탐지] — Wazuh 룰 (id 106061)
+
+      ### 할 일
+      ```xml
+      <group name="edu,iam,">
+        <rule id="106061" level="13">
+          <if_group>edu</if_group>
+          <match>cca06</match>
+          <description>CLOUD-W06 - IAM privilege abuse / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106061 룰 존재 시 인정.
+    hint: "IAM Wazuh 룰(id 106061) → restart. 채점: file_contains local_rules.xml 106061."
+    verify:
+      type: "file_contains"
+      expect: "106061"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106061" } }
+      semantic:
+        intent: "IAM 보안 — 권한 남용/계정 Wazuh 룰. 최소권한 통제."
+        success_criteria: ["local_rules.xml 에 rule id 106061", "권한 남용 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [최소권한 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - IAM 점검(최소권한/역할 분리/와일드카드 정책 제거/MFA/키 로테이션) + 위험도 + 권고
+      - R/B/P 회고 + 권한 남용(`/tmp/.cc06iam`)·계정(cca06) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 최소권한 점검·R/B/P 로 인정.
+    hint: "IAM 점검(최소권한/역할 분리/와일드카드 제거/MFA/키 로테이션) + R/B/P + 남용/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "IAM 점검 종합 — 최소권한/역할 분리 + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "IAM 점검(최소권한/역할 분리/와일드카드/MFA) + 권고"
+          - "R/B/P 회고 + 남용/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

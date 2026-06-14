@@ -1,0 +1,176 @@
+id: "compliance-w12"
+category: "compliance"
+title: "[컴플라이언스 W12] 사업연속성(BCP/DR) — 가용성 훼손 vs 백업 무결성·복원"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  컴플라이언스 12주차 — **사업연속성(BCP/DR)**. 백업 무결성·복원 능력·가용성 보장을 점검한다. 공격자는 가용성을
+  훼손(백업 변조/랜섬류)하고, 감사자(너)는 백업 무결성·복원 통제를 구현하고 연속성을 증적으로 입증한다.
+
+  ▸ 이야기: 공격자가 침투해(태그 `co12r1`) 백업 변조 흔적(`/tmp/.co12backup`)과 계정 `compa12` 을 남긴다.
+    감사자는 ① 가용성 위협 탐지, ② 백업 무결성 룰, ③ BCP/DR 종합 점검·증적으로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/백업 파일·계정).
+  ▸ 마커: 태그 **`co12r1-<본인id>`**, 백업 변조 **`/tmp/.co12backup`**(마커 `co12`), 계정 **`compa12`**,
+    Suricata **sid 9812011**, Wazuh **id 104121**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [가용성 위협] — 서비스 훼손 시도
+
+      ### 상황
+      BCP/DR 은 가용성을 다룬다. 너는 태그 `co12r1-<본인id>` 로 침투해 가용성 위협을 입증한다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "co12r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/exec/?ip=127.0.0.1;rm%23co12r1-kim&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `co12r1` 흔적 시 인정.
+    hint: "태그(co12r1) 가용성 위협 → 대상 modsec audit. 채점: log_contains modsec co12r1."
+    verify:
+      type: "log_contains"
+      expect: "co12r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "co12r1", since_sec: 1800 } }
+      semantic:
+        intent: "가용성 위협(T1485/T1490) — BCP/DR 대상. 태그(co12r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 co12r1 태그", "가용성 위협 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 위협"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [백업 변조] — 복원 무력화 + 계정
+
+      ### 상황
+      백업 변조/삭제는 복원을 무력화한다. 너는 백업 변조 흔적 **`/tmp/.co12backup`**(마커 `co12`)과 계정 **`compa12`** 을 남긴다.
+
+      ### 할 일
+      ```bash
+      printf 'co12 backup tampered: snapshots deleted, restore disabled' > /tmp/.co12backup
+      sudo useradd -m -s /bin/bash compa12
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.co12backup`(마커 `co12`) 또는 `compa12` 존재 시 인정.
+    hint: "백업 변조 /tmp/.co12backup (마커 co12) + useradd compa12. 채점: file_contains backup co12 + file_contains passwd compa12."
+    verify:
+      type: "file_contains"
+      expect: "co12"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.co12backup", pattern: "co12" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "compa12" } }
+      semantic:
+        intent: "백업 변조(T1490 Inhibit Recovery) + 계정(T1136) — 복원 무력화. BCP/DR 핵심 위협."
+        success_criteria: ["/tmp/.co12backup(마커 co12) 또는 계정 compa12", "백업 변조/복원 무력화 서술"]
+        acceptable_methods: ["백업 변조 산출물 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [가용성 위협 탐지] — Suricata 룰 (sid 9812011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"COMPLIANCE-W12 availability threat (destructive command)"; flow:to_server; http.uri; content:";rm"; nocase; sid:9812011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9812011 룰 존재 시 인정.
+    hint: "가용성 위협 Suricata 룰(sid 9812011) → reload. 채점: file_contains local.rules 9812011."
+    verify:
+      type: "file_contains"
+      expect: "9812011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9812011" } }
+      semantic:
+        intent: "BCP/DR — 가용성 위협 탐지 Suricata 룰. 파괴적 행위 모니터링."
+        success_criteria: ["local.rules 에 sid 9812011", "가용성 위협 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [백업 무결성] — Wazuh 룰 (id 104121)
+
+      ### 할 일
+      ```xml
+      <group name="edu,bcpdr,">
+        <rule id="104121" level="13">
+          <if_group>edu</if_group>
+          <match>compa12</match>
+          <description>COMPLIANCE-W12 - BCP/DR: backup tamper / account (inhibit recovery)</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 104121 룰 존재 시 인정.
+    hint: "백업 무결성 Wazuh 룰(id 104121) → restart. 채점: file_contains local_rules.xml 104121."
+    verify:
+      type: "file_contains"
+      expect: "104121"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "104121" } }
+      semantic:
+        intent: "BCP/DR — 백업 변조/계정 Wazuh 룰. 복원 능력 보호."
+        success_criteria: ["local_rules.xml 에 rule id 104121", "백업 무결성 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [BCP/DR 종합 점검·증적]
+
+      ### 할 일
+      보고서에:
+      - 백업 정책(주기/보관/오프사이트) + RTO/RPO 정의 + 복원 테스트 절차 + 증적
+      - 백업 변조(`/tmp/.co12backup`)·계정(compa12) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 BCP/DR 증적으로 인정.
+    hint: "BCP/DR 점검(백업 정책/RTO·RPO/복원 테스트) + 증적 + 백업변조/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "BCP/DR 종합 점검·증적 — 백업/RTO·RPO/복원 테스트. 분석형 — RTO/RPO·복원절차 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "백업 정책 + RTO/RPO + 복원 테스트 절차 + 증적"
+          - "백업 변조/계정 헌팅"
+        acceptable_methods: ["BCP/DR 점검 표 + 증적 + 헌팅"]
+        negative_signs: ["RTO/RPO·복원 누락"]

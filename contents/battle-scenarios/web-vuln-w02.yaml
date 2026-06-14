@@ -1,0 +1,177 @@
+id: "web-vuln-w02"
+category: "web-vuln"
+title: "[웹취약점 W2] 점검 도구 — 스캐너 공격 vs 스캐너 탐지·핑거프린팅 방어"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 2주차 — **점검 도구 환경**(curl/whatweb/nikto/sqlmap/ZAP/wafw00f). 공격자는 자동 스캐너로
+  표면을 훑고, 점검자(너)는 스캐너 트래픽을 탐지하고 핑거프린팅 노출을 줄인다.
+
+  ▸ 이야기: 공격자가 스캐너(태그 `wv02r1`)로 스캔하고 스캔 결과(`/tmp/.wv02scan`)와 계정 `wva02` 를 남긴다.
+    점검자는 ① 스캐너 탐지, ② 스캔/도구 Wazuh 룰, ③ 도구 기반 점검 종합·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/스캔 파일·계정).
+  ▸ 마커: 태그 **`wv02r1-<본인id>`**, 스캔 결과 **`/tmp/.wv02scan`**(마커 `wv02`), 계정 **`wva02`**,
+    Suricata **sid 9902011**, Wazuh **id 105021**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [자동 스캐너] — nikto/sqlmap UA 로 스캔
+
+      ### 상황
+      자동 스캐너는 빠르게 취약점을 찾는다. 너는 스캐너 UA(태그 `wv02r1-<본인id>`)로 대상을 스캔한다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      for p in / /admin /login /api; do
+        curl -s -A "wv02r1-kim (Nikto/2.5)" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>$p" -o /dev/null
+      done
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv02r1` 흔적(913 스캐너) 시 인정.
+    hint: "스캐너 UA(wv02r1, Nikto) 스캔 → 대상 modsec audit 913. 채점: log_contains modsec wv02r1."
+    verify:
+      type: "log_contains"
+      expect: "wv02r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv02r1", since_sec: 1800 } }
+      semantic:
+        intent: "자동 스캐너(T1595.002) — nikto/sqlmap 류 스캔. 태그(wv02r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv02r1 태그(913)", "사용 스캐너/탐지 표면 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 스캐너 스캔"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [스캔 결과] — 취약점 인벤토리 + 계정
+
+      ### 상황
+      스캔 결과(취약점 목록)는 다음 공격의 지도다. 너는 스캔 결과 **`/tmp/.wv02scan`**(마커 `wv02`)과 계정 **`wva02`** 을 남긴다.
+
+      ### 할 일
+      ```bash
+      printf 'wv02 scan: /login SQLi? /upload no-auth, server=Apache/2.4, php=7.4' > /tmp/.wv02scan
+      sudo useradd -m -s /bin/bash wva02
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv02scan`(마커 `wv02`) 또는 `wva02` 존재 시 인정.
+    hint: "스캔 결과 /tmp/.wv02scan (마커 wv02) + useradd wva02. 채점: file_contains scan wv02 + file_contains passwd wva02."
+    verify:
+      type: "file_contains"
+      expect: "wv02"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv02scan", pattern: "wv02" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva02" } }
+      semantic:
+        intent: "스캔 결과 수집(T1595) + 계정(T1136) — 취약점 인벤토리 + 발판."
+        success_criteria: ["/tmp/.wv02scan(마커 wv02) 또는 계정 wva02", "스캔 결과 활용 서술"]
+        acceptable_methods: ["스캔 결과 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [스캐너 탐지] — Suricata 룰 (sid 9902011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W02 web scanner (nikto/sqlmap UA)"; flow:to_server; http.user_agent; content:"Nikto"; nocase; sid:9902011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9902011 룰 존재 시 인정.
+    hint: "스캐너 탐지 Suricata 룰(sid 9902011, Nikto UA) → reload. 채점: file_contains local.rules 9902011."
+    verify:
+      type: "file_contains"
+      expect: "9902011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9902011" } }
+      semantic:
+        intent: "스캐너 탐지 — nikto/sqlmap UA Suricata 룰. 자동 스캔 가시화."
+        success_criteria: ["local.rules 에 sid 9902011", "스캐너 UA 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [스캔/도구 탐지] — Wazuh 룰 (id 105021)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105021" level="10">
+          <if_group>edu</if_group>
+          <match>wva02</match>
+          <description>WEBVULN-W02 - scan result / scanning account indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105021 룰 존재 시 인정.
+    hint: "스캔/도구 Wazuh 룰(id 105021) → restart. 채점: file_contains local_rules.xml 105021."
+    verify:
+      type: "file_contains"
+      expect: "105021"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105021" } }
+      semantic:
+        intent: "스캐너 활동 탐지 — 스캔 결과/계정 Wazuh 룰. 도구 기반 정찰 포착."
+        success_criteria: ["local_rules.xml 에 rule id 105021", "스캔 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [도구 기반 점검 종합·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - 점검 도구 활용(whatweb/wafw00f/nikto/sqlmap/ZAP) + 발견 표면 + 핑거프린팅 노출 축소 권고
+      - R/B/P 회고 + 스캔 결과(`/tmp/.wv02scan`)·계정(wva02) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 도구 점검·R/B/P 로 인정.
+    hint: "점검 도구(whatweb/wafw00f/nikto/sqlmap/ZAP) 활용 + 핑거프린팅 축소 권고 + R/B/P + 스캔/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "도구 기반 점검 종합 — 도구 활용 + 핑거프린팅 축소 + R/B/P. 분석형 — 구체 도구/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "점검 도구 활용 + 발견 표면 + 핑거프린팅 축소 권고"
+          - "R/B/P 회고 + 스캔/계정 헌팅"
+        acceptable_methods: ["도구 점검 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

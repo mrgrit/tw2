@@ -1,0 +1,235 @@
+id: "compliance-w06"
+category: "compliance"
+title: "[컴플라이언스 W6] PCI-DSS — 카드데이터 탈취 vs 세그멘테이션·FIM 통제"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  컴플라이언스 6주차 — **PCI-DSS**. 카드소유자 데이터(CHD) 보호·네트워크 세그멘테이션·로그 추적(Req 10)·
+  파일 무결성 모니터링(Req 11.5)을 요구한다. 공격자는 CHD 보호 공백을 노리고, 감사자(너)는 세그멘테이션·FIM·
+  로깅 통제를 구현하고 충족을 증적으로 입증한다.
+
+  ▸ 이야기
+    공격자가 침투해(태그 `co06r1`) 카드데이터 파일(`/tmp/.co06chd`)과 계정 `compa06` 을 남긴다. 감사자는
+    ① 침입 탐지(세그멘테이션 경계), ② FIM(파일 무결성) 룰, ③ PCI-DSS 12개 요구사항 종합 점검·증적으로 대응한다.
+
+  ▸ 모드
+    • solo : 한 학생이 CHD 탈취(자기 인프라 표적)와 통제 구현을 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라의 CHD 를 노리고, Blue 는 자기 인프라에 통제 구현.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(WAF audit 태그 / CHD 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    악용 태그 **`co06r1-<본인id>`**, 카드데이터 파일 **`/tmp/.co06chd`**(마커 `co06`), 계정 **`compa06`**,
+    Suricata 경계 룰 **sid 9806011**, Wazuh FIM 룰 **id 104061**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [CDE 침투] — 카드데이터 환경 경계 공략
+
+      ### 상황
+      PCI-DSS 의 핵심은 CDE(카드데이터 환경) 격리다. 너는 태그 `co06r1-<본인id>` 로 침투해 세그멘테이션 공백을 입증한다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "co06r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=co06r1-kim%27%20UNION%20SELECT%20cardnum%20FROM%20payments--+&Submit=Submit"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `co06r1` 가 포함된 흔적이 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `co06r1` 태그가 포함된 흔적이 남는다.
+    hint: "태그(co06r1) CDE 침투 → 대상 modsec audit. 채점: log_contains modsec co06r1."
+    verify:
+      type: "log_contains"
+      expect: "co06r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "co06r1", since_sec: 1800 } }
+      semantic:
+        intent: "CDE 침투(T1190) — PCI-DSS 세그멘테이션 공백 입증. 태그(co06r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 co06r1 태그가 포함된 흔적"
+          - "세그멘테이션/CDE 격리 공백 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 단 침투"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [CHD 탈취] — 평문 카드데이터 + 계정
+
+      ### 상황
+      PCI-DSS 는 CHD 저장 시 보호를 요구한다. 너는 평문 카드데이터 파일 **`/tmp/.co06chd`**(마커 `co06`, PAN 흉내)와
+      계정 **`compa06`** 을 남겨 보호 부재를 시연한다.
+
+      ### 할 일
+      ```bash
+      printf 'co06 PAN: 4111111111111111 exp=12/27 cvv=123' > /tmp/.co06chd
+      sudo useradd -m -s /bin/bash compa06
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.co06chd`(마커 `co06`)이 있거나 `/etc/passwd` 에 `compa06` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.co06chd`(마커 `co06`) 또는 계정 `compa06`.
+    hint: "평문 CHD /tmp/.co06chd (마커 co06) + useradd compa06. 채점: file_contains chd co06 + file_contains passwd compa06."
+    verify:
+      type: "file_contains"
+      expect: "co06"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.co06chd", pattern: "co06" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "compa06" } }
+      semantic:
+        intent: "CHD 탈취(T1530) + 계정(T1136) — 평문 카드데이터 저장. PCI-DSS Req 3(저장 보호) 위반."
+        success_criteria:
+          - "/tmp/.co06chd(마커 co06) 또는 계정 compa06"
+          - "PAN 평문 저장 위험과 Req 3 연계 서술"
+        acceptable_methods:
+          - "평문 CHD 파일 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [세그멘테이션 경계] — Suricata 룰 (sid 9806011)
+
+      ### 상황
+      PCI-DSS 는 CDE 접근을 모니터링·차단해야 한다. CDE 침투를 잡는 Suricata 룰(**sid 9806011**)을 배포한다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"COMPLIANCE-W06 PCI-DSS CDE access attempt"; flow:to_server; http.uri; content:"payments"; nocase; sid:9806011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9806011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 CDE 경계 룰 sid 9806011 이 존재한다.
+    hint: "CDE 경계 Suricata 룰(sid 9806011) → reload. 채점: file_contains local.rules 9806011."
+    verify:
+      type: "file_contains"
+      expect: "9806011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9806011" } }
+      semantic:
+        intent: "PCI-DSS 세그멘테이션 모니터링 — CDE 접근 Suricata 룰. Req 1(네트워크 보안)·Req 11(탐지) 연계."
+        success_criteria:
+          - "local.rules 에 sid 9806011"
+          - "CDE 세그멘테이션/모니터링 요구사항 언급"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [파일 무결성(FIM)] — Wazuh 룰 (id 104061) [Req 11.5]
+
+      ### 상황
+      PCI-DSS Req 11.5 는 **파일 무결성 모니터링(FIM)** 을 요구한다. CHD 파일/계정 변경을 잡는 Wazuh FIM 룰
+      (**id 104061**)을 만든다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,pcidss,">
+        <rule id="104061" level="13">
+          <if_group>edu</if_group>
+          <match>compa06</match>
+          <description>COMPLIANCE-W06 - PCI-DSS Req 11.5 FIM: CHD file / account change</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 104061 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 FIM 룰 id 104061 이 존재한다.
+    hint: "FIM(Req 11.5) Wazuh 룰(id 104061) → restart. 채점: file_contains local_rules.xml 104061."
+    verify:
+      type: "file_contains"
+      expect: "104061"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "104061" } }
+      semantic:
+        intent: "PCI-DSS Req 11.5 FIM — CHD 파일/계정 변경 Wazuh 무결성 룰. 파일 무결성 모니터링 통제."
+        success_criteria:
+          - "local_rules.xml 에 rule id 104061"
+          - "FIM 탐지 로직 + Req 11.5 연계"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [PCI-DSS 종합 점검·증적] — 12개 요구사항 충족 입증
+
+      ### 상황
+      PCI-DSS 12개 요구사항을 종합 점검하고 증적을 정리한다(방화벽 구성, 기본값 변경, CHD 보호, 전송 암호화,
+      안티멀웨어, 보안 시스템, 접근 제한, 식별/인증, 물리 접근, 로깅/모니터링, 테스트, 정책).
+
+      ### 할 일
+      보고서에:
+      - 요구사항별 점검(특히 Req 3 저장보호/Req 4 전송암호화/Req 8 인증/Req 10 로깅/Req 11 테스트) + 증적
+      - 미흡 개선 + 평문 CHD(`/tmp/.co06chd`)·계정(compa06) 헌팅·삭제
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 PCI-DSS 종합 점검 증적으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 요구사항별 점검·증적·헌팅은 제출로 검증).
+    hint: "PCI-DSS 12 요구사항 점검(Req3/4/8/10/11 중심) + 증적 + 평문 CHD/계정 헌팅·삭제. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "PCI-DSS 종합 점검·증적 — 12개 요구사항별 충족 입증 + CHD 보호. 분석형 — Req 매핑/증적 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "요구사항별 점검(Req 3/4/8/10/11 중심) + Req 매핑 + 증적"
+          - "평문 CHD 삭제 + 계정 헌팅"
+        acceptable_methods:
+          - "점검 표 + Req 매핑 + 증적 + 헌팅"
+        negative_signs:
+          - "Req/증적 없는 서술 / 항목 누락"

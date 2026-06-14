@@ -1,0 +1,182 @@
+id: "compliance-w15"
+category: "compliance"
+title: "[컴플라이언스 W15] 종합평가 — 다중 프레임워크 침해 vs 통합 통제·증적(수료)"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  컴플라이언스 **수료 시험**. 1~14주의 규제(PIPA/망법/ISMS-P/ISO/GDPR/PCI-DSS/SOX 등)를 하나의 사건에서
+  통합 평가한다. 공격자가 다중 통제 공백을 한 번에 노리고, 감사자(너)는 통합 통제를 구현하고 다중 프레임워크
+  준수를 증적으로 입증한다.
+
+  ▸ 이야기: 공격자가 침투해(태그 `co15r1`) 다중 위반(미암호화 PII + 비인가 변경, `/tmp/.co15final`)과 계정
+    `compa15` 을 남긴다. 감사자는 ① 침입 탐지, ② 통합 통제 룰, ③ 다중 프레임워크 종합평가·증적·cleanup 으로 수료한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/위반 파일·계정).
+  ▸ 마커: 태그 **`co15r1-<본인id>`**, 다중 위반 **`/tmp/.co15final`**(마커 `co15`), 계정 **`compa15`**,
+    Suricata **sid 9815011**, Wazuh **id 104151**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [다중 통제 공백 침투] — 통합 약점 공략
+
+      ### 상황
+      여러 규제의 공백이 한 침투로 드러난다. 너는 태그 `co15r1-<본인id>` 로 침투해 다중 통제 공백을 입증한다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "co15r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=co15r1-kim%27%20UNION%20SELECT%20user,password%20FROM%20users--+&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `co15r1` 흔적 시 인정.
+    hint: "태그(co15r1) 침투 → 대상 modsec audit. 채점: log_contains modsec co15r1."
+    verify:
+      type: "log_contains"
+      expect: "co15r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "co15r1", since_sec: 1800 } }
+      semantic:
+        intent: "다중 통제 공백 침투(T1190) — 여러 규제 동시 위반 입증. 태그(co15r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 co15r1 태그", "어떤 규제 통제들이 깨졌는지 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 침투"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [다중 위반] — PII 노출 + 비인가 변경 + 계정
+
+      ### 상황
+      한 산출물에 다중 위반을 모은다. 너는 다중 위반 흔적 **`/tmp/.co15final`**(마커 `co15`, PII+변경)과 계정 **`compa15`** 을 남긴다.
+
+      ### 할 일
+      ```bash
+      printf 'co15 multi-violation: PII user@x.com plaintext + unauthorized config change' > /tmp/.co15final
+      sudo useradd -m -s /bin/bash compa15
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.co15final`(마커 `co15`) 또는 `compa15` 존재 시 인정.
+    hint: "다중 위반 /tmp/.co15final (마커 co15) + useradd compa15. 채점: file_contains final co15 + file_contains passwd compa15."
+    verify:
+      type: "file_contains"
+      expect: "co15"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.co15final", pattern: "co15" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "compa15" } }
+      semantic:
+        intent: "다중 위반(T1530+T1565) + 계정(T1136) — PII 노출+비인가 변경. 여러 프레임워크 동시 위반."
+        success_criteria: ["/tmp/.co15final(마커 co15) 또는 계정 compa15", "다중 규제 위반 매핑 서술"]
+        acceptable_methods: ["다중 위반 산출물 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [통합 침입 탐지] — Suricata 룰 (sid 9815011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"COMPLIANCE-W15 integrated compliance intrusion"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; sid:9815011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9815011 룰 존재 시 인정.
+    hint: "통합 침입 Suricata 룰(sid 9815011) → reload. 채점: file_contains local.rules 9815011."
+    verify:
+      type: "file_contains"
+      expect: "9815011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9815011" } }
+      semantic:
+        intent: "통합 통제 — 침입 탐지 Suricata 룰. 다중 프레임워크 공통 탐지 통제."
+        success_criteria: ["local.rules 에 sid 9815011", "통합 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [통합 통제] — Wazuh 룰 (id 104151)
+
+      ### 할 일
+      ```xml
+      <group name="edu,compliance,">
+        <rule id="104151" level="13">
+          <if_group>edu</if_group>
+          <match>compa15</match>
+          <description>COMPLIANCE-W15 - integrated control: multi-framework violation / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 104151 룰 존재 시 인정.
+    hint: "통합 통제 Wazuh 룰(id 104151) → restart. 채점: file_contains local_rules.xml 104151."
+    verify:
+      type: "file_contains"
+      expect: "104151"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "104151" } }
+      semantic:
+        intent: "통합 통제 — 다중 위반/계정 Wazuh 룰. 여러 프레임워크 공통 통제."
+        success_criteria: ["local_rules.xml 에 rule id 104151", "다중 위반 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [수료] — 다중 프레임워크 종합평가·증적·Cleanup
+
+      ### 상황
+      컴플라이언스 수료 산출물이다. 다중 프레임워크(PIPA/망법/ISMS-P/ISO/GDPR/PCI-DSS/SOX)를 **통합 매핑**(공통
+      통제 식별)하고 준수를 증적으로 종합한 뒤, 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      보고서에:
+      - 프레임워크 간 통제 매핑(공통 통제: 접근통제/암호화/로깅/감사) + 준수 현황 + 증적
+      - cleanup:
+      ```bash
+      sudo rm -f /tmp/.co15final; sudo userdel -r compa15 2>/dev/null
+      sudo sed -i '/9815011/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 104151 블록 제거 후 wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 종합평가/매핑/증적/cleanup 으로 인정.
+    hint: "다중 프레임워크 통제 매핑(공통: 접근/암호화/로깅/감사) + 준수 현황 + 증적 + co15/compa15/9815011/104151 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "컴플라이언스 종합평가(수료) — 다중 프레임워크 통제 매핑 + 준수 증적 + cleanup. 15주 매듭."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "프레임워크 간 공통 통제 매핑 + 준수 현황 + 증적"
+          - "아티팩트 일괄 cleanup"
+        acceptable_methods: ["통제 매핑 표 + 증적 + cleanup"]
+        negative_signs: ["매핑/증적 누락 / cleanup 미완"]

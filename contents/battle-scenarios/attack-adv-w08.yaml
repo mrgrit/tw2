@@ -1,0 +1,233 @@
+id: "attack-adv-w08"
+category: "attack-adv"
+title: "[공격고급 W8] 측면 이동 — 피봇팅·자격증명 재사용 vs 세그멘테이션 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격 고급과정 8주차 — **측면 이동(Lateral Movement)**. 초기 거점에서 SSH 포트포워딩·SOCKS·chisel 터널·
+  자격증명 재사용으로 내부를 횡단한다. Red 는 피봇 체인을 구성하고, Blue 는 내부 이동을 탐지하고 세그멘테이션으로 막는다.
+
+  ▸ 이야기
+    공격자가 거점에 피봇/SOCKS 터널(**포트 55008**)을 세우고, 수집한 자격증명(**`/tmp/.aa08creds`**)을 재사용해
+    내부 호스트로 이동하며 계정 `atka08` 을 만든다. 방어자는 피봇/내부 스캔을 탐지하고 횡단 경로를 분석한다.
+
+  ▸ 모드
+    • solo : 한 학생이 측면 이동(자기 인프라 표적)과 탐지를 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라에서 피봇, Blue 는 자기 인프라에서 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(피봇 포트·자격증명 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    피봇/SOCKS 포트 **55008**, 수집 자격증명 **`/tmp/.aa08creds`**(마커 `aa08`), 계정 **`atka08`**,
+    Suricata 탐지 **sid 9708011**, Wazuh 탐지 **id 103081**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [피봇 터널] — SOCKS 프록시로 내부 횡단 거점
+
+      ### 상황
+      거점에서 내부로 들어가려면 **피봇**이 필요하다. 너는 SSH 동적 포트포워딩(SOCKS) 흉내 피봇 리스너 **포트
+      55008** 을 세워 내부망 접근 경로를 만든다.
+
+      ### 할 일
+      ```bash
+      nohup ncat -lk 55008 >/dev/null 2>&1 &     # 피봇/SOCKS 흉내 (또는 ssh -D 1080 / chisel)
+      # 개념: ssh -D 55008 user@<pivot>  →  proxychains 로 내부 도구 라우팅
+      ```
+
+      ### 채점 방법
+      대상 호스트에 포트 55008 이 listening 인지로 채점.
+
+      ### 합격 기준
+      대상 호스트에서 포트 55008 이 listening 이다.
+    hint: "피봇/SOCKS 포트 55008. 채점: port_listening 55008. ssh -D/proxychains/chisel 개념."
+    verify:
+      type: "port_listening"
+      expect: "55008"
+      checks:
+        - { id: "red-1-1", type: "port_listening", target: "web", params: { port: 55008 } }
+      semantic:
+        intent: "피봇팅(T1090 Proxy) — SOCKS/포트포워딩 터널로 내부 횡단 거점. 측면 이동의 경로."
+        success_criteria:
+          - "포트 55008 listening"
+          - "피봇/SOCKS/proxychains 로 내부 접근하는 흐름 서술"
+        acceptable_methods:
+          - "리스너로 55008 개방(ssh -D/chisel 개념)"
+        negative_signs:
+          - "포트 미개방"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [자격증명 재사용] — 수집 크리덴셜 + 내부 계정
+
+      ### 상황
+      측면 이동의 연료는 **재사용 가능한 자격증명**이다. 너는 설정/히스토리에서 수집한 크리덴셜을
+      **`/tmp/.aa08creds`**(마커 `aa08`)에 모으고, 이동 대상에 계정 **`atka08`** 을 만든다.
+
+      ### 할 일
+      ```bash
+      printf 'aa08 reuse: web:Passw0rd! db:dbpass siem:ccc' > /tmp/.aa08creds
+      sudo useradd -m -s /bin/bash atka08
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.aa08creds`(마커 `aa08`)이 있거나 `/etc/passwd` 에 `atka08` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.aa08creds`(마커 `aa08`) 또는 계정 `atka08`.
+    hint: "수집 자격증명 /tmp/.aa08creds (마커 aa08) + useradd atka08. 채점: file_contains creds aa08 + file_contains passwd atka08."
+    verify:
+      type: "file_contains"
+      expect: "aa08"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.aa08creds", pattern: "aa08" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "atka08" } }
+      semantic:
+        intent: "자격증명 재사용(T1078 유효 계정) + 계정(T1136) — 수집 크리덴셜로 내부 이동."
+        success_criteria:
+          - "/tmp/.aa08creds(마커 aa08) 또는 계정 atka08"
+          - "자격증명을 어디서 수집해 어디에 재사용했는지 서술"
+        acceptable_methods:
+          - "자격증명 파일 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [피봇/내부 스캔 탐지] — Suricata 룰 (sid 9708011)
+
+      ### 상황
+      피봇 포트(55008) 트래픽과 내부 스캔을 잡는 Suricata 룰(**sid 9708011**)을 만든다.
+
+      ### 할 일
+      ```
+      alert tcp any any -> any 55008 (msg:"ATKADV-W08 pivot/SOCKS tunnel port 55008"; flow:to_server; sid:9708011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9708011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 피봇 포트(55008)를 보는 sid 9708011 룰이 존재한다.
+    hint: "피봇 포트 Suricata 룰(sid 9708011, port 55008) → reload. 채점: file_contains local.rules 9708011."
+    verify:
+      type: "file_contains"
+      expect: "9708011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9708011" } }
+      semantic:
+        intent: "측면 이동 탐지(네트워크) — 피봇/터널 포트 Suricata 룰. 내부 횡단 경로 가시화."
+        success_criteria:
+          - "local.rules 에 sid 9708011 (port 55008)"
+          - "피봇/내부 스캔 탐지 의의 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "포트 불일치 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [자격증명 재사용 탐지] — Wazuh 룰 (id 103081)
+
+      ### 상황
+      RED-2 의 자격증명 재사용·내부 계정 생성을 잡는 Wazuh 룰(**id 103081**)을 만든다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,lateral,">
+        <rule id="103081" level="12">
+          <if_group>edu</if_group>
+          <match>atka08</match>
+          <description>ATKADV-W08 - lateral movement: credential reuse / new account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 103081 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 자격증명 재사용/계정 지표를 보는 id 103081 룰이 존재한다.
+    hint: "측면이동/자격증명 재사용 Wazuh 룰(id 103081) → restart. 채점: file_contains local_rules.xml 103081."
+    verify:
+      type: "file_contains"
+      expect: "103081"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "103081" } }
+      semantic:
+        intent: "측면 이동 탐지(호스트) — 자격증명 재사용/계정 생성 Wazuh 룰. 내부 이동 흔적 포착."
+        success_criteria:
+          - "local_rules.xml 에 rule id 103081"
+          - "자격증명 재사용/계정 생성 탐지 로직"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [횡단 경로·방어] — 세그멘테이션 + 헌팅
+
+      ### 상황
+      측면 이동 경로를 분석하고 방어한다. 공격 경로(거점→피봇→내부), 사용 기법(SOCKS/credential reuse), 그리고
+      **네트워크 세그멘테이션**·계정 격리 권고를 정리한다.
+
+      ### 할 일
+      보고서에:
+      - 공격 경로 + 사용 기법 + 탐지 규칙 매핑
+      - 방어 권고(세그멘테이션/최소권한/자격증명 위생) + 피봇(55008)·자격증명(`/tmp/.aa08creds`)·계정(atka08) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 횡단 경로·방어로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 횡단 경로·세그멘테이션 방어·헌팅은 제출로 검증).
+    hint: "공격 경로 + 기법 + 방어(세그멘테이션/최소권한/자격증명 위생) + 피봇/자격증명/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "측면 이동 분석·방어 — 경로/기법 + 세그멘테이션 권고 + 헌팅. 분석형 — 구체 방어 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "공격 경로 + 기법 + 세그멘테이션/최소권한 방어 권고"
+          - "피봇/자격증명/계정 헌팅 결과"
+        acceptable_methods:
+          - "경로 분석 + 방어 권고 + 헌팅"
+        negative_signs:
+          - "방어 권고 누락"

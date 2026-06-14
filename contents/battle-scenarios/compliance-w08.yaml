@@ -1,0 +1,192 @@
+id: "compliance-w08"
+category: "compliance"
+title: "[컴플라이언스 W8] 클라우드보안인증(CSAP) — 설정 노출 vs 클라우드 보안 통제"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  컴플라이언스 8주차 — **클라우드보안인증(CSAP)**. 클라우드 서비스의 접근통제·암호화·로깅·구성 보안을 점검한다.
+  (6v6 에는 실제 클라우드가 없어 노출된 구성/접근으로 시뮬레이션.) 공격자는 노출된 설정을 악용하고, 감사자(너)는
+  접근통제·구성 보안 통제를 구현하고 충족을 증적으로 입증한다.
+
+  ▸ 이야기: 공격자가 노출 설정을 노려 침투해(태그 `co08r1`) 노출 구성 파일(`/tmp/.co08cfg`)과 계정 `compa08` 을 남긴다.
+    감사자는 ① 침입 탐지, ② 구성/접근 탐지 룰, ③ CSAP 통제 종합 점검·증적으로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/구성 파일·계정).
+  ▸ 마커: 태그 **`co08r1-<본인id>`**, 노출 구성 **`/tmp/.co08cfg`**(마커 `co08`), 계정 **`compa08`**,
+    Suricata **sid 9808011**, Wazuh **id 104081**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [노출 설정 악용] — 잘못된 접근통제 공략
+
+      ### 상황
+      클라우드 오설정(공개 접근)은 흔한 침투 경로다. 너는 태그 `co08r1-<본인id>` 로 노출 설정을 노려 침투한다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "co08r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/config?probe=co08r1-kim"
+      curl -s -A "co08r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/.env"
+      ```
+
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `co08r1` 흔적이 남으면 인정.
+    hint: "태그(co08r1) 노출 설정 접근(/config,/.env) → 대상 modsec audit. 채점: log_contains modsec co08r1."
+    verify:
+      type: "log_contains"
+      expect: "co08r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "co08r1", since_sec: 1800 } }
+      semantic:
+        intent: "클라우드 오설정 악용(T1190/T1530) — 공개 접근/노출 설정. 태그(co08r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 co08r1 태그", "노출 설정/접근통제 공백 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 노출 설정 접근"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [구성 노출] — 클라우드 키·구성 파일 + 계정
+
+      ### 상황
+      노출된 구성/시크릿은 CSAP 위반이다. 너는 노출 구성 파일 **`/tmp/.co08cfg`**(마커 `co08`, 클라우드 키 흉내)와
+      계정 **`compa08`** 을 남긴다.
+
+      ### 할 일
+      ```bash
+      printf 'co08 cloud config: ACCESS_KEY=AKIA... bucket=public-rw region=ap' > /tmp/.co08cfg
+      sudo useradd -m -s /bin/bash compa08
+      ```
+
+      ### 채점 방법 / 합격 기준
+      `/tmp/.co08cfg`(마커 `co08`) 또는 `/etc/passwd` 의 `compa08` 존재 시 인정.
+    hint: "노출 구성 /tmp/.co08cfg (마커 co08) + useradd compa08. 채점: file_contains cfg co08 + file_contains passwd compa08."
+    verify:
+      type: "file_contains"
+      expect: "co08"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.co08cfg", pattern: "co08" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "compa08" } }
+      semantic:
+        intent: "구성/시크릿 노출(T1552) + 계정(T1136) — CSAP 구성 보안 위반. 공개 버킷/노출 키."
+        success_criteria: ["/tmp/.co08cfg(마커 co08) 또는 계정 compa08", "구성 노출 위험 서술"]
+        acceptable_methods: ["구성 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [접근 탐지] — Suricata 룰 (sid 9808011)
+
+      ### 상황
+      노출 구성/시크릿 접근을 잡는 Suricata 룰(**sid 9808011**)을 배포한다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"COMPLIANCE-W08 CSAP exposed config/secret access"; flow:to_server; http.uri; content:".env"; nocase; sid:9808011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9808011 룰 존재 시 인정.
+    hint: "노출 설정 접근 Suricata 룰(sid 9808011, .env 등) → reload. 채점: file_contains local.rules 9808011."
+    verify:
+      type: "file_contains"
+      expect: "9808011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9808011" } }
+      semantic:
+        intent: "CSAP 구성 보안 — 노출 설정/시크릿 접근 Suricata 룰. 접근 통제 모니터링."
+        success_criteria: ["local.rules 에 sid 9808011", "노출 설정 접근 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [구성/시크릿 탐지] — Wazuh 룰 (id 104081)
+
+      ### 상황
+      노출 구성·시크릿·계정 변경을 잡는 Wazuh 룰(**id 104081**)을 만든다(클라우드 키 패턴 탐지).
+
+      ### 할 일
+      ```xml
+      <group name="edu,csap,">
+        <rule id="104081" level="13">
+          <if_group>edu</if_group>
+          <match>compa08</match>
+          <description>COMPLIANCE-W08 - CSAP exposed cloud config/secret / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 104081 룰 존재 시 인정.
+    hint: "구성/시크릿 Wazuh 룰(id 104081) → restart. 채점: file_contains local_rules.xml 104081."
+    verify:
+      type: "file_contains"
+      expect: "104081"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "104081" } }
+      semantic:
+        intent: "CSAP 구성 보안 — 노출 구성/시크릿/계정 Wazuh 룰. 시크릿 노출 탐지."
+        success_criteria: ["local_rules.xml 에 rule id 104081", "구성/시크릿 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [CSAP 통제 종합 점검·증적]
+
+      ### 상황
+      CSAP 통제 항목을 종합 점검하고 증적을 정리한다(접근통제, 암호화, 로깅/모니터링, 구성 보안, 시크릿 관리).
+
+      ### 할 일
+      보고서에:
+      - 통제별 점검(접근통제/암호화/로깅/구성보안/시크릿관리) + 증적
+      - 미흡 개선 + 노출 구성(`/tmp/.co08cfg`)·계정(compa08) 헌팅·삭제
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 CSAP 점검 증적으로 인정.
+    hint: "CSAP 통제 점검(접근통제/암호화/로깅/구성보안/시크릿) + 증적 + 구성/계정 헌팅·삭제. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "CSAP 종합 점검·증적 — 클라우드 통제 항목별 충족 입증. 분석형 — 통제/증적 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "CSAP 통제별 점검(접근/암호화/로깅/구성/시크릿) + 증적"
+          - "노출 구성 삭제 + 계정 헌팅"
+        acceptable_methods: ["점검 표 + 증적 + 헌팅"]
+        negative_signs: ["증적 없는 서술 / 항목 누락"]

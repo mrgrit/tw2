@@ -1,0 +1,171 @@
+id: "web-vuln-w13"
+category: "web-vuln"
+title: "[웹취약점 W13] 자동화 점검 도구 — nuclei/dalfox 스캔 vs 자동화 탐지"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 13주차 — **자동화 점검 도구(sqlmap/nuclei/nikto/dalfox/ZAP)**. 공격자는 자동화 도구로 대량
+  스캔/익스플로잇하고, 점검자(너)는 자동화 트래픽을 탐지하고 결과를 검증한다.
+
+  ▸ 이야기: 공격자가 nuclei/dalfox 자동 스캔(태그 `wv13r1`)을 돌리고 자동화 결과(`/tmp/.wv13auto`)와 계정 `wva13` 을 남긴다.
+    점검자는 ① 자동화 도구 탐지, ② 자동화 Wazuh 룰, ③ 자동화 점검 종합·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/결과 파일·계정).
+  ▸ 마커: 태그 **`wv13r1-<본인id>`**, 자동화 결과 **`/tmp/.wv13auto`**(마커 `wv13`), 계정 **`wva13`**,
+    Suricata **sid 9913011**, Wazuh **id 105131**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [자동화 스캔] — nuclei/dalfox 대량 점검
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      for t in sqli xss lfi ssrf; do
+        curl -s -A "wv13r1-kim (nuclei)" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?test=$t&wv13r1-kim=1"
+      done
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv13r1` 흔적 시 인정.
+    hint: "태그(wv13r1) 자동화 스캔(nuclei UA) → 대상 modsec audit. 채점: log_contains modsec wv13r1."
+    verify:
+      type: "log_contains"
+      expect: "wv13r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv13r1", since_sec: 1800 } }
+      semantic:
+        intent: "자동화 스캔(T1595.002) — nuclei/dalfox 대량 점검. 태그(wv13r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv13r1 태그", "사용 자동화 도구 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 자동화 스캔"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [자동화 결과] — 도구 출력 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'wv13 nuclei results: [sqli] /sqli [xss] /xss_r [exposure] /.git' > /tmp/.wv13auto
+      sudo useradd -m -s /bin/bash wva13
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv13auto`(마커 `wv13`) 또는 `wva13` 존재 시 인정.
+    hint: "자동화 결과 /tmp/.wv13auto (마커 wv13) + useradd wva13. 채점: file_contains auto wv13 + file_contains passwd wva13."
+    verify:
+      type: "file_contains"
+      expect: "wv13"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv13auto", pattern: "wv13" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva13" } }
+      semantic:
+        intent: "자동화 스캔 결과(T1595) + 계정(T1136) — 도구 출력 인벤토리."
+        success_criteria: ["/tmp/.wv13auto(마커 wv13) 또는 계정 wva13", "도구 결과 검증 필요성 서술"]
+        acceptable_methods: ["결과 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [자동화 도구 탐지] — Suricata 룰 (sid 9913011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W13 automated scanner (nuclei/dalfox UA)"; flow:to_server; http.user_agent; content:"nuclei"; nocase; sid:9913011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9913011 룰 존재 시 인정.
+    hint: "자동화 도구 Suricata 룰(sid 9913011, nuclei UA) → reload. 채점: file_contains local.rules 9913011."
+    verify:
+      type: "file_contains"
+      expect: "9913011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9913011" } }
+      semantic:
+        intent: "자동화 탐지 — nuclei/dalfox UA Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9913011", "자동화 도구 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [자동화 탐지] — Wazuh 룰 (id 105131)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105131" level="11" frequency="10" timeframe="60">
+          <if_matched_group>edu</if_matched_group>
+          <same_source_ip />
+          <description>WEBVULN-W13 - automated scan burst from same IP</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105131 룰 존재 시 인정.
+    hint: "자동화(빈도) Wazuh 룰(id 105131, frequency) → restart. 채점: file_contains local_rules.xml 105131."
+    verify:
+      type: "file_contains"
+      expect: "105131"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105131" } }
+      semantic:
+        intent: "자동화 탐지(빈도) — frequency 로 대량 스캔 포착. 자동화 도구의 고빈도 특성 활용."
+        success_criteria: ["local_rules.xml 에 rule id 105131 (frequency)", "자동화 고빈도 특성 활용 서술"]
+        acceptable_methods: ["Wazuh frequency 룰 + restart"]
+        negative_signs: ["frequency 없는 룰 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [자동화 점검 종합·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - 자동화 도구 활용(sqlmap/nuclei/nikto/dalfox/ZAP) + **결과 검증**(오탐 제거/수동 확인) + 위험도
+      - R/B/P 회고 + 자동화 결과(`/tmp/.wv13auto`)·계정(wva13) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 자동화 점검·결과 검증·R/B/P 로 인정.
+    hint: "자동화 도구 활용 + 결과 검증(오탐 제거/수동 확인) + R/B/P + 결과/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "자동화 점검 종합 — 도구 활용 + 결과 검증(오탐) + R/B/P. 분석형 — 결과 검증/오탐 처리 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "자동화 도구 활용 + 결과 검증(오탐 제거/수동 확인)"
+          - "R/B/P 회고 + 결과/계정 헌팅"
+        acceptable_methods: ["도구 점검 + 검증 + 회고 + 헌팅"]
+        negative_signs: ["결과 검증/회고 누락"]

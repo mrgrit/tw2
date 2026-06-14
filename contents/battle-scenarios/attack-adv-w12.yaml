@@ -1,0 +1,238 @@
+id: "attack-adv-w12"
+category: "attack-adv"
+title: "[공격고급 W12] 공급망 공격 — 악성 의존성 vs 무결성 검증·SBOM"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격 고급과정 12주차 — **공급망 공격**. 의존성 혼동·타이포스쿼팅·post-install 훅·CI/CD·악성 Docker 이미지로
+  신뢰 체인을 오염시킨다(SolarWinds 류). Red 는 악성 의존성을 주입하고, Blue 는 무결성 검증·SBOM·SLSA 로 막는다.
+
+  ▸ 이야기
+    공격자가 악성 패키지를 끌어오고(태그 `aa12r1`), post-install 훅으로 코드를 실행하는 악성 패키지 산출물
+    (**`/tmp/.aa12pkg`**)과 계정 `atka12` 를 심는다. 방어자는 악성 패키지 fetch 를 탐지하고 무결성/SBOM 으로 방어한다.
+
+  ▸ 모드
+    • solo : 한 학생이 공급망 공격(자기 인프라 표적)과 방어를 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 오염, Blue 는 자기 인프라에서 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(WAF audit 태그 / 악성 패키지 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    악성 의존성 fetch 태그 **`aa12r1-<본인id>`**, 악성 패키지 산출물 **`/tmp/.aa12pkg`**(마커 `aa12`),
+    계정 **`atka12`**, Suricata 탐지 **sid 9712011**, Wazuh 탐지 **id 103121**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [악성 의존성 fetch] — 의존성 혼동/타이포스쿼팅
+
+      ### 상황
+      너는 내부 패키지명과 동일한 공개 악성 패키지(의존성 혼동) 또는 유사 이름(타이포스쿼팅)을 빌드가 끌어오게
+      유도한다. 태그 `aa12r1-<본인id>` 로 악성 패키지 fetch 시도를 표시한다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      curl -s -A "aa12r1-kim-supplychain" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/npm/install?pkg=internal-utils-aa12r1-kim"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `aa12r1` 가 포함된 악성 의존성 fetch 시도가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `aa12r1` 태그가 포함된 흔적이 남는다.
+    hint: "태그(aa12r1) 의존성 혼동/타이포스쿼팅 fetch → 대상 modsec audit. 채점: log_contains modsec aa12r1."
+    verify:
+      type: "log_contains"
+      expect: "aa12r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "aa12r1", since_sec: 1800 } }
+      semantic:
+        intent: "공급망 공격(T1195 Supply Chain Compromise) — 의존성 혼동/타이포스쿼팅. 대상 WAF audit, 태그(aa12r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 aa12r1 태그가 포함된 fetch 흔적"
+          - "의존성 혼동/타이포스쿼팅 메커니즘 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 단 악성 의존성 fetch"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [post-install 코드 실행] — 악성 패키지 + 계정
+
+      ### 상황
+      악성 패키지의 **post-install 훅**은 설치만으로 코드를 실행한다. 너는 그런 악성 패키지 산출물
+      **`/tmp/.aa12pkg`**(마커 `aa12`, setup.py/postinstall 흉내)와 계정 **`atka12`** 를 심는다.
+
+      ### 할 일
+      ```bash
+      cat > /tmp/.aa12pkg <<'PKG'
+      # aa12 malicious package post-install hook
+      # setup.py: cmdclass install -> os.system("useradd atka12 ...")
+      PKG
+      sudo useradd -m -s /bin/bash atka12
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.aa12pkg`(마커 `aa12`)이 있거나 `/etc/passwd` 에 `atka12` 가 있는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.aa12pkg`(마커 `aa12`) 또는 계정 `atka12`.
+    hint: "악성 패키지 /tmp/.aa12pkg (마커 aa12, post-install 훅) + useradd atka12. 채점: file_contains pkg aa12 + file_contains passwd atka12."
+    verify:
+      type: "file_contains"
+      expect: "aa12"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.aa12pkg", pattern: "aa12" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "atka12" } }
+      semantic:
+        intent: "공급망 코드 실행(T1195.002) — post-install 훅 + 계정. 설치만으로 RCE."
+        success_criteria:
+          - "/tmp/.aa12pkg(마커 aa12) 또는 계정 atka12"
+          - "post-install 훅이 설치 시 코드 실행하는 원리 서술"
+        acceptable_methods:
+          - "악성 패키지 산출물 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [악성 fetch 탐지] — Suricata 룰 (sid 9712011)
+
+      ### 상황
+      악성 패키지 fetch(의존성 혼동/타이포스쿼팅) 시도를 잡는 Suricata 룰(**sid 9712011**)을 만든다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"ATKADV-W12 suspicious dependency fetch"; flow:to_server; http.uri; content:"/npm/install"; nocase; sid:9712011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9712011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 악성 fetch 를 보는 sid 9712011 룰이 존재한다.
+    hint: "악성 의존성 fetch Suricata 룰(sid 9712011) → reload. 채점: file_contains local.rules 9712011."
+    verify:
+      type: "file_contains"
+      expect: "9712011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9712011" } }
+      semantic:
+        intent: "공급망 탐지(네트워크) — 악성 의존성 fetch Suricata 룰. 빌드 시 외부 패키지 다운로드 모니터."
+        success_criteria:
+          - "local.rules 에 sid 9712011"
+          - "의존성 fetch 모니터링 의의 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [공급망 무결성 탐지] — post-install/계정 Wazuh 룰 (id 103121)
+
+      ### 상황
+      RED-2 의 악성 패키지 post-install·계정 생성을 잡는 Wazuh 룰(**id 103121**)을 만든다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,supplychain,">
+        <rule id="103121" level="13">
+          <if_group>edu</if_group>
+          <match>atka12</match>
+          <description>ATKADV-W12 - supply chain: post-install code exec / new account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 103121 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 공급망 코드 실행을 보는 id 103121 룰이 존재한다.
+    hint: "공급망 post-install/계정 Wazuh 룰(id 103121) → restart. 채점: file_contains local_rules.xml 103121."
+    verify:
+      type: "file_contains"
+      expect: "103121"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "103121" } }
+      semantic:
+        intent: "공급망 탐지(호스트) — post-install 코드 실행/계정 Wazuh 룰. 설치 시 이상 행위 포착."
+        success_criteria:
+          - "local_rules.xml 에 rule id 103121"
+          - "post-install 코드 실행 탐지 로직"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [SBOM·SLSA·방어] — 공급망 무결성 종합
+
+      ### 상황
+      공급망을 구조적으로 방어한다. **SBOM**(의존성 목록), **코드 서명 검증**(GPG/Sigstore), **SLSA** 성숙도
+      평가, 모니터링 전략을 정리한다.
+
+      ### 할 일
+      보고서에:
+      - SBOM 생성/위험 패키지 식별 + 코드 서명/해시 검증 + SLSA 레벨 평가
+      - 공급망 방어 로드맵 + 악성 패키지(`/tmp/.aa12pkg`)·계정(atka12) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 SBOM/SLSA/방어로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ SBOM·SLSA·방어 로드맵·헌팅은 제출로 검증).
+    hint: "SBOM + 코드 서명 검증(GPG/Sigstore) + SLSA 평가 + 방어 로드맵 + 악성패키지/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "공급망 방어 — SBOM/코드서명/SLSA/모니터링 + 헌팅. 분석형 — 구체 방어(SBOM/SLSA) 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "SBOM + 코드 서명 검증 + SLSA 레벨 평가"
+          - "공급망 방어 로드맵 + 악성패키지/계정 헌팅"
+        acceptable_methods:
+          - "SBOM/SLSA 분석 + 방어 로드맵 + 헌팅"
+        negative_signs:
+          - "SBOM/SLSA 누락"

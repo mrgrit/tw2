@@ -1,0 +1,177 @@
+id: "compliance-w10"
+category: "compliance"
+title: "[컴플라이언스 W10] 보안감사 수행 — 감사 회피 vs 감사 증적·로그 완전성"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  컴플라이언스 10주차 — **보안감사 수행**. 감사 증적의 완전성·무결성, 로그 수집 범위, 감사 추적을 점검한다.
+  공격자는 감사를 회피(로그 갭 유발)하고, 감사자(너)는 감사 로그 완전성 통제를 구현하고 증적으로 입증한다.
+
+  ▸ 이야기: 공격자가 침투해(태그 `co10r1`) 감사 회피 흔적(`/tmp/.co10audit`)과 계정 `compa10` 을 남긴다.
+    감사자는 ① 침입 탐지, ② 감사 로그 완전성 룰, ③ 보안감사 종합 수행·증적으로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/회피 파일·계정).
+  ▸ 마커: 태그 **`co10r1-<본인id>`**, 감사 회피 **`/tmp/.co10audit`**(마커 `co10`), 계정 **`compa10`**,
+    Suricata **sid 9810011**, Wazuh **id 104101**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [감사 대상 행위] — 침투로 감사 이벤트 생성
+
+      ### 상황
+      보안감사는 행위 증적을 다룬다. 너는 태그 `co10r1-<본인id>` 로 침투해 감사 대상 이벤트를 만든다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "co10r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=co10r1-kim%27%20UNION%20SELECT%201--+&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `co10r1` 흔적 시 인정.
+    hint: "태그(co10r1) 침투 → 대상 modsec audit. 채점: log_contains modsec co10r1."
+    verify:
+      type: "log_contains"
+      expect: "co10r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "co10r1", since_sec: 1800 } }
+      semantic:
+        intent: "감사 대상 행위 생성(T1190) — 보안감사 증적의 입력. 태그(co10r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 co10r1 태그", "감사 증적 대상 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 침투"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [감사 회피] — 로그 갭 유발 + 계정
+
+      ### 상황
+      감사 회피(로그 미수집 경로 악용)는 감사 무결성을 훼손한다. 너는 회피 흔적 **`/tmp/.co10audit`**(마커 `co10`)과
+      계정 **`compa10`** 을 남긴다.
+
+      ### 할 일
+      ```bash
+      printf 'co10 audit evasion: action in unlogged path, no trail' > /tmp/.co10audit
+      sudo useradd -m -s /bin/bash compa10
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.co10audit`(마커 `co10`) 또는 `compa10` 존재 시 인정.
+    hint: "감사 회피 /tmp/.co10audit (마커 co10) + useradd compa10. 채점: file_contains audit co10 + file_contains passwd compa10."
+    verify:
+      type: "file_contains"
+      expect: "co10"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.co10audit", pattern: "co10" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "compa10" } }
+      semantic:
+        intent: "감사 회피(T1562 Impair Defenses) + 계정(T1136) — 로그 갭으로 감사 무결성 훼손."
+        success_criteria: ["/tmp/.co10audit(마커 co10) 또는 계정 compa10", "감사 회피/로그 갭 서술"]
+        acceptable_methods: ["회피 산출물 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [감사 대상 탐지] — Suricata 룰 (sid 9810011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"COMPLIANCE-W10 audit-relevant intrusion"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; sid:9810011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9810011 룰 존재 시 인정.
+    hint: "감사 대상 탐지 Suricata 룰(sid 9810011) → reload. 채점: file_contains local.rules 9810011."
+    verify:
+      type: "file_contains"
+      expect: "9810011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9810011" } }
+      semantic:
+        intent: "보안감사 — 감사 대상 행위 탐지 Suricata 룰로 증적 생성. 로그 완전성."
+        success_criteria: ["local.rules 에 sid 9810011", "감사 증적 생성 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [감사 로그 완전성] — Wazuh 룰 (id 104101)
+
+      ### 할 일
+      ```xml
+      <group name="edu,audit,">
+        <rule id="104101" level="12">
+          <if_group>edu</if_group>
+          <match>compa10</match>
+          <description>COMPLIANCE-W10 - audit log integrity: evasion / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 104101 룰 존재 시 인정.
+    hint: "감사 로그 완전성 Wazuh 룰(id 104101) → restart. 채점: file_contains local_rules.xml 104101."
+    verify:
+      type: "file_contains"
+      expect: "104101"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "104101" } }
+      semantic:
+        intent: "감사 로그 완전성 — 감사 회피/계정 Wazuh 룰. 로그 갭 탐지 + 무결성."
+        success_criteria: ["local_rules.xml 에 rule id 104101", "로그 완전성/회피 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [보안감사 종합 수행·증적]
+
+      ### 할 일
+      보고서에:
+      - 감사 범위/체크리스트 + 로그 수집 완전성 점검 + 발견사항 + 증적
+      - 미흡 개선 + 감사 회피(`/tmp/.co10audit`)·계정(compa10) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 감사 수행 증적으로 인정.
+    hint: "보안감사 수행(범위/체크리스트/로그 완전성/발견사항) + 증적 + 회피/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "보안감사 종합 수행·증적 — 감사 범위/로그 완전성/발견사항. 분석형 — 체크리스트/증적 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "감사 범위/체크리스트 + 로그 완전성 점검 + 발견사항 + 증적"
+          - "감사 회피/계정 헌팅"
+        acceptable_methods: ["감사 체크리스트 + 증적 + 헌팅"]
+        negative_signs: ["증적 없는 서술 / 항목 누락"]

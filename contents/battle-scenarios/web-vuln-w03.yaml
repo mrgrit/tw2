@@ -1,0 +1,174 @@
+id: "web-vuln-w03"
+category: "web-vuln"
+title: "[웹취약점 W3] 정보수집(Recon) — WSTG-INFO 정찰 vs 정보 노출 축소"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 3주차 — **정보수집(WSTG-INFO)**. 서버/프레임워크 핑거프린팅, 숨은 경로/파일, 메타데이터,
+  주석/에러 노출을 정찰한다. 공격자는 정보를 수집하고, 점검자(너)는 정보 노출을 탐지·축소한다.
+
+  ▸ 이야기: 공격자가 WSTG-INFO 정찰(태그 `wv03r1`)로 표면을 수집하고 정찰 노트(`/tmp/.wv03recon`)와 계정 `wva03` 을 남긴다.
+    점검자는 ① 정찰 탐지, ② 정보 노출 Wazuh 룰, ③ 정보수집 점검 종합·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/정찰 파일·계정).
+  ▸ 마커: 태그 **`wv03r1-<본인id>`**, 정찰 노트 **`/tmp/.wv03recon`**(마커 `wv03`), 계정 **`wva03`**,
+    Suricata **sid 9903011**, Wazuh **id 105031**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [WSTG-INFO 정찰] — 숨은 경로/메타데이터 수집
+
+      ### 상황
+      너는 태그 `wv03r1-<본인id>` 로 robots.txt·백업파일·주석·에러 페이지 등 정보 노출을 정찰한다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      for p in /robots.txt /.git/config /backup.zip /index.php~ /server-status; do
+        curl -s -A "wv03r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>$p" -o /dev/null
+      done
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv03r1` 흔적 시 인정.
+    hint: "태그(wv03r1) 정보 노출 정찰(robots/.git/backup) → 대상 modsec audit. 채점: log_contains modsec wv03r1."
+    verify:
+      type: "log_contains"
+      expect: "wv03r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv03r1", since_sec: 1800 } }
+      semantic:
+        intent: "정보수집(T1592/T1595) — WSTG-INFO 정찰. 태그(wv03r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv03r1 태그", "정찰한 정보 노출 항목 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 정보 정찰"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [정찰 노트] — 노출 정보 정리 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'wv03 recon: .git exposed, server=Apache/2.4.41, framework=PHP, admin=/dvwa' > /tmp/.wv03recon
+      sudo useradd -m -s /bin/bash wva03
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv03recon`(마커 `wv03`) 또는 `wva03` 존재 시 인정.
+    hint: "정찰 노트 /tmp/.wv03recon (마커 wv03) + useradd wva03. 채점: file_contains recon wv03 + file_contains passwd wva03."
+    verify:
+      type: "file_contains"
+      expect: "wv03"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv03recon", pattern: "wv03" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva03" } }
+      semantic:
+        intent: "정찰 정보 정리(T1592) + 계정(T1136) — 노출 정보 인벤토리."
+        success_criteria: ["/tmp/.wv03recon(마커 wv03) 또는 계정 wva03", "노출 정보 위험 서술"]
+        acceptable_methods: ["정찰 노트 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [정찰 탐지] — Suricata 룰 (sid 9903011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W03 info disclosure recon (.git/backup)"; flow:to_server; http.uri; content:".git"; nocase; sid:9903011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9903011 룰 존재 시 인정.
+    hint: "정찰 탐지 Suricata 룰(sid 9903011, .git/backup) → reload. 채점: file_contains local.rules 9903011."
+    verify:
+      type: "file_contains"
+      expect: "9903011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9903011" } }
+      semantic:
+        intent: "정보 노출 정찰 탐지 — .git/backup 접근 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9903011", "정찰 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [정보 노출 탐지] — Wazuh 룰 (id 105031)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105031" level="10">
+          <if_group>edu</if_group>
+          <match>wva03</match>
+          <description>WEBVULN-W03 - info disclosure / recon account indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105031 룰 존재 시 인정.
+    hint: "정보 노출 Wazuh 룰(id 105031) → restart. 채점: file_contains local_rules.xml 105031."
+    verify:
+      type: "file_contains"
+      expect: "105031"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105031" } }
+      semantic:
+        intent: "정보 노출 탐지 — 정찰/계정 Wazuh 룰. 노출 축소 통제."
+        success_criteria: ["local_rules.xml 에 rule id 105031", "정보 노출 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [정보수집 점검 종합·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - WSTG-INFO 항목별 점검(서버/프레임워크 핑거프린팅/숨은 경로/주석/에러 노출) + 노출 축소 권고
+      - R/B/P 회고 + 정찰 노트(`/tmp/.wv03recon`)·계정(wva03) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 정보수집 점검·R/B/P 로 인정.
+    hint: "WSTG-INFO 점검(핑거프린팅/숨은경로/주석/에러) + 노출 축소 권고 + R/B/P + 정찰/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "정보수집 점검 종합 — WSTG-INFO 항목 + 노출 축소 + R/B/P. 분석형 — 구체 항목/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "WSTG-INFO 항목별 점검 + 노출 축소 권고"
+          - "R/B/P 회고 + 정찰/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

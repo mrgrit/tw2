@@ -16,8 +16,13 @@ interface Scenario {
 // 시나리오 트랙(카테고리) 라벨/순서 — 카탈로그 그룹핑용
 const CAT_LABEL: Record<string, string> = {
   'secuops-easy': '보안운영 입문', 'secuops': '보안운영', 'soc': 'SOC 관제', 'attack': '공격기법',
+  'soc-adv': 'SOC 고급', 'attack-adv': '공격 고급', 'compliance': '컴플라이언스',
+  'web-vuln': '웹취약점 점검', 'cloud-container': '클라우드/컨테이너',
 }
-const CAT_ORDER = ['secuops-easy', 'secuops', 'soc', 'attack']
+const CAT_ORDER = [
+  'secuops-easy', 'secuops', 'soc', 'soc-adv', 'attack', 'attack-adv',
+  'web-vuln', 'cloud-container', 'compliance',
+]
 function catLabel(c?: string | null) { return c ? (CAT_LABEL[c] || c) : '미분류' }
 function catRank(c: string) { const i = CAT_ORDER.indexOf(c); return i < 0 ? 99 : i }
 
@@ -685,7 +690,7 @@ function MissionCard({ m, battleId, meId, events, canSubmit, onSubmitted, onErr 
   meId: number
   events: BattleEvent[]
   canSubmit: boolean
-  onSubmitted: () => void
+  onSubmitted: (missionKey?: string) => void
   onErr: (msg: string) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -787,7 +792,7 @@ function MissionCard({ m, battleId, meId, events, canSubmit, onSubmitted, onErr 
 function ReportForm({ battleId, mission, onSubmitted, onErr }: {
   battleId: number
   mission: Mission
-  onSubmitted: () => void
+  onSubmitted: (missionKey?: string) => void
   onErr: (msg: string) => void
 }) {
   const [whatDid, setWhatDid] = useState('')
@@ -833,7 +838,7 @@ function ReportForm({ battleId, mission, onSubmitted, onErr }: {
       await api(`/battles/${battleId}/events`, { method: 'POST', json: payload })
       setWhatDid(''); setWhatHappened(''); setDesc('')
       setNotice({ ok: true, text: '✅ 제출 저장됨 — 채점은 백그라운드에서 제출 순서대로 진행됩니다. 기다리지 말고 다음 미션을 진행하세요. (결과는 잠시 후 이 카드와 “내 워크북”에 표시)' })
-      onSubmitted()
+      onSubmitted(`${mission.side}-${mission.order}`)
     } catch (e: any) {
       // 실패 시 입력 보존 — 인라인으로 사유 표시(상단 배너에도 한 번 더).
       setNotice({ ok: false, text: `제출 실패: ${e.message}` })
@@ -988,6 +993,8 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
   // join 다이얼로그 — 로비에서 BattleView 직접 열린 경우
   const [joinRole, setJoinRole] = useState<'red' | 'blue' | 'free'>(b.battle.mode === 'duel' ? 'red' : 'free')
   const [joinInfra, setJoinInfra] = useState<number | null>(myInfras[0]?.id ?? null)
+  // 이번 세션에 내가 제출한 미션 키(`side-order`) — 채점 이벤트가 아직 안 와도 "제출함"으로 카운트.
+  const [submittedKeys, setSubmittedKeys] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     if (hintCool <= 0) return
@@ -1028,6 +1035,29 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
     : [...b.participants].sort((a, b) => b.score - a.score)
   const teamSums: Record<string, number> = {}
   for (const p of b.participants) teamSums[p.role] = (teamSums[p.role] || 0) + p.score
+
+  // ── 내 미션 진행 요약 — "다 풀면 완료" 매듭(강제 종료와 구분되는 자연스러운 마무리) ──
+  const mKey = (m: { side: string; order: number }) => `${m.side}-${m.order}`
+  // 미션별 최신 채점 이벤트(id 오름차순으로 덮어써 최신만 남김).
+  const latestGraded: Record<string, BattleEvent> = {}
+  for (const e of b.events
+    .filter(e => e.actor_user_id === meId && e.detail?.grading && e.detail?.report)
+    .sort((a, b) => a.id - b.id)) {
+    latestGraded[`${e.detail.report.mission_side}-${e.detail.report.mission_order}`] = e
+  }
+  const myMissions = b.my_missions
+  const verdictOf = (m: Mission): string | undefined =>
+    m.solved ? 'pass' : latestGraded[mKey(m)]?.detail?.grading?.verdict
+  const isSubmitted = (m: Mission) => m.solved || !!latestGraded[mKey(m)] || submittedKeys.has(mKey(m))
+  const isGraded = (m: Mission) => m.solved || !!latestGraded[mKey(m)]
+  const submittedCount = myMissions.filter(isSubmitted).length
+  const gradedCount = myMissions.filter(isGraded).length
+  const passedCount = myMissions.filter(m => {
+    const v = verdictOf(m); return v === 'pass' || v === 'partial'
+  }).length
+  const allSubmitted = myMissions.length > 0 && submittedCount === myMissions.length
+  const myScore = b.participants.find(p => p.user_id === meId)?.score ?? 0
+  const isSolo = b.battle.mode === 'solo'
 
   return (
     <>
@@ -1133,8 +1163,45 @@ function BattleView({ b, meId, onClose, onStart, onEnd, onRefresh, onErr, myInfr
             <MissionCard key={`${m.side}-${m.order}`} m={m}
               battleId={b.battle.id} meId={meId} events={b.events}
               canSubmit={canPostEvent && b.battle.status === 'active'}
-              onSubmitted={onRefresh} onErr={onErr} />
+              onSubmitted={(key) => {
+                if (key) setSubmittedKeys(s => { const n = new Set(s); n.add(key); return n })
+                onRefresh()
+              }}
+              onErr={onErr} />
           ))}
+
+          {/* 🏁 완료 매듭 — 내 미션을 전부 제출하면 등장(강제 종료와 다른, 자연스러운 마무리) */}
+          {canPostEvent && b.battle.status === 'active' && allSubmitted && (
+            <div className="card" style={{ borderColor: 'var(--green)', background: 'rgba(80,200,120,0.06)' }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--green)' }}>
+                🎉 모든 미션 제출 완료!
+              </div>
+              <div style={{ marginTop: 6, fontSize: 14, color: 'var(--fg-dim)', lineHeight: 1.6 }}>
+                제출 <b>{submittedCount}/{myMissions.length}</b>
+                {' · '}채점완료 <b>{gradedCount}</b>
+                {gradedCount < submittedCount && <span> (채점 중 {submittedCount - gradedCount})</span>}
+                {' · '}인정 <b style={{ color: 'var(--green)' }}>{passedCount}</b>
+                {' · '}현재 점수 <b style={{ color: 'var(--primary)' }}>{myScore}</b>
+              </div>
+              <div style={{ marginTop: 10 }}>
+                {isSolo ? (
+                  <>
+                    <button className="primary" onClick={onEnd}>🏁 도전 마치기 (결과 보기)</button>
+                    <span style={{ fontSize: 12, color: 'var(--fg-dim)', marginLeft: 10 }}>
+                      마치면 채점이 끝난 미션 점수로 최종 확정됩니다. 더 풀고 싶으면 위에서 다시 제출하세요.
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <button className="ghost" onClick={onClose}>목록으로</button>
+                    <span style={{ fontSize: 12, color: 'var(--fg-dim)', marginLeft: 10 }}>
+                      공방전 종료는 진행자(또는 시간 만료)가 합니다 — 결과는 채점이 끝나는 대로 반영됩니다.
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
       {b.opponent_missions.length > 0 && (

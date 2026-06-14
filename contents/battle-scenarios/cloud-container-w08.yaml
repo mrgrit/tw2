@@ -1,0 +1,169 @@
+id: "cloud-container-w08"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W8] 스토리지 보안 — 볼륨·시크릿 노출 vs 암호화·접근 통제"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 8주차 — **스토리지 보안**. 볼륨 마운트·시크릿 관리·데이터 암호화를 점검한다. 공격자는 노출
+  볼륨/시크릿을 탈취하고, 점검자(너)는 암호화·접근 통제·시크릿 관리를 점검·구현한다.
+
+  ▸ 이야기: 공격자가 노출 볼륨/시크릿을 탈취해(태그 `cc08r1`) 탈취 시크릿(`/tmp/.cc08storage`)과 계정 `cca08` 을 남긴다.
+    점검자는 ① 시크릿 접근 탐지, ② 스토리지 Wazuh 룰, ③ 스토리지 보안 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/시크릿 파일·계정).
+  ▸ 마커: 태그 **`cc08r1-<본인id>`**, 탈취 시크릿 **`/tmp/.cc08storage`**(마커 `cc08`), 계정 **`cca08`**,
+    Suricata **sid 9008011**, Wazuh **id 106081**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [시크릿 접근] — 노출 볼륨/시크릿 탈취 시도
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "cc08r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?file=cc08r1-kim/../../run/secrets/db_password"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc08r1` 흔적 시 인정.
+    hint: "태그(cc08r1) 시크릿/볼륨 접근 → 대상 modsec audit. 채점: log_contains modsec cc08r1."
+    verify:
+      type: "log_contains"
+      expect: "cc08r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc08r1", since_sec: 1800 } }
+      semantic:
+        intent: "스토리지 시크릿 접근(T1552.001) — 노출 볼륨/시크릿. 태그(cc08r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc08r1 태그", "시크릿 노출 경로 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 시크릿 접근"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [시크릿 탈취] — 평문 시크릿 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc08 secrets: DB_PASS=plaintext, API_KEY=exposed in volume, no encryption' > /tmp/.cc08storage
+      sudo useradd -m -s /bin/bash cca08
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc08storage`(마커 `cc08`) 또는 `cca08` 존재 시 인정.
+    hint: "탈취 시크릿 /tmp/.cc08storage (마커 cc08) + useradd cca08. 채점: file_contains storage cc08 + file_contains passwd cca08."
+    verify:
+      type: "file_contains"
+      expect: "cc08"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc08storage", pattern: "cc08" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca08" } }
+      semantic:
+        intent: "시크릿 탈취(T1552) + 계정(T1136) — 평문 시크릿/미암호 볼륨."
+        success_criteria: ["/tmp/.cc08storage(마커 cc08) 또는 계정 cca08", "평문 시크릿 위험 서술"]
+        acceptable_methods: ["시크릿 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [시크릿 접근 탐지] — Suricata 룰 (sid 9008011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W08 secret/volume access (run/secrets)"; flow:to_server; http.uri; content:"run/secrets"; nocase; sid:9008011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9008011 룰 존재 시 인정.
+    hint: "시크릿 접근 Suricata 룰(sid 9008011) → reload. 채점: file_contains local.rules 9008011."
+    verify:
+      type: "file_contains"
+      expect: "9008011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9008011" } }
+      semantic:
+        intent: "스토리지 보안 — 시크릿/볼륨 접근 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9008011", "시크릿 접근 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [스토리지 탐지] — Wazuh 룰 (id 106081)
+
+      ### 할 일
+      ```xml
+      <group name="edu,storage,">
+        <rule id="106081" level="13">
+          <if_group>edu</if_group>
+          <match>cca08</match>
+          <description>CLOUD-W08 - secret/volume exposure / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106081 룰 존재 시 인정.
+    hint: "스토리지 Wazuh 룰(id 106081) → restart. 채점: file_contains local_rules.xml 106081."
+    verify:
+      type: "file_contains"
+      expect: "106081"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106081" } }
+      semantic:
+        intent: "스토리지 보안 — 시크릿 노출/계정 Wazuh 룰. 시크릿 관리 통제."
+        success_criteria: ["local_rules.xml 에 rule id 106081", "시크릿 노출 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [스토리지 보안 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - 스토리지 점검(볼륨 암호화/시크릿 매니저 사용/평문 시크릿 제거/접근 권한/볼륨 마운트 최소화) + 위험도 + 권고
+      - R/B/P 회고 + 탈취 시크릿(`/tmp/.cc08storage`)·계정(cca08) 헌팅·삭제
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 스토리지 보안 점검·R/B/P 로 인정.
+    hint: "스토리지 점검(볼륨 암호화/시크릿 매니저/평문 제거/접근 권한/마운트 최소화) + R/B/P + 시크릿/계정 헌팅·삭제. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "스토리지 보안 점검 종합 — 암호화/시크릿 관리 + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "스토리지 점검(암호화/시크릿 매니저/접근 권한) + 권고"
+          - "R/B/P 회고 + 시크릿 삭제 + 계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

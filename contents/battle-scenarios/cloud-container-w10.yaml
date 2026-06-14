@@ -1,0 +1,169 @@
+id: "cloud-container-w10"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W10] CI/CD 파이프라인 — 빌드 변조 vs 파이프라인 보안"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 10주차 — **CI/CD 파이프라인 보안**. 빌드 변조·시크릿 유출·악성 단계 삽입을 점검한다. 공격자는
+  파이프라인을 변조하고, 점검자(너)는 파이프라인 보안 통제를 점검·구현한다.
+
+  ▸ 이야기: 공격자가 빌드 변조(태그 `cc10r1`)로 악성 단계를 넣고 변조 산출물(`/tmp/.cc10cicd`)과 계정 `cca10` 을 남긴다.
+    점검자는 ① 빌드 변조 탐지, ② 파이프라인 Wazuh 룰, ③ CI/CD 보안 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/변조 파일·계정).
+  ▸ 마커: 태그 **`cc10r1-<본인id>`**, 변조 산출물 **`/tmp/.cc10cicd`**(마커 `cc10`), 계정 **`cca10`**,
+    Suricata **sid 9010011**, Wazuh **id 106101**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [빌드 변조 시도] — 파이프라인 엔드포인트 공략
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "cc10r1-kim" -H "Host: dvwa.6v6.lab" --data "job=build&inject=cc10r1-kim" "http://<대상_공개IP>/ci/trigger"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc10r1` 흔적 시 인정.
+    hint: "태그(cc10r1) CI 트리거/빌드 변조 → 대상 modsec audit. 채점: log_contains modsec cc10r1."
+    verify:
+      type: "log_contains"
+      expect: "cc10r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc10r1", since_sec: 1800 } }
+      semantic:
+        intent: "CI/CD 빌드 변조(T1195) — 파이프라인 악성 단계. 태그(cc10r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc10r1 태그", "빌드 변조 방식 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 CI 변조"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [악성 단계] — 변조 빌드 산출물 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc10 pipeline tamper: malicious build step curl|bash, secret leaked to log' > /tmp/.cc10cicd
+      sudo useradd -m -s /bin/bash cca10
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc10cicd`(마커 `cc10`) 또는 `cca10` 존재 시 인정.
+    hint: "변조 산출물 /tmp/.cc10cicd (마커 cc10) + useradd cca10. 채점: file_contains cicd cc10 + file_contains passwd cca10."
+    verify:
+      type: "file_contains"
+      expect: "cc10"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc10cicd", pattern: "cc10" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca10" } }
+      semantic:
+        intent: "파이프라인 변조(T1195.002) + 계정(T1136) — 악성 빌드 단계/시크릿 유출."
+        success_criteria: ["/tmp/.cc10cicd(마커 cc10) 또는 계정 cca10", "악성 단계 위험 서술"]
+        acceptable_methods: ["변조 산출물 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [빌드 변조 탐지] — Suricata 룰 (sid 9010011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W10 CI/CD pipeline tamper (ci trigger)"; flow:to_server; http.uri; content:"/ci/trigger"; nocase; sid:9010011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9010011 룰 존재 시 인정.
+    hint: "CI/CD 변조 Suricata 룰(sid 9010011) → reload. 채점: file_contains local.rules 9010011."
+    verify:
+      type: "file_contains"
+      expect: "9010011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9010011" } }
+      semantic:
+        intent: "CI/CD 보안 — 빌드 변조 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9010011", "빌드 변조 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [파이프라인 탐지] — Wazuh 룰 (id 106101)
+
+      ### 할 일
+      ```xml
+      <group name="edu,cicd,">
+        <rule id="106101" level="13">
+          <if_group>edu</if_group>
+          <match>cca10</match>
+          <description>CLOUD-W10 - CI/CD pipeline tamper / malicious build / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106101 룰 존재 시 인정.
+    hint: "파이프라인 Wazuh 룰(id 106101) → restart. 채점: file_contains local_rules.xml 106101."
+    verify:
+      type: "file_contains"
+      expect: "106101"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106101" } }
+      semantic:
+        intent: "CI/CD 보안 — 파이프라인 변조/계정 Wazuh 룰."
+        success_criteria: ["local_rules.xml 에 rule id 106101", "파이프라인 변조 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [CI/CD 보안 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - CI/CD 점검(파이프라인 권한 최소화/시크릿 마스킹/서명된 아티팩트/단계 무결성/러너 격리) + 위험도 + 권고
+      - R/B/P 회고 + 변조 산출물(`/tmp/.cc10cicd`)·계정(cca10) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 CI/CD 보안 점검·R/B/P 로 인정.
+    hint: "CI/CD 점검(권한 최소화/시크릿 마스킹/서명 아티팩트/단계 무결성/러너 격리) + R/B/P + 변조/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "CI/CD 보안 점검 종합 — 권한/시크릿/무결성 + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "CI/CD 점검(권한/시크릿 마스킹/서명/무결성/러너 격리) + 권고"
+          - "R/B/P 회고 + 변조/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

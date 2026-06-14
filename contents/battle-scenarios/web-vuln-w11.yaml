@@ -1,0 +1,170 @@
+id: "web-vuln-w11"
+category: "web-vuln"
+title: "[웹취약점 W11] 에러/정보 노출 — stack trace 유발 vs 에러 처리·노출 차단"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 11주차 — **에러 처리/정보 노출**. 스택 트레이스·버전·디버그 정보 노출을 점검한다. 공격자는
+  에러를 유발해 내부 정보를 캐고, 점검자(너)는 에러 처리·노출 차단을 구현한다.
+
+  ▸ 이야기: 공격자가 에러를 유발해(태그 `wv11r1`) 노출 정보를 수집하고 노출 노트(`/tmp/.wv11trace`)와 계정 `wva11` 을 남긴다.
+    점검자는 ① 에러 유발 탐지, ② 정보 노출 Wazuh 룰, ③ 에러 처리 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/노출 파일·계정).
+  ▸ 마커: 태그 **`wv11r1-<본인id>`**, 노출 노트 **`/tmp/.wv11trace`**(마커 `wv11`), 계정 **`wva11`**,
+    Suricata **sid 9911011**, Wazuh **id 105111**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [에러 유발] — 비정상 입력으로 stack trace 노출
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "wv11r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/api/item?id[]=wv11r1-kim"
+      curl -s -A "wv11r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?debug=1&wv11r1-kim=%00"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv11r1` 흔적 시 인정.
+    hint: "태그(wv11r1) 에러 유발(배열/널바이트/디버그) → 대상 modsec audit. 채점: log_contains modsec wv11r1."
+    verify:
+      type: "log_contains"
+      expect: "wv11r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv11r1", since_sec: 1800 } }
+      semantic:
+        intent: "정보 노출 유발(T1190) — 에러로 stack trace/버전 노출. 태그(wv11r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv11r1 태그", "에러 유발 방식 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 에러 유발"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [노출 정보 수집] — 내부 정보 노트 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'wv11 disclosure: PHP 7.4.3, /var/www/app stack, DB host db.internal' > /tmp/.wv11trace
+      sudo useradd -m -s /bin/bash wva11
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv11trace`(마커 `wv11`) 또는 `wva11` 존재 시 인정.
+    hint: "노출 노트 /tmp/.wv11trace (마커 wv11) + useradd wva11. 채점: file_contains trace wv11 + file_contains passwd wva11."
+    verify:
+      type: "file_contains"
+      expect: "wv11"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv11trace", pattern: "wv11" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva11" } }
+      semantic:
+        intent: "정보 노출 수집(T1592) + 계정(T1136) — stack trace/버전/경로 노출."
+        success_criteria: ["/tmp/.wv11trace(마커 wv11) 또는 계정 wva11", "노출 정보 위험 서술"]
+        acceptable_methods: ["노출 노트 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [에러 유발 탐지] — Suricata 룰 (sid 9911011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W11 error-trigger probe (debug/null byte)"; flow:to_server; http.uri; content:"debug=1"; nocase; sid:9911011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9911011 룰 존재 시 인정.
+    hint: "에러 유발 Suricata 룰(sid 9911011, debug) → reload. 채점: file_contains local.rules 9911011."
+    verify:
+      type: "file_contains"
+      expect: "9911011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9911011" } }
+      semantic:
+        intent: "정보 노출 탐지 — 에러 유발 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9911011", "에러 유발 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [정보 노출 탐지] — Wazuh 룰 (id 105111)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105111" level="10">
+          <if_group>edu</if_group>
+          <match>wva11</match>
+          <description>WEBVULN-W11 - info disclosure (stack trace/version) / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105111 룰 존재 시 인정.
+    hint: "정보 노출 Wazuh 룰(id 105111) → restart. 채점: file_contains local_rules.xml 105111."
+    verify:
+      type: "file_contains"
+      expect: "105111"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105111" } }
+      semantic:
+        intent: "정보 노출 탐지(호스트) — stack trace/버전 노출/계정 Wazuh 룰."
+        success_criteria: ["local_rules.xml 에 rule id 105111", "정보 노출 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [에러 처리 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - 에러 처리 점검(커스텀 에러 페이지/디버그 비활성/버전 헤더 제거/스택 노출 차단) + 위험도
+      - R/B/P 회고 + 노출 노트(`/tmp/.wv11trace`)·계정(wva11) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 에러 처리 점검·R/B/P 로 인정.
+    hint: "에러 처리 점검(커스텀 에러/디버그 off/버전 헤더 제거/스택 차단) + R/B/P + 노출/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "에러 처리 점검 종합 — 노출 차단 + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "에러 처리 점검(커스텀 에러/디버그/버전/스택) + 위험도"
+          - "R/B/P 회고 + 노출/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

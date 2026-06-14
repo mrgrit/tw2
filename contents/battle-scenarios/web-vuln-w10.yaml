@@ -1,0 +1,170 @@
+id: "web-vuln-w10"
+category: "web-vuln"
+title: "[웹취약점 W10] 암호화/통신 — 약한 TLS·cipher vs 전송 보안 점검"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 10주차 — **암호화/통신 보안(TLS/cipher/인증서/HSTS)**. 공격자는 약한 TLS/평문 전송을 노리고,
+  점검자(너)는 전송 보안 통제를 점검·구현한다.
+
+  ▸ 이야기: 공격자가 평문/약한 암호 채널을 노려 자격증명을 가로채고(태그 `wv10r1`) 가로챈 평문(`/tmp/.wv10tls`)과 계정 `wva10` 을 남긴다.
+    점검자는 ① 평문 전송 탐지, ② 전송 보안 Wazuh 룰, ③ TLS 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/평문 파일·계정).
+  ▸ 마커: 태그 **`wv10r1-<본인id>`**, 가로챈 평문 **`/tmp/.wv10tls`**(마커 `wv10`), 계정 **`wva10`**,
+    Suricata **sid 9910011**, Wazuh **id 105101**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [평문/약한 TLS] — 비암호화 채널 자격증명 전송 유도
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "wv10r1-kim" -H "Host: dvwa.6v6.lab" --data "user=admin&pass=secret&wv10r1-kim=1" "http://<대상_공개IP>/login"
+      ```
+      (HTTP 평문 전송 — TLS 미적용/약한 cipher 시 가로채기 가능.)
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv10r1` 흔적 시 인정.
+    hint: "태그(wv10r1) 평문 자격증명 전송 → 대상 modsec audit. 채점: log_contains modsec wv10r1."
+    verify:
+      type: "log_contains"
+      expect: "wv10r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv10r1", since_sec: 1800 } }
+      semantic:
+        intent: "전송 보안 미흡(T1040) — 평문/약한 TLS 자격증명 전송. 태그(wv10r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv10r1 태그", "평문/약한 TLS 위험 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 평문 전송"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [가로챈 평문] — 캡처 자격증명 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'wv10 intercepted: admin:secret over HTTP, TLSv1.0 weak cipher RC4' > /tmp/.wv10tls
+      sudo useradd -m -s /bin/bash wva10
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv10tls`(마커 `wv10`) 또는 `wva10` 존재 시 인정.
+    hint: "가로챈 평문 /tmp/.wv10tls (마커 wv10) + useradd wva10. 채점: file_contains tls wv10 + file_contains passwd wva10."
+    verify:
+      type: "file_contains"
+      expect: "wv10"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv10tls", pattern: "wv10" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva10" } }
+      semantic:
+        intent: "전송 가로채기(T1040) + 계정(T1136) — 평문/약한 cipher 로 자격증명 캡처."
+        success_criteria: ["/tmp/.wv10tls(마커 wv10) 또는 계정 wva10", "약한 TLS/cipher 위험 서술"]
+        acceptable_methods: ["캡처 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [평문 전송 탐지] — Suricata 룰 (sid 9910011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W10 plaintext credential over HTTP"; flow:to_server; http.request_body; content:"pass="; nocase; sid:9910011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9910011 룰 존재 시 인정.
+    hint: "평문 자격증명 Suricata 룰(sid 9910011) → reload. 채점: file_contains local.rules 9910011."
+    verify:
+      type: "file_contains"
+      expect: "9910011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9910011" } }
+      semantic:
+        intent: "전송 보안 탐지 — 평문 자격증명 Suricata 룰. TLS 강제/HSTS 권고."
+        success_criteria: ["local.rules 에 sid 9910011", "TLS 강제/HSTS 권고 언급"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [전송 보안 탐지] — Wazuh 룰 (id 105101)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105101" level="11">
+          <if_group>edu</if_group>
+          <match>wva10</match>
+          <description>WEBVULN-W10 - weak TLS / intercepted credential / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105101 룰 존재 시 인정.
+    hint: "전송 보안 Wazuh 룰(id 105101) → restart. 채점: file_contains local_rules.xml 105101."
+    verify:
+      type: "file_contains"
+      expect: "105101"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105101" } }
+      semantic:
+        intent: "전송 보안 탐지(호스트) — 약한 TLS/가로채기/계정 Wazuh 룰."
+        success_criteria: ["local_rules.xml 에 rule id 105101", "전송 보안 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [TLS 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - TLS 점검(프로토콜 버전/cipher suite/인증서 유효성/HSTS) + 방어(TLS1.2+ 강제/강한 cipher/HSTS) + 위험도
+      - R/B/P 회고 + 가로챈 평문(`/tmp/.wv10tls`)·계정(wva10) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 TLS 점검·R/B/P 로 인정.
+    hint: "TLS 점검(버전/cipher/인증서/HSTS) + 방어(TLS1.2+/강한 cipher/HSTS) + R/B/P + 평문/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "전송 보안 점검 종합 — TLS/cipher/인증서/HSTS + 방어 + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "TLS 점검(버전/cipher/인증서/HSTS) + 방어 + 위험도"
+          - "R/B/P 회고 + 평문/계정 헌팅"
+        acceptable_methods: ["점검 표 + 방어 + 회고 + 헌팅"]
+        negative_signs: ["방어/회고 누락"]

@@ -1,0 +1,355 @@
+id: "soc-adv-w01"
+category: "soc-adv"
+title: "[SOC고급 W1] SOC 성숙도 평가 — 가시성 공백 침투 vs 탐지역량 정량화"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 1주차 — **SOC 성숙도(SOC-CMM)** 를 다룬다. 그러나 성숙도는 문서가 아니라 "실제로 무엇을
+  탐지하는가"로 증명된다. 그래서 이번 공방전은 **공격자가 우리 SOC의 미성숙한 가시성 공백을 직접 찌르고**,
+  관제팀(너)은 그 공백을 **실제 탐지룰로 메우면서 역량을 정량화**하는 형태로 진행한다.
+
+  ▸ 이야기
+    한 침입자가 우리 망 바깥에서 웹 표면을 정찰하고 SQLi로 침투를 시도한다(웹공격 가시성 점검). 이어서
+    호스트에 조용한 백도어 계정과 리스너를 심어 "호스트 계층은 보이는가"를 시험한다. 관제팀은 ① 웹공격
+    탐지 공백을 Suricata 룰로 메우고, ② 그 위협을 Wazuh 고위험 룰로 격상하고, ③ 호스트의 백도어를
+    헌팅·제거하고, ④ 5개 도메인 성숙도를 평가하고, ⑤ 갭 분석·개선 로드맵을 만든다.
+
+  ▸ 모드
+    • solo : 한 학생이 공격자 역할(자기 인프라를 표적)과 관제자 역할을 모두 수행한다. 공격 대상 = 본인 인프라.
+    • duel : Red(공격) 학생이 상대(Blue)의 인프라를 외부에서 공격하고, Blue 학생은 자기 인프라에서 탐지·평가한다.
+
+  ▸ 공격자 위치(중요)
+    이 주차의 Red 미션은 **망 외부 공격자(attacker-ext, SSH 2203)** 기준이다. 외부 공격자가 친 명령 자체는
+    6v6 가 수집하지 못하므로, Red 채점은 "무슨 명령을 쳤나"가 아니라 **대상 인프라(피해자)에 남은 탐지 흔적**
+    (WAF audit / 호스트 계정·포트)으로 한다. 그래서 반드시 **고유 태그**를 붙여 앰비언트 노이즈와 구분되게 한다.
+
+  ▸ 이번 주차 전용 마커 (다른 주차와 겹치지 않게 고정)
+    웹 침투 태그 **`sa01r1-<본인id>`**, 백도어 계정 **`soca01`**, 리스너 포트 **54001**,
+    Suricata 탐지룰 **sid 9601011**, Wazuh 격상룰 **id 102011**. 종료 시 일괄 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [정찰→웹 침투] — SOC 의 웹공격 가시성 공백 찌르기
+
+      ### 상황
+      성숙도 평가의 첫 질문은 "우리 SOC 가 웹공격을 보는가?"이다. 너는 외부 공격자가 되어, 대상의 공개 웹
+      표면을 스캐너 흉내로 훑고 **SQL 인젝션(UNION 기반)** 을 한 번 보낸다. 이 공격이 대상 WAF(ModSecurity)
+      audit 에 탐지로 남아야, 관제팀이 그 흔적을 보고 탐지룰을 만들 수 있다.
+
+      ### 할 일 (attacker-ext, 외부 침입자)
+      반드시 이 미션 전용 태그 `sa01r1-<본인id>` 를 파라미터에 넣어 **귀속 가능**하게 만든다. 예시(id=kim):
+      ```bash
+      # 1) 스캐너 UA 로 정찰 흔적 남기기
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa01r1-kim&Submit=Submit"
+      # 2) UNION 기반 SQLi 한 발 (태그 포함)
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa01r1-kim%27%20UNION%20SELECT%20user,password%20FROM%20users--+&Submit=Submit"
+      ```
+      `<대상_공개IP>` 는 solo 면 본인 인프라 IP, duel 이면 상대 인프라 IP 다.
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 **태그 `sa01r1` 가 포함된 SQLi/스캐너 탐지(룰 913/942 계열)** 가 남았는지로
+      채점한다. 보고서에는 보낸 페이로드와 대상 호스트(Host 헤더)를 정확히 적는다.
+
+      ### 합격 기준
+      대상 WAF audit 에 `sa01r1` 태그가 포함된 웹 침투 탐지가 1건 이상 남는다.
+    hint: "태그(sa01r1) 붙인 sqlmap UA + UNION SELECT SQLi 를 attacker-ext 에서 대상 dvwa 로. 채점: 대상 modsec audit 의 913/942 + 태그."
+    verify:
+      type: "log_contains"
+      expect: "942"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa01r1", since_sec: 1800 } }
+      semantic:
+        intent: "성숙도 평가의 입력 — Recon(T1595)→Initial Access(T1190, SQLi). 대상 WAF audit 으로 판정. 태그(sa01r1)로 귀속. 이 흔적이 BLUE 탐지룰 설계의 근거가 된다."
+        success_criteria:
+          - "대상 WAF audit 에 sa01r1 태그가 포함된 SQLi/스캐너 탐지(913/942)"
+          - "보낸 페이로드(UNION SELECT)와 대상 Host 를 보고서에 정확히 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 붙인 sqlmap UA + UNION SELECT SQLi"
+        negative_signs:
+          - "대상 미도달 / 태그 누락 / 페이로드 불일치"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [호스트 발판] — 미탐지 지속성으로 호스트 계층 가시성 시험
+
+      ### 상황
+      성숙도의 두 번째 질문은 "웹 너머 **호스트 계층**도 보는가?"이다. 너는 침투 이후를 가정해, 대상 호스트에
+      조용한 백도어 계정 **`soca01`** 과 C2 흉내 리스너 **포트 54001** 을 심는다. 관제팀이 이걸 헌팅으로
+      찾아내지 못하면 그 SOC 는 호스트 계층 성숙도가 낮은 것이다.
+
+      ### 할 일
+      대상 호스트에 계정 `soca01` 과 리스너 포트 54001 을 만든다.
+      ```bash
+      sudo useradd -m -s /bin/bash soca01
+      nohup ncat -lk 54001 >/dev/null 2>&1 &   # ncat 없으면: nc -lk 54001 또는 python3 -m http.server 54001
+      ```
+
+      ### 채점 방법
+      대상 호스트의 `/etc/passwd` 에 `soca01` 이 있거나, 포트 54001 이 listening 인지로 채점한다.
+
+      ### 합격 기준
+      `/etc/passwd` 에 `soca01` 계정이 있거나 포트 54001 이 listening 이다.
+    hint: "useradd soca01 + 포트 54001 리스너. 채점: file_contains passwd soca01 + port_listening 54001."
+    verify:
+      type: "file_contains"
+      expect: "soca01"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca01" } }
+        - { id: "red-2-2", type: "port_listening", target: "web", params: { port: 54001 } }
+      semantic:
+        intent: "Persistence(T1136 계정 생성) + C2 채널(T1571). 호스트 계층 가시성 시험. 관제팀 헌팅 대상이 된다."
+        success_criteria:
+          - "soca01 계정 또는 포트 54001 리스너 생성"
+          - "지속성/C2 채널을 만든 방법과 의도를 서술"
+        acceptable_methods:
+          - "useradd soca01 + ncat/nc/python 리스너"
+        negative_signs:
+          - "흔적 미생성 / 계정·포트 불일치"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [탐지 엔지니어링] — 웹공격 가시성 공백을 Suricata 룰로 메우기 (sid 9601011)
+
+      ### 상황
+      성숙도 평가 결과 "웹 SQLi 가 IDS 에서 안 잡힌다"는 공백을 발견했다(Technology 도메인 갭). RED-1 의
+      UNION 기반 SQLi 를 잡는 **커스텀 Suricata 룰(sid 9601011)** 을 만들어 그 공백을 메운다.
+
+      ### 할 일
+      `/etc/suricata/rules/local.rules` 에 아래 룰을 추가하고 reload 한다.
+      ```
+      alert http any any -> any any (msg:"SOCADV-W01 SQLi UNION payload"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; distance:0; sid:9601011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules    # 또는: sudo kill -USR2 $(pidof suricata)
+      ```
+      > ⚠️ 주의: 6v6 빌트인 룰(sid 1000001 등)은 이미 **공격도구 UA(sqlmap)** 를 본다. 그래서 이 룰은
+      > 일부러 **UA 가 아니라 페이로드(UNION SELECT)** 를 본다 — UA 스푸핑으로 새는 공백을 페이로드로 메우는
+      > 것이 핵심이다. (UA 룰을 또 만들면 빌트인과 기능이 중복돼 감점된다.)
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9601011 룰이 있는지로 확인한다.
+
+      ### 합격 기준
+      `local.rules` 에 sid 9601011 룰이 존재한다.
+    hint: "local.rules 에 UNION SELECT 페이로드 룰(sid 9601011, UA 말고 http.uri) → reload. 채점: file_contains local.rules 9601011."
+    verify:
+      type: "file_contains"
+      expect: "9601011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9601011" } }
+      semantic:
+        intent: "탐지 엔지니어링 — 성숙도 갭(웹공격 IDS 미탐)을 페이로드 기반 커스텀 룰로 보강. 빌트인 UA 룰과 탐지축을 일부러 다르게(UNION SELECT 페이로드) 잡아 중복 회피."
+        success_criteria:
+          - "local.rules 에 sid 9601011"
+          - "UA 가 아닌 페이로드(http.uri content UNION/SELECT) 기반"
+          - "reload 후 eve.json 로 룰 동작 확인(서술)"
+        acceptable_methods:
+          - "local.rules 작성 + reload + eve.json 검증"
+        negative_signs:
+          - "문법 오류로 로딩 실패 / 빌트인 UA 룰과 중복"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [운영화] — 웹 SQLi IOC 를 Wazuh 고위험 룰로 격상 (id 102011)
+
+      ### 상황
+      탐지룰만 있으면 분석가가 일일이 봐야 한다. 성숙한 SOC 는 알려진 위협을 **자동으로 고위험 격상**한다
+      (Process/Services 도메인). RED-1 의 SQLi IOC 를 Wazuh 룰(**id 102011**, level 12)로 격상한다.
+
+      ### 할 일
+      `/var/ossec/etc/rules/local_rules.xml` 에 룰을 추가하고 Wazuh 를 재시작한다.
+      ```xml
+      <group name="edu,web,">
+        <rule id="102011" level="12">
+          <if_group>web</if_group>
+          <match>UNION</match>
+          <description>SOCADV-W01 - web SQLi IOC escalation (level 12)</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102011 룰이 있는지로 확인한다.
+
+      ### 합격 기준
+      `local_rules.xml` 에 id 102011 룰이 존재한다.
+    hint: "local_rules.xml 에 SQLi IOC 격상 룰(id 102011, level 12) → wazuh-control restart. 채점: file_contains local_rules.xml 102011."
+    verify:
+      type: "file_contains"
+      expect: "102011"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102011" } }
+      semantic:
+        intent: "운영화/자동화 — 웹 SQLi IOC 를 Wazuh 고위험 룰로 격상해 재발 시 자동 critical 탐지. 성숙도 Process/Services 향상."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102011 (level≥10)"
+          - "web 그룹 연계 + IOC 격상 로직"
+          - "재발 시 자동 고위험 탐지 의의 서술"
+        acceptable_methods:
+          - "local_rules.xml 102011 + wazuh-control restart"
+        negative_signs:
+          - "IOC 미운영화 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [호스트 헌팅] — 백도어 계정·리스너 식별 후 제거
+
+      ### 상황
+      성숙도 평가의 호스트 계층 점검이다. RED-2 가 심은 백도어 계정 **`soca01`** 과 리스너 **포트 54001** 을
+      가설 기반으로 헌팅해 식별하고, IR 절차(식별→격리→제거→복구)로 제거한다.
+
+      ### 할 일
+      호스트를 전수 점검해 비인가 계정·리스너를 찾는다.
+      ```bash
+      # 비인가 계정 헌팅
+      sudo getent passwd | sort ; grep soca01 /etc/passwd
+      # 비인가 리스너 헌팅
+      sudo ss -tlnp | grep 54001
+      ```
+      식별했으면 보고서에 "발견 → 격리 → 제거 → 복구" 단계로 적는다. (실제 제거는 `userdel -r soca01`,
+      리스너 프로세스 kill.)
+
+      ### 채점 방법
+      대상 호스트에서 persistence(`soca01`) 또는 C2(포트 54001)가 헌팅되는지로 채점한다(발견 자체가 핵심 —
+      특정 도구 실행 증거는 요구하지 않는다).
+
+      ### 합격 기준
+      `/etc/passwd` 에 `soca01` 이 있거나 포트 54001 이 listening 인 상태를 식별한다(식별 후 제거 보고).
+    hint: "getent passwd / ss -tlnp 로 soca01·54001 헌팅 → IR 제거. 채점: file_contains passwd soca01 + port_listening 54001(발견 핵심, 도구 무관)."
+    verify:
+      type: "file_contains"
+      expect: "soca01"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca01" } }
+        - { id: "blue-3-2", type: "port_listening", target: "web", params: { port: 54001 } }
+      semantic:
+        intent: "호스트 계층 성숙도 — 가설 기반 헌팅으로 비인가 계정/리스너 발견 + IR 4단계. 채점 핵심은 발견과 전수조사(도구 실행 증거 비요구)."
+        success_criteria:
+          - "soca01 계정 또는 포트 54001 식별"
+          - "명시적 가설 + 질의 내용(무엇을 어디서 찾았는지) 제시"
+          - "식별→격리→제거→복구 단계 적용(음성 결과 포함 보고)"
+        acceptable_methods:
+          - "getent/ss/grep/Wazuh 로 발견 — 도구보다 발견·전수조사 핵심"
+        negative_signs:
+          - "발판 누락 / IR 단계 없음"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 17
+    instruction: |
+      ## 🛡️ BLUE-4 [성숙도 평가] — 5개 도메인 정량 평가 + KPI 기준선
+
+      ### 상황
+      SOC-CMM 5개 도메인(**Business / People / Process / Technology / Services**)을 0~5 레벨로 평가하고,
+      Wazuh 알림으로 KPI 기준선(24h 알림 수, level 분포, 고위험 비율)을 측정한다. 이 수치가 이후 개선의
+      before 기준이 된다.
+
+      ### 할 일
+      ```bash
+      # 자산/룰 커버리지(Technology) 근거
+      sudo /var/ossec/bin/agent_control -l 2>/dev/null | grep -c Active
+      # KPI 기준선 — 최근 알림 level 분포
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json,collections; c=collections.Counter();\
+        [c.update([json.loads(l).get("rule",{}).get("level",0)]) for l in sys.stdin if l.strip()];\
+        print(sorted(c.items()))'
+      ```
+      보고서에 5개 도메인 점수(0~5)와 각 점수의 근거, KPI 기준선 수치를 적는다.
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지(분석 대상 존재) + 제출한 5도메인 평가/KPI 로 채점한다.
+      > 참고: 분석형 미션은 기계가 "경보 존재"까지만 확인 가능하므로, 보고서에 **실재하는 증거**(예: Wazuh
+      > Suricata IDS rule **86601** 다수, 활성 에이전트 수, 고위험 level 분포)를 인용할수록 점수가 오른다.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 수집돼 있다(+ 5도메인 점수·근거·KPI 기준선은 제출로 검증).
+    hint: "agent_control -l + alerts.json level 분포로 KPI baseline + 5도메인(B/P/P/T/S) 0~5 평가. 실증 증거(Wazuh 86601 등) 인용. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "SOC-CMM 5도메인 정량 평가 + KPI 기준선. 분석형 — 보고서의 구체 인용(Wazuh 86601, 활성 에이전트, level 분포)이 실재해야 점수. 개선 before 기준."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "5개 도메인(Business/People/Process/Technology/Services) 0~5 점수 + 각 근거"
+          - "KPI 기준선(24h 알림 수/level 분포/고위험 비율) + 실증 증거 인용"
+        acceptable_methods:
+          - "agent_control + alerts.json 분석 + CMM 점수표"
+        negative_signs:
+          - "도메인 3개 이하 / 근거 없는 점수 / KPI 누락"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [갭 분석·로드맵·Cleanup] — 개선 계획 종합 + 실습 위생
+
+      ### 상황
+      평가의 산출물이다. 목표 Level 4 대비 **갭 분석**과 **3단계(3·6·12개월) 개선 로드맵**(각 단계 실행 항목 +
+      기대 KPI)을 만들고, Red/Blue/Purple 회고로 이번 공방전의 교훈을 정리한다. 마지막으로 이번 주 실습
+      아티팩트(9601011 / 102011 / soca01 / 54001)를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 갭 분석: 도메인별 (현재 → 목표 4) 갭 + 우선순위(HIGH/MED/LOW)
+      - 로드맵: Phase1(3M) Quick-Wins / Phase2(6M) 역량구축 / Phase3(12M) 최적화, 각 KPI 포함
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo userdel -r soca01 2>/dev/null
+      sudo pkill -f 'ncat -lk 54001' 2>/dev/null
+      sudo sed -i '/9601011/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # Wazuh 102011 룰 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 갭 분석/로드맵/회고/cleanup 으로 채점한다.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 갭 분석·3단계 로드맵·R/B/P 회고·cleanup 은 제출로 검증).
+    hint: "목표 L4 대비 갭 분석 + 3/6/12개월 로드맵(KPI 포함) + R/B/P 회고 + 아티팩트(9601011/102011/soca01/54001) 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "성숙도 개선 종합 — 갭 분석(목표 L4 대비) + 3단계 로드맵(KPI 연계) + R/B/P 회고 + 운영 위생(cleanup). 1주차 산출물이자 다음 주차들의 출발점."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "도메인별 갭 + 우선순위 + 3단계(3/6/12M) 로드맵 + 각 KPI"
+          - "R/B/P 회고 + 실습 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "갭표 + 로드맵 + 회고 + cleanup 명령"
+        negative_signs:
+          - "KPI 없는 서술만 / cleanup 미완"

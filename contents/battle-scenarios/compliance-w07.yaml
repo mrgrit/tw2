@@ -1,0 +1,198 @@
+id: "compliance-w07"
+category: "compliance"
+title: "[컴플라이언스 W7] SOX IT 통제 — 비인가 변경 vs 변경관리·감사추적"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  컴플라이언스 7주차 — **SOX IT 일반통제(ITGC)**. 재무 시스템의 무결성을 위한 변경 관리·접근 통제·직무 분리·
+  감사추적을 요구한다. 공격자는 비인가 변경으로 무결성을 훼손하고, 감사자(너)는 변경관리·감사추적 통제를
+  구현하고 충족을 증적으로 입증한다.
+
+  ▸ 이야기
+    공격자가 침투해(태그 `co07r1`) 비인가 시스템 변경(`/tmp/.co07chg`)과 계정 `compa07` 을 남긴다. 감사자는
+    ① 변경 침입 탐지, ② 변경/감사추적 룰, ③ SOX ITGC 종합 점검·증적으로 대응한다.
+
+  ▸ 모드: solo(자기 인프라) / duel(상대 인프라). 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/변경 파일·계정).
+
+  ▸ 이번 주차 전용 마커: 태그 **`co07r1-<본인id>`**, 비인가 변경 **`/tmp/.co07chg`**(마커 `co07`), 계정 **`compa07`**,
+    Suricata **sid 9807011**, Wazuh **id 104071**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [무결성 훼손 침투] — 재무 시스템 무단 접근
+
+      ### 상황
+      SOX 는 재무 데이터 무결성을 요구한다. 너는 태그 `co07r1-<본인id>` 로 침투해 변경 통제 공백을 입증한다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "co07r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=co07r1-kim%27%20UNION%20SELECT%20ledger--+&Submit=Submit"
+      ```
+
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit(modsec)에 태그 `co07r1` 가 포함된 흔적이 남으면 인정.
+    hint: "태그(co07r1) 침투 → 대상 modsec audit. 채점: log_contains modsec co07r1."
+    verify:
+      type: "log_contains"
+      expect: "co07r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "co07r1", since_sec: 1800 } }
+      semantic:
+        intent: "재무 시스템 무단 접근(T1190) — SOX 변경/접근 통제 공백. 태그(co07r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 co07r1 태그가 포함된 흔적"
+          - "변경/접근 통제 공백 서술"
+        acceptable_methods: ["attacker-ext 에서 태그 단 침투"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [비인가 변경] — 무단 시스템 변경 + 계정
+
+      ### 상황
+      SOX ITGC 의 핵심은 변경 관리다. 너는 비인가 변경 산출물 **`/tmp/.co07chg`**(마커 `co07`)과 계정 **`compa07`** 을
+      남겨 변경 통제 부재를 시연한다(직무 분리 위반).
+
+      ### 할 일
+      ```bash
+      printf 'co07 unauthorized change: prod config edited without approval' > /tmp/.co07chg
+      sudo useradd -m -s /bin/bash compa07
+      ```
+
+      ### 채점 방법 / 합격 기준
+      `/tmp/.co07chg`(마커 `co07`) 또는 `/etc/passwd` 의 `compa07` 존재 시 인정.
+    hint: "비인가 변경 /tmp/.co07chg (마커 co07) + useradd compa07. 채점: file_contains chg co07 + file_contains passwd compa07."
+    verify:
+      type: "file_contains"
+      expect: "co07"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.co07chg", pattern: "co07" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "compa07" } }
+      semantic:
+        intent: "비인가 변경(T1565) + 계정(T1136) — SOX 변경관리/직무분리 위반. 승인 없는 운영 변경."
+        success_criteria:
+          - "/tmp/.co07chg(마커 co07) 또는 계정 compa07"
+          - "변경 관리/직무 분리 위반 서술"
+        acceptable_methods: ["변경 산출물 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [무단 접근 탐지] — Suricata 룰 (sid 9807011)
+
+      ### 상황
+      재무 시스템 무단 접근을 잡는 Suricata 룰(**sid 9807011**)을 배포한다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"COMPLIANCE-W07 SOX unauthorized financial system access"; flow:to_server; http.uri; content:"ledger"; nocase; sid:9807011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9807011 룰 존재 시 인정.
+    hint: "무단 접근 Suricata 룰(sid 9807011) → reload. 채점: file_contains local.rules 9807011."
+    verify:
+      type: "file_contains"
+      expect: "9807011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9807011" } }
+      semantic:
+        intent: "SOX 접근 통제 — 재무 시스템 무단 접근 Suricata 룰. ITGC 접근 통제."
+        success_criteria: ["local.rules 에 sid 9807011", "SOX 접근 통제 연계"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [변경/감사추적] — Wazuh 룰 (id 104071)
+
+      ### 상황
+      SOX 는 변경 감사추적을 요구한다. 비인가 변경·계정 생성을 잡는 Wazuh 룰(**id 104071**)을 만든다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,sox,">
+        <rule id="104071" level="12">
+          <if_group>edu</if_group>
+          <match>compa07</match>
+          <description>COMPLIANCE-W07 - SOX ITGC: unauthorized change / account (audit trail)</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 104071 룰 존재 시 인정.
+    hint: "변경/감사추적 Wazuh 룰(id 104071) → restart. 채점: file_contains local_rules.xml 104071."
+    verify:
+      type: "file_contains"
+      expect: "104071"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "104071" } }
+      semantic:
+        intent: "SOX 변경 감사추적 — 비인가 변경/계정 Wazuh 룰. 변경 관리 + 감사추적 통제."
+        success_criteria: ["local_rules.xml 에 rule id 104071", "변경/감사추적 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [SOX ITGC 종합 점검·증적]
+
+      ### 상황
+      SOX IT 일반통제를 종합 점검하고 증적을 정리한다(변경 관리, 접근 통제, 직무 분리, 백업/복구, 감사추적).
+
+      ### 할 일
+      보고서에:
+      - ITGC 영역별 점검(변경관리/접근통제/직무분리/감사추적) + 증적
+      - 미흡 개선 + 비인가 변경(`/tmp/.co07chg`)·계정(compa07) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 ITGC 점검 증적으로 인정.
+    hint: "SOX ITGC 점검(변경관리/접근통제/직무분리/감사추적) + 증적 + 변경/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "SOX ITGC 종합 점검·증적 — IT 일반통제 영역별 충족 입증. 분석형 — 통제 영역/증적 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "ITGC 영역별 점검(변경/접근/직무분리/감사추적) + 증적"
+          - "비인가 변경/계정 헌팅"
+        acceptable_methods: ["점검 표 + 증적 + 헌팅"]
+        negative_signs: ["증적 없는 서술 / 영역 누락"]

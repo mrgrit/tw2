@@ -1,0 +1,170 @@
+id: "cloud-container-w05"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W5] Kubernetes 기초(시뮬) — API·토큰 탈취 vs RBAC·통제"
+difficulty: "hard"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 5주차 — **Kubernetes 기초(Docker 시뮬)**. K8s API 노출·ServiceAccount 토큰·RBAC·Pod 보안을
+  다룬다. (6v6 에는 실제 K8s 가 없어 API/토큰 접근으로 시뮬.) 공격자는 API/토큰을 노리고, 점검자(너)는 RBAC·
+  토큰 보호를 점검·구현한다.
+
+  ▸ 이야기: 공격자가 K8s API/토큰을 노려(태그 `cc05r1`) 탈취 토큰(`/tmp/.cc05k8s`)과 계정 `cca05` 를 남긴다.
+    점검자는 ① API 접근 탐지, ② 토큰/RBAC Wazuh 룰, ③ K8s 보안 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/토큰 파일·계정).
+  ▸ 마커: 태그 **`cc05r1-<본인id>`**, 탈취 토큰 **`/tmp/.cc05k8s`**(마커 `cc05`), 계정 **`cca05`**,
+    Suricata **sid 9005011**, Wazuh **id 106051**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [K8s API 접근] — 비인가 API/토큰 시도
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "cc05r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/api/v1/namespaces/default/secrets?probe=cc05r1-kim"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc05r1` 흔적 시 인정.
+    hint: "태그(cc05r1) K8s API(secrets) 접근 → 대상 modsec audit. 채점: log_contains modsec cc05r1."
+    verify:
+      type: "log_contains"
+      expect: "cc05r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc05r1", since_sec: 1800 } }
+      semantic:
+        intent: "K8s API 접근(T1610/T1552.007) — 비인가 secrets/토큰. 태그(cc05r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc05r1 태그", "K8s API/토큰 탈취 흐름 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 API 접근"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [SA 토큰 탈취] — ServiceAccount 토큰 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc05 SA token: eyJ... namespace=default role=cluster-admin' > /tmp/.cc05k8s
+      sudo useradd -m -s /bin/bash cca05
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc05k8s`(마커 `cc05`) 또는 `cca05` 존재 시 인정.
+    hint: "탈취 토큰 /tmp/.cc05k8s (마커 cc05) + useradd cca05. 채점: file_contains k8s cc05 + file_contains passwd cca05."
+    verify:
+      type: "file_contains"
+      expect: "cc05"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc05k8s", pattern: "cc05" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca05" } }
+      semantic:
+        intent: "SA 토큰 탈취(T1552.007) + 계정(T1136) — cluster-admin 토큰 탈취."
+        success_criteria: ["/tmp/.cc05k8s(마커 cc05) 또는 계정 cca05", "토큰 권한/위험 서술"]
+        acceptable_methods: ["토큰 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [K8s API 접근 탐지] — Suricata 룰 (sid 9005011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W05 k8s API secrets access"; flow:to_server; http.uri; content:"/api/v1/namespaces"; nocase; sid:9005011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9005011 룰 존재 시 인정.
+    hint: "K8s API Suricata 룰(sid 9005011) → reload. 채점: file_contains local.rules 9005011."
+    verify:
+      type: "file_contains"
+      expect: "9005011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9005011" } }
+      semantic:
+        intent: "K8s 보안 — API 접근 Suricata 룰. API 서버 노출 모니터."
+        success_criteria: ["local.rules 에 sid 9005011", "K8s API 접근 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [토큰/RBAC 탐지] — Wazuh 룰 (id 106051)
+
+      ### 할 일
+      ```xml
+      <group name="edu,k8s,">
+        <rule id="106051" level="13">
+          <if_group>edu</if_group>
+          <match>cca05</match>
+          <description>CLOUD-W05 - k8s SA token theft / RBAC abuse / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106051 룰 존재 시 인정.
+    hint: "토큰/RBAC Wazuh 룰(id 106051) → restart. 채점: file_contains local_rules.xml 106051."
+    verify:
+      type: "file_contains"
+      expect: "106051"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106051" } }
+      semantic:
+        intent: "K8s 보안 — SA 토큰 탈취/RBAC/계정 Wazuh 룰. 최소권한 RBAC."
+        success_criteria: ["local_rules.xml 에 rule id 106051", "토큰/RBAC 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [K8s 보안 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - K8s 보안 점검(RBAC 최소권한/SA 토큰 자동마운트 비활성/Pod Security/네트워크 정책/API 인증) + 위험도 + 권고
+      - R/B/P 회고 + 탈취 토큰(`/tmp/.cc05k8s`)·계정(cca05) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 K8s 보안 점검·R/B/P 로 인정.
+    hint: "K8s 점검(RBAC/SA 토큰/Pod Security/네트워크 정책/API 인증) + R/B/P + 토큰/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "K8s 보안 점검 종합 — RBAC/토큰/Pod Security + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "K8s 점검(RBAC/SA 토큰/Pod Security/네트워크 정책) + 권고"
+          - "R/B/P 회고 + 토큰/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

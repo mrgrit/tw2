@@ -1,0 +1,170 @@
+id: "web-vuln-w14"
+category: "web-vuln"
+title: "[웹취약점 W14] 점검 보고서 작성법 — 대표 취약점 입증 vs 표준 보고서"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 14주차 — **취약점 점검 보고서 작성법**. 양식·위험도(CVSS)·권고·Executive Summary 를 다룬다.
+  공격자는 대표 취약점을 입증하고, 점검자(너)는 탐지 룰과 표준 보고서를 작성한다.
+
+  ▸ 이야기: 공격자가 대표 취약점(태그 `wv14r1`)을 입증하고 PoC 증거(`/tmp/.wv14report`)와 계정 `wva14` 를 남긴다.
+    점검자는 ① 대응 탐지, ② 발견 Wazuh 룰, ③ 표준 보고서·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/PoC 파일·계정).
+  ▸ 마커: 태그 **`wv14r1-<본인id>`**, PoC 증거 **`/tmp/.wv14report`**(마커 `wv14`), 계정 **`wva14`**,
+    Suricata **sid 9914011**, Wazuh **id 105141**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [대표 취약점 입증] — 보고서 Finding 증거
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "wv14r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=wv14r1-kim%27%20UNION%20SELECT%201--+&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv14r1` 흔적 시 인정.
+    hint: "태그(wv14r1) 대표 취약점 입증 → 대상 modsec audit. 채점: log_contains modsec wv14r1."
+    verify:
+      type: "log_contains"
+      expect: "wv14r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv14r1", since_sec: 1800 } }
+      semantic:
+        intent: "대표 취약점 입증(T1190) — 보고서 Finding 의 재현 증거. 태그(wv14r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv14r1 태그", "재현 절차를 Finding 형식으로 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 입증"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [PoC 증거] — 부록용 산출물 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'wv14 PoC: SQLi req/resp, screenshot ref, CVSS 9.8 vector' > /tmp/.wv14report
+      sudo useradd -m -s /bin/bash wva14
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv14report`(마커 `wv14`) 또는 `wva14` 존재 시 인정.
+    hint: "PoC 증거 /tmp/.wv14report (마커 wv14) + useradd wva14. 채점: file_contains report wv14 + file_contains passwd wva14."
+    verify:
+      type: "file_contains"
+      expect: "wv14"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv14report", pattern: "wv14" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva14" } }
+      semantic:
+        intent: "PoC 증거(부록) + 계정(T1136) — 보고서 증빙."
+        success_criteria: ["/tmp/.wv14report(마커 wv14) 또는 계정 wva14", "PoC 가 어떤 Finding 을 뒷받침하는지 서술"]
+        acceptable_methods: ["PoC 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [대응 탐지] — Suricata 룰 (sid 9914011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W14 reported finding (SQLi)"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; sid:9914011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9914011 룰 존재 시 인정.
+    hint: "Finding 대응 Suricata 룰(sid 9914011) → reload. 채점: file_contains local.rules 9914011."
+    verify:
+      type: "file_contains"
+      expect: "9914011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9914011" } }
+      semantic:
+        intent: "Finding 대응 탐지 — 보고된 취약점 Suricata 룰. 보고서의 탐지 가능성 증빙."
+        success_criteria: ["local.rules 에 sid 9914011", "대응 Finding 명시"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [발견 대응] — Wazuh 룰 (id 105141)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105141" level="12">
+          <if_group>edu</if_group>
+          <match>wva14</match>
+          <description>WEBVULN-W14 - reported finding response / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105141 룰 존재 시 인정.
+    hint: "발견 대응 Wazuh 룰(id 105141) → restart. 채점: file_contains local_rules.xml 105141."
+    verify:
+      type: "file_contains"
+      expect: "105141"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105141" } }
+      semantic:
+        intent: "발견 대응 탐지(호스트) — 보고 취약점/계정 Wazuh 룰."
+        success_criteria: ["local_rules.xml 에 rule id 105141", "발견 대응 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [표준 보고서·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - 표준 점검 보고서(Executive Summary / Finding(제목·CVSS·재현·영향·권고) / 위험도 요약 테이블)
+      - R/B/P 회고 + PoC 증거(`/tmp/.wv14report`)·계정(wva14) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 표준 보고서·R/B/P 로 인정.
+    hint: "표준 보고서(Exec Summary/Finding+CVSS/재현/영향/권고/위험도 테이블) + R/B/P + PoC/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "점검 보고서 작성법 — Exec Summary/Finding/CVSS/권고/위험도 테이블 + R/B/P. 분석형 — 보고서 구조/CVSS 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "표준 보고서(Exec Summary/Finding/CVSS/재현/영향/권고/위험도 테이블)"
+          - "R/B/P 회고 + PoC/계정 헌팅"
+        acceptable_methods: ["표준 보고서 + 회고 + 헌팅"]
+        negative_signs: ["보고서 구조/CVSS 누락"]

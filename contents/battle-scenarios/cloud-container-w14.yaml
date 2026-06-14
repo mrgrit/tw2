@@ -1,0 +1,170 @@
+id: "cloud-container-w14"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W14] 컨테이너 컴플라이언스 — 기준 미준수 vs CIS 벤치마크 점검"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 14주차 — **컨테이너 컴플라이언스**. CIS Docker/Kubernetes 벤치마크 등 기준 준수를 점검한다.
+  공격자는 미준수 항목을 악용하고, 점검자(너)는 벤치마크 통제를 구현하고 준수를 증적으로 입증한다.
+
+  ▸ 이야기: 공격자가 벤치마크 미준수(태그 `cc14r1`)를 악용하고 미준수 흔적(`/tmp/.cc14compliance`)과 계정 `cca14` 를 남긴다.
+    점검자는 ① 미준수 악용 탐지, ② 벤치마크 Wazuh 룰, ③ CIS 벤치마크 점검·증적·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/흔적 파일·계정).
+  ▸ 마커: 태그 **`cc14r1-<본인id>`**, 미준수 흔적 **`/tmp/.cc14compliance`**(마커 `cc14`), 계정 **`cca14`**,
+    Suricata **sid 9014011**, Wazuh **id 106141**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [미준수 악용] — 벤치마크 위반 항목 공략
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "cc14r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/exec/?ip=127.0.0.1;id%23cc14r1-kim&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc14r1` 흔적 시 인정.
+    hint: "태그(cc14r1) 미준수 악용 → 대상 modsec audit. 채점: log_contains modsec cc14r1."
+    verify:
+      type: "log_contains"
+      expect: "cc14r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc14r1", since_sec: 1800 } }
+      semantic:
+        intent: "벤치마크 미준수 악용(T1190) — CIS 위반 항목. 태그(cc14r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc14r1 태그", "어떤 벤치마크 미준수를 노렸는지 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 미준수 악용"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [미준수 흔적] — CIS 위반 산출물 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc14 CIS violations: root container, no AppArmor, host net, no resource limit' > /tmp/.cc14compliance
+      sudo useradd -m -s /bin/bash cca14
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc14compliance`(마커 `cc14`) 또는 `cca14` 존재 시 인정.
+    hint: "미준수 흔적 /tmp/.cc14compliance (마커 cc14) + useradd cca14. 채점: file_contains compliance cc14 + file_contains passwd cca14."
+    verify:
+      type: "file_contains"
+      expect: "cc14"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc14compliance", pattern: "cc14" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca14" } }
+      semantic:
+        intent: "벤치마크 미준수(T1610) + 계정(T1136) — CIS 위반(root/host net/no AppArmor)."
+        success_criteria: ["/tmp/.cc14compliance(마커 cc14) 또는 계정 cca14", "CIS 위반 항목 서술"]
+        acceptable_methods: ["미준수 흔적 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [미준수 악용 탐지] — Suricata 룰 (sid 9014011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W14 benchmark non-compliance exploit"; flow:to_server; http.uri; content:";id"; nocase; sid:9014011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9014011 룰 존재 시 인정.
+    hint: "미준수 악용 Suricata 룰(sid 9014011) → reload. 채점: file_contains local.rules 9014011."
+    verify:
+      type: "file_contains"
+      expect: "9014011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9014011" } }
+      semantic:
+        intent: "컨테이너 컴플라이언스 — 미준수 악용 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9014011", "미준수 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [벤치마크 위반 탐지] — Wazuh 룰 (id 106141)
+
+      ### 할 일
+      ```xml
+      <group name="edu,container,compliance,">
+        <rule id="106141" level="12">
+          <if_group>edu</if_group>
+          <match>cca14</match>
+          <description>CLOUD-W14 - CIS benchmark violation / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106141 룰 존재 시 인정.
+    hint: "벤치마크 위반 Wazuh 룰(id 106141) → restart. 채점: file_contains local_rules.xml 106141."
+    verify:
+      type: "file_contains"
+      expect: "106141"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106141" } }
+      semantic:
+        intent: "컨테이너 컴플라이언스 — CIS 위반/계정 Wazuh 룰."
+        success_criteria: ["local_rules.xml 에 rule id 106141", "벤치마크 위반 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [CIS 벤치마크 점검·증적·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - CIS Docker/K8s 벤치마크 점검(docker-bench/kube-bench 항목) + 준수율 + 증적 + 위험도
+      - R/B/P 회고 + 미준수 흔적(`/tmp/.cc14compliance`)·계정(cca14) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 CIS 벤치마크 점검·증적·R/B/P 로 인정.
+    hint: "CIS 벤치마크(docker-bench/kube-bench) 점검 + 준수율 + 증적 + R/B/P + 흔적/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "컨테이너 컴플라이언스 점검 종합 — CIS 벤치마크 + 증적 + R/B/P. 분석형 — 벤치마크 항목/증적 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "CIS 벤치마크(docker-bench/kube-bench) 점검 + 준수율 + 증적"
+          - "R/B/P 회고 + 흔적/계정 헌팅"
+        acceptable_methods: ["벤치마크 점검 표 + 증적 + 회고 + 헌팅"]
+        negative_signs: ["벤치마크/증적 누락"]

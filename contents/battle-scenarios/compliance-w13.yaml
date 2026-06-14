@@ -1,0 +1,175 @@
+id: "compliance-w13"
+category: "compliance"
+title: "[컴플라이언스 W13] 보안정책 — 정책 위반 vs 정책 강제·기술 통제 매핑"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  컴플라이언스 13주차 — **보안정책 문서/강제**. 정책이 실제 기술 통제로 강제되는지 점검한다(정책-통제 매핑).
+  공격자는 정책 위반을 시연하고, 감사자(너)는 정책을 강제하는 기술 통제를 구현하고 매핑을 증적으로 입증한다.
+
+  ▸ 이야기: 공격자가 정책 위반 행위로 침투해(태그 `co13r1`) 위반 흔적(`/tmp/.co13policy`)과 계정 `compa13` 을 남긴다.
+    감사자는 ① 정책 위반 탐지, ② 정책 강제 룰, ③ 정책-통제 매핑 종합·증적으로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/위반 파일·계정).
+  ▸ 마커: 태그 **`co13r1-<본인id>`**, 정책 위반 **`/tmp/.co13policy`**(마커 `co13`), 계정 **`compa13`**,
+    Suricata **sid 9813011**, Wazuh **id 104131**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [정책 위반 행위] — 금지된 접근 시도
+
+      ### 상황
+      정책이 강제되지 않으면 위반이 통한다. 너는 태그 `co13r1-<본인id>` 로 정책 위반(금지 경로/행위) 접근을 시도한다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "co13r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/admin?probe=co13r1-kim"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `co13r1` 흔적 시 인정.
+    hint: "태그(co13r1) 정책 위반 접근 → 대상 modsec audit. 채점: log_contains modsec co13r1."
+    verify:
+      type: "log_contains"
+      expect: "co13r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "co13r1", since_sec: 1800 } }
+      semantic:
+        intent: "정책 위반 행위(T1190) — 정책 미강제 입증. 태그(co13r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 co13r1 태그", "어떤 정책을 위반했는지 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 정책 위반 접근"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [정책 우회] — 미강제 정책 산출물 + 계정
+
+      ### 상황
+      문서만 있고 강제 안 되는 정책은 무용지물이다. 너는 정책 위반 산출물 **`/tmp/.co13policy`**(마커 `co13`)과 계정 **`compa13`** 을 남긴다.
+
+      ### 할 일
+      ```bash
+      printf 'co13 policy violation: weak password set despite policy, no enforcement' > /tmp/.co13policy
+      sudo useradd -m -s /bin/bash compa13
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.co13policy`(마커 `co13`) 또는 `compa13` 존재 시 인정.
+    hint: "정책 위반 /tmp/.co13policy (마커 co13) + useradd compa13. 채점: file_contains policy co13 + file_contains passwd compa13."
+    verify:
+      type: "file_contains"
+      expect: "co13"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.co13policy", pattern: "co13" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "compa13" } }
+      semantic:
+        intent: "정책 우회(T1078) + 계정(T1136) — 정책 미강제로 위반 지속."
+        success_criteria: ["/tmp/.co13policy(마커 co13) 또는 계정 compa13", "정책 미강제 위험 서술"]
+        acceptable_methods: ["위반 산출물 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [정책 강제(네트워크)] — Suricata 룰 (sid 9813011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"COMPLIANCE-W13 policy enforcement: prohibited access"; flow:to_server; http.uri; content:"/admin"; nocase; sid:9813011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9813011 룰 존재 시 인정.
+    hint: "정책 강제 Suricata 룰(sid 9813011) → reload. 채점: file_contains local.rules 9813011."
+    verify:
+      type: "file_contains"
+      expect: "9813011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9813011" } }
+      semantic:
+        intent: "정책 강제 — 금지 접근 탐지 Suricata 룰. 정책을 기술 통제로 강제."
+        success_criteria: ["local.rules 에 sid 9813011", "정책-통제 강제 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [정책 위반 탐지] — Wazuh 룰 (id 104131)
+
+      ### 할 일
+      ```xml
+      <group name="edu,policy,">
+        <rule id="104131" level="12">
+          <if_group>edu</if_group>
+          <match>compa13</match>
+          <description>COMPLIANCE-W13 - policy violation: unenforced policy / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 104131 룰 존재 시 인정.
+    hint: "정책 위반 Wazuh 룰(id 104131) → restart. 채점: file_contains local_rules.xml 104131."
+    verify:
+      type: "file_contains"
+      expect: "104131"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "104131" } }
+      semantic:
+        intent: "정책 강제 — 정책 위반/계정 Wazuh 룰. 정책의 기술적 강제."
+        success_criteria: ["local_rules.xml 에 rule id 104131", "정책 위반 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [정책-통제 매핑 종합·증적]
+
+      ### 할 일
+      보고서에:
+      - 핵심 정책 항목 → 기술 통제 매핑(예: 패스워드 정책 → PAM, 접근 정책 → 방화벽/WAF, 로깅 정책 → auditd)
+      - 미강제 정책 식별 + 정책 위반(`/tmp/.co13policy`)·계정(compa13) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 정책-통제 매핑 증적으로 인정.
+    hint: "정책→기술통제 매핑(PAM/방화벽·WAF/auditd) + 미강제 식별 + 위반/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "보안정책 종합·증적 — 정책-통제 매핑 + 미강제 식별. 분석형 — 매핑/증적 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "핵심 정책 → 기술 통제 매핑 + 미강제 식별 + 증적"
+          - "정책 위반/계정 헌팅"
+        acceptable_methods: ["정책-통제 매핑 표 + 증적 + 헌팅"]
+        negative_signs: ["매핑 없는 서술 / 항목 누락"]

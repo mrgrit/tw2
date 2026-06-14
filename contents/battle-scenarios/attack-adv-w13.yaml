@@ -1,0 +1,237 @@
+id: "attack-adv-w13"
+category: "attack-adv"
+title: "[공격고급 W13] 클라우드 공격 — 메타데이터·자격증명 탈취(시뮬) vs CSPM"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격 고급과정 13주차 — **클라우드 공격**. SSRF 메타데이터 탈취·S3 오설정·IAM 권한상승·서버리스/K8s 공격·
+  자격증명 유출을 다룬다. **6v6 에는 실제 클라우드가 없으므로**, SSRF 메타데이터 접근과 자격증명 유출을 6v6
+  표면에서 시뮬레이션하고 클라우드 방어(CSPM/CloudTrail/Zero Trust)는 개념으로 학습한다.
+
+  ▸ 이야기
+    공격자가 SSRF 로 클라우드 메타데이터(169.254.169.254)에서 임시 자격증명 탈취를 시도하고(태그 `aa13r1`),
+    유출된 클라우드 키 산출물(**`/tmp/.aa13creds`**)과 계정 `atka13` 을 남긴다. 방어자는 메타데이터 접근을 탐지하고
+    클라우드 보안 자세를 평가한다.
+
+  ▸ 모드
+    • solo : 한 학생이 클라우드 공격(자기 인프라 표적)과 방어를 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 공격, Blue 는 자기 인프라에서 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(WAF audit 태그 / 유출 키 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    SSRF 메타데이터 태그 **`aa13r1-<본인id>`**, 유출 키 산출물 **`/tmp/.aa13creds`**(마커 `aa13`),
+    계정 **`atka13`**, Suricata 탐지 **sid 9713011**, Wazuh 탐지 **id 103131**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [SSRF 메타데이터] — 클라우드 임시 자격증명 탈취 시도
+
+      ### 상황
+      클라우드의 고전 공격은 **SSRF → 메타데이터 서비스(169.254.169.254) → 임시 자격증명 탈취**다(IMDSv1).
+      너는 태그 `aa13r1-<본인id>` 로 메타데이터 접근을 시도한다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      curl -s -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/aa13r1-kim"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `aa13r1` 가 포함된 메타데이터 접근 시도가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `aa13r1` 태그가 포함된 흔적이 남는다.
+    hint: "태그(aa13r1) SSRF 메타데이터(169.254.169.254) → 대상 modsec audit. 채점: log_contains modsec aa13r1."
+    verify:
+      type: "log_contains"
+      expect: "aa13r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "aa13r1", since_sec: 1800 } }
+      semantic:
+        intent: "클라우드 공격(T1552.005 메타데이터) — SSRF 로 IMDS 임시 자격증명 탈취. 대상 WAF audit, 태그(aa13r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 aa13r1 태그가 포함된 메타데이터 접근"
+          - "SSRF→IMDS→자격증명 탈취 흐름 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 단 SSRF 메타데이터 접근"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [자격증명 유출] — 클라우드 키 산출물 + 계정
+
+      ### 상황
+      탈취/유출된 클라우드 자격증명을 산출물 **`/tmp/.aa13creds`**(마커 `aa13`, AKIA 형식 키 흉내)로 남기고,
+      계정 **`atka13`** 으로 지속 접근을 둔다.
+
+      ### 할 일
+      ```bash
+      printf 'aa13 AKIAEXAMPLE1234 / secret=cloudsecretkey / role=admin' > /tmp/.aa13creds
+      sudo useradd -m -s /bin/bash atka13
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.aa13creds`(마커 `aa13`)이 있거나 `/etc/passwd` 에 `atka13` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.aa13creds`(마커 `aa13`) 또는 계정 `atka13`.
+    hint: "유출 클라우드 키 /tmp/.aa13creds (마커 aa13, AKIA 흉내) + useradd atka13. 채점: file_contains creds aa13 + file_contains passwd atka13."
+    verify:
+      type: "file_contains"
+      expect: "aa13"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.aa13creds", pattern: "aa13" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "atka13" } }
+      semantic:
+        intent: "클라우드 자격증명 유출(T1552) + 계정(T1136) — 키 노출 + 백도어. 클라우드 지속성 전 단계."
+        success_criteria:
+          - "/tmp/.aa13creds(마커 aa13) 또는 계정 atka13"
+          - "자격증명 유출 경로(메타데이터/Git/CI/로그) 서술"
+        acceptable_methods:
+          - "키 산출물 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [메타데이터 접근 탐지] — Suricata 룰 (sid 9713011)
+
+      ### 상황
+      SSRF 메타데이터 접근(169.254.169.254)을 잡는 Suricata 룰(**sid 9713011**)을 만든다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"ATKADV-W13 cloud metadata SSRF 169.254.169.254"; flow:to_server; http.uri; content:"169.254.169.254"; nocase; sid:9713011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9713011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 메타데이터 접근을 보는 sid 9713011 룰이 존재한다.
+    hint: "메타데이터(169.254.169.254) Suricata 룰(sid 9713011) → reload. 채점: file_contains local.rules 9713011."
+    verify:
+      type: "file_contains"
+      expect: "9713011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9713011" } }
+      semantic:
+        intent: "클라우드 탐지(네트워크) — 메타데이터 SSRF Suricata 룰. IMDS 접근 모니터(+IMDSv2 권고)."
+        success_criteria:
+          - "local.rules 에 sid 9713011 (169.254.169.254)"
+          - "IMDSv2 등 메타데이터 보호 권고 언급"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [자격증명 유출 탐지] — Wazuh 룰 (id 103131)
+
+      ### 상황
+      RED-2 의 클라우드 키 유출·계정 생성을 잡는 Wazuh 룰(**id 103131**)을 만든다(개념: 키 패턴 AKIA 탐지).
+
+      ### 할 일
+      ```xml
+      <group name="edu,cloud,">
+        <rule id="103131" level="13">
+          <if_group>edu</if_group>
+          <match>atka13</match>
+          <description>ATKADV-W13 - cloud credential leak / new account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 103131 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 자격증명 유출을 보는 id 103131 룰이 존재한다.
+    hint: "클라우드 자격증명 유출 Wazuh 룰(id 103131) → restart. 채점: file_contains local_rules.xml 103131."
+    verify:
+      type: "file_contains"
+      expect: "103131"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "103131" } }
+      semantic:
+        intent: "클라우드 탐지(호스트) — 키 유출/계정 Wazuh 룰. AKIA 키 패턴/이상 계정 포착."
+        success_criteria:
+          - "local_rules.xml 에 rule id 103131"
+          - "클라우드 키 유출 탐지 로직(키 패턴/계정)"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [CSPM·CloudTrail·Zero Trust] — 클라우드 방어 종합
+
+      ### 상황
+      클라우드 보안 자세를 종합한다. **CSPM**(ScoutSuite/Prowler 개념), **CloudTrail** 이상 탐지 쿼리, **IaC 보안**
+      (Terraform 오설정), **Zero Trust** 적용, 그리고 클라우드 공격 평가 보고서를 정리한다.
+
+      ### 할 일
+      보고서에:
+      - CSPM 점검 항목(S3 공개/과도한 IAM) + CloudTrail 이상 탐지 쿼리 개념 + IaC 보안 + Zero Trust
+      - 유출 키(`/tmp/.aa13creds`)·계정(atka13) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 CSPM/CloudTrail/Zero Trust 분석으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ CSPM·CloudTrail·Zero Trust·헌팅은 제출로 검증).
+    hint: "CSPM(S3/IAM 점검) + CloudTrail 이상 탐지 + IaC 보안 + Zero Trust + 유출키/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "클라우드 방어 — CSPM/CloudTrail/IaC/Zero Trust + 헌팅. 분석형 — 구체 클라우드 방어 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "CSPM 점검 + CloudTrail 이상 탐지 + IaC 보안 + Zero Trust"
+          - "유출 키/계정 헌팅"
+        acceptable_methods:
+          - "CSPM/CloudTrail 분석 + 헌팅"
+        negative_signs:
+          - "클라우드 방어 항목 누락"

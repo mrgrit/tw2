@@ -1,0 +1,169 @@
+id: "cloud-container-w02"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W2] AWS 보안 모델(시뮬) — IAM·S3 오설정 vs 클라우드 통제"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 2주차 — **AWS 보안 모델(Docker 시뮬)**. IAM 권한·S3 버킷·메타데이터 보안을 점검한다.
+  공격자는 IAM/S3 오설정을 악용하고, 점검자(너)는 최소권한·버킷 정책·키 보호를 점검·구현한다.
+
+  ▸ 이야기: 공격자가 SSRF 메타데이터로 임시 키를 노리고(태그 `cc02r1`) 유출 IAM 키(`/tmp/.cc02aws`)와 계정 `cca02` 를 남긴다.
+    점검자는 ① 메타데이터 접근 탐지, ② IAM/키 Wazuh 룰, ③ AWS 보안 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/키 파일·계정).
+  ▸ 마커: 태그 **`cc02r1-<본인id>`**, 유출 IAM 키 **`/tmp/.cc02aws`**(마커 `cc02`), 계정 **`cca02`**,
+    Suricata **sid 9002011**, Wazuh **id 106021**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [메타데이터 SSRF] — 임시 자격증명 탈취 시도
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/cc02r1-kim"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc02r1` 흔적 시 인정.
+    hint: "태그(cc02r1) SSRF 메타데이터 → 대상 modsec audit. 채점: log_contains modsec cc02r1."
+    verify:
+      type: "log_contains"
+      expect: "cc02r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc02r1", since_sec: 1800 } }
+      semantic:
+        intent: "AWS 메타데이터 탈취(T1552.005) — IMDS 임시 키. 태그(cc02r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc02r1 태그", "IMDS 탈취 흐름 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 SSRF 메타데이터"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [IAM 키 유출] — 과도 권한 키 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc02 IAM: AKIAEXAMPLE / secret / policy=*:* / S3 public-rw' > /tmp/.cc02aws
+      sudo useradd -m -s /bin/bash cca02
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc02aws`(마커 `cc02`) 또는 `cca02` 존재 시 인정.
+    hint: "유출 IAM 키 /tmp/.cc02aws (마커 cc02) + useradd cca02. 채점: file_contains aws cc02 + file_contains passwd cca02."
+    verify:
+      type: "file_contains"
+      expect: "cc02"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc02aws", pattern: "cc02" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca02" } }
+      semantic:
+        intent: "IAM 키 유출(T1552) + 계정(T1136) — 과도 권한 키/공개 S3."
+        success_criteria: ["/tmp/.cc02aws(마커 cc02) 또는 계정 cca02", "과도 권한/공개 버킷 위험 서술"]
+        acceptable_methods: ["키 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [메타데이터 접근 탐지] — Suricata 룰 (sid 9002011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W02 IMDS metadata access"; flow:to_server; http.uri; content:"169.254.169.254"; nocase; sid:9002011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9002011 룰 존재 시 인정.
+    hint: "메타데이터 Suricata 룰(sid 9002011) → reload. 채점: file_contains local.rules 9002011."
+    verify:
+      type: "file_contains"
+      expect: "9002011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9002011" } }
+      semantic:
+        intent: "AWS 보안 — 메타데이터 접근 Suricata 룰. IMDSv2 권고."
+        success_criteria: ["local.rules 에 sid 9002011", "IMDSv2 권고 언급"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [IAM 키 탐지] — Wazuh 룰 (id 106021)
+
+      ### 할 일
+      ```xml
+      <group name="edu,cloud,">
+        <rule id="106021" level="13">
+          <if_group>edu</if_group>
+          <match>cca02</match>
+          <description>CLOUD-W02 - AWS IAM key leak / overprivileged / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106021 룰 존재 시 인정.
+    hint: "IAM 키 Wazuh 룰(id 106021) → restart. 채점: file_contains local_rules.xml 106021."
+    verify:
+      type: "file_contains"
+      expect: "106021"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106021" } }
+      semantic:
+        intent: "AWS 보안 — IAM 키 유출/계정 Wazuh 룰. 최소권한/키 보호."
+        success_criteria: ["local_rules.xml 에 rule id 106021", "IAM 키 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [AWS 보안 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - AWS 보안 점검(IAM 최소권한/S3 버킷 정책/메타데이터 IMDSv2/키 로테이션) + 위험도 + 권고
+      - R/B/P 회고 + 유출 키(`/tmp/.cc02aws`)·계정(cca02) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 AWS 보안 점검·R/B/P 로 인정.
+    hint: "AWS 점검(IAM 최소권한/S3 정책/IMDSv2/키 로테이션) + R/B/P + 키/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "AWS 보안 점검 종합 — IAM/S3/메타데이터/키 + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "AWS 점검(IAM/S3/IMDSv2/키) + 권고"
+          - "R/B/P 회고 + 키/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

@@ -1,0 +1,176 @@
+id: "web-vuln-w01"
+category: "web-vuln"
+title: "[웹취약점 W1] HTTP 기초 — 위험 메서드·헤더 악용 vs HTTP 보안 점검"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 1주차 — **HTTP 기초**. 요청/응답·헤더·메서드·쿠키의 보안 속성을 점검한다. 공격자는 위험
+  메서드(PUT/TRACE)·헤더 주입·쿠키 약점을 악용하고, 점검자(너)는 HTTP 보안 통제를 구현해 방어한다.
+
+  ▸ 이야기: 공격자가 위험 HTTP 메서드/헤더로 공격하고(태그 `wv01r1`) 탈취 쿠키(`/tmp/.wv01cookie`)와 계정 `wva01` 을 남긴다.
+    점검자는 ① 위험 메서드 탐지, ② 쿠키/세션 보호 룰, ③ HTTP 보안 종합 점검·R/B/P 회고로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/쿠키 파일·계정).
+  ▸ 마커: 태그 **`wv01r1-<본인id>`**, 탈취 쿠키 **`/tmp/.wv01cookie`**(마커 `wv01`), 계정 **`wva01`**,
+    Suricata **sid 9901011**, Wazuh **id 105011**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [위험 메서드/헤더] — PUT/TRACE·헤더 주입
+
+      ### 상황
+      허용된 위험 메서드와 헤더 주입은 침투 경로다. 너는 태그 `wv01r1-<본인id>` 로 위험 메서드/헤더를 시도한다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -X TRACE -A "wv01r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?probe=wv01r1-kim"
+      curl -s -X PUT -A "wv01r1-kim" -H "Host: dvwa.6v6.lab" --data "x" "http://<대상_공개IP>/wv01r1-kim.txt"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv01r1` 흔적 시 인정.
+    hint: "태그(wv01r1) 위험 메서드(PUT/TRACE)/헤더 → 대상 modsec audit. 채점: log_contains modsec wv01r1."
+    verify:
+      type: "log_contains"
+      expect: "wv01r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv01r1", since_sec: 1800 } }
+      semantic:
+        intent: "위험 HTTP 메서드/헤더(T1190) — PUT/TRACE/헤더 주입. 태그(wv01r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv01r1 태그", "어떤 위험 메서드/헤더를 썼는지 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 위험 메서드/헤더"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [쿠키 탈취] — 세션 쿠키 + 계정
+
+      ### 상황
+      약한 쿠키 속성(HttpOnly/Secure 부재)은 세션 탈취로 이어진다. 너는 탈취 쿠키 **`/tmp/.wv01cookie`**(마커 `wv01`)와 계정 **`wva01`** 을 남긴다.
+
+      ### 할 일
+      ```bash
+      printf 'wv01 stolen: PHPSESSID=abc; no HttpOnly; no Secure' > /tmp/.wv01cookie
+      sudo useradd -m -s /bin/bash wva01
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv01cookie`(마커 `wv01`) 또는 `wva01` 존재 시 인정.
+    hint: "탈취 쿠키 /tmp/.wv01cookie (마커 wv01) + useradd wva01. 채점: file_contains cookie wv01 + file_contains passwd wva01."
+    verify:
+      type: "file_contains"
+      expect: "wv01"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv01cookie", pattern: "wv01" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva01" } }
+      semantic:
+        intent: "세션 쿠키 탈취(T1539) + 계정(T1136) — 약한 쿠키 속성 악용."
+        success_criteria: ["/tmp/.wv01cookie(마커 wv01) 또는 계정 wva01", "쿠키 속성 약점 서술"]
+        acceptable_methods: ["쿠키 산출물 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [위험 메서드 탐지] — Suricata 룰 (sid 9901011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W01 dangerous HTTP method (PUT/TRACE)"; flow:to_server; http.method; content:"TRACE"; nocase; sid:9901011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9901011 룰 존재 시 인정.
+    hint: "위험 메서드 Suricata 룰(sid 9901011, TRACE/PUT) → reload. 채점: file_contains local.rules 9901011."
+    verify:
+      type: "file_contains"
+      expect: "9901011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9901011" } }
+      semantic:
+        intent: "HTTP 보안 — 위험 메서드 탐지 Suricata 룰. 메서드 제한 통제."
+        success_criteria: ["local.rules 에 sid 9901011", "위험 메서드 제한 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [쿠키/세션 보호] — Wazuh 룰 (id 105011)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105011" level="10">
+          <if_group>edu</if_group>
+          <match>wva01</match>
+          <description>WEBVULN-W01 - cookie theft / session hijack indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105011 룰 존재 시 인정.
+    hint: "쿠키/세션 보호 Wazuh 룰(id 105011) → restart. 채점: file_contains local_rules.xml 105011."
+    verify:
+      type: "file_contains"
+      expect: "105011"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105011" } }
+      semantic:
+        intent: "HTTP 보안 — 쿠키 탈취/계정 Wazuh 룰. 세션 보호(HttpOnly/Secure/SameSite) 통제."
+        success_criteria: ["local_rules.xml 에 rule id 105011", "쿠키 보안 속성 권고 언급"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [HTTP 보안 종합 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - HTTP 보안 점검(허용 메서드/보안 헤더 X-Frame-Options·CSP·HSTS/쿠키 속성) + 위험도 + 권고
+      - R/B/P 회고 + 탈취 쿠키(`/tmp/.wv01cookie`)·계정(wva01) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 HTTP 보안 점검·R/B/P 로 인정.
+    hint: "HTTP 보안 점검(메서드/보안헤더/쿠키 속성) + 위험도/권고 + R/B/P 회고 + 쿠키/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "HTTP 보안 종합 — 메서드/헤더/쿠키 점검 + 위험도/권고 + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "HTTP 보안 점검(메서드/보안헤더/쿠키) + 위험도 + 권고"
+          - "R/B/P 회고 + 쿠키/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

@@ -1,0 +1,172 @@
+id: "web-vuln-w08"
+category: "web-vuln"
+title: "[웹취약점 W8] 중간고사 — JuiceShop 종합 점검(W01~W07) vs 통합 탐지·보고"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  웹취약점 점검 8주차 — **중간고사**. W01~W07(HTTP/도구/정찰/인증/SQLi/XSS/업로드)을 하나의 점검으로 통합한다.
+  공격자가 다중 취약점을 연계 공격하고, 점검자(너)는 통합 탐지와 점검 보고서를 작성한다.
+
+  ▸ 이야기: 공격자가 정찰→SQLi→XSS→웹쉘 연계 공격(태그 `wv08r1`)을 하고 종합 발견(`/tmp/.wv08midterm`)과 계정 `wva08` 을 남긴다.
+    점검자는 ① 통합 탐지, ② 종합 Wazuh 룰, ③ 통합 점검 보고서·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/발견 파일·계정).
+  ▸ 마커: 태그 **`wv08r1-<본인id>`**, 종합 발견 **`/tmp/.wv08midterm`**(마커 `wv08`), 계정 **`wva08`**,
+    Suricata **sid 9908011**, Wazuh **id 105081**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [연계 공격] — 정찰→SQLi→XSS 체인
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "wv08r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/robots.txt"
+      curl -s -A "wv08r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=wv08r1-kim%27%20UNION%20SELECT%201--+&Submit=Submit"
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/vulnerabilities/xss_r/?name=wv08r1-kim<script>1</script>"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv08r1` 흔적 시 인정.
+    hint: "태그(wv08r1) 정찰+SQLi+XSS 연계 → 대상 modsec audit. 채점: log_contains modsec wv08r1."
+    verify:
+      type: "log_contains"
+      expect: "wv08r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv08r1", since_sec: 1800 } }
+      semantic:
+        intent: "다중 취약점 연계(T1190) — 정찰→SQLi→XSS 체인. 태그(wv08r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv08r1 태그", "연계 공격 순서 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 연계 공격"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [종합 발견] — 취약점 인벤토리 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'wv08 findings: SQLi(/sqli) XSS(/xss_r) upload(no-check) auth(weak) — chained' > /tmp/.wv08midterm
+      sudo useradd -m -s /bin/bash wva08
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.wv08midterm`(마커 `wv08`) 또는 `wva08` 존재 시 인정.
+    hint: "종합 발견 /tmp/.wv08midterm (마커 wv08) + useradd wva08. 채점: file_contains midterm wv08 + file_contains passwd wva08."
+    verify:
+      type: "file_contains"
+      expect: "wv08"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.wv08midterm", pattern: "wv08" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva08" } }
+      semantic:
+        intent: "취약점 인벤토리(T1592) + 계정(T1136) — 종합 발견 정리."
+        success_criteria: ["/tmp/.wv08midterm(마커 wv08) 또는 계정 wva08", "발견 취약점 연계 서술"]
+        acceptable_methods: ["발견 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [통합 탐지] — Suricata 룰 (sid 9908011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W08 chained web attack"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; sid:9908011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9908011 룰 존재 시 인정.
+    hint: "통합 탐지 Suricata 룰(sid 9908011) → reload. 채점: file_contains local.rules 9908011."
+    verify:
+      type: "file_contains"
+      expect: "9908011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9908011" } }
+      semantic:
+        intent: "통합 탐지 — 연계 웹 공격 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9908011", "연계 공격 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [종합 탐지] — Wazuh 룰 (id 105081)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105081" level="12">
+          <if_group>edu</if_group>
+          <match>wva08</match>
+          <description>WEBVULN-W08 - chained web attack findings / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105081 룰 존재 시 인정.
+    hint: "종합 탐지 Wazuh 룰(id 105081) → restart. 채점: file_contains local_rules.xml 105081."
+    verify:
+      type: "file_contains"
+      expect: "105081"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105081" } }
+      semantic:
+        intent: "종합 탐지(호스트) — 연계 공격 발견/계정 Wazuh 룰."
+        success_criteria: ["local_rules.xml 에 rule id 105081", "종합 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [통합 점검 보고서·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - W01~W07 통합 점검 보고서(발견 목록/위험도/권고/Executive Summary)
+      - R/B/P 회고 + 종합 발견(`/tmp/.wv08midterm`)·계정(wva08) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 통합 점검 보고서·R/B/P 로 인정.
+    hint: "W01~W07 통합 점검 보고서(발견/위험도/권고/Exec Summary) + R/B/P + 발견/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "중간고사 통합 점검 보고서 — 발견/위험도/권고/Exec Summary + R/B/P. 분석형 — 보고서 구조/증적 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "통합 점검 보고서(발견/위험도/권고/Exec Summary)"
+          - "R/B/P 회고 + 발견/계정 헌팅"
+        acceptable_methods: ["통합 보고서 + 회고 + 헌팅"]
+        negative_signs: ["보고서 구조 누락"]

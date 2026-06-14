@@ -1,0 +1,328 @@
+id: "soc-adv-w09"
+category: "soc-adv"
+title: "[SOC고급 W9] 악성코드 분석 — 샘플 투입 vs 정적·동적 분석과 IOC 룰화"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 9주차 — **악성코드 분석**. 잡은 샘플을 **정적(코드/구조)**·**동적(행위/네트워크)** 으로 분석해
+  기능·목적을 파악하고 IOC 를 뽑아 탐지로 만든다. 이번 공방전에서 공격자는 대상에 **악성 샘플**을 떨구고
+  **C2 행위**를 보이고, 관제팀(너)은 정적 분석→YARA, 동적 분석→Suricata, IOC→Wazuh 로 3종 탐지를 만든다.
+
+  ▸ 이야기
+    공격자가 드로퍼 샘플 `/tmp/.sa09sample` 을 떨구고, 실행 시 C2 채널(**포트 54009**)을 연다(동적 행위).
+    관제팀은 ① 정적 분석으로 YARA 시그니처를, ② 동적 분석으로 C2 Suricata 룰을, ③ 추출 IOC 로 Wazuh 룰을
+    만들고, ④ 정적/동적/분류/안티분석을 종합하고, ⑤ ATT&CK 매핑 보고서로 마무리한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + 악성코드 분석을 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라에 샘플/C2 를 심고, Blue 는 자기 인프라에서 분석.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. Red 채점은 **대상 호스트의 흔적(샘플 파일·C2 포트)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    악성 샘플 **`/tmp/.sa09sample`**(마커 `sa09mal`), C2 포트 **54009**, YARA 룰 파일
+    **`/var/ossec/etc/yara/soc-adv-w09.yar`**(룰명 `SOCADV_W09_*`), Suricata 룰 **sid 9609091**, Wazuh 룰 **id 102091**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [악성 샘플 드롭] — 분석 대상 드로퍼 심기
+
+      ### 상황
+      너는 대상 호스트에 악성 드로퍼 샘플 **`/tmp/.sa09sample`** 을 떨군다. 정적 분석에 걸리도록 알려진 악성
+      문자열(시그니처 `sa09mal`, API/문자열 패턴)을 포함시킨다.
+
+      ### 할 일
+      ```bash
+      printf 'sa09mal DROPPER /bin/sh -c base64 -d | sh ; connect 54009 ; chmod +x' > /tmp/.sa09sample
+      chmod +x /tmp/.sa09sample
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.sa09sample` 이 있고 시그니처 `sa09mal` 을 포함하는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.sa09sample` 이 존재하고 `sa09mal` 을 포함한다.
+    hint: "악성 샘플 /tmp/.sa09sample (시그니처 sa09mal + 악성 문자열). 채점: file_exists + file_contains sa09mal."
+    verify:
+      type: "file_exists"
+      expect: "/tmp/.sa09sample"
+      checks:
+        - { id: "red-1-1", type: "file_exists", target: "web", params: { path: "/tmp/.sa09sample" } }
+        - { id: "red-1-2", type: "file_contains", target: "web",
+            params: { path: "/tmp/.sa09sample", pattern: "sa09mal" } }
+      semantic:
+        intent: "악성 샘플 드롭(T1105) — 정적 분석 대상 드로퍼. 알려진 악성 문자열/시그니처 포함. YARA 시그니처의 표적."
+        success_criteria:
+          - "/tmp/.sa09sample 존재 + 시그니처 sa09mal"
+          - "샘플의 악성 기능(드로퍼/디코딩) 서술"
+        acceptable_methods:
+          - "악성 문자열 포함 파일 드롭"
+        negative_signs:
+          - "파일 부재 / 시그니처 누락"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [C2 동적 행위] — 실행 시 지휘통제 채널 열기
+
+      ### 상황
+      동적 분석의 표적은 **실행 중 행위**다. 샘플이 실행되면 C2 채널 **포트 54009** 를 연다고 가정하고, 그
+      리스너를 띄운다. 관제팀의 동적 분석/네트워크 탐지가 이걸 잡아야 한다.
+
+      ### 할 일
+      ```bash
+      nohup ncat -lk 54009 >/dev/null 2>&1 &    # 또는: nc -lk 54009 / python3 -m http.server 54009
+      ```
+
+      ### 채점 방법
+      대상 호스트에 포트 54009 가 listening 인지로 채점.
+
+      ### 합격 기준
+      대상 호스트에서 포트 54009 가 listening 이다.
+    hint: "악성코드 C2 동적 행위 = 포트 54009 리스너. 채점: port_listening 54009."
+    verify:
+      type: "port_listening"
+      expect: "54009"
+      checks:
+        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 54009 } }
+      semantic:
+        intent: "악성코드 동적 행위(T1571 C2) — 실행 시 C2 채널 개설. 동적 분석/네트워크 탐지의 표적."
+        success_criteria:
+          - "포트 54009 listening"
+          - "샘플의 동적 행위(C2 통신)와 비콘 간격 등 서술"
+        acceptable_methods:
+          - "리스너로 54009 개방"
+        negative_signs:
+          - "포트 미개방"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [정적 분석 → YARA] — 샘플 시그니처 룰 (SOCADV_W09)
+
+      ### 상황
+      정적 분석(file/hash/strings/entropy)으로 RED-1 샘플의 특징을 뽑아 YARA 룰을 만든다.
+
+      ### 할 일
+      ```bash
+      file /tmp/.sa09sample ; sha256sum /tmp/.sa09sample ; strings /tmp/.sa09sample | head
+      sudo mkdir -p /var/ossec/etc/yara
+      sudo tee /var/ossec/etc/yara/soc-adv-w09.yar >/dev/null <<'YAR'
+      rule SOCADV_W09_dropper {
+        meta:
+          description = "SOCADV-W09 malware dropper static signature"
+        strings:
+          $sig  = "sa09mal"
+          $b64  = "base64 -d"
+          $drop = "chmod +x"
+        condition:
+          $sig or all of ($b64, $drop)
+      }
+      YAR
+      yara /var/ossec/etc/yara/soc-adv-w09.yar /tmp/.sa09sample
+      ```
+
+      ### 채점 방법
+      `/var/ossec/etc/yara/soc-adv-w09.yar` 에 룰명 `SOCADV_W09` 가 있는지로 확인.
+
+      ### 합격 기준
+      YARA 룰 파일에 `SOCADV_W09_*` 룰이 존재한다.
+    hint: "정적 분석(strings/hash) → YARA 룰(SOCADV_W09) → /var/ossec/etc/yara/soc-adv-w09.yar. 채점: file_contains 그 파일 SOCADV_W09."
+    verify:
+      type: "file_contains"
+      expect: "SOCADV_W09"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "web",
+            params: { path: "/var/ossec/etc/yara/soc-adv-w09.yar", pattern: "SOCADV_W09" } }
+      semantic:
+        intent: "정적 분석→YARA — file/hash/strings 로 샘플 특징 추출 + 시그니처 룰. 코드/구조 기반 탐지."
+        success_criteria:
+          - "soc-adv-w09.yar 에 SOCADV_W09 룰"
+          - "정적 분석(file/hash/strings) 수행 + 추출 특징"
+          - "condition 논리 설명"
+        acceptable_methods:
+          - "정적 분석 + YARA 룰 + yara 검증"
+        negative_signs:
+          - "분석 없이 룰만 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [동적 분석 → Suricata] — C2 행위 네트워크 탐지 (sid 9609091)
+
+      ### 상황
+      동적 분석으로 관측한 C2 행위(포트 54009)를 잡는 Suricata 룰(**sid 9609091**)을 만든다.
+
+      ### 할 일
+      ```
+      alert tcp any any -> any 54009 (msg:"SOCADV-W09 malware C2 port 54009"; flow:to_server; sid:9609091; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9609091 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 C2 포트(54009)를 보는 sid 9609091 룰이 존재한다.
+    hint: "동적 분석 C2 행위 → Suricata 룰(sid 9609091, port 54009) → reload. 채점: file_contains local.rules 9609091."
+    verify:
+      type: "file_contains"
+      expect: "9609091"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9609091" } }
+      semantic:
+        intent: "동적 분석→Suricata — 실행 행위(C2 포트)를 네트워크 탐지로. 행위 기반 IOC 운영화."
+        success_criteria:
+          - "local.rules 에 sid 9609091 (port 54009)"
+          - "strace/네트워크 캡처 등 동적 분석으로 관측한 C2 행위 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "포트 불일치 / 문법 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [IOC → Wazuh] — 호스트 IOC 탐지 룰 (id 102091)
+
+      ### 상황
+      분석에서 뽑은 호스트 IOC(샘플 경로/문자열)를 Wazuh 룰(**id 102091**)로 운영화한다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,malware,">
+        <rule id="102091" level="13">
+          <if_group>edu</if_group>
+          <match>sa09mal</match>
+          <description>SOCADV-W09 - malware host IOC detected, escalate</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102091 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 호스트 IOC 를 보는 id 102091 룰이 존재한다.
+    hint: "호스트 IOC(sa09mal) Wazuh 룰(id 102091, level 13) → restart. 채점: file_contains local_rules.xml 102091."
+    verify:
+      type: "file_contains"
+      expect: "102091"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102091" } }
+      semantic:
+        intent: "IOC→Wazuh — 추출한 호스트 IOC 를 SIEM 룰로 격상. YARA(파일)+Suricata(네트워크)+Wazuh(로그) 3종 탐지 완성."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102091"
+          - "호스트 IOC(경로/문자열) 탐지 로직"
+          - "3종(YARA/Suricata/Wazuh) 탐지의 상호 보완 서술"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "IOC 근거 없음 / XML 오류"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [심층 분석] — 정적·동적 종합 + 분류 + 안티분석
+
+      ### 상황
+      샘플의 정체를 규정한다. 정적(엔트로피/패킹)·동적(시스템콜/파일변경/네트워크)을 종합해 악성코드 유형
+      (드로퍼/RAT/봇넷)을 분류하고, 안티분석 기법(VM/디버거 탐지 등)과 우회를 분석한다.
+
+      ### 할 일
+      보고서에:
+      - 정적 결과(엔트로피/문자열/패킹) + 동적 결과(strace/파일변경/C2)
+      - 악성코드 분류(유형/기능/대상) + 안티분석 기법 식별
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 정적/동적 종합·분류·안티분석으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 정적/동적 종합·분류·안티분석은 제출로 검증).
+    hint: "정적(엔트로피/패킹)+동적(strace/파일변경/C2) 종합 + 악성코드 분류(드로퍼/RAT) + 안티분석 기법. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "악성코드 심층 분석 — 정적/동적 종합 + 분류 + 안티분석. 분석형 — 실제 관측(엔트로피/시스템콜) 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "정적(엔트로피/패킹) + 동적(시스템콜/네트워크) 종합"
+          - "악성코드 분류(유형/기능/대상) + 안티분석 기법"
+        acceptable_methods:
+          - "정적/동적 분석 + 분류 표"
+        negative_signs:
+          - "분류 근거 없음 / 단편 분석"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — 분석 보고서 + ATT&CK + 위생
+
+      ### 상황
+      악성코드 분석의 산출물이다. 업계 표준 형식(요약/정적/동적/IOC/탐지방안)과 **ATT&CK 매핑**, SOC 통합
+      워크플로우(알림→샘플 확보→분석→IOC 배포→룰 적용)를 보고서로 종합하고, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 표준 보고서(요약/정적/동적/IOC/탐지방안) + ATT&CK 매핑 + SOC 통합 워크플로우
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo rm -f /tmp/.sa09sample /var/ossec/etc/yara/soc-adv-w09.yar; sudo pkill -f 'ncat -lk 54009' 2>/dev/null
+      sudo sed -i '/9609091/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102091 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 보고서/ATT&CK/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 표준 보고서·ATT&CK·회고·cleanup 은 제출로 검증).
+    hint: "표준 악성코드 보고서(요약/정적/동적/IOC/탐지) + ATT&CK 매핑 + SOC 통합 워크플로우 + R/B/P 회고 + 샘플/YARA/54009/9609091/102091 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "악성코드 분석 종합 — 표준 보고서(요약/정적/동적/IOC/탐지) + ATT&CK 매핑 + SOC 통합 + R/B/P 회고 + cleanup."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "표준 보고서 5섹션 + ATT&CK 매핑 + SOC 통합 워크플로우"
+          - "R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "표준 보고서 + ATT&CK + 회고 + cleanup"
+        negative_signs:
+          - "보고서 섹션 누락 / cleanup 미완"

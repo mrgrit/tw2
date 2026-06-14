@@ -1,0 +1,238 @@
+id: "attack-adv-w09"
+category: "attack-adv"
+title: "[공격고급 W9] Active Directory 공격 — 디렉토리 장악(시뮬) vs 특권 남용 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격 고급과정 9주차 — **Active Directory 공격**. Kerberoasting·DCSync·Golden/Silver Ticket·ACL 남용·
+  NTLM Relay·ADCS 등 AD 장악 기법을 다룬다. **6v6 에는 실제 AD/도메인이 없으므로**, 이 주차는 (1) AD 공격
+  킬체인을 **개념으로 정확히 학습**하고, (2) 6v6 에서 가능한 **디렉토리 열거 + 특권 계정/티켓 탈취 흔적**으로
+  공방을 치환해 실습한다.
+
+  ▸ 이야기
+    공격자가 디렉토리/서비스 계정을 열거하고(태그 `aa09r1`), 해시/티켓을 추출한 산출물(**`/tmp/.aa09tickets`**)과
+    특권 백도어 계정 **`atka09`** 을 만든다. 방어자는 디렉토리 열거와 특권 계정 남용을 탐지하고 AD 방어 전략을 정리한다.
+
+  ▸ 모드
+    • solo : 한 학생이 디렉토리 공격(자기 인프라 표적)과 탐지를 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 공격, Blue 는 자기 인프라에서 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(WAF audit 태그 / 티켓·해시 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    디렉토리 열거 태그 **`aa09r1-<본인id>`**, 티켓/해시 산출물 **`/tmp/.aa09tickets`**(마커 `aa09`),
+    특권 계정 **`atka09`**, Suricata 탐지 **sid 9709011**, Wazuh 탐지 **id 103091**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [디렉토리 열거] — 사용자/서비스 계정 + SPN 정찰
+
+      ### 상황
+      AD 공격의 시작은 **열거**다(사용자·그룹·SPN). 6v6 에서는 디렉토리/관리 엔드포인트를 태그 `aa09r1-<본인id>`
+      로 열거한다(개념: `ldapsearch`, `enum4linux`, `GetUserSPNs`).
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      for p in /ldap /users /api/users /.well-known /admin; do
+        curl -s -A "aa09r1-kim-enum" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>$p" -o /dev/null
+      done
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `aa09r1` 가 포함된 열거 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `aa09r1` 태그가 포함된 열거 탐지가 남는다.
+    hint: "태그(aa09r1) 디렉토리/사용자 열거 → 대상 modsec audit. 채점: log_contains modsec aa09r1. (개념: ldapsearch/enum4linux/GetUserSPNs)"
+    verify:
+      type: "log_contains"
+      expect: "aa09r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "aa09r1", since_sec: 1800 } }
+      semantic:
+        intent: "AD 열거(T1087 계정 발견, T1018) — 사용자/SPN 정찰. 6v6 치환: 디렉토리/관리 엔드포인트 열거. 태그(aa09r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 aa09r1 태그가 포함된 열거 탐지"
+          - "AD 열거(사용자/SPN)와 6v6 치환을 연결 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 단 디렉토리 열거"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [티켓/해시 탈취] — Kerberoast 산출물 + 특권 계정
+
+      ### 상황
+      AD 공격의 핵심 산출물은 **크랙용 해시/티켓**이다(Kerberoasting/DCSync). 6v6 에서는 추출 산출물
+      **`/tmp/.aa09tickets`**(마커 `aa09`)와 특권 백도어 계정 **`atka09`** 으로 시뮬레이션한다.
+
+      ### 할 일
+      ```bash
+      printf 'aa09 kerberoast: $krb5tgs$23$*svc$... (offline crack target)' > /tmp/.aa09tickets
+      sudo useradd -m -s /bin/bash atka09
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.aa09tickets`(마커 `aa09`)이 있거나 `/etc/passwd` 에 `atka09` 가 있는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.aa09tickets`(마커 `aa09`) 또는 계정 `atka09`.
+    hint: "티켓/해시 산출물 /tmp/.aa09tickets (마커 aa09) + useradd atka09. 채점: file_contains tickets aa09 + file_contains passwd atka09."
+    verify:
+      type: "file_contains"
+      expect: "aa09"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.aa09tickets", pattern: "aa09" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "atka09" } }
+      semantic:
+        intent: "Kerberoasting/DCSync 시뮬(T1558/T1003.006) + 특권 계정(T1136) — 해시/티켓 추출 + 백도어."
+        success_criteria:
+          - "/tmp/.aa09tickets(마커 aa09) 또는 계정 atka09"
+          - "Kerberoasting/DCSync/Golden Ticket 개념과 6v6 치환을 서술"
+        acceptable_methods:
+          - "티켓/해시 산출물 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [디렉토리 열거 탐지] — Suricata 룰 (sid 9709011)
+
+      ### 상황
+      디렉토리/사용자 열거를 잡는 Suricata 룰(**sid 9709011**)을 만든다(개념: LDAP/SPN 열거 탐지).
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"ATKADV-W09 directory/user enumeration"; flow:to_server; http.uri; content:"/ldap"; nocase; sid:9709011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9709011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 디렉토리 열거를 보는 sid 9709011 룰이 존재한다.
+    hint: "디렉토리 열거 Suricata 룰(sid 9709011, /ldap 등) → reload. 채점: file_contains local.rules 9709011."
+    verify:
+      type: "file_contains"
+      expect: "9709011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9709011" } }
+      semantic:
+        intent: "디렉토리 열거 탐지(네트워크) — LDAP/사용자 열거 Suricata 룰. AD 정찰 단계 가시화(6v6 치환)."
+        success_criteria:
+          - "local.rules 에 sid 9709011"
+          - "AD 열거 탐지 개념과 6v6 치환 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [특권 계정 남용 탐지] — Wazuh 룰 (id 103091)
+
+      ### 상황
+      RED-2 의 특권 계정 생성·티켓 탈취 흔적을 잡는 Wazuh 룰(**id 103091**)을 만든다(개념: 특권 그룹 변경/DCSync 탐지).
+
+      ### 할 일
+      ```xml
+      <group name="edu,ad,">
+        <rule id="103091" level="13">
+          <if_group>edu</if_group>
+          <match>atka09</match>
+          <description>ATKADV-W09 - privileged account abuse / ticket theft indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 103091 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 특권 계정 남용을 보는 id 103091 룰이 존재한다.
+    hint: "특권 계정 남용 Wazuh 룰(id 103091) → restart. 채점: file_contains local_rules.xml 103091."
+    verify:
+      type: "file_contains"
+      expect: "103091"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "103091" } }
+      semantic:
+        intent: "특권 남용 탐지(호스트) — 특권 계정 생성/티켓 탈취 Wazuh 룰. AD 장악 흔적(6v6 치환)."
+        success_criteria:
+          - "local_rules.xml 에 rule id 103091"
+          - "특권 계정/티켓 탈취 탐지 로직 + DCSync/특권그룹 변경 개념"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [AD 킬체인·방어] — 공격 단계 + 방어 전략
+
+      ### 상황
+      AD 공격 킬체인(열거→Kerberoast→DCSync→Golden Ticket→지속성)을 정리하고, 각 단계 **방어 전략**(SPN 계정
+      강한 PW, 특권 그룹 감사, krbtgt 주기 회전, 티어링)을 작성한다.
+
+      ### 할 일
+      보고서에:
+      - AD 공격 킬체인 단계별 기법(Kerberoasting/DCSync/Golden·Silver Ticket/ACL/NTLM Relay/ADCS)
+      - 단계별 방어 전략 + 티켓/해시(`/tmp/.aa09tickets`)·특권 계정(atka09) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 AD 킬체인·방어 전략으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ AD 킬체인·방어 전략·헌팅은 제출로 검증).
+    hint: "AD 킬체인(Kerberoast/DCSync/Golden Ticket/ACL/NTLM Relay/ADCS) 단계별 + 방어(krbtgt 회전/티어링/특권 감사) + 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "AD 공격 종합·방어 — 킬체인 단계 + 방어 전략 + 헌팅. 분석형 — 정확한 AD 기법/방어 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "AD 킬체인 단계별 기법 + 단계별 방어 전략"
+          - "티켓/특권 계정 헌팅 결과"
+        acceptable_methods:
+          - "킬체인 표 + 방어 전략 + 헌팅"
+        negative_signs:
+          - "방어 전략 누락 / 기법 부정확"

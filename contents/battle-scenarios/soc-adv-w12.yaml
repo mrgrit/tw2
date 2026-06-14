@@ -1,0 +1,326 @@
+id: "soc-adv-w12"
+category: "soc-adv"
+title: "[SOC고급 W12] 로그 엔지니어링 — 로그 회피 vs 가시성·감사 파이프라인"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 12주차 — **로그 엔지니어링**. 탐지는 "보이는 만큼만" 가능하다. 좋은 SOC 는 로그 소스를
+  빠짐없이 수집·정규화하고 **무결성**을 지킨다. 이번 공방전에서 공격자는 기본 로깅을 **회피**하려 하고(비표준
+  경로, bash history 우회), 관제팀(너)은 **auditd 감사 룰·커스텀 디코더·무결성 체계**로 가시성 공백을 메운다.
+
+  ▸ 이야기
+    공격자가 태그 `sa12r1` 공격을 보내고, 기본 로깅이 약한 경로 `/var/tmp/.sa12hidden` 에 흔적을 숨기며 계정
+    `soca12` 를 만든다. 관제팀은 ① 민감 파일 변조를 잡는 auditd 룰, ② 커스텀 Wazuh 룰/디코더, ③ Suricata
+    eve.json 파싱 룰을 만들고, ④ 로그 정규화·보관·ATT&CK 데이터소스 매핑을 설계하고, ⑤ 로그 무결성·EPS·종합 보고로 마무리한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + 로그 엔지니어링을 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라에 회피 흔적을 남기고, Blue 는 자기 인프라의 가시성 강화.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. Red 채점은 **대상 인프라의 흔적(WAF audit / 은닉 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    공격 태그 **`sa12r1-<본인id>`**, 은닉 파일 **`/var/tmp/.sa12hidden`**(마커 `sa12`), 계정 **`soca12`**,
+    auditd 룰 **`/etc/audit/rules.d/soc-adv-w12.rules`**(키 `sa12`), Wazuh 룰 **id 102121**, Suricata 룰 **sid 9612121**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [공격: 로그 생성] — 정규화가 필요한 공격 흔적
+
+      ### 상황
+      너는 태그 `sa12r1-<본인id>` 를 단 공격을 보내, 관제팀이 파싱·정규화해야 할 로그를 만든다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa12r1-kim%27%20UNION%20SELECT%201--+&Submit=Submit"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `sa12r1` 가 포함된 공격 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `sa12r1` 태그가 포함된 공격 탐지가 남는다.
+    hint: "태그(sa12r1) 공격 → 대상 modsec audit. 채점: log_contains modsec sa12r1. 파싱/정규화 대상 로그 생성."
+    verify:
+      type: "log_contains"
+      expect: "sa12r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa12r1", since_sec: 1800 } }
+      semantic:
+        intent: "공격 흔적 생성(T1190) — 로그 파싱/정규화 대상. 대상 WAF audit, 태그(sa12r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 sa12r1 태그가 포함된 공격 탐지"
+          - "이 로그가 어떤 소스/형식인지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 공격"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [로그 회피] — 감사 사각지대에 흔적 숨기기
+
+      ### 상황
+      영리한 공격자는 **기본 로깅이 약한 경로**에 흔적을 숨긴다. 너는 `/var/tmp/.sa12hidden`(마커 `sa12`)에 흔적을
+      남기고 계정 `soca12` 를 만든다. 관제팀의 auditd 감사 룰이 이 사각지대를 메워야 한다.
+
+      ### 할 일
+      ```bash
+      printf 'sa12 hidden artifact in weakly-audited path' > /var/tmp/.sa12hidden
+      sudo useradd -m -s /bin/bash soca12
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/var/tmp/.sa12hidden`(마커 `sa12`)이 있거나 `/etc/passwd` 에 `soca12` 가 있는지로 채점.
+
+      ### 합격 기준
+      `/var/tmp/.sa12hidden`(마커 `sa12`)이 존재하거나 `/etc/passwd` 에 `soca12` 가 있다.
+    hint: "은닉 /var/tmp/.sa12hidden (마커 sa12) + useradd soca12. 채점: file_contains 은닉파일 sa12 + file_contains passwd soca12."
+    verify:
+      type: "file_contains"
+      expect: "sa12"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/var/tmp/.sa12hidden", pattern: "sa12" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca12" } }
+      semantic:
+        intent: "로그 회피(T1562 Impair Defenses) + 계정(T1136) — 감사 사각지대 은닉. auditd 가시성 공백의 표적."
+        success_criteria:
+          - "/var/tmp/.sa12hidden(마커 sa12) 또는 계정 soca12"
+          - "왜 기본 로깅이 약한 경로를 노렸는지 서술"
+        acceptable_methods:
+          - "비표준 경로 파일 + useradd"
+        negative_signs:
+          - "흔적 미생성 / 마커 누락"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [auditd 감사 룰] — 가시성 공백 메우기 (key sa12)
+
+      ### 상황
+      RED-2 의 회피를 막으려면 **감사(auditd)** 가 필요하다. 민감 파일/경로 변조를 감사하는 auditd 룰을
+      **`/etc/audit/rules.d/soc-adv-w12.rules`**(키 `sa12`)에 작성한다.
+
+      ### 할 일
+      ```bash
+      sudo tee /etc/audit/rules.d/soc-adv-w12.rules >/dev/null <<'RUL'
+      -w /etc/passwd -p wa -k sa12_passwd
+      -w /var/tmp -p wa -k sa12_tmp
+      RUL
+      sudo augenrules --load 2>/dev/null || sudo auditctl -R /etc/audit/rules.d/soc-adv-w12.rules
+      ```
+
+      ### 채점 방법
+      web 의 `/etc/audit/rules.d/soc-adv-w12.rules` 에 키 `sa12` 감사 룰이 있는지로 확인.
+
+      ### 합격 기준
+      auditd 룰 파일에 `/etc/passwd`/`/var/tmp` 를 감사하는 `sa12` 키 룰이 존재한다.
+    hint: "auditd 룰(/etc/passwd, /var/tmp 감사, key sa12) → /etc/audit/rules.d/soc-adv-w12.rules → augenrules --load. 채점: file_contains 그 파일 sa12."
+    verify:
+      type: "file_contains"
+      expect: "sa12"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "web",
+            params: { path: "/etc/audit/rules.d/soc-adv-w12.rules", pattern: "sa12" } }
+      semantic:
+        intent: "감사 가시성 — auditd 룰로 민감 파일/경로 변조 감사. 로그 회피 사각지대 봉쇄."
+        success_criteria:
+          - "soc-adv-w12.rules 에 sa12 키 감사 룰(/etc/passwd, /var/tmp)"
+          - "augenrules/auditctl 로딩 서술"
+          - "auditd 가 메우는 가시성 공백 설명"
+        acceptable_methods:
+          - "auditd 룰 작성 + 로딩"
+        negative_signs:
+          - "감사 대상 부적절 / 미로딩"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [커스텀 Wazuh 룰] — 비표준 로그 탐지 (id 102121)
+
+      ### 상황
+      수집한 감사/비표준 로그를 SIEM 에서 의미 있게 잡는 커스텀 Wazuh 룰(**id 102121**)을 만든다(개념적으로는
+      커스텀 디코더로 파싱한 필드를 본다).
+
+      ### 할 일
+      ```xml
+      <group name="edu,logeng,">
+        <rule id="102121" level="11">
+          <if_group>edu</if_group>
+          <match>sa12</match>
+          <description>SOCADV-W12 - audit key sa12 sensitive change detected</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102121 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 감사 이벤트를 보는 id 102121 룰이 존재한다.
+    hint: "커스텀 Wazuh 룰(id 102121, audit key sa12) → restart. 채점: file_contains local_rules.xml 102121."
+    verify:
+      type: "file_contains"
+      expect: "102121"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102121" } }
+      semantic:
+        intent: "비표준 로그 SIEM 탐지 — 커스텀 룰/디코더로 audit/비표준 로그를 의미 있는 경보로. 정규화→탐지 연결."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102121"
+          - "auditd/비표준 로그 탐지 로직"
+          - "커스텀 디코더의 역할(파싱) 서술"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [Suricata eve.json 활용] — 네트워크 로그 탐지 (sid 9612121)
+
+      ### 상황
+      네트워크 로그(eve.json)도 핵심 소스다. RED-1 공격 패턴을 잡는 Suricata 룰(**sid 9612121**)을 만들어
+      eve.json 에 구조화된 탐지를 남긴다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"SOCADV-W12 SQLi UNION (eve.json source)"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; sid:9612121; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9612121 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 공격 패턴을 보는 sid 9612121 룰이 존재한다.
+    hint: "Suricata 룰(sid 9612121, UNION SELECT) → eve.json 구조화 로그 → reload. 채점: file_contains local.rules 9612121."
+    verify:
+      type: "file_contains"
+      expect: "9612121"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9612121" } }
+      semantic:
+        intent: "네트워크 로그 소스 — Suricata 룰이 eve.json 에 구조화 탐지 생성. 멀티 소스 가시성."
+        success_criteria:
+          - "local.rules 에 sid 9612121"
+          - "eve.json 구조화 로그의 파싱 이점 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [정규화·보관·매핑] — 파이프라인 설계
+
+      ### 상황
+      로그 엔지니어링의 설계다. 서로 다른 형식(syslog/JSON/CSV)을 통일 스키마로 **정규화**, 계층적 **보관**
+      (Hot/Warm/Cold), 그리고 현재 로그가 **ATT&CK Data Source** 어디를 덮는지 매핑한다.
+
+      ### 할 일
+      보고서에:
+      - 정규화 스키마(공통 필드: timestamp/src/dst/action/severity)
+      - 보관 정책(Hot/Warm/Cold + 기간 + 비용)
+      - ATT&CK Data Source 커버리지 매핑 + 공백
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 정규화/보관/ATT&CK 매핑으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 정규화 스키마·보관 정책·ATT&CK 데이터소스 매핑은 제출로 검증).
+    hint: "정규화 스키마(공통 필드) + 보관 정책(Hot/Warm/Cold) + ATT&CK Data Source 커버리지 매핑. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "로그 파이프라인 설계 — 정규화/보관/ATT&CK 데이터소스 매핑. 분석/설계형 — 구체 스키마/커버리지 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "정규화 공통 스키마 + 계층 보관(Hot/Warm/Cold)"
+          - "ATT&CK Data Source 커버리지 + 공백"
+        acceptable_methods:
+          - "스키마/보관/매핑 표"
+        negative_signs:
+          - "매핑/스키마 누락"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — 로그 무결성 + EPS + 보고서 + 위생
+
+      ### 상황
+      로그 엔지니어링의 산출물이다. 로그 **무결성**(해시 체인/원격 저장/접근 제어), 수집 성능 **EPS/지연/손실률**,
+      현재 인프라 현황과 개선 로드맵을 종합하고, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 무결성 체계 + EPS/지연/손실률 측정 + 개선 로드맵
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo rm -f /var/tmp/.sa12hidden /etc/audit/rules.d/soc-adv-w12.rules; sudo userdel -r soca12 2>/dev/null
+      sudo augenrules --load 2>/dev/null
+      sudo sed -i '/9612121/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102121 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 무결성/EPS/보고서/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 무결성·EPS·보고서·회고·cleanup 은 제출로 검증).
+    hint: "로그 무결성(해시체인/원격/ACL) + EPS/지연/손실률 + 개선 로드맵 + R/B/P 회고 + 은닉/auditd/soca12/9612121/102121 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "로그 엔지니어링 종합 — 무결성 + EPS/성능 + 인프라 현황/로드맵 + R/B/P 회고 + cleanup. 로그 엔지니어링 보고서."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "로그 무결성 체계 + EPS/지연/손실률 + 개선 로드맵"
+          - "R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "무결성/EPS/로드맵 + 회고 + cleanup"
+        negative_signs:
+          - "무결성/EPS 누락 / cleanup 미완"

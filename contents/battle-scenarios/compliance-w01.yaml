@@ -1,0 +1,241 @@
+id: "compliance-w01"
+category: "compliance"
+title: "[컴플라이언스 W1] 개인정보보호법 기술적 보호조치 — 미준수 악용 vs 통제·증적"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  컴플라이언스 1주차 — **개인정보보호법(PIPA) 기술적 보호조치**. 규제는 문서가 아니라 **실제 통제**로 증명된다.
+  이번 공방전에서 공격자는 미준수 항목(약한 인증·미보호 개인정보·접속기록 부재)을 악용하고, 감사자(너)는
+  안전조치 기준에 맞는 **기술적 통제를 구현하고 증적(audit evidence)** 을 남긴다.
+
+  ▸ 이야기
+    공격자가 약한 인증으로 침투해 개인정보를 빼낸다(태그 `co01r1`). 감사자는 ① 접속기록 감사(auditd) 통제,
+    ② 비인가 접근 탐지룰, ③ 안전조치 종합 점검·증적으로 준수를 입증한다.
+
+  ▸ 모드
+    • solo : 한 학생이 미준수 악용(자기 인프라 표적)과 통제 구현을 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라의 미준수를 악용, Blue 는 자기 인프라에 통제 구현.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(WAF audit 태그 / 유출 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    악용 태그 **`co01r1-<본인id>`**, 유출 개인정보 **`/tmp/.co01pii`**(마커 `co01`), 취약 계정 **`compa01`**,
+    감사 통제 **`/etc/audit/rules.d/compliance-co01.rules`**(키 `co01`), Wazuh 탐지 **id 104011**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [미준수 악용] — 약한 인증으로 개인정보 시스템 침투
+
+      ### 상황
+      안전조치 미준수(약한 패스워드 정책/평문 전송)는 곧 침투 경로다. 너는 태그 `co01r1-<본인id>` 로 약한 인증을
+      공략해 개인정보 처리 시스템에 침투한다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      for pw in admin 1234 password admin123; do
+        curl -s -A "co01r1-kim" -H "Host: dvwa.6v6.lab" \
+          --data "username=admin&password=$pw&Login=Login" "http://<대상_공개IP>/login"
+      done
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `co01r1` 가 포함된 침투 시도가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `co01r1` 태그가 포함된 흔적이 남는다.
+    hint: "태그(co01r1) 약한 인증 공략 → 대상 modsec audit. 채점: log_contains modsec co01r1."
+    verify:
+      type: "log_contains"
+      expect: "co01r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "co01r1", since_sec: 1800 } }
+      semantic:
+        intent: "미준수 악용 — 약한 인증(T1110) 으로 개인정보 시스템 침투. 안전조치 미준수가 곧 공격 표면. 태그(co01r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 co01r1 태그가 포함된 침투 시도"
+          - "어떤 안전조치 미준수를 악용했는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 단 약한 인증 공략"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [개인정보 유출] — 미보호 PII 반출 + 계정
+
+      ### 상황
+      침투 후 미보호(평문) 개인정보를 빼낸다. 유출 산출물 **`/tmp/.co01pii`**(마커 `co01`, 이메일/주민번호 흉내)와
+      취약 계정 **`compa01`** 을 남긴다.
+
+      ### 할 일
+      ```bash
+      printf 'co01 PII: hong@example.com 900101-1xxxxxx 010-1234-5678' > /tmp/.co01pii
+      sudo useradd -m -s /bin/bash compa01
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.co01pii`(마커 `co01`)이 있거나 `/etc/passwd` 에 `compa01` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.co01pii`(마커 `co01`) 또는 계정 `compa01`.
+    hint: "유출 PII /tmp/.co01pii (마커 co01) + useradd compa01. 채점: file_contains pii co01 + file_contains passwd compa01."
+    verify:
+      type: "file_contains"
+      expect: "co01"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.co01pii", pattern: "co01" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "compa01" } }
+      semantic:
+        intent: "개인정보 유출(T1530) + 계정(T1136) — 미보호 PII 반출. 안전조치(암호화/접근통제) 미준수의 결과."
+        success_criteria:
+          - "/tmp/.co01pii(마커 co01) 또는 계정 compa01"
+          - "어떤 보호조치 부재로 PII 가 노출됐는지 서술"
+        acceptable_methods:
+          - "PII 산출물 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [접속기록 감사 통제] — auditd (key co01)
+
+      ### 상황
+      PIPA 안전조치는 **접속기록 1년 이상 보관**과 개인정보 처리 시스템 감사를 요구한다. `/etc/passwd`·`/etc/shadow`
+      변경과 개인정보 파일 접근을 감사하는 auditd 룰을 **`/etc/audit/rules.d/compliance-co01.rules`**(키 `co01`)에 작성한다.
+
+      ### 할 일
+      ```bash
+      sudo tee /etc/audit/rules.d/compliance-co01.rules >/dev/null <<'RUL'
+      -w /etc/passwd -p wa -k co01_acct
+      -w /etc/shadow -p wa -k co01_secret
+      RUL
+      sudo augenrules --load 2>/dev/null || sudo auditctl -R /etc/audit/rules.d/compliance-co01.rules
+      ```
+
+      ### 채점 방법
+      web 의 `/etc/audit/rules.d/compliance-co01.rules` 에 키 `co01` 감사 룰이 있는지로 확인.
+
+      ### 합격 기준
+      auditd 룰 파일에 계정/비밀 파일을 감사하는 `co01` 키 룰이 존재한다.
+    hint: "PIPA 접속기록 auditd 룰(/etc/passwd,/etc/shadow, key co01) → /etc/audit/rules.d/compliance-co01.rules. 채점: file_contains 그 파일 co01."
+    verify:
+      type: "file_contains"
+      expect: "co01"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "web",
+            params: { path: "/etc/audit/rules.d/compliance-co01.rules", pattern: "co01" } }
+      semantic:
+        intent: "PIPA 접속기록 통제 — auditd 로 계정/비밀 파일 감사. 접속기록 보관·책임추적성 안전조치 구현."
+        success_criteria:
+          - "compliance-co01.rules 에 co01 키 감사 룰(passwd/shadow)"
+          - "접속기록 보관 기간(1년/2년) 요건 언급"
+          - "augenrules 로딩 서술"
+        acceptable_methods:
+          - "auditd 룰 작성 + 로딩"
+        negative_signs:
+          - "감사 대상 부적절 / 미로딩"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [비인가 접근 탐지] — Wazuh 룰 (id 104011)
+
+      ### 상황
+      개인정보 비인가 접근·약한 인증 악용을 탐지하는 Wazuh 룰(**id 104011**)을 만든다(안전조치: 접근통제 + 탐지).
+
+      ### 할 일
+      ```xml
+      <group name="edu,pipa,">
+        <rule id="104011" level="12">
+          <if_group>edu</if_group>
+          <match>compa01</match>
+          <description>COMPLIANCE-W01 - PIPA: unauthorized access / weak account indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 104011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 비인가 접근을 보는 id 104011 룰이 존재한다.
+    hint: "비인가 접근 Wazuh 룰(id 104011) → restart. 채점: file_contains local_rules.xml 104011."
+    verify:
+      type: "file_contains"
+      expect: "104011"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "104011" } }
+      semantic:
+        intent: "PIPA 접근통제·탐지 — 비인가 접근/취약 계정 Wazuh 룰. 안전조치(접근통제+모니터링) 구현."
+        success_criteria:
+          - "local_rules.xml 에 rule id 104011"
+          - "비인가 접근/취약 계정 탐지 로직"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [안전조치 종합 점검·증적] — PIPA 준수 입증
+
+      ### 상황
+      PIPA 안전조치 기준을 종합 점검하고 **증적(evidence)** 을 정리한다(패스워드 정책 8자/복잡도/만료, SSH root
+      차단, 개인정보 전송 SSL/TLS, 로그 보관, SUID 최소화).
+
+      ### 할 일
+      보고서에:
+      - 항목별 점검 결과(준수/미준수 + 근거 명령): `passwd -S`, `sshd_config PermitRootLogin`, `apache SSL`, `find -perm -4000`
+      - 미준수 항목 개선 계획 + 유출 PII(`/tmp/.co01pii`)·계정(compa01) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 종합 점검 증적으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 안전조치 항목별 점검·증적·헌팅은 제출로 검증).
+    hint: "PIPA 안전조치 항목별 점검(PW정책/SSH/SSL/로그보관/SUID) + 증적 + 미준수 개선 + PII/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "PIPA 종합 점검·증적 — 안전조치 항목별 준수 입증 + 개선. 분석형 — 구체 점검 명령/증적 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "안전조치 항목별 점검(PW/SSH/SSL/로그/SUID) + 증적"
+          - "미준수 개선 계획 + PII/계정 헌팅"
+        acceptable_methods:
+          - "점검 표 + 증적 + 헌팅"
+        negative_signs:
+          - "증적 없는 서술 / 항목 누락"

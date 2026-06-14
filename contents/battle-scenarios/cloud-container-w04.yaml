@@ -1,0 +1,170 @@
+id: "cloud-container-w04"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W4] Docker 보안 심화 — 소켓·특권 탈출 vs Docker 하드닝"
+difficulty: "hard"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 4주차 — **Docker 보안 심화**. Docker 소켓 노출·특권 컨테이너·컨테이너 탈출(escape)을 다룬다.
+  공격자는 소켓/특권으로 호스트를 장악하고, 점검자(너)는 Docker 하드닝을 점검·구현한다.
+
+  ▸ 이야기: 공격자가 Docker 소켓/특권으로 탈출을 시도해(태그 `cc04r1`) 탈출 흔적(`/tmp/.cc04docker`)과 계정 `cca04` 를 남긴다.
+    점검자는 ① 탈출 시도 탐지, ② Docker 소켓/특권 Wazuh 룰, ③ Docker 하드닝 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/탈출 파일·계정).
+  ▸ 마커: 태그 **`cc04r1-<본인id>`**, 탈출 흔적 **`/tmp/.cc04docker`**(마커 `cc04`), 계정 **`cca04`**,
+    Suricata **sid 9004011**, Wazuh **id 106041**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [소켓/특권 탈출] — Docker 소켓 악용 시도
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "cc04r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/exec/?ip=127.0.0.1;ls%20/var/run/docker.sock%23cc04r1-kim&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc04r1` 흔적 시 인정.
+    hint: "태그(cc04r1) Docker 소켓 접근/특권 탈출 → 대상 modsec audit. 채점: log_contains modsec cc04r1."
+    verify:
+      type: "log_contains"
+      expect: "cc04r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc04r1", since_sec: 1800 } }
+      semantic:
+        intent: "컨테이너 탈출(T1611) — Docker 소켓/특권 악용. 태그(cc04r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc04r1 태그", "소켓/특권 탈출 메커니즘 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 소켓/특권 시도"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [탈출 흔적] — 호스트 장악 산출물 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc04 escape: docker.sock mounted, --privileged, host / mounted at /mnt' > /tmp/.cc04docker
+      sudo useradd -m -s /bin/bash cca04
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc04docker`(마커 `cc04`) 또는 `cca04` 존재 시 인정.
+    hint: "탈출 흔적 /tmp/.cc04docker (마커 cc04) + useradd cca04. 채점: file_contains docker cc04 + file_contains passwd cca04."
+    verify:
+      type: "file_contains"
+      expect: "cc04"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc04docker", pattern: "cc04" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca04" } }
+      semantic:
+        intent: "컨테이너 탈출(T1611) + 계정(T1136) — 소켓 마운트/특권으로 호스트 장악."
+        success_criteria: ["/tmp/.cc04docker(마커 cc04) 또는 계정 cca04", "탈출 경로 서술"]
+        acceptable_methods: ["탈출 흔적 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [탈출 시도 탐지] — Suricata 룰 (sid 9004011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W04 docker socket / container escape attempt"; flow:to_server; http.uri; content:"docker.sock"; nocase; sid:9004011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9004011 룰 존재 시 인정.
+    hint: "Docker 소켓/탈출 Suricata 룰(sid 9004011) → reload. 채점: file_contains local.rules 9004011."
+    verify:
+      type: "file_contains"
+      expect: "9004011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9004011" } }
+      semantic:
+        intent: "Docker 보안 — 소켓/탈출 시도 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9004011", "탈출 시도 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [소켓/특권 탐지] — Wazuh 룰 (id 106041)
+
+      ### 할 일
+      ```xml
+      <group name="edu,container,">
+        <rule id="106041" level="14">
+          <if_group>edu</if_group>
+          <match>cca04</match>
+          <description>CLOUD-W04 - docker socket exposure / privileged escape / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106041 룰 존재 시 인정.
+    hint: "소켓/특권 Wazuh 룰(id 106041, level 14) → restart. 채점: file_contains local_rules.xml 106041."
+    verify:
+      type: "file_contains"
+      expect: "106041"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106041" } }
+      semantic:
+        intent: "Docker 보안 — 소켓 노출/특권 탈출/계정 Wazuh 룰. 호스트 장악 위협 포착."
+        success_criteria: ["local_rules.xml 에 rule id 106041", "소켓/특권 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [Docker 하드닝 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - Docker 하드닝(소켓 미마운트/non-privileged/capability drop/seccomp·AppArmor/user namespace) + 위험도 + 권고
+      - R/B/P 회고 + 탈출 흔적(`/tmp/.cc04docker`)·계정(cca04) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 Docker 하드닝 점검·R/B/P 로 인정.
+    hint: "Docker 하드닝(소켓 미마운트/non-privileged/cap drop/seccomp·AppArmor/userns) + R/B/P + 탈출/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "Docker 하드닝 점검 종합 — 소켓/특권/cap/seccomp + R/B/P. 분석형 — 구체 하드닝 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "Docker 하드닝(소켓/특권/cap drop/seccomp/userns) + 권고"
+          - "R/B/P 회고 + 탈출/계정 헌팅"
+        acceptable_methods: ["하드닝 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

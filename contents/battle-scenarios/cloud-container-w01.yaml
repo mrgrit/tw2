@@ -1,0 +1,170 @@
+id: "cloud-container-w01"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W1] 클라우드·가상화 기초 — 노출 자원 악용 vs 격리·접근 통제"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 보안 1주차 — **클라우드·가상화 기초**. 가상화/클라우드 자원의 격리·접근통제·노출을 점검한다.
+  (6v6 는 Docker 기반이라 컨테이너/가상화 표면으로 실습.) 공격자는 노출 자원을 악용하고, 점검자(너)는 격리·접근
+  통제를 구현한다.
+
+  ▸ 이야기: 공격자가 노출 가상화 자원을 노려 침투하고(태그 `cc01r1`) 노출 메타(`/tmp/.cc01vm`)와 계정 `cca01` 을 남긴다.
+    점검자는 ① 침입 탐지, ② 자원 접근 Wazuh 룰, ③ 가상화 보안 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/메타 파일·계정).
+  ▸ 마커: 태그 **`cc01r1-<본인id>`**, 노출 메타 **`/tmp/.cc01vm`**(마커 `cc01`), 계정 **`cca01`**,
+    Suricata **sid 9001011**, Wazuh **id 106011**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [노출 자원 악용] — 가상화/관리 인터페이스 공략
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "cc01r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?url=http://169.254.169.254/cc01r1-kim"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc01r1` 흔적 시 인정.
+    hint: "태그(cc01r1) 노출 자원/메타데이터 접근 → 대상 modsec audit. 채점: log_contains modsec cc01r1."
+    verify:
+      type: "log_contains"
+      expect: "cc01r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc01r1", since_sec: 1800 } }
+      semantic:
+        intent: "노출 가상화 자원 악용(T1190/T1552) — 격리/접근통제 공백. 태그(cc01r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc01r1 태그", "노출 자원 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 자원 접근"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [메타 노출] — 가상화 메타 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc01 vm meta: hypervisor info, shared kernel, no isolation' > /tmp/.cc01vm
+      sudo useradd -m -s /bin/bash cca01
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc01vm`(마커 `cc01`) 또는 `cca01` 존재 시 인정.
+    hint: "노출 메타 /tmp/.cc01vm (마커 cc01) + useradd cca01. 채점: file_contains vm cc01 + file_contains passwd cca01."
+    verify:
+      type: "file_contains"
+      expect: "cc01"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc01vm", pattern: "cc01" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca01" } }
+      semantic:
+        intent: "가상화 메타 노출(T1552) + 계정(T1136) — 격리 부재 정보 노출."
+        success_criteria: ["/tmp/.cc01vm(마커 cc01) 또는 계정 cca01", "격리 부재 위험 서술"]
+        acceptable_methods: ["메타 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [자원 접근 탐지] — Suricata 룰 (sid 9001011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W01 metadata/resource access"; flow:to_server; http.uri; content:"169.254.169.254"; nocase; sid:9001011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9001011 룰 존재 시 인정.
+    hint: "자원 접근 Suricata 룰(sid 9001011) → reload. 채점: file_contains local.rules 9001011."
+    verify:
+      type: "file_contains"
+      expect: "9001011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9001011" } }
+      semantic:
+        intent: "클라우드 자원 접근 탐지 — 메타데이터/자원 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9001011", "자원 접근 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [격리/접근 탐지] — Wazuh 룰 (id 106011)
+
+      ### 할 일
+      ```xml
+      <group name="edu,cloud,">
+        <rule id="106011" level="11">
+          <if_group>edu</if_group>
+          <match>cca01</match>
+          <description>CLOUD-W01 - virtualization resource exposure / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106011 룰 존재 시 인정.
+    hint: "격리/접근 Wazuh 룰(id 106011) → restart. 채점: file_contains local_rules.xml 106011."
+    verify:
+      type: "file_contains"
+      expect: "106011"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106011" } }
+      semantic:
+        intent: "가상화 보안 — 자원 노출/계정 Wazuh 룰. 격리/접근통제."
+        success_criteria: ["local_rules.xml 에 rule id 106011", "격리/접근 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [가상화 보안 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - 가상화/클라우드 기초 점검(격리/접근통제/공유 자원/메타데이터 보호) + 위험도 + 권고
+      - R/B/P 회고 + 노출 메타(`/tmp/.cc01vm`)·계정(cca01) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 가상화 보안 점검·R/B/P 로 인정.
+    hint: "가상화/클라우드 기초 점검(격리/접근/공유자원/메타데이터) + R/B/P + 메타/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "가상화 보안 점검 종합 — 격리/접근/메타데이터 + R/B/P. 분석형 — 구체 점검/권고 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "가상화/클라우드 기초 점검(격리/접근/메타데이터) + 권고"
+          - "R/B/P 회고 + 메타/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

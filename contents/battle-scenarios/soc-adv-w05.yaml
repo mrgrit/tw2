@@ -1,0 +1,333 @@
+id: "soc-adv-w05"
+category: "soc-adv"
+title: "[SOC고급 W5] 위협 인텔리전스(CTI) — IOC 살포 vs 인텔 운영화"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 5주차 — **CTI(Cyber Threat Intelligence)**. 좋은 인텔은 "남이 이미 본 악성 지표(IOC)를
+  우리 탐지에 즉시 반영"하는 것이다. 이번 공방전에서 공격자는 **알려진 악성 지표**(고유 UA/페이로드,
+  악성 파일)를 대상에 남기고, 관제팀(너)은 그 IOC 를 **Suricata 룰·Wazuh CDB 리스트·STIX Indicator** 로
+  운영화해 재발 시 자동 탐지되게 한다.
+
+  ▸ 이야기
+    공격자가 인텔 피드에 오를 법한 시그니처(IOC 마커 **`sa05evil`**)를 단 공격을 보내고, 악성 파일
+    `/tmp/.sa05ioc` 을 떨군다. 관제팀은 ① IOC 를 Suricata 룰로, ② Wazuh CDB 리스트로 등록하고, ③ CDB 를
+    참조하는 Wazuh 격상룰을 만들고, ④ Diamond Model·행위자 프로파일·enrichment 로 분석하고, ⑤ TI 자동 수집
+    파이프라인·TLP·KPI 로 종합한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + 관제를 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 외부 공격, Blue 는 자기 인프라에서 인텔 운영화.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. 외부 명령은 6v6 가 수집 못 하므로 Red 채점은
+    **대상 인프라의 흔적(WAF audit 의 IOC 태그 / 호스트의 악성 파일)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    악성 IOC 문자열 **`sa05evil`**, 악성 파일 **`/tmp/.sa05ioc`**, Suricata IOC 룰 **sid 9605051**,
+    Wazuh CDB 리스트 **`/var/ossec/etc/lists/soc-adv-w05-ioc`**, CDB 참조 Wazuh 룰 **id 102051**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [IOC 살포] — 알려진 악성 시그니처로 공격
+
+      ### 상황
+      너는 인텔 피드에 등록될 법한 **고유 악성 지표(IOC) `sa05evil`** 를 UA 와 페이로드에 달아 공격을 보낸다.
+      이 IOC 가 대상 WAF audit 에 남아야, 관제팀이 그것을 인텔로 운영화할 수 있다.
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "sa05evil-scanner/1.0" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa05evil%27%20OR%201=1--+&Submit=Submit"
+      ```
+      `<대상_공개IP>` = solo 면 본인, duel 이면 상대.
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 **IOC `sa05evil` 가 포함된 공격 탐지** 가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `sa05evil` IOC 가 포함된 탐지가 남는다.
+    hint: "IOC sa05evil 를 UA+페이로드에 달아 공격 → 대상 modsec audit 에 sa05evil. 채점: log_contains modsec sa05evil."
+    verify:
+      type: "log_contains"
+      expect: "sa05evil"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa05evil", since_sec: 1800 } }
+      semantic:
+        intent: "IOC 생성(공격자 관점) — 인텔로 운영화될 고유 악성 지표(sa05evil)를 UA/페이로드에 남김. BLUE 의 Suricata/CDB IOC 운영화 근거."
+        success_criteria:
+          - "대상 WAF audit 에 IOC sa05evil 포함 탐지"
+          - "어떤 IOC(UA/페이로드)를 남겼는지 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 IOC 마커 단 공격"
+        negative_signs:
+          - "IOC 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [악성 파일 IOC] — 알려진 해시/문자열 파일 드롭
+
+      ### 상황
+      파일 기반 IOC 도 만든다. 너는 인텔에 등록될 법한 악성 파일 **`/tmp/.sa05ioc`**(시그니처 문자열 `sa05ioc`
+      포함)을 떨군다. 관제팀이 이 파일 IOC 를 enrichment/탐지에 활용해야 한다.
+
+      ### 할 일
+      ```bash
+      printf 'sa05ioc KNOWN-BAD payload signature for CTI lab' > /tmp/.sa05ioc
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.sa05ioc` 이 있고 시그니처 `sa05ioc` 를 포함하는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.sa05ioc` 이 존재하고 `sa05ioc` 를 포함한다.
+    hint: "악성 파일 IOC /tmp/.sa05ioc (시그니처 sa05ioc). 채점: file_exists + file_contains sa05ioc."
+    verify:
+      type: "file_exists"
+      expect: "/tmp/.sa05ioc"
+      checks:
+        - { id: "red-2-1", type: "file_exists", target: "web", params: { path: "/tmp/.sa05ioc" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/tmp/.sa05ioc", pattern: "sa05ioc" } }
+      semantic:
+        intent: "파일 기반 IOC(T1105) — 알려진 악성 시그니처 파일. BLUE 의 enrichment/해시 IOC 운영화 표적."
+        success_criteria:
+          - "/tmp/.sa05ioc 존재 + 시그니처 sa05ioc"
+          - "파일 IOC 의 의미(해시/문자열) 서술"
+        acceptable_methods:
+          - "악성 시그니처 파일 드롭"
+        negative_signs:
+          - "파일 부재 / 시그니처 누락"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [IOC → Suricata] — 악성 지표 네트워크 룰 (sid 9605051)
+
+      ### 상황
+      RED-1 의 IOC `sa05evil` 를 즉시 네트워크 탐지로 운영화한다. Suricata 커스텀 룰(**sid 9605051**)로
+      이 IOC 가 다시 보이면 경보가 나게 한다.
+
+      ### 할 일
+      `/etc/suricata/rules/local.rules` 에 추가 후 reload:
+      ```
+      alert http any any -> any any (msg:"SOCADV-W05 known-bad IOC sa05evil"; flow:to_server; content:"sa05evil"; nocase; http.uri; sid:9605051; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9605051 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 IOC `sa05evil` 를 보는 sid 9605051 룰이 존재한다.
+    hint: "IOC sa05evil → Suricata 룰(sid 9605051, content sa05evil) → reload. 채점: file_contains local.rules 9605051."
+    verify:
+      type: "file_contains"
+      expect: "9605051"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9605051" } }
+      semantic:
+        intent: "IOC 운영화(네트워크) — CTI 의 악성 지표를 Suricata 커스텀 룰로 즉시 탐지. feed-to-rule. 빌트인과 다른 IOC 문자열."
+        success_criteria:
+          - "local.rules 에 sid 9605051 (content sa05evil)"
+          - "IOC→룰 변환 절차 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "IOC 불일치 / 문법 오류로 로딩 실패"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 14
+    instruction: |
+      ## 🛡️ BLUE-2 [IOC → Wazuh CDB] — 인텔 목록 등록
+
+      ### 상황
+      개별 룰보다 확장성 있는 방법은 **CDB(Constant Database) 리스트**다. 악성 IP/문자열/도메인 IOC 를 목록
+      파일로 관리하고 룰이 그 목록을 참조하게 한다. IOC 를 CDB 리스트 **`/var/ossec/etc/lists/soc-adv-w05-ioc`**
+      에 등록한다.
+
+      ### 할 일
+      ```bash
+      sudo tee /var/ossec/etc/lists/soc-adv-w05-ioc >/dev/null <<'CDB'
+      sa05evil:known-bad-ioc
+      sa05ioc:known-bad-file
+      evil.sa05.example:known-bad-domain
+      CDB
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      CDB 리스트 파일 `/var/ossec/etc/lists/soc-adv-w05-ioc` 에 IOC `sa05evil` 가 등록됐는지로 확인.
+
+      ### 합격 기준
+      CDB 리스트 파일에 IOC `sa05evil` 가 등록돼 있다.
+    hint: "IOC 를 Wazuh CDB 리스트 /var/ossec/etc/lists/soc-adv-w05-ioc 에 key:value 로 등록. 채점: file_contains 그 파일 sa05evil."
+    verify:
+      type: "file_contains"
+      expect: "sa05evil"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/lists/soc-adv-w05-ioc", pattern: "sa05evil" } }
+      semantic:
+        intent: "IOC 운영화(CDB) — 인텔 지표를 Wazuh CDB 리스트로 확장 가능하게 관리. key:value 포맷. 룰에서 list 참조의 기반."
+        success_criteria:
+          - "CDB 리스트에 sa05evil 등 IOC 등록(key:value)"
+          - "CDB 가 개별 룰보다 확장성 있는 이유 서술"
+        acceptable_methods:
+          - "lists 파일 작성 + wazuh-control restart"
+        negative_signs:
+          - "포맷 오류 / IOC 누락"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [CDB 참조 룰] — IOC 매칭 자동 격상 (id 102051)
+
+      ### 상황
+      CDB 리스트는 그 자체로는 탐지하지 않는다. **리스트를 참조하는 룰**이 있어야 매칭 시 경보가 난다. CDB 의
+      IOC 가 요청 URL 등에서 매칭되면 고위험으로 격상하는 Wazuh 룰(**id 102051**)을 만든다.
+
+      ### 할 일
+      `/var/ossec/etc/rules/local_rules.xml` 에 추가 후 재시작:
+      ```xml
+      <group name="edu,cti,">
+        <rule id="102051" level="12">
+          <if_group>web</if_group>
+          <list field="url" lookup="address_match_key">etc/lists/soc-adv-w05-ioc</list>
+          <description>SOCADV-W05 - CTI IOC match from CDB list, escalate</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 CDB 리스트를 참조하는 id 102051 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 CDB 리스트를 `<list>` 로 참조하는 id 102051 룰이 존재한다.
+    hint: "CDB 리스트 참조 Wazuh 룰(id 102051, <list>etc/lists/soc-adv-w05-ioc</list>) → restart. 채점: file_contains local_rules.xml 102051."
+    verify:
+      type: "file_contains"
+      expect: "102051"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102051" } }
+      semantic:
+        intent: "CDB 참조 룰 — 리스트의 IOC 가 매칭되면 자동 격상. 리스트(데이터)와 룰(로직)의 분리로 인텔 업데이트가 룰 수정 없이 반영."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102051"
+          - "<list> 로 soc-adv-w05-ioc CDB 참조"
+          - "데이터/로직 분리의 운영 이점 서술"
+        acceptable_methods:
+          - "Wazuh 룰 + list 참조 + restart"
+        negative_signs:
+          - "list 참조 없음 / XML 오류"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [위협 분석] — Diamond Model + 행위자 프로파일 + enrichment
+
+      ### 상황
+      IOC 는 맥락이 붙어야 인텔이 된다. 이번 공격을 **Diamond Model**(Adversary/Capability/Infrastructure/
+      Victim) 4축으로 분석하고, 행위자 프로파일과 IOC enrichment(Whois/GeoIP/관련 캠페인) 절차를 제시한다.
+
+      ### 할 일
+      보고서에:
+      - Diamond Model 4축 분석(이번 공방전의 공격을 매핑)
+      - IOC enrichment 절차: `sa05evil`/`/tmp/.sa05ioc` 에 어떤 컨텍스트(출발지 GeoIP/관련 TTP)를 붙일지
+      - STIX Indicator 개념(pattern: `[file:hashes.SHA-256 = ...]` 등)
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 Diamond Model/enrichment 분석으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ Diamond Model 4축·enrichment·STIX 개념은 제출로 검증).
+    hint: "Diamond Model 4축(Adversary/Capability/Infra/Victim) + IOC enrichment(GeoIP/캠페인) + STIX Indicator 개념. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "위협 분석 — Diamond Model 4축 + 행위자 프로파일 + IOC enrichment + STIX Indicator. 분석형 — 이번 공격을 실제로 매핑하면 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "Diamond Model 4축으로 이번 공격 매핑"
+          - "IOC enrichment 절차 + STIX Indicator 개념"
+        acceptable_methods:
+          - "Diamond/STIX 분석 + enrichment 설계"
+        negative_signs:
+          - "4축 누락 / 맥락 없는 IOC 나열"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — TI 자동수집 파이프라인 + TLP + KPI + 위생
+
+      ### 상황
+      CTI 프로그램의 산출물이다. **TI 자동 수집 파이프라인**(cron 으로 피드 수집→정규화→CDB/Suricata 자동
+      업데이트), **TLP** 공유 정책, TI **KPI**(IOC 매칭률·평균 적용 시간 등)를 종합하고, R/B/P 회고 후 아티팩트를
+      **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 자동 수집: `cron 0 */6 * * * ti_fetch.py` → 정규화 → CDB/Suricata 갱신 → reload 절차
+      - TLP: RED/AMBER/GREEN/CLEAR 별 공유 허용 범위
+      - KPI: TI 활용률/IOC 매칭률/평균 적용 시간/TI 기반 탐지 비율
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo rm -f /tmp/.sa05ioc /var/ossec/etc/lists/soc-adv-w05-ioc
+      sudo sed -i '/9605051/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102051 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 파이프라인/TLP/KPI/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 자동수집 파이프라인·TLP·KPI·회고·cleanup 은 제출로 검증).
+    hint: "TI 자동수집 파이프라인(cron→정규화→CDB/Suricata 갱신) + TLP 공유정책 + TI KPI + R/B/P 회고 + 9605051/102051/CDB/파일 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "CTI 종합 — TI 자동수집 파이프라인 + TLP 공유 정책 + TI KPI + R/B/P 회고 + cleanup. 위협 인텔 프로그램 보고서."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "TI 자동수집 파이프라인 + TLP 정책 + TI KPI"
+          - "R/B/P 회고 + 아티팩트(9605051/102051/CDB/파일) 일괄 cleanup"
+        acceptable_methods:
+          - "파이프라인 + TLP + KPI + 회고 + cleanup"
+        negative_signs:
+          - "KPI/파이프라인 없이 서술만 / cleanup 미완"

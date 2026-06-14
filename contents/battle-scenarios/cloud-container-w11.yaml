@@ -1,0 +1,169 @@
+id: "cloud-container-w11"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W11] IaC 보안 — 오설정 코드 vs IaC 스캔·정책 통제"
+difficulty: "medium"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 11주차 — **IaC(Infrastructure as Code) 보안**. Terraform/매니페스트의 오설정을 점검한다.
+  공격자는 IaC 오설정을 악용하고, 점검자(너)는 IaC 스캔·정책(OPA/policy-as-code)을 점검·구현한다.
+
+  ▸ 이야기: 공격자가 IaC 오설정(태그 `cc11r1`)을 노려 침투하고 오설정 코드(`/tmp/.cc11iac`)와 계정 `cca11` 을 남긴다.
+    점검자는 ① 오설정 악용 탐지, ② IaC Wazuh 룰, ③ IaC 보안 점검·R/B/P 로 대응한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/코드 파일·계정).
+  ▸ 마커: 태그 **`cc11r1-<본인id>`**, 오설정 코드 **`/tmp/.cc11iac`**(마커 `cc11`), 계정 **`cca11`**,
+    Suricata **sid 9011011**, Wazuh **id 106111**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-1 [오설정 악용] — IaC 가 만든 노출 자원 공략
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -A "cc11r1-kim" -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?bucket=public-by-iac&probe=cc11r1-kim"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc11r1` 흔적 시 인정.
+    hint: "태그(cc11r1) IaC 오설정 노출 자원 접근 → 대상 modsec audit. 채점: log_contains modsec cc11r1."
+    verify:
+      type: "log_contains"
+      expect: "cc11r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc11r1", since_sec: 1800 } }
+      semantic:
+        intent: "IaC 오설정 악용(T1190) — 코드로 만들어진 노출 자원. 태그(cc11r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc11r1 태그", "IaC 오설정 위험 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 오설정 자원 접근"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🎯 RED-2 [오설정 코드] — 위험 IaC + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc11 IaC misconfig: security_group 0.0.0.0/0:22, public_bucket=true, hardcoded secret' > /tmp/.cc11iac
+      sudo useradd -m -s /bin/bash cca11
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc11iac`(마커 `cc11`) 또는 `cca11` 존재 시 인정.
+    hint: "오설정 코드 /tmp/.cc11iac (마커 cc11) + useradd cca11. 채점: file_contains iac cc11 + file_contains passwd cca11."
+    verify:
+      type: "file_contains"
+      expect: "cc11"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc11iac", pattern: "cc11" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca11" } }
+      semantic:
+        intent: "IaC 오설정(T1190) + 계정(T1136) — 0.0.0.0/0/공개 버킷/하드코딩 시크릿."
+        success_criteria: ["/tmp/.cc11iac(마커 cc11) 또는 계정 cca11", "오설정 항목 서술"]
+        acceptable_methods: ["오설정 코드 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-1 [오설정 자원 접근 탐지] — Suricata 룰 (sid 9011011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W11 IaC misconfig resource access"; flow:to_server; http.uri; content:"bucket=public"; nocase; sid:9011011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9011011 룰 존재 시 인정.
+    hint: "오설정 자원 Suricata 룰(sid 9011011) → reload. 채점: file_contains local.rules 9011011."
+    verify:
+      type: "file_contains"
+      expect: "9011011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9011011" } }
+      semantic:
+        intent: "IaC 보안 — 오설정 자원 접근 Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9011011", "오설정 자원 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [IaC 오설정 탐지] — Wazuh 룰 (id 106111)
+
+      ### 할 일
+      ```xml
+      <group name="edu,iac,">
+        <rule id="106111" level="12">
+          <if_group>edu</if_group>
+          <match>cca11</match>
+          <description>CLOUD-W11 - IaC misconfiguration / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106111 룰 존재 시 인정.
+    hint: "IaC 오설정 Wazuh 룰(id 106111) → restart. 채점: file_contains local_rules.xml 106111."
+    verify:
+      type: "file_contains"
+      expect: "106111"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106111" } }
+      semantic:
+        intent: "IaC 보안 — 오설정/계정 Wazuh 룰. policy-as-code 통제."
+        success_criteria: ["local_rules.xml 에 rule id 106111", "오설정 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [IaC 보안 점검·R/B/P]
+
+      ### 할 일
+      보고서에:
+      - IaC 점검(tfsec/checkov 스캔/policy-as-code(OPA)/시크릿 하드코딩 제거/최소 권한 자원) + 위험도 + 권고
+      - R/B/P 회고 + 오설정 코드(`/tmp/.cc11iac`)·계정(cca11) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 IaC 보안 점검·R/B/P 로 인정.
+    hint: "IaC 점검(tfsec/checkov 스캔/OPA policy/시크릿 제거/최소 권한) + R/B/P + 코드/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "IaC 보안 점검 종합 — 스캔/policy-as-code + R/B/P. 분석형 — 구체 도구/정책 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "IaC 점검(tfsec/checkov/OPA/시크릿/최소 권한) + 권고"
+          - "R/B/P 회고 + 코드/계정 헌팅"
+        acceptable_methods: ["점검 표 + 권고 + 회고 + 헌팅"]
+        negative_signs: ["권고/회고 누락"]

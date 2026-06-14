@@ -1,0 +1,334 @@
+id: "soc-adv-w10"
+category: "soc-adv"
+title: "[SOC고급 W10] SOAR 자동화 — 반복 공격 vs 자동 대응 플레이북"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 10주차 — **SOAR(Security Orchestration, Automation & Response)**. 분석가가 손으로 막던 대응을
+  **플레이북으로 자동화**한다. 이번 공방전에서 공격자는 반복 공격과 C2 채널로 SOC 를 압박하고, 관제팀(너)은
+  자동 차단 플레이북, Wazuh Active-Response 트리거, Suricata 탐지로 **탐지→대응 자동 연계**를 구축한다.
+
+  ▸ 이야기
+    공격자가 태그 `sa10r1` 를 단 SQLi 를 반복하고 C2 포트(**54010**)를 연다. 관제팀은 ① 악성 IP 자동 차단
+    플레이북(nftables), ② 그 플레이북을 부르는 Wazuh Active-Response 트리거 룰, ③ C2 Suricata 룰을 만들고,
+    ④ 피싱/랜섬 대응 플레이북·에스컬레이션·IOC enrichment 를 설계하고, ⑤ SOAR 메트릭·ROI·리스크로 종합한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + SOAR 구축을 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 반복 공격, Blue 는 자기 인프라에서 자동 대응.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. Red 채점은 **대상 인프라의 흔적(WAF audit / C2 포트)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    공격 태그 **`sa10r1-<본인id>`**, C2 포트 **54010**, 자동 차단 플레이북 **`/opt/soar/soc-adv-w10-block.sh`**
+    (마커 `SOCADV_W10`), Wazuh Active-Response 트리거 룰 **id 102101**, Suricata 룰 **sid 9610101**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [반복 공격] — 자동 차단을 유발하는 공격 폭주
+
+      ### 상황
+      SOAR 의 가치는 "반복되는 뻔한 공격을 사람 없이 막는다"이다. 너는 태그 `sa10r1-<본인id>` 를 단 SQLi 를
+      **여러 번** 보내, 관제팀의 자동 차단 플레이북이 발동할 조건을 만든다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      for i in $(seq 1 8); do
+        curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+          "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa10r1-kim-$i%27%20UNION%20SELECT%201--+&Submit=Submit"
+        sleep 3
+      done
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `sa10r1` 가 포함된 SQLi 탐지가 (반복적으로) 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `sa10r1` 태그가 포함된 SQLi 탐지가 남는다.
+    hint: "태그(sa10r1) SQLi 반복 → 대상 modsec audit. 채점: log_contains modsec sa10r1. 자동 차단 플레이북의 입력."
+    verify:
+      type: "log_contains"
+      expect: "sa10r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa10r1", since_sec: 1800 } }
+      semantic:
+        intent: "반복 공격(T1190) — 자동 대응(SOAR) 트리거 조건 형성. 대상 WAF audit, 태그(sa10r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 sa10r1 태그가 포함된 SQLi 탐지"
+          - "반복 공격이 자동 대응 트리거가 되는 흐름 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 SQLi 반복"
+        negative_signs:
+          - "태그 누락 / 단발 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [C2 채널] — enrichment·자동 차단 대상 만들기
+
+      ### 상황
+      자동 대응의 또 다른 대상은 **C2 통신**이다. 너는 C2 포트 **54010** 을 열어, 관제팀의 IOC enrichment 와
+      자동 차단(악성 목적지 차단)의 표적을 만든다.
+
+      ### 할 일
+      ```bash
+      nohup ncat -lk 54010 >/dev/null 2>&1 &    # 또는 nc -lk 54010 / python3 -m http.server 54010
+      ```
+
+      ### 채점 방법
+      대상 호스트에 포트 54010 이 listening 인지로 채점.
+
+      ### 합격 기준
+      대상 호스트에서 포트 54010 이 listening 이다.
+    hint: "C2 포트 54010 리스너. 채점: port_listening 54010. IOC enrichment/자동 차단 표적."
+    verify:
+      type: "port_listening"
+      expect: "54010"
+      checks:
+        - { id: "red-2-1", type: "port_listening", target: "web", params: { port: 54010 } }
+      semantic:
+        intent: "C2 채널(T1571) — 자동 enrichment/차단 대상. SOAR 워크플로우의 입력."
+        success_criteria:
+          - "포트 54010 listening"
+          - "C2 가 자동 enrichment/차단 워크플로우에 어떻게 쓰이는지 서술"
+        acceptable_methods:
+          - "리스너로 54010 개방"
+        negative_signs:
+          - "포트 미개방"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [자동 차단 플레이북] — 악성 IP nftables 차단 스크립트 (SOCADV_W10)
+
+      ### 상황
+      SOAR 의 핵심은 **실행 가능한 플레이북**이다. 악성 IP 를 받아 검증 후 nftables 로 자동 차단하는 플레이북
+      스크립트 **`/opt/soar/soc-adv-w10-block.sh`**(마커 `SOCADV_W10`)를 작성한다.
+
+      ### 할 일
+      ```bash
+      sudo mkdir -p /opt/soar
+      sudo tee /opt/soar/soc-adv-w10-block.sh >/dev/null <<'SH'
+      #!/bin/bash
+      # SOCADV_W10 auto-block playbook: 악성 IP 검증 후 nftables 차단
+      IP="$1"
+      [ -z "$IP" ] && { echo "usage: $0 <ip>"; exit 1; }
+      # 1) (개념) TI 검증 후 2) 차단:
+      nft add rule inet filter input ip saddr "$IP" drop 2>/dev/null \
+        || echo "SOCADV_W10: would block $IP (nft not available)"
+      logger -t SOCADV_W10 "auto-blocked $IP"
+      SH
+      sudo chmod +x /opt/soar/soc-adv-w10-block.sh
+      ```
+
+      ### 채점 방법
+      `/opt/soar/soc-adv-w10-block.sh` 에 마커 `SOCADV_W10` 가 있는지로 확인.
+
+      ### 합격 기준
+      자동 차단 플레이북 스크립트가 존재하고 마커 `SOCADV_W10` 을 포함한다.
+    hint: "악성 IP nftables 차단 플레이북 /opt/soar/soc-adv-w10-block.sh (마커 SOCADV_W10). 채점: file_contains 그 파일 SOCADV_W10."
+    verify:
+      type: "file_contains"
+      expect: "SOCADV_W10"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "web",
+            params: { path: "/opt/soar/soc-adv-w10-block.sh", pattern: "SOCADV_W10" } }
+      semantic:
+        intent: "SOAR 플레이북 — 악성 IP 검증 후 nftables 자동 차단 스크립트. Orchestration+Automation+Response 의 R."
+        success_criteria:
+          - "/opt/soar/soc-adv-w10-block.sh 존재 + 마커 SOCADV_W10"
+          - "IP 입력 → 검증 → 차단 → 로깅 흐름"
+          - "자동 차단의 오탐 위험과 검증 단계 필요성 서술"
+        acceptable_methods:
+          - "플레이북 스크립트 작성 + 실행 권한"
+        negative_signs:
+          - "검증 없이 무조건 차단 / 마커 누락"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [Active-Response 트리거] — 플레이북을 부르는 Wazuh 룰 (id 102101)
+
+      ### 상황
+      플레이북은 **트리거**가 있어야 자동 실행된다. RED-1 같은 반복 공격이 잡히면 BLUE-1 플레이북을 호출하도록
+      하는 Wazuh 룰(**id 102101**)을 만든다(Active-Response 연계 지점).
+
+      ### 할 일
+      `/var/ossec/etc/rules/local_rules.xml` 에 추가 후 재시작:
+      ```xml
+      <group name="edu,soar,">
+        <rule id="102101" level="12">
+          <if_group>web</if_group>
+          <match>UNION</match>
+          <description>SOCADV-W10 - repeated web attack triggers auto-block playbook (active-response)</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      (개념: `ossec.conf` 의 `<active-response>` 가 이 rule_id 에 BLUE-1 스크립트를 연결.)
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102101 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 플레이북 트리거 룰 id 102101 이 존재한다.
+    hint: "플레이북 트리거 Wazuh 룰(id 102101) → active-response 연계 → restart. 채점: file_contains local_rules.xml 102101."
+    verify:
+      type: "file_contains"
+      expect: "102101"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102101" } }
+      semantic:
+        intent: "SOAR 트리거 — 탐지 룰이 플레이북을 자동 호출(Active-Response). 탐지→대응 자동 연계의 핵심 연결고리."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102101"
+          - "이 룰이 BLUE-1 플레이북을 호출하는 active-response 연계 설명"
+          - "자동 실행 트리거 조건 서술"
+        acceptable_methods:
+          - "Wazuh 룰 + active-response 연계 개념 + restart"
+        negative_signs:
+          - "트리거 개념 누락 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [C2 탐지 → 자동대응 입력] — Suricata 룰 (sid 9610101)
+
+      ### 상황
+      네트워크 측 자동 대응 입력도 만든다. RED-2 의 C2 포트(54010)를 잡는 Suricata 룰(**sid 9610101**)을
+      만들어, IOC enrichment·자동 차단의 신호원으로 삼는다.
+
+      ### 할 일
+      ```
+      alert tcp any any -> any 54010 (msg:"SOCADV-W10 C2 port 54010 (SOAR input)"; flow:to_server; sid:9610101; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9610101 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 C2 포트(54010)를 보는 sid 9610101 룰이 존재한다.
+    hint: "C2 포트 Suricata 룰(sid 9610101, port 54010) → reload. SOAR 자동대응 신호원. 채점: file_contains local.rules 9610101."
+    verify:
+      type: "file_contains"
+      expect: "9610101"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9610101" } }
+      semantic:
+        intent: "SOAR 네트워크 입력 — C2 Suricata 룰이 enrichment/차단 워크플로우를 트리거. 다소스 자동 대응."
+        success_criteria:
+          - "local.rules 에 sid 9610101 (port 54010)"
+          - "이 신호가 자동 대응 워크플로우에 어떻게 들어가는지 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "포트 불일치 / 문법 오류"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [플레이북 설계] — 피싱/랜섬 대응 + 에스컬레이션 + enrichment
+
+      ### 상황
+      한 플레이북으로 끝나지 않는다. **피싱 이메일 대응**(수신→분석→IOC→TI→차단→통보)과 **랜섬웨어 대응**
+      (탐지→격리→분석→복구→보고), 자동 **에스컬레이션**(심각도/영향/자산 기준), **IOC enrichment**(다중 TI 조회)를 설계한다.
+
+      ### 할 일
+      보고서에:
+      - 피싱 대응 플레이북 6단계 + 랜섬 대응 플레이북 5단계
+      - 에스컬레이션 경로(심각도/영향/자산 → Tier1/2/3 + SLA)
+      - IOC enrichment 워크플로우(IP/Hash/Domain 다중 TI 조회 통합)
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 플레이북/에스컬레이션/enrichment 설계로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 피싱/랜섬 플레이북·에스컬레이션·enrichment 는 제출로 검증).
+    hint: "피싱 6단계 + 랜섬 5단계 플레이북 + 에스컬레이션 경로(SLA) + IOC enrichment 워크플로우 설계. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "플레이북 설계 — 피싱/랜섬 대응 + 에스컬레이션 + enrichment. 분석/설계형 — 구체 단계·SLA 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "피싱(6단계)/랜섬(5단계) 플레이북 + 에스컬레이션 경로(SLA)"
+          - "IOC enrichment 다중 TI 통합 워크플로우"
+        acceptable_methods:
+          - "플레이북 단계도 + 에스컬레이션 표"
+        negative_signs:
+          - "단계/SLA 누락 / 추상적 서술"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — SOAR 메트릭·ROI·리스크 + 위생
+
+      ### 상황
+      SOAR 구축의 산출물이다. SOAR **메트릭**(자동화율/MTTR/플레이북 성공률), **ROI**(도입 전후 비교), **리스크**
+      (자동 차단 오탐/단일 장애점/과도한 자동화)를 종합하고, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 메트릭(자동화율/MTTR/성공률) + ROI(인력 시간·비용 절감) + 리스크 완화 방안
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo rm -f /opt/soar/soc-adv-w10-block.sh; sudo pkill -f 'ncat -lk 54010' 2>/dev/null
+      sudo sed -i '/9610101/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102101 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 메트릭/ROI/리스크/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ SOAR 메트릭·ROI·리스크·회고·cleanup 은 제출로 검증).
+    hint: "SOAR 메트릭(자동화율/MTTR/성공률) + ROI + 리스크(오탐/단일장애점/과도자동화) 완화 + R/B/P 회고 + 플레이북/54010/9610101/102101 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "SOAR 종합 — 메트릭 + ROI + 리스크 완화 + R/B/P 회고 + cleanup. SOAR 구축 보고서."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "SOAR 메트릭(자동화율/MTTR/성공률) + ROI + 리스크 완화"
+          - "R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "메트릭/ROI/리스크 표 + 회고 + cleanup"
+        negative_signs:
+          - "메트릭/리스크 누락 / cleanup 미완"

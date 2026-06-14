@@ -1,0 +1,326 @@
+id: "soc-adv-w08"
+category: "soc-adv"
+title: "[SOC고급 W8] 메모리 포렌식 — 휘발성 은닉 vs /proc 라이브 분석"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 8주차 — **메모리/휘발성 포렌식**. 디스크에 안 남고 **메모리·런타임**에만 존재하는 위협
+  (fileless, in-memory C2, 숨겨진 프로세스)이 늘고 있다. 이번 공방전에서 공격자는 휘발성 흔적(메모리 상주
+  리스너, tmpfs 은닉 파일)을 만들고, 관제팀(너)은 `/proc` 파일시스템으로 **라이브 메모리 분석**을 수행해
+  찾아낸다.
+
+  ▸ 이야기
+    공격자가 대상 호스트에 메모리 상주 C2 리스너(**포트 54008**)와 메모리 기반 파일시스템 은닉 파일
+    (**`/dev/shm/.sa08`**)을 심는다(보조 계정 `soca08`). 디스크 스캔으론 잘 안 보인다. 관제팀은 ① 의심
+    프로세스/연결을 Wazuh 룰화, ② C2 포트를 Suricata 룰화, ③ `/proc` 라이브 헌팅으로 발견·제거하고, ④ 프로세스
+    트리·숨김 프로세스·커널 모듈을 분석하고, ⑤ 메모리 포렌식 보고서로 종합한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + 메모리 분석을 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라에 휘발성 흔적을 심고, Blue 는 자기 인프라를 라이브 분석.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. Red 채점은 **대상 호스트의 런타임 흔적(포트·tmpfs
+    파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    메모리 상주 C2 포트 **54008**, tmpfs 은닉 파일 **`/dev/shm/.sa08`**(마커 `sa08`), 계정 **`soca08`**,
+    Suricata 룰 **sid 9608081**, Wazuh 룰 **id 102081**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [메모리 상주 C2] — 디스크에 안 남는 리스너
+
+      ### 상황
+      fileless 공격의 핵심은 "디스크에 안 남는다"이다. 너는 대상 호스트에 메모리 상주 C2 리스너 **포트 54008**
+      을 띄운다. 디스크 스캔으로는 잘 안 보이고, `/proc/net/tcp` 같은 **런타임** 분석으로만 보인다.
+
+      ### 할 일 (attacker-ext → 발판 후 호스트)
+      ```bash
+      nohup ncat -lk 54008 >/dev/null 2>&1 &    # 또는: nc -lk 54008 / python3 -m http.server 54008
+      ```
+
+      ### 채점 방법
+      대상 호스트에 포트 54008 이 listening 인지로 채점.
+
+      ### 합격 기준
+      대상 호스트에서 포트 54008 이 listening 이다.
+    hint: "메모리 상주 C2 리스너 포트 54008. 채점: port_listening 54008. /proc/net/tcp 런타임 분석 표적."
+    verify:
+      type: "port_listening"
+      expect: "54008"
+      checks:
+        - { id: "red-1-1", type: "port_listening", target: "web", params: { port: 54008 } }
+      semantic:
+        intent: "메모리 상주 C2(T1059/T1571) — 디스크 미상주 리스너. /proc 런타임 분석의 표적."
+        success_criteria:
+          - "포트 54008 listening"
+          - "fileless/메모리 상주가 디스크 스캔을 회피하는 이유 서술"
+        acceptable_methods:
+          - "리스너로 54008 개방"
+        negative_signs:
+          - "포트 미개방"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [tmpfs 은닉] — 메모리 기반 파일시스템에 숨기기
+
+      ### 상황
+      `/dev/shm` 은 **메모리 기반(tmpfs)** 이라 재부팅 시 사라지고 디스크 포렌식에서 누락되기 쉽다. 너는 여기에
+      은닉 파일 **`/dev/shm/.sa08`**(마커 `sa08`)을 만들고 보조 계정 `soca08` 을 생성한다.
+
+      ### 할 일
+      ```bash
+      printf 'sa08 in-memory artifact' > /dev/shm/.sa08
+      sudo useradd -m -s /bin/bash soca08
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/dev/shm/.sa08` 이 있거나 `/etc/passwd` 에 `soca08` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/dev/shm/.sa08`(마커 `sa08`)이 존재하거나 `/etc/passwd` 에 `soca08` 이 있다.
+    hint: "tmpfs 은닉 /dev/shm/.sa08 (마커 sa08) + useradd soca08. 채점: file_contains /dev/shm/.sa08 sa08 + file_contains passwd soca08."
+    verify:
+      type: "file_contains"
+      expect: "sa08"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/dev/shm/.sa08", pattern: "sa08" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca08" } }
+      semantic:
+        intent: "tmpfs 은닉(T1564) + 계정 지속성(T1136) — 메모리 기반 파일시스템 은닉. 디스크 포렌식 누락 회피."
+        success_criteria:
+          - "/dev/shm/.sa08(마커 sa08) 또는 계정 soca08"
+          - "tmpfs 은닉이 디스크 포렌식을 회피하는 이유 서술"
+        acceptable_methods:
+          - "/dev/shm 파일 작성 + useradd"
+        negative_signs:
+          - "흔적 미생성 / 마커 누락"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [의심 연결 → Wazuh 룰] — 비정상 리스너/계정 탐지 (id 102081)
+
+      ### 상황
+      메모리 위협도 흔적은 남긴다 — 비정상 포트 listening, 새 계정. 이를 탐지하는 Wazuh 룰(**id 102081**)을 만든다.
+
+      ### 할 일
+      `/var/ossec/etc/rules/local_rules.xml` 에 추가 후 재시작:
+      ```xml
+      <group name="edu,memory,">
+        <rule id="102081" level="12">
+          <if_group>edu</if_group>
+          <match>soca08</match>
+          <description>SOCADV-W08 - suspicious account / in-memory artifact indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102081 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 비정상 계정/메모리 지표를 보는 id 102081 룰이 존재한다.
+    hint: "비정상 계정/메모리 지표 Wazuh 룰(id 102081) → restart. 채점: file_contains local_rules.xml 102081."
+    verify:
+      type: "file_contains"
+      expect: "102081"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102081" } }
+      semantic:
+        intent: "메모리 위협 호스트 탐지 — 비정상 계정/지표 Wazuh 룰. 휘발성 위협도 남기는 흔적을 포착."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102081"
+          - "비정상 계정/메모리 지표 탐지 로직"
+          - "휘발성 위협도 어떤 흔적을 남기는지 서술"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: ips
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [C2 포트 → Suricata 룰] — 메모리 상주 채널 네트워크 탐지 (sid 9608081)
+
+      ### 상황
+      메모리 상주 C2 도 결국 **네트워크로 통신**한다. RED-1 의 C2 포트(54008) 트래픽을 잡는 Suricata 룰(**sid 9608081**)을 만든다.
+
+      ### 할 일
+      ```
+      alert tcp any any -> any 54008 (msg:"SOCADV-W08 in-memory C2 port 54008"; flow:to_server; sid:9608081; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9608081 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 C2 포트(54008)를 보는 sid 9608081 룰이 존재한다.
+    hint: "메모리 C2 포트 Suricata 룰(sid 9608081, port 54008) → reload. 채점: file_contains local.rules 9608081."
+    verify:
+      type: "file_contains"
+      expect: "9608081"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9608081" } }
+      semantic:
+        intent: "메모리 C2 네트워크 탐지 — 디스크엔 안 보여도 통신은 잡힌다. 휘발성 위협의 네트워크 측면 포착."
+        success_criteria:
+          - "local.rules 에 sid 9608081 (port 54008)"
+          - "메모리 위협도 네트워크로는 보인다는 점 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "포트 불일치 / 문법 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [/proc 라이브 헌팅] — 휘발성 흔적 발견 후 제거
+
+      ### 상황
+      `/proc` 로 라이브 메모리 분석을 수행한다. RED 의 메모리 상주 리스너(54008)와 tmpfs 은닉 파일
+      (`/dev/shm/.sa08`)을 찾아 격리·제거한다.
+
+      ### 할 일
+      ```bash
+      sudo ss -tlnp | grep 54008                 # /proc/net/tcp 기반 리스너
+      ls -al /dev/shm/ ; cat /dev/shm/.sa08 2>/dev/null   # tmpfs 은닉
+      # 숨김 프로세스 점검: /proc 직접 열거 vs ps 비교
+      ls /proc | grep -E '^[0-9]+$' | wc -l ; ps -e --no-headers | wc -l
+      ```
+      발견 후 보고서에 "발견 → 격리 → 제거 → 복구" 로 적는다.
+
+      ### 채점 방법
+      대상 호스트에서 메모리 상주 리스너(54008) 또는 tmpfs 파일(`/dev/shm/.sa08`)이 헌팅되는지로 채점(발견이 핵심).
+
+      ### 합격 기준
+      포트 54008 listening 또는 `/dev/shm/.sa08` 존재를 식별한다(식별 후 제거 보고).
+    hint: "ss -tlnp 54008 + /dev/shm 점검 + /proc vs ps 비교 헌팅 → 제거. 채점: port_listening 54008 + file_contains /dev/shm/.sa08 sa08(발견 핵심)."
+    verify:
+      type: "port_listening"
+      expect: "54008"
+      checks:
+        - { id: "blue-3-1", type: "port_listening", target: "web", params: { port: 54008 } }
+        - { id: "blue-3-2", type: "file_contains", target: "web",
+            params: { path: "/dev/shm/.sa08", pattern: "sa08" } }
+      semantic:
+        intent: "라이브 메모리 헌팅 — /proc/net/tcp·/dev/shm·/proc vs ps 비교로 휘발성 흔적 발견 + 제거. 발견과 전수조사 핵심(도구 비요구)."
+        success_criteria:
+          - "메모리 상주 리스너(54008) 또는 tmpfs 파일 식별"
+          - "/proc 직접 열거 vs ps 비교 등 숨김 프로세스 헌팅 가설 제시"
+          - "발견→격리→제거→복구(음성 결과 포함)"
+        acceptable_methods:
+          - "ss/proc/dev/shm 점검으로 발견 — 도구보다 발견·전수조사 핵심"
+        negative_signs:
+          - "휘발성 흔적 누락 / 가설 없음"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [심화 분석] — 프로세스 트리·숨김 프로세스·커널 모듈
+
+      ### 상황
+      메모리 포렌식의 핵심 기법을 적용한다. 비정상 부모-자식(웹서버가 셸 스폰), 숨김 프로세스(`/proc` vs `ps`),
+      의심 커널 모듈, bash history 의심 명령을 분석한다.
+
+      ### 할 일
+      보고서에:
+      - 프로세스 트리 이상(예: apache→bash→nc) 점검 결과
+      - 숨김 프로세스 점검(`/proc` 직접 열거 vs `ps`) + 커널 모듈(`lsmod`) 이상
+      - bash history 의심 명령(wget/curl/nc/base64/chmod +x) 필터
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 프로세스 트리/숨김 프로세스/커널 모듈 분석으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 프로세스 트리·숨김 프로세스·커널 모듈 분석은 제출로 검증).
+    hint: "프로세스 트리(apache→shell) + 숨김 프로세스(/proc vs ps) + 커널 모듈(lsmod) + bash history 의심 명령 분석. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "메모리 심화 분석 — 프로세스 트리/숨김 프로세스/커널 모듈/bash history. 분석형 — 구체 기법·관측 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "프로세스 트리 이상 + 숨김 프로세스(/proc vs ps) 점검"
+          - "커널 모듈/ bash history 의심 명령 분석"
+        acceptable_methods:
+          - "/proc 분석 + ps/lsmod/history 비교"
+        negative_signs:
+          - "기법 나열만 / 관측 없음"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — 메모리 포렌식 보고서 + 위생
+
+      ### 상황
+      메모리 포렌식의 산출물이다. 수집 절차(휘발성 우선순위: 메모리→연결→디스크), 분석 결과, 발견 의심 활동,
+      타임라인, 권고를 보고서로 종합하고, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 보고서(휘발성 수집 순서 + 분석 결과 + 타임라인 + 권고)
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo pkill -f 'ncat -lk 54008' 2>/dev/null; sudo rm -f /dev/shm/.sa08; sudo userdel -r soca08 2>/dev/null
+      sudo sed -i '/9608081/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102081 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 보고서/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 메모리 포렌식 보고서·회고·cleanup 은 제출로 검증).
+    hint: "휘발성 수집 순서 + 분석 결과 + 타임라인 + 권고 보고서 + R/B/P 회고 + 54008/dev.shm/soca08/9608081/102081 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "메모리 포렌식 종합 — 휘발성 수집 순서 + 분석 결과 + 타임라인 + 권고 + R/B/P 회고 + cleanup. 메모리 포렌식 보고서."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "휘발성 수집 우선순위 + 분석 결과 + 타임라인 + 권고"
+          - "R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "보고서 + 회고 + cleanup"
+        negative_signs:
+          - "수집 순서/타임라인 누락 / cleanup 미완"

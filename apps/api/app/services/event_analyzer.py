@@ -508,6 +508,15 @@ Grading rules (fairness is critical — a single unfair point is a big problem):
   state created by someone else (e.g., a log/alert produced by the attacker, not by the student's own
   analysis/defense). The student must have performed the action themselves (verify via command_ran for
   insider actions, or via correlated target-side trace for external attacks).
+- ATTRIBUTION via UNIQUE MARKER (blue rule/config CREATION missions): when the mission prescribes a
+  MISSION-SPECIFIC unique marker — a Suricata `sid`, Wazuh rule `id`, auditd key, WAF rule id, or a
+  named account/port (e.g. sid:9601011, rule id 102011, account soca01, port 54001) — and inspection
+  confirms that EXACT marker is present in the target file/config matching the mission spec, that
+  presence is BY ITSELF sufficient proof of the student's action. Such a scenario-specific marker
+  cannot plausibly be "ambient" (no one else would create that exact id). Do NOT require command_ran or
+  FIM for these (host/console/GUI edits frequently leave no shell trace, and FIM may not watch every
+  config dir). Award full/near-full for a correct, spec-matching artifact; reserve deductions only for a
+  wrong/missing marker, a syntax error, or functional duplication with a built-in rule.
 - EXCEPTION for DEFENSIVE OBSERVATION/ANALYSIS missions (blue team READS logs/alerts/SIEM, often via a
   GUI console → NO shell-command trace exists; do NOT require command_ran here): the student's action is
   to FIND and INTERPRET evidence. Valid proof = (a) the claimed evidence genuinely EXISTS (confirm by
@@ -582,10 +591,44 @@ def _extract_json_obj(text: str) -> dict:
     t = text.strip()
     if t.startswith("```"):
         t = t.split("\n", 1)[1].rsplit("```", 1)[0] if "\n" in t else t
-    i, j = t.find("{"), t.rfind("}")
-    if i == -1 or j == -1:
+    i = t.find("{")
+    if i == -1:
         raise ValueError("no json")
-    return json.loads(t[i:j + 1])
+    j = t.rfind("}")
+    if j != -1:
+        try:
+            return json.loads(t[i:j + 1])
+        except Exception:
+            pass
+    # 잘린 JSON 복구 — 미완 문자열/배열/객체를 닫아 마지막 유효 객체를 회수
+    # (claude 출력이 길어 잘리면 정상 판정이 0점 처리되던 것 방지).
+    return json.loads(_repair_truncated_json(t[i:]))
+
+
+def _repair_truncated_json(s: str) -> str:
+    """여는 괄호/문자열이 미완인 잘린 JSON 문자열을 닫아 파싱 가능하게 복구."""
+    stack: list[str] = []
+    in_str = esc = False
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch in "}]" and stack:
+            stack.pop()
+    out = s + ('"' if in_str else "")
+    out = re.sub(r"[,:]\s*$", "", out.rstrip())   # 트레일링 콤마/콜론 제거
+    for ch in reversed(stack):
+        out += "}" if ch == "{" else "]"
+    return out
 
 
 async def grade(
@@ -673,11 +716,18 @@ async def grade(
         try:
             v = _extract_json_obj(text)
         except Exception:
+            # 최종 라운드 파싱 실패 → 1회 재시도(잘린/깨진 JSON 회복; 정상 제출이 0점 되는 것 방지).
             if final:
-                return AnalysisResult(
-                    reasoning=f"_AI 응답 파싱 실패 — 강사 검토 필요._\n\n```\n{text[:400]}\n```",
-                    model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
-            continue
+                text2, cost2 = await _call(p)
+                total_cost += cost2
+                try:
+                    v = _extract_json_obj(text2 or "")
+                except Exception:
+                    return AnalysisResult(
+                        reasoning=f"_AI 응답 파싱 실패(재시도 후) — 강사 검토 필요._\n\n```\n{(text or '')[:400]}\n```",
+                        model="needs-review", verdict="review", awarded_points=None, cost_usd=total_cost)
+            else:
+                continue
 
         # AI 가 인프라 직접 점검을 요청 (마지막 라운드 전까지만)
         req = v.get("inspect")

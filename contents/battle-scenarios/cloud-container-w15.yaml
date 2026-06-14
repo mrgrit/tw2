@@ -1,0 +1,176 @@
+id: "cloud-container-w15"
+category: "cloud-container"
+title: "[클라우드/컨테이너 W15] 종합 평가 — 클라우드·컨테이너 풀체인 vs 통합 방어(수료)"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  클라우드/컨테이너 보안 **수료 시험**. 1~14주(가상화/AWS/컨테이너/Docker/K8s/IAM/네트워크/스토리지/서버리스/
+  CI-CD/IaC/모니터링/IR/컴플라이언스)를 하나의 사건에 통합한다. 공격자가 클라우드·컨테이너 풀체인으로 침투하고,
+  점검자(너)는 통합 방어와 종합 보안 평가를 수행한다.
+
+  ▸ 이야기: 공격자가 메타데이터→컨테이너 탈출→측면이동 풀체인(태그 `cc15r1`)으로 침투하고 종합 산출물
+    (`/tmp/.cc15final`)과 계정 `cca15` 를 남긴다. 점검자는 ① 통합 탐지, ② 통합 Wazuh 룰, ③ 종합 보안 평가·R/B/P·cleanup 으로 수료한다.
+
+  ▸ 모드: solo/duel. 공격자=attacker-ext(2203), Red 채점=대상 흔적(WAF audit 태그/산출물·계정).
+  ▸ 마커: 태그 **`cc15r1-<본인id>`**, 종합 산출물 **`/tmp/.cc15final`**(마커 `cc15`), 계정 **`cca15`**,
+    Suricata **sid 9015011**, Wazuh **id 106151**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [풀체인 침투] — 메타데이터→컨테이너→측면이동
+
+      ### 할 일 (attacker-ext)
+      ```bash
+      curl -s -H "Host: dvwa.6v6.lab" "http://<대상_공개IP>/?url=http://169.254.169.254/cc15r1-kim"
+      curl -s -A "cc15r1-kim" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/exec/?ip=127.0.0.1;ls%20/var/run/docker.sock%23cc15r1-kim&Submit=Submit"
+      ```
+      ### 채점 방법 / 합격 기준
+      대상 WAF audit 에 태그 `cc15r1` 흔적 시 인정.
+    hint: "태그(cc15r1) 메타데이터+컨테이너 탈출 풀체인 → 대상 modsec audit. 채점: log_contains modsec cc15r1."
+    verify:
+      type: "log_contains"
+      expect: "cc15r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "cc15r1", since_sec: 1800 } }
+      semantic:
+        intent: "클라우드·컨테이너 풀체인(T1552→T1611→T1021) — 메타데이터→탈출→이동. 태그(cc15r1) 귀속."
+        success_criteria: ["대상 WAF audit 에 cc15r1 태그", "풀체인 단계 서술"]
+        acceptable_methods: ["attacker-ext 에서 태그 단 풀체인"]
+        negative_signs: ["태그 누락 / 대상 미도달"]
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [종합 산출물] — 풀체인 결과 + 계정
+
+      ### 할 일
+      ```bash
+      printf 'cc15 full chain: IAM key + container escape + lateral + exfil — assessment' > /tmp/.cc15final
+      sudo useradd -m -s /bin/bash cca15
+      ```
+      ### 채점 방법 / 합격 기준
+      `/tmp/.cc15final`(마커 `cc15`) 또는 `cca15` 존재 시 인정.
+    hint: "종합 산출물 /tmp/.cc15final (마커 cc15) + useradd cca15. 채점: file_contains final cc15 + file_contains passwd cca15."
+    verify:
+      type: "file_contains"
+      expect: "cc15"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.cc15final", pattern: "cc15" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "cca15" } }
+      semantic:
+        intent: "풀체인 결과(T1611/T1530) + 계정(T1136) — 종합 침해 인벤토리."
+        success_criteria: ["/tmp/.cc15final(마커 cc15) 또는 계정 cca15", "풀체인 결과 서술"]
+        acceptable_methods: ["산출물 파일 + useradd"]
+        negative_signs: ["흔적 미생성"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [통합 탐지] — Suricata 룰 (sid 9015011)
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"CLOUD-W15 cloud/container full-chain attack"; flow:to_server; http.uri; content:"169.254.169.254"; nocase; sid:9015011; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+      ### 채점 방법 / 합격 기준
+      ips 의 `local.rules` 에 sid 9015011 룰 존재 시 인정.
+    hint: "통합 탐지 Suricata 룰(sid 9015011) → reload. 채점: file_contains local.rules 9015011."
+    verify:
+      type: "file_contains"
+      expect: "9015011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9015011" } }
+      semantic:
+        intent: "통합 탐지(네트워크) — 풀체인 진입(메타데이터) Suricata 룰."
+        success_criteria: ["local.rules 에 sid 9015011", "풀체인 탐지 의의"]
+        acceptable_methods: ["Suricata 룰 작성 + reload"]
+        negative_signs: ["패턴 부정확 / 문법 오류"]
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 [통합 탐지] — Wazuh 룰 (id 106151)
+
+      ### 할 일
+      ```xml
+      <group name="edu,cloud,container,">
+        <rule id="106151" level="14">
+          <if_group>edu</if_group>
+          <match>cca15</match>
+          <description>CLOUD-W15 - cloud/container full-chain findings / account</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      `local_rules.xml` 에 id 106151 룰 존재 시 인정.
+    hint: "통합 Wazuh 룰(id 106151, level 14) → restart. 채점: file_contains local_rules.xml 106151."
+    verify:
+      type: "file_contains"
+      expect: "106151"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "106151" } }
+      semantic:
+        intent: "통합 탐지(호스트) — 풀체인 결과/계정 Wazuh 룰."
+        success_criteria: ["local_rules.xml 에 rule id 106151", "통합 탐지 로직"]
+        acceptable_methods: ["Wazuh 룰 작성 + restart"]
+        negative_signs: ["탐지 로직 부실 / XML 오류"]
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [수료] — 종합 보안 평가·R/B/P·Cleanup
+
+      ### 상황
+      클라우드/컨테이너 보안 수료 산출물이다. 전 영역(IAM/네트워크/스토리지/런타임/CI-CD/IaC/컴플라이언스)을
+      종합 평가하고 **클라우드 보안 평가 보고서**를 작성한 뒤, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 종합 보안 평가 보고서(영역별 위험/우선순위 권고/풀체인 방어) + R/B/P 회고
+      - cleanup:
+      ```bash
+      sudo rm -f /tmp/.cc15final; sudo userdel -r cca15 2>/dev/null
+      sudo sed -i '/9015011/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 106151 블록 제거 후 wazuh-control restart
+      ```
+      ### 채점 방법 / 합격 기준
+      본인 SIEM 에 최근 경보 + 제출한 종합 평가·R/B/P·cleanup 으로 인정.
+    hint: "클라우드/컨테이너 종합 보안 평가(영역별 위험/권고/풀체인 방어) + R/B/P + cc15/cca15/9015011/106151 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "클라우드/컨테이너 종합 평가(수료) — 영역별 위험/권고 + 풀체인 방어 + R/B/P + cleanup. 15주 매듭."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "영역별(IAM/네트워크/스토리지/런타임/CI-CD/IaC) 위험 + 우선순위 권고 + 풀체인 방어"
+          - "R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods: ["종합 평가 보고서 + 회고 + cleanup"]
+        negative_signs: ["영역 평가 누락 / cleanup 미완"]

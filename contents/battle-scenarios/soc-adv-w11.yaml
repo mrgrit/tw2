@@ -1,0 +1,315 @@
+id: "soc-adv-w11"
+category: "soc-adv"
+title: "[SOC고급 W11] 인시던트 대응 — 침해 발생 vs NIST IR 전주기 대응"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  SOC 고급과정 11주차 — **인시던트 대응(IR)**. 실제 침해가 터졌을 때 **NIST SP 800-61 4단계**(준비 → 탐지/분석
+  → 격리/근절/복구 → 사후활동)로 침착하게 대응한다. 이번 공방전에서 공격자는 SQLi 로 침해하고 발판을 남기며,
+  관제팀(너)은 트리아지부터 격리·근절·복구·교훈까지 IR 전 주기를 수행한다.
+
+  ▸ 이야기
+    공격자가 태그 `sa11r1` 를 단 SQLi 로 침투하고 백도어 계정 `soca11` 을 남긴다. 관제팀은 ① 격리(공격
+    패턴 Suricata 탐지/차단), ② 근절(WAF 차단 룰로 취약점 봉쇄), ③ 발판 제거 검증, ④ 범위 파악·타임라인·
+    커뮤니케이션, ⑤ 종합 보고·교훈·규정 준수로 마무리한다.
+
+  ▸ 모드
+    • solo : 공격(자기 인프라 표적) + IR 을 한 학생이. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라를 침해, Blue 는 자기 인프라에서 IR.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 외부 침입자 기준. Red 채점은 **대상 인프라의 흔적(WAF audit / 계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    공격 태그 **`sa11r1-<본인id>`**, 백도어 계정 **`soca11`**, Suricata 격리룰 **sid 9611111**,
+    WAF 근절룰(ModSecurity) **id 9611201**, Wazuh 룰 **id 102111**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-1 [침해: SQLi] — 인시던트를 발생시키는 침투
+
+      ### 상황
+      너는 태그 `sa11r1-<본인id>` 를 단 UNION SQLi 로 침투해 인시던트를 발생시킨다. 이 탐지가 관제팀의 트리아지·
+      범위 파악의 출발점이 된다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      curl -s -A "sqlmap/1.7" -H "Host: dvwa.6v6.lab" \
+        "http://<대상_공개IP>/vulnerabilities/sqli/?id=sa11r1-kim%27%20UNION%20SELECT%20user,password%20FROM%20users--+&Submit=Submit"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `sa11r1` 가 포함된 SQLi 탐지가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `sa11r1` 태그가 포함된 SQLi 탐지가 남는다.
+    hint: "태그(sa11r1) UNION SQLi → 대상 modsec audit. 채점: log_contains modsec sa11r1. IR 트리아지 출발점."
+    verify:
+      type: "log_contains"
+      expect: "sa11r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "sa11r1", since_sec: 1800 } }
+      semantic:
+        intent: "침해 발생(T1190 SQLi) — IR 의 탐지/분석 단계 입력. 대상 WAF audit, 태그(sa11r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 sa11r1 태그가 포함된 SQLi 탐지"
+          - "공격 시점/페이로드를 보고서에 서술(트리아지 근거)"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 SQLi"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 17
+    instruction: |
+      ## 🎯 RED-2 [발판: 백도어 계정] — 근절 단계가 제거해야 할 흔적
+
+      ### 상황
+      침투 후 너는 백도어 계정 **`soca11`** 을 만들어 지속성을 확보한다. 관제팀의 근절(eradication) 단계가 이걸
+      찾아 제거해야 완전한 대응이 된다.
+
+      ### 할 일
+      ```bash
+      sudo useradd -m -s /bin/bash soca11
+      ```
+
+      ### 채점 방법
+      대상 호스트의 `/etc/passwd` 에 `soca11` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/etc/passwd` 에 `soca11` 계정이 있다.
+    hint: "useradd soca11. 채점: file_contains passwd soca11. IR 근절 단계 대상."
+    verify:
+      type: "file_contains"
+      expect: "soca11"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca11" } }
+      semantic:
+        intent: "지속성(T1136) — 백도어 계정. IR 근절 단계가 제거해야 할 발판."
+        success_criteria:
+          - "계정 soca11 생성"
+          - "지속성 메커니즘과 의도 서술"
+        acceptable_methods:
+          - "useradd soca11"
+        negative_signs:
+          - "계정 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 16
+    instruction: |
+      ## 🛡️ BLUE-1 [격리: 탐지·차단] — 공격 패턴 Suricata 룰 (sid 9611111)
+
+      ### 상황
+      IR 의 격리(Containment)는 "더 못 들어오게" 막는 것이다. RED-1 의 SQLi 패턴을 탐지하는 Suricata 룰
+      (**sid 9611111**)을 배포해 동일 공격을 즉시 가시화·차단 신호로 삼는다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"SOCADV-W11 IR containment SQLi UNION"; flow:to_server; http.uri; content:"UNION"; nocase; content:"SELECT"; nocase; sid:9611111; rev:1;)
+      ```
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9611111 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 SQLi 패턴을 보는 sid 9611111 룰이 존재한다.
+    hint: "격리 단계 → SQLi 탐지 Suricata 룰(sid 9611111, UNION SELECT) → reload. 채점: file_contains local.rules 9611111."
+    verify:
+      type: "file_contains"
+      expect: "9611111"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9611111" } }
+      semantic:
+        intent: "IR 격리 — 공격 패턴 Suricata 탐지로 가시화/차단 신호. 추가 침입 억제."
+        success_criteria:
+          - "local.rules 에 sid 9611111 (UNION SELECT)"
+          - "격리 단계의 목적(추가 침입 억제) 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-2 [근절: WAF 차단 룰] — 취약점 봉쇄 (ModSecurity id 9611201)
+
+      ### 상황
+      근절(Eradication)은 근본 원인을 막는 것이다. SQLi 가 통하지 않도록 WAF(ModSecurity) 커스텀 차단 룰
+      (**id 9611201**)을 추가한다. (`zzz-` 접두로 modsecurity.conf 뒤·CRS 앞에 로드.)
+
+      ### 할 일
+      ```bash
+      sudo tee -a /etc/modsecurity/zzz-edu-custom.conf >/dev/null <<'CONF'
+      SecRule ARGS "@rx (?i:union\s+select)" "id:9611201,phase:2,deny,status:403,log,msg:'SOCADV-W11 IR eradication block SQLi'"
+      CONF
+      sudo apache2ctl configtest && sudo apache2ctl graceful
+      ```
+
+      ### 채점 방법
+      web 의 `/etc/modsecurity/zzz-edu-custom.conf` 에 id 9611201 룰이 있는지로 확인.
+
+      ### 합격 기준
+      WAF 커스텀 설정에 SQLi 를 deny 하는 id 9611201 룰이 존재한다.
+    hint: "근절 단계 → ModSecurity 차단 룰(id 9611201, deny UNION SELECT) → configtest+graceful. 채점: file_contains /etc/modsecurity/zzz-edu-custom.conf 9611201."
+    verify:
+      type: "file_contains"
+      expect: "9611201"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "web",
+            params: { path: "/etc/modsecurity/zzz-edu-custom.conf", pattern: "9611201" } }
+      semantic:
+        intent: "IR 근절 — WAF 차단 룰로 SQLi 취약점 봉쇄(근본 원인 차단). deny 액션으로 재공격 차단."
+        success_criteria:
+          - "zzz-edu-custom.conf 에 id 9611201 (deny)"
+          - "configtest 로 검증 후 graceful 반영 서술"
+          - "근절이 격리와 어떻게 다른지(근본 원인) 서술"
+        acceptable_methods:
+          - "ModSecurity 룰 작성 + configtest + graceful"
+        negative_signs:
+          - "deny 아님 / 문법 오류로 미로딩"
+
+  - order: 3
+    assess_target: self
+    target_vm: web
+    points: 15
+    instruction: |
+      ## 🛡️ BLUE-3 [근절 검증: 발판 제거] — 백도어 계정 헌팅·제거
+
+      ### 상황
+      근절은 취약점만이 아니라 **공격자가 남긴 발판**까지 제거해야 한다. RED-2 의 백도어 계정 `soca11` 을 찾아 제거한다.
+
+      ### 할 일
+      ```bash
+      sudo getent passwd | grep soca11
+      # 식별 후 제거: sudo userdel -r soca11
+      ```
+      보고서에 "발견 → 격리 → 제거 → 복구(서비스 정상화/모니터링 강화)" 로 적는다.
+
+      ### 채점 방법
+      대상 호스트의 `/etc/passwd` 에서 `soca11` 발판이 헌팅되는지로 채점(발견이 핵심).
+
+      ### 합격 기준
+      `/etc/passwd` 에서 `soca11` 을 식별한다(식별 후 제거 보고).
+    hint: "getent passwd soca11 헌팅 → 제거 + 복구. 채점: file_contains passwd soca11(발견 핵심)."
+    verify:
+      type: "file_contains"
+      expect: "soca11"
+      checks:
+        - { id: "blue-3-1", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "soca11" } }
+      semantic:
+        intent: "IR 근절·복구 — 백도어 발판(soca11) 식별·제거 + 복구(정상화/모니터링 강화). 전수 조사 핵심."
+        success_criteria:
+          - "백도어 계정 soca11 식별"
+          - "발견→제거→복구 단계 적용(음성 결과 포함)"
+          - "복구 시 모니터링 강화 방안"
+        acceptable_methods:
+          - "getent/grep 으로 발견 + userdel + 복구"
+        negative_signs:
+          - "발판 잔존 / 복구 누락"
+
+  - order: 4
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-4 [범위·타임라인·소통] — 분석 단계 종합
+
+      ### 상황
+      IR 탐지/분석의 핵심이다. 공격 **범위**(영향 시스템·유출 가능 데이터), 시간순 **타임라인**, 내부/외부
+      **커뮤니케이션** 계획을 작성한다.
+
+      ### 할 일
+      보고서에:
+      - 범위: 웹/DB/네트워크 로그로 시작 시점·영향 시스템·유출 가능 데이터 조사
+      - 타임라인: 공격(SQLi→계정 생성) + 대응(격리→근절→복구) 시간순
+      - 커뮤니케이션: 내부(경영진/IT/법무) + 외부(고객/규제기관) 전략
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 범위/타임라인/커뮤니케이션으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 범위·타임라인·커뮤니케이션은 제출로 검증).
+    hint: "공격 범위(영향/유출) + 시간순 타임라인(공격+대응) + 내부/외부 커뮤니케이션 계획. 실증 증거 인용. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-4-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "IR 분석 — 범위 파악 + 타임라인 + 커뮤니케이션. 분석형 — 실재 증거 인용 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "공격 범위(영향 시스템/유출 가능 데이터)"
+          - "시간순 타임라인(공격+대응) + 내부/외부 커뮤니케이션"
+        acceptable_methods:
+          - "로그 분석 + 타임라인 + 커뮤니케이션 표"
+        negative_signs:
+          - "범위/타임라인 누락"
+
+  - order: 5
+    assess_target: self
+    target_vm: siem
+    points: 19
+    instruction: |
+      ## 🛡️ BLUE-5 [종합·Cleanup] — IR 보고서 + 교훈 + 규정 준수 + 위생
+
+      ### 상황
+      IR 의 사후활동이다. 경영진 요약·인시던트 상세·타임라인·영향 분석·**교훈(Lessons Learned)**·**규정 준수**
+      (개인정보보호법/GDPR 신고 의무·기한)를 보고서로 종합하고, R/B/P 회고 후 아티팩트를 **일괄 cleanup** 한다.
+
+      ### 할 일
+      - 종합 IR 보고서 + 교훈(기술/프로세스/인력) + 규정 준수(신고 의무/기한/대상)
+      - R/B/P 회고 + cleanup:
+      ```bash
+      sudo userdel -r soca11 2>/dev/null
+      sudo sed -i '/9611201/d' /etc/modsecurity/zzz-edu-custom.conf && sudo apache2ctl graceful
+      sudo sed -i '/9611111/d' /etc/suricata/rules/local.rules && sudo suricatasc -c reload-rules
+      # local_rules.xml 에서 102111 블록 제거 후 wazuh-control restart
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 IR 보고서/교훈/규정준수/회고/cleanup 으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ IR 보고서·교훈·규정준수·회고·cleanup 은 제출로 검증).
+    hint: "경영진 요약+상세+타임라인+영향+교훈+규정준수(신고 의무/기한) IR 보고서 + R/B/P 회고 + 9611111/9611201/soca11/102111 일괄 cleanup. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-5-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "IR 사후활동 — 종합 보고서 + 교훈 + 규정 준수 + R/B/P 회고 + cleanup. NIST IR 4단계 완성."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "경영진 요약+타임라인+영향+교훈(기술/프로세스/인력)+규정 준수"
+          - "R/B/P 회고 + 아티팩트 일괄 cleanup"
+        acceptable_methods:
+          - "IR 보고서 + 교훈 + 규정 + 회고 + cleanup"
+        negative_signs:
+          - "교훈/규정준수 누락 / cleanup 미완"

