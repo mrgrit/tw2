@@ -111,8 +111,24 @@ def host_exec(ip, cmd, sudo=None, timeout=120):
     return rc, out, err
 
 def docker_exec(ip, container, cmd, timeout=120):
-    """6v6-<container> 안에서 명령 실행."""
+    """el34-<container> 안에서 명령 실행."""
     return host_exec(ip, f"docker exec {container} sh -lc {json.dumps(cmd)}", timeout=timeout)
+
+# el34 외부 공격자 VM (출처 IP .202 가 IPS/WAF/SIEM 에 보존됨)
+ATT_IP = os.environ.get("VH_ATT_IP", "192.168.0.202")
+ATT_USER = os.environ.get("VH_ATT_USER", "att")
+ATT_PASS = os.environ.get("VH_ATT_PASS", "1")
+_ATT_SSH = {}
+def attacker_exec(cmd, timeout=120):
+    """외부 공격자 VM(.202)에서 명령 실행 — 진짜 외부 출처 IP 로 el34(.161) 공격."""
+    if "att" not in _ATT_SSH:
+        cli = paramiko.SSHClient(); cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        cli.connect(ATT_IP, username=ATT_USER, password=ATT_PASS, timeout=10,
+                    banner_timeout=10, auth_timeout=10)
+        _ATT_SSH["att"] = cli
+    i, o, e = _ATT_SSH["att"].exec_command(f"bash -lc {json.dumps(cmd)}", timeout=timeout)
+    out = o.read().decode(errors="replace"); err = e.read().decode(errors="replace")
+    return o.channel.recv_exit_status(), out, err
 
 # ---------------- 배틀 lifecycle ----------------
 def create_solo(scenario_id, user_email, infra_id, monitor="claude", target_apps=None, cohort_id=None):

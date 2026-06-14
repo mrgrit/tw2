@@ -11,7 +11,9 @@ import sys, re, time, argparse, sqlite3
 sys.path.insert(0, "scripts"); import vh
 import yaml, os.path as osp, glob
 
-CN = {"web": "6v6-web", "ips": "6v6-ips", "siem": "6v6-siem", "attacker": "6v6-attacker"}
+CN = {"web": "el34-web", "ips": "el34-ips", "siem": "el34-siem", "attacker": "el34-attacker"}
+EL34_HOST = "192.168.0.151"      # el34 단일 머신(ssh ccc/1, docker exec el34-*)
+WEB_ENTRY = "192.168.0.161"      # 외부 웹 진입(.202 공격자가 여기로) — 출처 IP 보존
 LEDGER = ".data/verify_ledger.sqlite3"
 
 def load_yaml(sid):
@@ -73,9 +75,10 @@ def plant_red(host, m, suf, P):
     did, cite = [], []
     blocks = fenced(m.get("instruction",""))
     text = "\n".join(blocks)
-    # substitute placeholders
+    # substitute placeholders — el34: 외부공격자(.202)가 웹 진입 .161 로 공격(출처 IP 보존)
     def sub(c):
-        c = c.replace("<대상_공개IP>","10.20.30.1").replace("<본인id>",suf)
+        c = c.replace("<대상_공개IP>",WEB_ENTRY).replace("<본인id>",suf)
+        c = c.replace("10.20.30.1",WEB_ENTRY)   # 구 insider 게이트웨이 → el34 외부 진입
         c = re.sub(r"\bkim\b", suf, c)
         c = c.replace("sudo ","")
         return c
@@ -102,18 +105,18 @@ def plant_red(host, m, suf, P):
     for cc1 in curl_cmds:
         if "http" in cc1:
             for _ in range(reps):
-                run_in(host, "6v6-attacker", cc1 + " -o /dev/null -w '%{http_code}' 2>/dev/null || true")
+                vh.attacker_exec(cc1 + " -o /dev/null -w '%{http_code}' 2>/dev/null || true")  # 외부 VM .202 → .161
             did.append((f"x{reps} " if reps>1 else "") + cc1[:200])
-    # 2) host artifacts from checks
+    # 2) host artifacts from checks (el34 호스트 .151 docker exec)
     for c in checks_of(m,"red"):
-        t=c.get("type"); pr=c.get("params") or {}; tgt=CN.get(c.get("target"),"6v6-web")
+        t=c.get("type"); pr=c.get("params") or {}; tgt=CN.get(c.get("target"),"el34-web")
         path=str(pr.get("path","")); pat=pr.get("pattern")
         if t=="file_contains" and ("passwd" in path or "shadow" in path):
             acct=pat; run_in(host,tgt,f"useradd -m -s /bin/bash {acct} 2>/dev/null; id {acct}")
             P.accts.add((tgt,acct)); did.append(f"useradd {acct}"); cite.append(f"/etc/passwd 에 {acct}")
         elif t=="port_listening":
             port=pr.get("port")
-            # python3 http.server 로 확실히 리스너 개방(6v6-web 에 ncat/nc 없음). 백그라운드 유지(nohup).
+            # python3 http.server 로 확실히 리스너 개방(el34-web 에 ncat/nc 없음). 백그라운드 유지(nohup).
             run_in(host,tgt,f"setsid nohup python3 -m http.server {port} >/dev/null 2>&1 < /dev/null & sleep 1; (ss -tlnp 2>/dev/null||netstat -tlnp 2>/dev/null)|grep -c ':{port}'")
             P.ports.add((tgt,port)); did.append(f"listener :{port}"); cite.append(f"포트 {port} listening")
         elif t=="file_contains" and "cron" in path:
@@ -125,8 +128,8 @@ def plant_red(host, m, suf, P):
             write_file(host,tgt,path,content)
             P.files.add((tgt,path)); did.append(f"file {path}"); cite.append(f"{path}({marker})")
         elif t=="log_contains" and pr.get("log")=="modsec":
-            if not curl_cmds:  # synthesize a tagged hit
-                run_in(host,"6v6-attacker",f"curl -s -A '{pat}' -H 'Host: dvwa.6v6.lab' \"http://10.20.30.1/?probe={pat}\" -o /dev/null||true")
+            if not curl_cmds:  # synthesize a tagged hit — 외부 VM .202 → .161
+                vh.attacker_exec(f"curl -s -A '{pat}' -H 'Host: dvwa.6v6.lab' \"http://{WEB_ENTRY}/?probe={pat}\" -o /dev/null||true")
                 did.append(f"tagged curl {pat}")
             cite.append(f"WAF audit 태그 {pat}")
     what_i_did=" ; ".join(did)[:1500] or "처방 명령 수행"
@@ -140,43 +143,43 @@ def plant_blue(host, m, P):
     vtype=(m.get("verify") or {}).get("type")
     red_files = {p for _,p in P.files}   # RED 가 심은 파일(헌팅 미션이 찾을 대상)
     for c in checks_of(m,"blue"):
-        t=c.get("type"); pr=c.get("params") or {}; tgt=CN.get(c.get("target"),"6v6-siem")
+        t=c.get("type"); pr=c.get("params") or {}; tgt=CN.get(c.get("target"),"el34-siem")
         path=str(pr.get("path","")); pat=pr.get("pattern")
         is_file = t in ("file_contains","file_exists")
         if is_file and ("yara" in path.lower() or path.lower().endswith(".yar")):  # YARA 룰 파일(blue 작성)
-            ct=CN.get(c.get("target"),"6v6-siem")
+            ct=CN.get(c.get("target"),"el34-siem")
             append_file(host,ct,path,make_file_content(path,pat),pat)
             P.bluefiles.add((ct,path)); did.append(f"YARA {pat}"); cite.append(f"{osp.basename(path)} rule {pat}")
         elif is_file and "/lists/" in path:  # Wazuh CDB 리스트(key:value), XML 룰 아님
-            ct=CN.get(c.get("target"),"6v6-siem")
+            ct=CN.get(c.get("target"),"el34-siem")
             append_file(host,ct,path,f"{pat}:malicious",pat)
             P.bluefiles.add((ct,path)); did.append(f"CDB {pat}"); cite.append(f"{osp.basename(path)} IOC {pat}")
         elif is_file and "suricata" in path:  # suricata rule
             rule=next((l.strip() for l in text.splitlines() if l.strip().startswith("alert ") and (str(pat) in l)), None)
             if not rule:
                 rule=f'alert http any any -> any any (msg:"EDU rule {pat}"; flow:to_server; http.uri; content:"UNION"; nocase; sid:{pat}; rev:1;)'
-            append_file(host,"6v6-ips",path,rule,pat); run_in(host,"6v6-ips","suricatasc -c reload-rules 2>/dev/null; echo r")
+            append_file(host,"el34-ips",path,rule,pat); run_in(host,"el34-ips","suricatasc -c reload-rules 2>/dev/null; echo r")
             P.sids.add((path,pat)); did.append(f"suricata sid {pat}"); cite.append(f"local.rules sid {pat}")
         elif is_file and ("ossec" in path or "local_rules" in path):  # wazuh rule
             mblk=re.search(r"(<group[^>]*>.*?</group>)", text, re.S) or re.search(r"(<rule id=\""+str(pat)+r"\".*?</rule>)", text, re.S)
             block=mblk.group(1) if mblk else f'<group name="edu,"><rule id="{pat}" level="12"><if_group>edu</if_group><match>{pat}</match><description>EDU rule {pat}</description></rule></group>'
             block=" ".join(x.strip() for x in block.splitlines())
-            append_file(host,"6v6-siem",path,block,pat)
+            append_file(host,"el34-siem",path,block,pat)
             P.wids.add((path,pat)); did.append(f"wazuh rule {pat}"); cite.append(f"local_rules.xml id {pat}")
         elif is_file and "audit" in path:  # auditd
-            key=pat; at=CN.get(c.get("target"),"6v6-web")
+            key=pat; at=CN.get(c.get("target"),"el34-web")
             write_file(host,at,path,f"-w /etc/passwd -p wa -k {key}\n-w /etc/shadow -p wa -k {key}\n")
             run_in(host,at,f"(augenrules --load 2>/dev/null||auditctl -R {path} 2>/dev/null); grep -c '{key}' {path}")
             P.auditk.add((at,path)); did.append(f"auditd {key}"); cite.append(f"{path} key {key}")
         elif is_file and ("modsec" in path or "modsecurity" in path):  # WAF custom rule
-            wt=CN.get(c.get("target"),"6v6-web")
+            wt=CN.get(c.get("target"),"el34-web")
             ruleid=str(pat) if str(pat).isdigit() else "9100099"
             secrule=f'SecRule ARGS "@contains {pat}" "id:{ruleid},phase:2,pass,log,msg:EDU-{pat}"'
             append_file(host,wt,path,secrule,pat); run_in(host,wt,"apache2ctl graceful 2>/dev/null||true")
             P.bluefiles.add((wt,path)); did.append(f"WAF {pat}"); cite.append(f"{osp.basename(path)} {pat}")
         elif is_file and (path in red_files or "passwd" in path or "shadow" in path):
             # 헌팅: 실제 아티팩트를 읽어 검증가능 구체값(경로·크기·내용·계정행)을 보고에 인용(채점기 관찰형 인정).
-            ht=CN.get(c.get("target"),"6v6-web")
+            ht=CN.get(c.get("target"),"el34-web")
             rc,o,e=run_in(host,ht, f"ls -la {path} 2>/dev/null; head -c 80 {path} 2>/dev/null; getent passwd 2>/dev/null|grep -E '{pat}' || true")
             spec=" ".join((o or "").split())[:140]
             cite.append(f"{osp.basename(path) or path}({pat}) 발견 — {spec}")
@@ -191,7 +194,7 @@ def plant_blue(host, m, P):
             cite.append("Wazuh 에 Suricata IDS rule 86601(nmap) 다수 수집 확인")
     if vtype=="wazuh_alert" and not did:
         # 실제 SIEM 통계 조회 → 검증가능 구체수치 인용 (관찰형 채점은 구체성에 비례)
-        rc,o,e = run_in(host,"6v6-siem",
+        rc,o,e = run_in(host,"el34-siem",
             "tail -500 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -oE '\"id\":\"[0-9]+\"' | sort | uniq -c | sort -rn | head -5; "
             "echo LV; tail -500 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -oE '\"level\":[0-9]+' | sort | uniq -c | sort -rn | head -5")
         stats=" ".join((o or "").split())[:300]
@@ -220,12 +223,12 @@ def cleanup(host, P, blue_host=None):
     for tgt,port in P.ports: run_in(host,tgt,f"pkill -f ':{port}' 2>/dev/null; pkill -f 'http.server {port}' 2>/dev/null; pkill -f 'ncat -lk {port}' 2>/dev/null; echo x")
     for tgt,path in P.files: run_in(host,tgt,f"rm -f {path}; echo x")
     for tgt,path in P.crons: run_in(host,tgt,f"rm -f {path}; echo x")
-    for path,sid in P.sids: run_in(blue_host or host,"6v6-ips",f"sed -i '/{sid}/d' {path}; suricatasc -c reload-rules 2>/dev/null; echo x")
-    for path,wid in P.wids: run_in(blue_host or host,"6v6-siem",f"sed -i '/{wid}/d' {path}; echo x")
+    for path,sid in P.sids: run_in(blue_host or host,"el34-ips",f"sed -i '/{sid}/d' {path}; suricatasc -c reload-rules 2>/dev/null; echo x")
+    for path,wid in P.wids: run_in(blue_host or host,"el34-siem",f"sed -i '/{wid}/d' {path}; echo x")
     for tgt,path in P.auditk: run_in(blue_host or host,tgt,f"rm -f {path}; echo x")
     for tgt,path in P.bluefiles: run_in(blue_host or host,tgt,f"rm -f {path}; echo x")
 
-def run_one(sid, mode, target="192.168.0.79"):
+def run_one(sid, mode, target=EL34_HOST):
     class A: pass
     a=A(); a.sid=sid; a.mode=mode; a.target=target
     d,path=load_yaml(a.sid); scn_int=vh.scenario_int_id(a.sid)
@@ -233,16 +236,16 @@ def run_one(sid, mode, target="192.168.0.79"):
     reds=sorted(d.get("red_missions") or [],key=lambda x:x.get("order"))
     blues=sorted(d.get("blue_missions") or [],key=lambda x:x.get("order"))
 
+    # el34 = 단일 공유 인스턴스(.151). 외부 공격은 .202 VM→.161(출처 IP 보존), 점검/심기는 .151 docker exec.
     if a.mode=="solo":
-        EMAIL="mrgrit@ync.ac.kr"; INFRA=2; HOST=a.target; suf="mrgrit"
+        EMAIL="mrgrit@ync.ac.kr"; INFRA=1; HOST=a.target; suf="mrgrit"
         st,b=vh.create_solo(scn_int,EMAIL,INFRA,monitor="bastion"); bid=b["battle"]["id"]; vh.start(bid,EMAIL)
         RED_EMAIL=BLUE_EMAIL=EMAIL; RHOST=BHOST=HOST
     else:
-        # red=shin(infra1/.78) attacks blue=mrgrit(infra2/.79) → 타깃=blue 의 .79(검증된 신뢰 인프라).
-        # 공격은 .79 에 떨궈 .79 흔적으로 채점(RED opponent), BLUE 는 자기 .79 방어. (w01 duel 검증 config)
+        # duel: red=shin(infra2) opponent공격, blue=mrgrit(infra1) 자기방어 — 둘 다 동일 el34(.151) 타깃.
         RED_EMAIL="shin@ync.ac.kr"; BLUE_EMAIL="mrgrit@ync.ac.kr"
-        BHOST="192.168.0.79"; RHOST="192.168.0.79"; suf="shin"
-        st,b=vh.create_duel(scn_int,RED_EMAIL,1,BLUE_EMAIL,2,monitor="bastion"); bid=b["battle"]["id"]; vh.start(bid,RED_EMAIL)
+        BHOST=RHOST=EL34_HOST; suf="shin"
+        st,b=vh.create_duel(scn_int,RED_EMAIL,2,BLUE_EMAIL,1,monitor="bastion"); bid=b["battle"]["id"]; vh.start(bid,RED_EMAIL)
     print(f"[{a.sid}/{a.mode}] battle={bid} red_host={RHOST} blue_host={BHOST}", flush=True)
     P=Planted(); results=[]
 
@@ -302,7 +305,7 @@ def run_one(sid, mode, target="192.168.0.79"):
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("sid"); ap.add_argument("mode",choices=["solo","duel"])
-    ap.add_argument("--target",default="192.168.0.79")
+    ap.add_argument("--target",default="192.168.0.151")
     a=ap.parse_args()
     run_one(a.sid,a.mode,a.target)
 
