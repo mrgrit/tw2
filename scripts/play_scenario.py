@@ -297,7 +297,7 @@ def run_one(sid, mode, target=EL34_HOST):
     c.commit()
     npass=sum(1 for _,_,r,_ in results if r and r.get("verdict")=="pass")
     npart=sum(1 for _,_,r,_ in results if r and r.get("verdict")=="partial")
-    nbad=sum(1 for _,_,r,_ in results if not r or r.get("verdict") in ("fail",None))
+    nbad=sum(1 for _,_,r,_ in results if not r or r.get("verdict") in ("fail",None,"review"))
     print(f"=== {a.sid}/{a.mode}: pass{npass} partial{npart} bad{nbad} / {len(results)} ===", flush=True)
     return {"sid":a.sid,"mode":a.mode,"battle":bid,"pass":npass,"partial":npart,"bad":nbad,
             "results":[(s,o,(r.get("verdict") if r else None),(r.get("awarded_points") if r else None),mx) for s,o,r,mx in results]}

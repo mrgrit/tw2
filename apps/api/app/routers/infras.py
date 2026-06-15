@@ -28,10 +28,12 @@ async def list_my(user: User = Depends(get_current_user), session: AsyncSession 
 
 @router.post("", response_model=InfraOut)
 async def create(body: InfraIn, user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> InfraOut:
-    # 학생 1인 = 인프라 1개 (Phase 1 단순화)
-    existing = await session.scalar(select(Infra).where(Infra.owner_id == user.id))
+    # el34 모델: 학생 1인이 el34(타깃) + attacker(외부 공격자 VM .202) 두 인프라를 등록한다.
+    # 동일 vm_ip 중복만 막고, 서로 다른 인프라(el34 .151 + attacker .202)는 허용.
+    existing = await session.scalar(
+        select(Infra).where(Infra.owner_id == user.id, Infra.vm_ip == body.vm_ip))
     if existing:
-        raise HTTPException(status.HTTP_409_CONFLICT, "infra already registered. delete first or PATCH.")
+        raise HTTPException(status.HTTP_409_CONFLICT, "이 vm_ip 인프라가 이미 등록됨. 삭제 후 재등록하거나 PATCH.")
 
     infra = Infra(
         owner_id=user.id,
