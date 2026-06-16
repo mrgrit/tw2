@@ -639,7 +639,7 @@ async def grade(
     evidence_text: str = "",
     max_points: int = 0,
     inspector=None,          # async callable(list[check-spec]) -> list[result]  (참여자 infra 직접 점검)
-    max_rounds: int = 2,     # 1회 직접 점검 + 1회 최종 판정 (지연 한도). claude -p 가 호출당 ~30-40s.
+    max_rounds: int = int(os.getenv("TUBEWAR_GRADE_ROUNDS", "2")),  # 라운드(claude 호출) 수. 1=초기증거(체크결과 포함)만으로 즉시 판정 → claude 호출/레이트 절반. env TUBEWAR_GRADE_ROUNDS.
     grader: dict | None = None,   # {provider:cc|bastion, model, base_url, api_key} — 시나리오별 채점기
 ) -> AnalysisResult:
     """학생 제출 1건을 AI 가 **참여자 인프라를 직접 점검**하며 시맨틱 채점. 점수는 AI 가 결정.

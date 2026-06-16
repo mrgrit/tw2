@@ -38,31 +38,30 @@ def main():
     sids=[s for s in track_scenarios(a.prefix)
           if a.frm <= int(s.split("-w")[-1]) <= a.to]
     print(f"[grind] {a.prefix} 시나리오 {len(sids)}개 × {modes} 순차 검수 시작", flush=True)
-    summary=[]; consec_allfail=0
+    summary=[]
     import time as _t
+    def allfail(res): return (res["pass"]+res["partial"])==0 and (res["pass"]+res["partial"]+res["bad"])>0
     for sid in sids:
         dm=done_modes(sid)
         for mode in modes:
             if mode in dm and not a.redo:
                 print(f"  · {sid}/{mode} 이미 done — skip", flush=True); continue
-            try:
-                res=ps.run_one(sid, mode)
-                summary.append((sid,mode,res["pass"],res["partial"],res["bad"]))
-                # 장애 감지: 미션이 돌았는데 pass·partial 0(전부 error) → 채점 장애 의심
-                if (res["pass"]+res["partial"])==0 and (res["pass"]+res["partial"]+res["bad"])>0:
-                    consec_allfail+=1
-                    print(f"  ⚠️ {sid}/{mode} 전부 error — 채점 장애 의심(연속 {consec_allfail})", flush=True)
-                    if consec_allfail>=2:
-                        print("  !! 연속 전부-error 2회 → 채점 장애로 판단, 배치 중단(개입 필요)", flush=True)
-                        raise SystemExit("grading outage detected")
-                    print("  … 90s 백오프(레이트/장애 회복 대기)", flush=True); _t.sleep(90)
-                else:
-                    consec_allfail=0
-            except SystemExit: raise
-            except Exception as e:
-                print(f"  !! {sid}/{mode} 예외: {e}", flush=True)
-                traceback.print_exc()
-                summary.append((sid,mode,"ERR","ERR","ERR"))
+            # 자가복구: 전부-error(일시 채점장애 윈도우)면 장시간 백오프 후 같은 시나리오 재시도(최대 3회).
+            res=None
+            for attempt in range(1, 4):
+                try:
+                    res=ps.run_one(sid, mode)
+                except Exception as e:
+                    print(f"  !! {sid}/{mode} 예외(시도{attempt}): {e}", flush=True); traceback.print_exc()
+                    res=None
+                if res and not allfail(res):
+                    break
+                if attempt < 3:
+                    wait=900*attempt   # 240s, 480s — claude 윈도우 회복 대기
+                    print(f"  ⚠️ {sid}/{mode} 전부 error/예외 — 일시 채점장애 의심, {wait}s 백오프 후 재시도({attempt}/3)", flush=True)
+                    _t.sleep(wait)
+            if res: summary.append((sid,mode,res["pass"],res["partial"],res["bad"]))
+            else:   summary.append((sid,mode,"ERR","ERR","ERR"))
     print("\n=== grind 요약 ===", flush=True)
     for sid,mode,p,pa,b in summary:
         flag=" ⚠️" if (b not in (0,"ERR") or b=="ERR") else ""
