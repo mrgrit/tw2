@@ -126,7 +126,8 @@ def attacker_exec(cmd, timeout=120):
         cli.connect(ATT_IP, username=ATT_USER, password=ATT_PASS, timeout=10,
                     banner_timeout=10, auth_timeout=10)
         _ATT_SSH["att"] = cli
-    i, o, e = _ATT_SSH["att"].exec_command(f"bash -lc {json.dumps(cmd)}", timeout=timeout)
+    # timeout 25 래퍼 — el34 웹이 느리거나 행 걸려도 SSH read 가 영구 블록되지 않게(curl hang 방지).
+    i, o, e = _ATT_SSH["att"].exec_command(f"timeout 25 bash -lc {json.dumps(cmd)}", timeout=timeout)
     out = o.read().decode(errors="replace"); err = e.read().decode(errors="replace")
     return o.channel.recv_exit_status(), out, err
 
