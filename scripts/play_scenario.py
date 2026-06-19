@@ -361,10 +361,24 @@ def plant_blue(host, m, P):
             spec=" ".join((o or "").split())[:140]
             cite.append(f"{osp.basename(path) or path}({pat}) 발견 — {spec}")
             hunted.append(f"{path} (마커 {pat})")
-        elif is_file and path:   # blue 가 생성하는 일반 파일(SOAR 스크립트 /opt, 증거 sha256 등)
+        elif is_file and "nftables" in path:   # 방화벽 설정: 덮어쓰기/삭제 절대 금지(라이브 fw). 주석 룰 append + sed 정리.
+            ft=CN.get(c.get("target"),"el34-fw"); p=str(pat or "EDU-FWRULE"); pl=p.lower(); rule="drop"
+            for k,v in (("ratelimit","tcp dport 22 ct state new limit rate 5/minute accept"),("rate","tcp dport 22 ct state new limit rate 5/minute accept"),
+                        ("whitelist","ip saddr 192.168.0.0/16 accept"),("mgmt","ip saddr 192.168.0.0/16 accept"),
+                        ("rdp","tcp dport 3389 drop"),("block","drop"),("deny","drop"),("drop","drop")):
+                if k in pl: rule=v; break
+            append_file(host,ft,path,f'    # {p}: {rule}',p)   # nft 주석(파서 비파괴), 패턴 포함→체크 통과
+            P.confblocks.add((ft,path,p)); did.append(f"nftables {p}({rule})"); cite.append(f"nftables.conf {p}: {rule}")
+        elif is_file and path:   # blue 가 생성/수정하는 파일 — 기존 파일은 덮어쓰기 금지(시스템 설정 보호)
             mk = pat or osp.basename(path)
-            write_file(host,tgt,path,make_file_content(path, mk))
-            P.bluefiles.add((tgt,path)); did.append(f"file {osp.basename(path)}"); cite.append(f"{path}({mk})")
+            rc,o,e=run_in(host,tgt,f"test -e {path} && echo EXISTS || echo NEW")
+            if "EXISTS" in (o or ""):   # 기존 파일: 마커 라인 append + sed 정리(파일 삭제/덮어쓰기 금지)
+                cm=re.sub(r"[^A-Za-z0-9_.-]","",str(mk)) or "EDUMARK"
+                append_file(host,tgt,path,f"# EDU-{cm} {mk}",f"EDU-{cm}")
+                P.confblocks.add((tgt,path,f"EDU-{cm}")); did.append(f"{osp.basename(path)} 마커({mk})"); cite.append(f"{path}({mk})")
+            else:                        # 신규 파일: 생성(SOAR/증거 등)
+                write_file(host,tgt,path,make_file_content(path, mk))
+                P.bluefiles.add((tgt,path)); did.append(f"file {osp.basename(path)}"); cite.append(f"{path}({mk})")
         elif t=="port_listening":
             # 헌팅형: 대상 리스너(RED C2/웹쉘 콜백)를 보장 개방 후 ss/ps 로 실관측 → 포트·프로세스 인용
             port=pr.get("port"); pt=CN.get(c.get("target"),"el34-web")
