@@ -1,59 +1,53 @@
 # 중앙 SIEM — 운영·아키텍처 가이드
 
 학생 활동(명령/알림/파일변경/서비스)을 코호트 위계로 모아 **육안 탐색 + 통계 + AI 분석**하는
-중앙 활동 lake. 채점(권위)은 Postgres, 탐색용 lake 는 OpenSearch — 두 트랙이 분리되어 있다.
+가이드. SIEM 의 권위 소스는 **el34 인프라 자체의 Wazuh**(`el34-siem`)이며, 채점(권위)은
+tw2 의 SQLite(Battle/점수)다 — 두 트랙이 분리되어 있다.
+
+> **tw2 변경점:** 구 tubewar 는 학생 활동을 **중앙 OpenSearch lake** 로 적재해 탐색했다. tw2 는
+> **el34 인프라에 내장된 Wazuh manager+indexer 를 SIEM 으로 사용**하고, 중앙 OpenSearch 적재는
+> **비활성**(`TUBEWAR_LAB_MONITOR=0`)이다. 따라서 별도 OpenSearch/Dashboards 배포가 필요 없다.
 
 ## 구성 2층
 
 | 레이어 | 정체 | 비고 |
 |--------|------|------|
-| 저장·검색 엔진 | **OpenSearch 2.18** (`:9201`, security 비활성, 단일 노드) | 물리 인덱스 = "큰 단위"(교과목) 1개, 하위 코호트는 필드 태깅 |
-| 화면(기본) | tubewar 네이티브 `중앙 SIEM` 탭 (`SiemTab`) + `/monitoring/siem/*` API | 코호트 RBAC·KST·세션격리를 tubewar 가 통제 |
-| 화면(옵션) | **OpenSearch Dashboards 2.18** (`:5601`) iframe/딥링크 | `OPENSEARCH_DASHBOARDS_URL` 설정 시 같은 탭에 함께 표시 |
+| 저장·검색 엔진 | **el34-siem = Wazuh manager + indexer** | Suricata(IPS)·ModSec(WAF) 로그를 Wazuh 에이전트(`el34-web`·`el34-ips`)가 수집·상관·경보 |
+| 조회 경로 | el34 **Assessor `:9201`** (`/assess`·`/activity`) | tw2 가 read-only 로 Wazuh 경보·활동을 당겨옴 |
+| 화면(기본) | tw2 네이티브 `중앙 SIEM` 탭 (`SiemTab`) + `/monitoring/siem/*` API | 코호트 RBAC·KST·세션격리를 tw2 가 통제 |
 
-> 네이티브 패널은 항상 동작(엔진만 있으면). Dashboards 는 더 풍부한 탐색을 위한 보강이며
-> 끄거나 켜도 네이티브 패널은 그대로다.
+> 네이티브 패널(통계·로그·드릴다운·AI 분석)은 tw2 가 직접 제공한다. 중앙 OpenSearch/Dashboards
+> 배포는 tw2 에서 더 이상 사용하지 않는다.
 
 ## 데이터 흐름
 
 ```
-6v6 Assessor /activity ──(lab_monitor.pull_activity_once)──▶ ActivityEvent(Postgres)
+el34 Wazuh(IPS/WAF 상관·경보) ── Assessor /activity·/assess ──▶ tw2
                                           │
-                                          └─(run_lab_tick → _export_to_siem)─▶ OpenSearch
+                                          └─(lab_monitor.pull_activity_once)─▶ ActivityEvent(SQLite)
   stamp 필드: student / infra / ts(date) / kind / cohort_path / cohort_id / scenario_id / payload / battle_id
+  (TUBEWAR_LAB_MONITOR=0 이면 중앙 OpenSearch 로의 _export_to_siem 적재는 OFF)
 ```
 
-- 물리 인덱스명: `tubewar-activity-<course_ref|name>` (교과목 단위). 하위(분반/팀)은 `cohort_id` 필드로 구분.
-- 외부 attacker(망 외부) 명령은 6v6 가 수집 못함 → 타깃 인프라의 공격 흔적으로 대체(채점 정책과 동일).
+- 외부 attacker(망 외부, VM `192.168.0.202`) 명령은 el34 가 수집 못함 → 타깃 인프라의 공격 흔적
+  (ModSec/Suricata/Wazuh + source IP·payload 상관)으로 대체(채점 정책과 동일).
 
-## 배포 (중앙 서버, tarball)
+## 배포
 
-```bash
-# 1) OpenSearch 2.18 (예: /home/ccc/.local/opensearch)
-#    config/opensearch.yml: plugins.security.disabled: true, http.port: 9201, single-node
-# 2) OpenSearch Dashboards 2.18 (예: /home/ccc/.local/opensearch-dashboards)
-./bin/opensearch-dashboards-plugin remove securityDashboards     # 엔진 security 비활성과 정합
-cat > config/opensearch_dashboards.yml <<'YML'
-server.host: "0.0.0.0"
-server.port: 5601
-server.name: "tubewar-siem"
-opensearch.hosts: ["http://127.0.0.1:9201"]
-opensearch.ssl.verificationMode: none
-YML
-./bin/opensearch-dashboards          # 최초 기동은 번들 최적화로 1~3분
-```
+별도 SIEM 배포가 없다. el34 인프라가 기동되면 `el34-siem`(Wazuh manager+indexer)이 함께 올라오고,
+tw2 는 `bootstrap.sh` 만으로 동작한다(§ `docs/manual_admin.md` 2장).
 
-### tubewar API 환경변수
+- Wazuh 경보 확인은 **인프라 측**(el34-siem)에서 한다.
+- tw2 는 Assessor(`192.168.0.151:9201`, header `X-API-Key: ccc-api-key-2026`)로 경보·활동을 조회한다.
 
-| 변수 | 값(예) | 효과 |
-|------|--------|------|
-| `OPENSEARCH_URL` | `http://127.0.0.1:9201` | SIEM 적재·조회 활성(없으면 no-op, 네이티브/Postgres 만) |
-| `OPENSEARCH_DASHBOARDS_URL` | `http://192.168.0.107:5601` | 탭에 Dashboards iframe/딥링크 노출. **브라우저가 닿는 host** 여야 함 |
+### tw2 API 환경변수
 
-> iframe 임베드: OSD 2.18 은 기본적으로 `X-Frame-Options`/`frame-ancestors` 를 설정하지 않아 동일망에서 임베드 가능.
+| 변수 | 값 | 효과 |
+|------|-----|------|
+| `TUBEWAR_LAB_MONITOR` | `0`(기본) | 중앙 OpenSearch 적재 OFF. `1` 이면 배틀 시작 시 백그라운드 실습 모니터 기동 |
 
-코호트 강사 진입 시 `GET /monitoring/cohorts/{id}/siem` 가 데이터뷰(`dv-N`)→저장검색(`se-N`)→
-대시보드(`dash-N`)와 RBAC 롤을 멱등 생성한다(실제 OSD saved-object → iframe 즉시 렌더).
+코호트 강사 진입 시 `GET /monitoring/cohorts/{id}/siem` 는 해당 코호트 서브트리의 활동/통계 조회를
+준비한다(네이티브 패널 렌더).
 
 ## SIEM 페이지 기능 (`관리자 → 중앙 SIEM`)
 
@@ -61,10 +55,10 @@ YML
 - **기간 선택**: 빠른 범위(1·7·30일·1년·전체) + 시작/종료일 직접 지정.
 - **코호트 → 시나리오 → 미션 드릴다운**: 코호트 선택 → 그 서브트리 공방전의 시나리오·미션 목록 →
   시나리오로 통계/로그/클리어를 좁힘.
-- **학생별 클리어**: 완수 미션 수·완성도(막대)·막힘 상태 (Postgres 권위 채점 기준).
+- **학생별 클리어**: 완수 미션 수·완성도(막대)·막힘 상태 (SQLite 권위 채점 기준).
 - **로그 테이블**: 행 클릭 → 전체 로그(payload JSON) 모달.
-- **AI 로그 분석 Q&A**: 현재 필터의 로그·통계·클리어를 근거로 질문 → **CC 또는 bastion**(채점기 프로필 선택)
-  모델이 분석 답변. `POST /monitoring/siem/ask`.
+- **AI 로그 분석 Q&A**: 현재 필터의 로그·통계·클리어를 근거로 질문 → `claude` CLI
+  (`claude-sonnet-4-6`)가 분석 답변. `POST /monitoring/siem/ask`. (claude CLI 미설치 시 비활성.)
 
 ## 관련 API
 
@@ -74,5 +68,5 @@ YML
 | GET | `/monitoring/siem/stats` | 집계(총/종류별/학생별/일자별) |
 | GET | `/monitoring/siem/scenarios` | 코호트 서브트리 시나리오+미션 |
 | GET | `/monitoring/siem/clears` | 학생별 클리어/완성도 |
-| POST | `/monitoring/siem/ask` | AI 로그 분석(CC/bastion 선택) |
-| GET | `/monitoring/cohorts/{id}/siem` | 코호트 데이터뷰/대시보드/RBAC 멱등 생성 + 딥링크 |
+| POST | `/monitoring/siem/ask` | AI 로그 분석(claude CLI, `claude-sonnet-4-6`) |
+| GET | `/monitoring/cohorts/{id}/siem` | 코호트 서브트리 활동/통계 조회 준비 |

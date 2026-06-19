@@ -138,4 +138,5 @@
 | `scripts/e2e_cohort_cross_infra.sh` | cohort 트리→2학생+infra→cohort-bound cross-infra 듀얼→(mock)Assessor 자동 채점→cohort 필터 리더보드→**lab-tick(/activity→진도·병목)→피드백→SIEM 딥링크** |
 | `scripts/e2e_identity_only.sh` | cohort 없이 solo 정상(cohort_id=null) |
 
-> mock Assessor: `scripts/mock_assessor.py`. 실 6v6 연동은 `ASSESSOR_LIVE=1` + 실 `vm_ip` 로 확장.
+> mock Assessor: `scripts/mock_assessor.py`. 실 el34 연동은 `ASSESSOR_LIVE=1` + 실 `vm_ip`(192.168.0.151:9201) 로 확장.
+> 콘텐츠 라이브 검수는 `scripts/play_scenario.py` + `scripts/grind_track.py`(el34 실인프라 + claude 채점) 사용.
