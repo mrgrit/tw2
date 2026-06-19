@@ -48,19 +48,25 @@ say "1/7 시스템 패키지 설치"
 if have apt-get; then
   $SUDO apt-get update -y
   $SUDO apt-get install -y python3 python3-venv python3-pip python3-dev \
-      git curl ca-certificates build-essential sqlite3 openssl
+      git curl ca-certificates build-essential sqlite3 openssl libffi-dev libssl-dev
   if ! have node || [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null||echo 0)" -lt 18 ]; then
     say "  Node.js 20 (NodeSource) 설치"
     curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash -
     $SUDO apt-get install -y nodejs
   fi
 elif have dnf; then
-  $SUDO dnf install -y python3 python3-pip python3-devel git curl gcc gcc-c++ make sqlite openssl
+  $SUDO dnf install -y python3 python3-pip python3-devel git curl gcc gcc-c++ make sqlite openssl libffi-devel openssl-devel
   have node || $SUDO dnf module install -y nodejs:20/common || $SUDO dnf install -y nodejs
 else
   echo "지원 안 되는 패키지매니저(apt/dnf 아님). python3.10+/node18+/git/sqlite 수동 설치 후 --no-* 로 재실행"; exit 1
 fi
 say "  python=$(python3 -V 2>&1) node=$(node -v 2>&1) npm=$(npm -v 2>&1)"
+PYMAJ=$(python3 -c 'import sys;print(sys.version_info[0])' 2>/dev/null||echo 0)
+PYMIN=$(python3 -c 'import sys;print(sys.version_info[1])' 2>/dev/null||echo 0)
+if [ "$PYMAJ" -lt 3 ] || { [ "$PYMAJ" -eq 3 ] && [ "$PYMIN" -lt 10 ]; }; then
+  echo "✋ python3 $PYMAJ.$PYMIN — 3.10+ 필요(현 배포판 기본이 낮음). Ubuntu22.04+/Debian12+ 권장,"
+  echo "   또는 deadsnakes PPA 등으로 python3.10+ 설치 후 재실행."; exit 1
+fi
 
 # ---------- 2) .env 생성 ----------
 say "2/7 .env 생성"
