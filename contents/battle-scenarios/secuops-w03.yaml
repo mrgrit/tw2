@@ -5,7 +5,7 @@ difficulty: "medium"
 time_limit: 3000
 battle_type: "1v1"
 description: |
-  보안운영 3주차 — 직원 PC(Windows 엔드포인트, 6v6-win)를 노린 공격을 **Sysmon + Wazuh(EDR)**
+  보안운영 3주차 — 직원 PC(Windows 엔드포인트, el34-win)를 노린 공격을 **Sysmon + Wazuh(EDR)**
   로 탐지한다. 경계 장비(방화벽/IPS/WAF)가 막지 못한 엔드포인트 단계의 위협(RDP 무차별 대입,
   PowerShell 난독 실행, LOLBAS)을 호스트 가시화로 잡는 것이 핵심이다.
 
@@ -13,14 +13,11 @@ description: |
     • solo : 공격자 → 엔드포인트 운영자(EDR 탐지·대응)를 한 학생이 수행. 대상=본인 인프라.
     • duel : Red 가 상대 엔드포인트를 공격, Blue 는 본인 EDR 로 탐지. 대상=상대 인프라.
 
-  ▸ 공격자 위치(이 주차는 두 종류를 명시적으로 구분한다 — 채점 혼동 금지):
-    • **외부 공격자(attacker-ext)**: 경계 너머에서 RDP 등 노출 포트로 무차별 대입(RED-1).
-      → 외부 명령 미수집 → 대상 엔드포인트의 Windows 보안 이벤트(EID 4625)가 Wazuh 로 올라온
-        흔적으로 채점.
-    • **내부 발판(attacker, 2202) — 침해 후 시뮬레이션**: 경계를 이미 통과했다고 가정하고
-      엔드포인트에서 악성 실행(PowerShell/LOLBAS)을 재현(RED-2). → 이 행위가 엔드포인트의
-      Sysmon 이벤트로 Wazuh 에 남는지로 채점(내부 발판임을 문제에 명시).
-    어느 경우든 **채점 신호는 엔드포인트→Wazuh 의 탐지 이벤트** 다(공격자 위치와 무관하게 일관).
+  ▸ 공격자 위치(중요)
+    이 주차의 Red 미션은 **망 외부 공격자 VM(192.168.0.202)** 기준이다. el34 는 공격자의 출처 IP를
+    fw→ips→web(WAF) 전 계층에 그대로 보존하므로(HAProxy 제거·NAT 출처소실 없음), Red 채점은 **대상
+    (el34) 인프라에 남은 탐지 흔적**(WAF audit / IPS / 호스트 계정·포트)과 **출처 IP(192.168.0.202)·
+    고유 태그 상관**으로 한다. 반드시 **고유 태그**를 붙여 앰비언트 노이즈와 구분되게 한다.
 
 # ───────────────────────── RED (엔드포인트 침해) ─────────────────────────
 red_missions:
@@ -31,7 +28,7 @@ red_missions:
     instruction: |
       ## 🎯 RED-1 — [외부] RDP 무차별 대입 (엔드포인트 인증 공격)
 
-      당신은 **망 외부 공격자(attacker-ext)** 다. 경계 너머로 노출된 RDP 로 직원 PC 계정에 무차별
+      당신은 **망 외부 공격자(외부 공격자 VM 192.168.0.202)** 다. 경계 너머로 노출된 RDP 로 직원 PC 계정에 무차별
       대입을 시도한다. 다수의 로그온 실패는 Windows 보안 로그(EID 4625)에 남고, Wazuh 가 이를
       엔드포인트에서 수집한다.
 
@@ -42,11 +39,11 @@ red_missions:
       ```
       ### 📌 채점
       외부 명령 미수집 → **대상 엔드포인트의 Windows 인증 실패 이벤트(EID 4625)가 Wazuh 로 올라온
-      흔적** 으로 채점한다(외부 attacker-ext 명령 로그 불신뢰).
+      흔적** 으로 채점한다(외부 외부 공격자 VM(192.168.0.202) 명령 로그 불신뢰).
 
       ### ✅ 합격 기준
       대상 SIEM(Wazuh)에 Windows 인증 실패(RDP/EID 4625) 관련 경보가 남는다.
-    hint: "attacker-ext 에서 RDP 무차별 대입. 채점: 대상 Wazuh 의 Windows 인증 실패(EID 4625)."
+    hint: "외부 공격자 VM(192.168.0.202) 에서 RDP 무차별 대입. 채점: 대상 Wazuh 의 Windows 인증 실패(EID 4625)."
     verify:
       type: "wazuh_alert"
       expect: "authentication"
@@ -55,14 +52,14 @@ red_missions:
             params: { groups: "authentication_failed", since_sec: 1800 } }
       semantic:
         intent: |
-          MITRE T1110 (Brute Force) on RDP — 외부 공격자 모델. command_ran(attacker-ext) 불신뢰,
+          MITRE T1110 (Brute Force) on RDP — 외부 공격자 모델. command_ran(외부 공격자 VM 192.168.0.202) 불신뢰,
           대상 엔드포인트의 Windows Security EID 4625(로그온 실패)가 Wazuh 로 수집된 흔적으로 판정.
         success_criteria:
           - "대상 Wazuh 에 Windows 인증 실패/RDP 관련 경보(최근)"
           - "다수 실패가 짧은 시간에 몰림(무차별 대입)"
           - "(설명) 노린 계정과 RDP 노출 위험 서술"
-        acceptable_methods: ["attacker-ext 에서 hydra/ncrack/crowbar RDP 무차별 대입"]
-        negative_signs: ["대상 엔드포인트 인증 실패 이벤트 없음", "command_ran(attacker-ext) 의존"]
+        acceptable_methods: ["외부 공격자 VM(192.168.0.202) 에서 hydra/ncrack/crowbar RDP 무차별 대입"]
+        negative_signs: ["대상 엔드포인트 인증 실패 이벤트 없음", "command_ran(외부 공격자 VM 192.168.0.202) 의존"]
 
   - order: 2
     assess_target: opponent
@@ -116,12 +113,12 @@ blue_missions:
     instruction: |
       ## 🛡️ BLUE-1 — 엔드포인트가 EDR 감시망에 있는지 확인
 
-      직원 PC(6v6-win)가 Wazuh 에 에이전트로 등록·Active 이고 Sysmon 이 이벤트를 보내고 있는지
+      직원 PC(el34-win)가 Wazuh 에 에이전트로 등록·Active 이고 Sysmon 이 이벤트를 보내고 있는지
       확인한다(엔드포인트 탐지의 토대).
 
       ### ✅ 합격 기준
-      본인 SIEM 에 Windows 엔드포인트(6v6-win) 관련 이벤트/경보 수집 흔적이 있다.
-    hint: "본인 Wazuh 에서 windows 엔드포인트(6v6-win) 이벤트 수집 확인."
+      본인 SIEM 에 Windows 엔드포인트(el34-win) 관련 이벤트/경보 수집 흔적이 있다.
+    hint: "본인 Wazuh 에서 windows 엔드포인트(el34-win) 이벤트 수집 확인."
     verify:
       type: "wazuh_alert"
       expect: "windows"
@@ -131,7 +128,7 @@ blue_missions:
       semantic:
         intent: "EDR 가용성 — Windows 엔드포인트가 Wazuh 로 이벤트를 보냄(탐지 토대)."
         success_criteria: ["본인 Wazuh 에 windows 그룹 이벤트 수집", "(설명) Sysmon+Wazuh 가 무엇을 보는지 서술"]
-        acceptable_methods: ["siem wazuh_alert(groups=windows)", "agent_control 로 6v6-win Active"]
+        acceptable_methods: ["siem wazuh_alert(groups=windows)", "agent_control 로 el34-win Active"]
         negative_signs: ["windows 이벤트 수집 없음(에이전트 점검 필요)"]
 
   - order: 2
