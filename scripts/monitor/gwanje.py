@@ -195,12 +195,12 @@ def os_indices():
     st, data = http_json(OS_URL + "/_cat/indices/tubewar-*?format=json&h=index,docs.count")
     if isinstance(data, list):
         return {d["index"]: int(d.get("docs.count") or 0) for d in data}
-    return {"_error": "opensearch unreachable"}
+    return {"_disabled": "중앙 OpenSearch 비활성(tw2: TUBEWAR_LAB_MONITOR=0 — SIEM은 el34 Wazuh 사용)"}
 
 
 def systemd_status():
     out = {}
-    for svc in ("tubewar-api", "tubewar-ui", "tubewar-opensearch", "tubewar-dashboards"):
+    for svc in ("tw2-api", "tw2-ui"):
         try:
             r = subprocess.run(["systemctl", "is-active", svc],
                                capture_output=True, text=True, timeout=6)
@@ -386,7 +386,7 @@ def main():
     should_report = baseline or sal >= 5 or hb_due
 
     snap = {"ts_kst": kst.strftime("%Y-%m-%d %H:%M:%S"), "baseline": baseline,
-            "stack": {"api_health": api_st, "services": svc, "opensearch": "_error" not in idx},
+            "stack": {"api_health": api_st, "services": svc, "opensearch": ("_error" not in idx and "_disabled" not in idx)},
             "active_battles": active, "orphans": orphans, "recent_done": recent_done,
             "new_events_count": len(new_events), "new_events": new_events,
             "activity_new_total": new_act_total, "activity_by_kind": act_kind,
@@ -420,7 +420,7 @@ def main():
     P = print
     bad_svc = [k for k, v in svc.items() if v != "active"]
     P(f"╔══ 관제 {snap['ts_kst']} KST {'[BASELINE]' if baseline else ''} ══")
-    P(f"║ 스택: API={api_st} {'OK' if api_st==200 else '⚠'} | svc {'all-active' if not bad_svc else '⚠'+str(bad_svc)} | OpenSearch={'OK' if '_error' not in idx else '⚠DOWN'}")
+    P(f"║ 스택: API={api_st} {'OK' if api_st==200 else '⚠'} | svc {'all-active' if not bad_svc else '⚠'+str(bad_svc)} | SIEM(중앙OS)={'OK' if ('_error' not in idx and '_disabled' not in idx) else ('비활성' if '_disabled' in idx else '⚠DOWN')}")
     P(f"║ 활성배틀 {len(active)} | 새채점이벤트 {len(new_events)} | 새활동 {new_act_total} | 새피드백 {len(new_fb)} | 채점대기 {sp}")
     for b in active:
         if isinstance(b, dict) and "id" in b:
