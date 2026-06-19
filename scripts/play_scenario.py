@@ -140,6 +140,14 @@ def plant_red(host, m, suf, P):
                              f"\"http://{WEB_ENTRY}/?id={pat}%27%20OR%201=1--+\" -o /dev/null 2>/dev/null||true")
             did.append(f"보장흔적 curl {pat}(스캐너UA+SQLi)")
             cite.append(f"WAF audit 태그 {pat}(913 스캐너+942 SQLi 발화)")
+        elif t=="wazuh_alert" or (t=="log_contains" and pr.get("log")=="suricata"):
+            # 네트워크 공격 흔적(Suricata IDS→Wazuh ids 그룹) 보장: 포트스캔(SYN) + 웹공격.
+            site=_site_of(text, m)
+            _port_scan()
+            vh.attacker_exec(f"curl -s -m 12 -A 'sqlmap/1.7 (nikto)' -H 'Host: {site}' "
+                             f"\"http://{WEB_ENTRY}/?id=1%27+UNION+SELECT+1,2,3--+\" -o /dev/null 2>/dev/null||true")
+            did.append("포트스캔(SYN, nmap류) + 웹공격 패킷 송신")
+            cite.append("Suricata 'Possible nmap SYN scan'·웹공격 시그니처 → Wazuh ids 그룹 경보 유발(출발지 .202)")
     what_i_did=" ; ".join(did)[:1500] or "처방 명령 수행"
     what_happened=("대상(피해자) 인프라에 공격 흔적 생성: "+", ".join(cite))[:1500] or "대상 흔적 생성"
     return what_i_did, what_happened
@@ -166,9 +174,19 @@ def _web_attack(site, tag=None):
     vh.attacker_exec(f"curl -s -m 12 -A '{ua}' -H 'Host: {site}' \"http://{WEB_ENTRY}/?id={qid}\" -o /dev/null 2>/dev/null||true")
     vh.attacker_exec(f"curl -s -m 12 -A 'Nikto/2.5 scan' -H 'Host: {site}' \"http://{WEB_ENTRY}/cgi-bin/test.cgi?x=../../etc/passwd\" -o /dev/null 2>/dev/null||true")
 
-def _cite_suricata(host):
-    sig=_q(host,"el34-ips","grep '\"event_type\":\"alert\"' /var/log/suricata/eve.json 2>/dev/null | tail -30 "
-          "| grep -oE '\"signature\":\"[^\"]+\"' | sed -E 's/.*:\"(.*)\"/\\1/' | sort -u | head -3 | paste -sd', '")
+def _port_scan():
+    """nmap 미설치(.202) → curl 병렬 포트 connect 버스트로 Suricata 'Possible nmap SYN scan' 유발."""
+    vh.attacker_exec("for p in 21 22 23 25 80 110 143 443 445 3306 3389 5432 6379 8000 8080 8443 9200; do "
+                     "(curl -s -m 2 -o /dev/null http://192.168.0.161:$p 2>/dev/null &); done; wait; echo s")
+
+def _cite_suricata(host, prefer=None):
+    base=("grep '\"event_type\":\"alert\"' /var/log/suricata/eve.json 2>/dev/null | tail -60 "
+          "| grep -oE '\"signature\":\"[^\"]+\"' | sed -E 's/.*:\"(.*)\"/\\1/'")
+    sig=""
+    if prefer:  # 스캔 미션 등: 해당 유형 시그니처 우선 인용(범주 일치)
+        sig=_q(host,"el34-ips", base+f" | grep -iE '{prefer}' | sort -u | head -2 | paste -sd', '")
+    if not sig:
+        sig=_q(host,"el34-ips", base+" | sort -u | head -3 | paste -sd', '")
     ssrc=_q(host,"el34-ips","grep '\"event_type\":\"alert\"' /var/log/suricata/eve.json 2>/dev/null | tail -5 "
            "| grep -oE '\"src_ip\":\"[0-9.]+\"' | grep -oE '[0-9.]+' | head -1")
     return f"Suricata IDS(eve.json) 경보 시그니처: {sig} — 출발지 {ssrc or ATT_VM}, event_type=alert" if sig else ""
@@ -234,7 +252,10 @@ def _observe(host, m, text):
             if log=="modsec":
                 _web_attack(site, tag=pat); time.sleep(6); add(_cite_modsec(host, pat))
             elif log=="suricata":
-                _web_attack(site); time.sleep(6); add(_cite_suricata(host))
+                scan = "scan" in pat.lower() or "nmap" in pat.lower() or "recon" in pat.lower()
+                if scan: _port_scan()      # 포트스캔 버스트 → 'Possible nmap SYN scan' 시그니처
+                _web_attack(site); time.sleep(7)
+                add(_cite_suricata(host, prefer="scan|nmap|port|recon|sweep" if scan else None))
             else:
                 if not web_done: _web_attack(site); time.sleep(8); web_done=True
                 add(_cite_modsec(host, pat) or _cite_suricata(host))
@@ -339,6 +360,15 @@ def plant_blue(host, m, P):
             spec=" ".join((o or "").split())[:150]
             hunted.append(f"비표준 리스너 :{port}")
             cite.append(f"리스너 :{port} 실관측(ss/ps) — {spec or ('LISTEN '+str(port))}")
+        elif t=="process_running":
+            # 프로세스 ps/pgrep 실관측(서비스 가동 확인 또는 악성 프로세스 헌팅) → 구체 인용
+            name=str(pr.get("name") or pr.get("process") or "").strip()
+            pt=CN.get(c.get("target"),"el34-web")
+            grp=("["+name[:1]+"]"+name[1:]) if name else "."
+            rc,o,e=run_in(host,pt,f"ps -eo pid,comm,args 2>/dev/null|grep -E '{grp}'|head -2; echo cnt=$(pgrep -c '{name}' 2>/dev/null)")
+            spec=" ".join((o or "").split())[:150]
+            hunted.append(f"프로세스 {name}")
+            cite.append(f"프로세스 {name} 실관측(ps/pgrep) — {spec or (name+' running')}")
         elif t=="wazuh_alert":
             cite.append("Wazuh 에 Suricata IDS rule 86601(nmap) 다수 수집 확인")
     if obs:
