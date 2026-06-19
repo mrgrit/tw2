@@ -11,7 +11,7 @@ import sys, re, time, argparse, sqlite3
 sys.path.insert(0, "scripts"); import vh
 import yaml, os.path as osp, glob
 
-CN = {"web": "el34-web", "ips": "el34-ips", "siem": "el34-siem", "attacker": "el34-attacker"}
+CN = {"web": "el34-web", "ips": "el34-ips", "siem": "el34-siem", "fw": "el34-fw", "attacker": "el34-attacker"}
 EL34_HOST = "192.168.0.151"      # el34 단일 머신(ssh ccc/1, docker exec el34-*)
 WEB_ENTRY = "192.168.0.161"      # 외부 웹 진입(.202 공격자가 여기로) — 출처 IP 보존
 LEDGER = ".data/verify_ledger.sqlite3"
@@ -305,11 +305,17 @@ def plant_blue(host, m, P):
             P.bluefiles.add((ct,tf)); did.append(f"CDB IOC 리스트 {osp.basename(tf)}")
             cite.append(f"{tf} CDB 환류 — IOC {mk}, 192.168.0.202(공격자 출처), sqlmap(스캐너 UA)")
         elif is_file and "suricata" in path:  # suricata rule
-            rule=next((l.strip() for l in text.splitlines() if l.strip().startswith("alert ") and (str(pat) in l)), None)
-            if not rule:
-                rule=f'alert http any any -> any any (msg:"EDU rule {pat}"; flow:to_server; http.uri; content:"UNION"; nocase; sid:{pat}; rev:1;)'
-            append_file(host,"el34-ips",path,rule,pat); run_in(host,"el34-ips","suricatasc -c reload-rules 2>/dev/null; echo r")
-            P.sids.add((path,pat)); did.append(f"suricata sid {pat}"); cite.append(f"local.rules sid {pat}")
+            # 안전: 항상 local.rules 에만(설정파일 suricata.yaml 편집 금지), 단일라인(백슬래시 연속 금지),
+            # sid 는 항상 숫자(sid:None 금지 — 파싱실패→전체 룰 미적재 사고 방지).
+            rpath="/etc/suricata/rules/local.rules"
+            # pattern 에서 구체 sid 추출(예: '9005003|9005004' → 9005003), 없으면 안정 해시 sid. None/비숫자 안전.
+            _sm=re.search(r"\d{4,7}", str(pat or ""))
+            sid=_sm.group(0) if _sm else str(1000900+(abs(hash(str(pat)+str(c.get('id') or path)))%8999))
+            mark=f"sid:{sid};"
+            rule=(f'alert http any any -> any any (msg:"EDU {pat or sid}"; flow:established,to_server; '
+                  f'http.uri; content:"UNION"; nocase; {mark} rev:1;)')
+            append_file(host,"el34-ips",rpath,rule,mark); run_in(host,"el34-ips","suricatasc -c reload-rules 2>/dev/null; echo r")
+            P.sids.add((rpath,mark)); did.append(f"suricata sid {sid}"); cite.append(f"local.rules sid {sid}")
         elif is_file and "ossec.conf" in path and pat and not str(pat).isdigit():
             # ossec.conf 설정 키워드(active-response 등): 키워드를 포함하는 유효 단일라인 <ossec_config> 추가.
             # 매니저 자동 재로드 없음→가동 중 안전. 정리는 sed(파일 삭제 절대 금지 — 라이브 매니저 설정).
@@ -318,17 +324,25 @@ def plant_blue(host, m, P):
                 block=(f'<ossec_config><!-- {mark} --><active-response><command>firewall-drop</command>'
                        f'<location>local</location><level>10</level><timeout>600</timeout></active-response>'
                        f'<command><name>firewall-drop</name><executable>firewall-drop</executable><timeout_allowed>yes</timeout_allowed></command></ossec_config>')
+                desc="자동대응(firewall-drop+timeout 600+화이트리스트)"
+            elif "localfile" in kw or "location" in kw or "log_format" in kw:
+                block=(f'<ossec_config><!-- {mark} --><localfile><log_format>syslog</log_format>'
+                       f'<location>/var/log/edu-collect.log</location></localfile></ossec_config>')
+                desc="로그수집 localfile(log_format/location)"
             else:
                 block=f'<ossec_config><!-- {mark}: {kw} 설정(EDU) --></ossec_config>'
+                desc=f"{kw} 설정"
             append_file(host,"el34-siem",path,block,mark)
-            P.confblocks.add(("el34-siem",path,mark)); did.append(f"ossec.conf {kw} 설정(firewall-drop+timeout 600+화이트리스트 설계)")
+            P.confblocks.add(("el34-siem",path,mark)); did.append(f"ossec.conf {desc}")
             cite.append(f"{osp.basename(path)} {kw}")
         elif is_file and ("ossec" in path or "local_rules" in path):  # wazuh rule
-            mblk=re.search(r"(<group[^>]*>.*?</group>)", text, re.S) or re.search(r"(<rule id=\""+str(pat)+r"\".*?</rule>)", text, re.S)
-            block=mblk.group(1) if mblk else f'<group name="edu,"><rule id="{pat}" level="12"><if_group>edu</if_group><match>{pat}</match><description>EDU rule {pat}</description></rule></group>'
-            block=" ".join(x.strip() for x in block.splitlines())
-            append_file(host,"el34-siem",path,block,pat)
-            P.wids.add((path,pat)); did.append(f"wazuh rule {pat}"); cite.append(f"local_rules.xml id {pat}")
+            # 안전: 룰은 local_rules.xml 에만(ossec.conf 설정파일에 룰 주입 금지), id 숫자(id=None 금지), 단일라인.
+            rpath = path if "local_rules" in path else "/var/ossec/etc/rules/local_rules.xml"
+            rid = str(pat) if (pat and str(pat).isdigit()) else str(100900+(abs(hash(str(pat)+str(c.get('id') or path)))%8999))
+            block=f'<group name="edu,"><rule id="{rid}" level="12"><decoded_as>json</decoded_as><description>EDU rule {rid}</description></rule></group>'
+            mark=f'EDU rule {rid}'   # 멱등/정리 마커(따옴표 없는 안전 문자열)
+            append_file(host,"el34-siem",rpath,block,mark)
+            P.wids.add((rpath,mark)); did.append(f"wazuh rule {rid}"); cite.append(f"local_rules.xml id {rid}")
         elif is_file and "audit" in path:  # auditd
             key=pat; at=CN.get(c.get("target"),"el34-web")
             write_file(host,at,path,f"-w /etc/passwd -p wa -k {key}\n-w /etc/shadow -p wa -k {key}\n")
@@ -375,7 +389,7 @@ def plant_blue(host, m, P):
         # 분석형: 신선한 라이브 관측값(obs)을 핵심 증거로 인용. 룰작성/헌팅이 섞였으면 함께 보강.
         sem=(m.get("verify") or {}).get("semantic",{}) or {}
         crits=sem.get("success_criteria") or []
-        marks=sorted({s for _,s in P.sids}|{w for _,w in P.wids})
+        marks=sorted(str(x) for x in ({s for _,s in P.sids}|{w for _,w in P.wids}) if x is not None)
         markstr=", ".join(str(x) for x in marks)
         what_i_did=("웹·네트워크·SIEM 로그 직접 분석/상관: ModSec audit + Suricata eve.json + Wazuh alerts 교차 조회, "
             "출발지 IP·rule id·시그니처·트랜잭션·타임스탬프 식별, 네트워크-호스트 상관으로 단일 킬체인 재구성"
