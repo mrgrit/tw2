@@ -1,4 +1,6 @@
 # tubewar — 사이버 공방전 훈련 플랫폼
+<img width="1347" height="1143" alt="image" src="https://github.com/user-attachments/assets/73a07b5a-efb2-4794-8cd2-771834cb52f9" />
+
 
 `6v6` 인프라 (https://github.com/mrgrit/6v6) 를 학생 PC 마다 1세트 배포해두고,
 중앙 tubewar 서버가 학생 인프라 간 **공방전 (Red/Blue)** 을 시나리오/미션 단위로
