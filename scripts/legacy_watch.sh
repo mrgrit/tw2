@@ -1,6 +1,6 @@
 GP="$1"; LOG="$2"
 LED=/home/ccc/tw2/.data/verify_ledger.sqlite3
-PY=/home/ccc/tubewar/.venv/bin/python3
+PY="$(command -v python3)"
 SIDS="apt-phase1 apt-phase2 apt-phase3 bruteforce-vs-lockout championship cohort-cross-infra-demo dos-vs-resilience exfil-vs-dlp incident-response lateral-vs-segmentation live-healthcheck precinct6-data-theft precinct6-phishing privesc-vs-hardening purple-team recon-vs-detect sqli-vs-waf webshell-vs-integrity xss-vs-filter"
 inq=$(echo "$SIDS"|tr ' ' ','|sed "s/[^,]*/'&'/g")
 dc(){ "$PY" -c "import sqlite3;print(sum(1 for _ in sqlite3.connect('$LED').execute(\"SELECT 1 FROM scenario_state WHERE scenario_id IN ($inq) AND status='done'\")))"; }

@@ -14,7 +14,7 @@
 from __future__ import annotations
 import json, os, re, shutil, sqlite3, subprocess, sys, datetime as dt, urllib.request
 
-REPO = "/home/ccc/tubewar"
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # <repo>/scripts/monitor/gwanje.py → <repo>
 sys.path.insert(0, os.path.join(REPO, "apps/api"))
 CURSOR = "/tmp/mon/cursor.json"
 os.makedirs("/tmp/mon", exist_ok=True)
@@ -39,7 +39,7 @@ if "--reset" in ARGV and os.path.exists(CURSOR):
     os.remove(CURSOR)
 
 # ── 설정 로드(.env) ─────────────────────────────────────────────
-DB_PATH = os.path.join(REPO, ".data/tubewar.sqlite3")
+DB_PATH = os.path.join(REPO, ".data/tw2.sqlite3")
 JWT_SECRET = None
 ADMIN_EMAIL = "admin@tubewar.app"
 API = "http://127.0.0.1:9200"

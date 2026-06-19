@@ -4,7 +4,7 @@
 # usage: track_watch.sh <grind_pid> <ledger_like e.g. soc-w%> <total> <logfile>
 GP="$1"; LIKE="$2"; TOTAL="$3"; LOG="$4"
 LED=/home/ccc/tw2/.data/verify_ledger.sqlite3
-PY=/home/ccc/tubewar/.venv/bin/python3
+PY="$(command -v python3)"
 donecount(){ "$PY" -c "import sqlite3;c=sqlite3.connect('$LED');print(sum(1 for _ in c.execute(\"SELECT 1 FROM scenario_state WHERE scenario_id LIKE '$LIKE' AND status='done'\")))" 2>/dev/null || echo "?"; }
 prev=-1; same=0; n=0
 while true; do
