@@ -1,0 +1,258 @@
+lab_id: standalone-soc-week06
+title: "분석가의 눈 — 흩어진 경보를 ATT&CK으로 읽고 한 캠페인으로 엮기"
+version: standalone-soc
+course: soc
+week: 6
+description: |
+  흩어진 경보를 MITRE ATT&CK 전술/기술로 매핑하고, 시간순+출발지로 한 캠페인으로 재구성하며,
+  ModSec/Suricata 심층 분석으로 각 단계를 입증하고, P1~P4 에스컬레이션을 판정한다.
+  관측·분석 중심. 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+difficulty: medium
+duration_minutes: 180
+prerequisites:
+  - "W01–W05 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(ATT&CK) §3(캠페인) §5(에스컬레이션) 숙지"
+objectives:
+  - "경보를 ATT&CK 전술/기술로 매핑"
+  - "시간순+출발지로 캠페인 재구성"
+  - "ModSec/Suricata 심층 분석"
+  - "P1~P4 에스컬레이션 판정"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 텔레메트리 소스
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json | jq "{src:.data.src_ip,sig:.rule.description}"'
+      ```
+      ## ✅ 합격 기준
+      analysisd running + 경보 적재.
+    hint: 'analysisd + alerts.json'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json | jq "{src:.data.src_ip,sig:.rule.description}"'
+    answer_detail: "ATT&CK 분석의 토대 = 경보 스트림(alerts.json) + 심층 소스(ModSec/Suricata)."
+    verify:
+      type: output_contains
+      expect: 'analysisd'
+      field: stdout
+      semantic:
+        intent: "텔레메트리 점검"
+        success_criteria: ["analysisd", "경보 적재"]
+        acceptable_methods: ["**[OSS] wazuh-control (권장)**"]
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 공격 체인 재현 — 정찰→침투
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw6%27%20UNION%20SELECT%201--%20-\""
+      echo "chain done"
+      ```
+      ## ✅ 합격 기준
+      정찰(스캔)→침투(웹) 체인이 재현된다.
+    hint: 'nmap + 웹 SQLi'
+    category: recon
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw6%27%20UNION%20SELECT%201--%20-\""
+      sleep 6
+      echo "chain done"
+    answer_detail: "정찰(스캔)→초기침투(SQLi) — ATT&CK 전술 순서대로 진행되는 공격 체인."
+    verify:
+      type: output_contains
+      expect: 'done'
+      field: stdout
+      semantic:
+        intent: "공격 체인 재현"
+        success_criteria: ["스캔→웹 체인"]
+        acceptable_methods: ["**[OSS] nmap + 웹 (권장)**"]
+    target_vm: siem
+
+  - order: 3
+    instruction: |
+      ## 🎯 ATT&CK 매핑 — 경보를 전술/기술로
+      ## 💻 실행 명령
+      ```bash
+      echo "스캔   → TA0043 정찰 / T1046 Network Service Scanning"
+      echo "SQLi   → TA0001 초기침투 / T1190 Exploit Public-Facing App"
+      echo "인증실패 → TA0006 자격증명 / T1110 Brute Force"
+      ```
+      ## ✅ 합격 기준
+      각 경보를 ATT&CK technique(T1190 등)에 매핑한다.
+    hint: '경보 → 전술/기술 매핑'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 경보 → ATT&CK 매핑 ==="
+      echo "스캔     → TA0043 정찰 / T1046 Network Service Scanning"
+      echo "SQLi     → TA0001 초기침투 / T1190 Exploit Public-Facing Application"
+      echo "인증 실패 → TA0006 자격증명 접근 / T1110 Brute Force"
+      echo "→ 매핑하면 '정찰만(초기)' vs '침투까지(심각)' 단계가 한눈에"
+    answer_detail: "경보를 ATT&CK 전술/기술로 매핑하면 공격 단계가 보인다. 전술 순서(정찰→침투→…)로 '지금 어디까지 왔나'를 판단."
+    verify:
+      type: output_contains
+      expect: 'T1190'
+      field: stdout
+      semantic:
+        intent: "경보 ATT&CK 매핑"
+        success_criteria: ["전술/기술 매핑", "T1046/T1190/T1110"]
+        acceptable_methods: ["**[관리적] ATT&CK 매핑 (권장)**"]
+    target_vm: siem
+
+  - order: 4
+    instruction: |
+      ## 🎯 캠페인 재구성 — 시간순 + 출발지
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -10'
+      ```
+      ## ✅ 합격 기준
+      같은 출발지(10.20.30.202)의 경보를 시간순 체인으로 재구성한다.
+    hint: 'alerts.json src 10.20.30.202 시간순'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 캠페인 재구성 (출발지 10.20.30.202, 시간순) ==="
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -10'
+      echo "→ 같은 출발지 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인"
+    answer_detail: "흩어진 경보를 출발지로 묶고 시간순 정렬 = 공격 체인. ATT&CK 전술 순서와 시간순이 맞으면 강한 캠페인 신호. el34 출처 보존이 전제."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "시간순+출발지로 캠페인 재구성"
+        success_criteria: ["출발지 묶기", "시간순 체인"]
+        acceptable_methods: ["**[OSS] alerts.json 시간순+src (권장)**"]
+    target_vm: siem
+
+  - order: 5
+    instruction: |
+      ## 🎯 ModSec 심층 — 웹 단계 입증
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      ```
+      ## ✅ 합격 기준
+      웹 침투 단계를 ModSec rule/anomaly로 입증한다.
+    hint: 'modsec 942/949110'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== ModSec 심층 (T1190 입증) ==="
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      echo "→ 942(SQLi) payload가 anomaly score 누적 → 949110 차단. T1190 단계의 증거"
+    answer_detail: "캠페인의 침투 단계(T1190)를 ModSec으로 입증 — 942 SQLi rule + 949110 anomaly 차단이 증거."
+    verify:
+      type: output_contains
+      expect: '942'
+      field: stdout
+      semantic:
+        intent: "ModSec 심층으로 웹 단계 입증"
+        success_criteria: ["rule 942/949110", "T1190 증거"]
+        acceptable_methods: ["**[OSS] modsec rule (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 Suricata 심층 — 네트워크 단계 입증
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|[.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | tail -5'
+      ```
+      ## ✅ 합격 기준
+      네트워크 단계를 Suricata signature로 입증한다.
+    hint: 'eve alert signature_id'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== Suricata 심층 (T1046 정찰 입증) ==="
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|[.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | tail -5'
+      echo "→ signature_id/signature로 스캔(T1046) 단계 입증, flow로 세션 규모"
+    answer_detail: "캠페인의 정찰 단계(T1046)를 Suricata로 입증 — signature_id, 출발지, flow(세션). 네트워크 관점의 증거."
+    verify:
+      type: output_contains
+      expect: 'sqlmap'
+      field: stdout
+      semantic:
+        intent: "Suricata 심층으로 네트워크 단계 입증"
+        success_criteria: ["signature_id/signature", "T1046 증거"]
+        acceptable_methods: ["**[OSS] eve signature (권장)**"]
+    target_vm: ips
+
+  - order: 7
+    instruction: |
+      ## 🎯 에스컬레이션 판정 — P1~P4
+      ## 💻 실행 명령
+      ```bash
+      echo "정찰만(T1046)        → P3"
+      echo "침투 시도(T1190 체인) → P2 (에스컬레이션)"
+      echo "침투 성공/지속성     → P1 (즉시 IR)"
+      ```
+      ## ✅ 합격 기준
+      ATT&CK 단계+체인으로 P1~P4를 판정한다.
+    hint: 'ATT&CK 단계 깊이 → P1~P4'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 에스컬레이션 판정 ==="
+      echo "정찰만(T1046)         → P3 (모니터링)"
+      echo "정찰→침투 체인(T1190)  → P2 (에스컬레이션 — 진행형)"
+      echo "침투 성공/지속성(T1136) → P1 (즉시 IR)"
+      echo "→ 본 캠페인: 정찰→침투 체인 진행 = P2 에스컬레이션(L2/IR로)"
+    answer_detail: "ATT&CK 단계가 깊을수록(정찰<침투<지속성) 우선순위↑. 체인이 진전 중이면 에스컬레이션. 정찰→침투 = P2(L2로 올림)."
+    verify:
+      type: output_contains
+      expect: 'P2'
+      field: stdout
+      semantic:
+        intent: "P1~P4 에스컬레이션 판정"
+        success_criteria: ["단계 깊이 기반 우선순위", "에스컬레이션 결정"]
+        acceptable_methods: ["**[설명] ATT&CK 단계→우선순위 (권장)**"]
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 캠페인 분석 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC W06 캠페인 분석 보고서 (학번, 이름)
+      ## 1. ATT&CK 매핑 (경보→전술/기술)
+      ## 2. 캠페인 재구성 (시간순+출발지)
+      ## 3. 심층 증거 (ModSec/Suricata)
+      ## 4. 에스컬레이션 (P1~P4)
+      ```
+      ## ✅ 합격 기준
+      보고서에 ATT&CK 매핑 + 캠페인 + 에스컬레이션이 포함된다.
+    hint: 'ATT&CK+캠페인+에스컬레이션'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # SOC W06 캠페인 분석 보고서
+      ## 1. ATT&CK: 스캔(T1046 정찰)→SQLi(T1190 침투)→(인증 T1110)
+      ## 2. 캠페인: 출발지 10.20.30.202, 시간순 정찰→침투 체인
+      ## 3. 증거: ModSec(942→949110), Suricata(scan signature_id), 출처 보존
+      ## 4. 에스컬레이션: 정찰→침투 체인 진행 = P2(L2/IR로)
+      ## 결론: ATT&CK으로 읽으면 흩어진 경보가 '어느 단계까지 온 캠페인'으로 보인다
+      EOF
+    answer_detail: "ATT&CK 캠페인 분석 = 매핑→재구성→심층증거→에스컬레이션. 분석가의 눈은 경보를 단계로 읽어 캠페인을 본다."
+    verify:
+      type: output_contains
+      expect: 'ATT&CK'
+      field: stdout
+      semantic:
+        intent: "캠페인 분석 종합 보고"
+        success_criteria: ["ATT&CK 매핑", "캠페인", "에스컬레이션"]
+        acceptable_methods: ["**[관리적] 캠페인 보고서 (권장)**"]
+    target_vm: siem
