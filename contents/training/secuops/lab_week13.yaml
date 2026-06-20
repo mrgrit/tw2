@@ -1,0 +1,401 @@
+lab_id: standalone-secuops-week13
+title: "맥락이 평결을 바꾼다 — enrichment + 빈도로 경보 우선순위 자동 격상"
+version: standalone-secuops
+course: secuops
+week: 13
+description: |
+  W12의 정적 IOC 매칭을 넘어, 같은 경보라도 맥락(평판·지역·빈도)으로 위험도를 동적으로 올린다.
+  평판 enrichment 격상 룰과 frequency/timeframe 빈도 격상 룰을 작성하고 wazuh-logtest로 검증하며,
+  OpenCTI Stream Connector로 인텔→CDB 자동화를 이해한다. 격상 룰은 끝나면 삭제(공유 매니저 무중단·보존).
+  모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-<comp>` 로.
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "W12(IOC/CDB 매칭) 통과"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec"
+  - "lecture §2(enrichment) §3(빈도) §4(평판격상) §5(자동화) 숙지"
+objectives:
+  - "enrichment(평판/지역) 개념 + 평판 격상 룰(id 101302) logtest 검증"
+  - "frequency/timeframe 빈도 격상 룰(id 101301) logtest 검증"
+  - "enrichment + 빈도 결합으로 동적 우선순위(P1) 이해"
+  - "OpenCTI Stream Connector → CDB 자동화 그림"
+  - "반복 공격이 Wazuh로 수렴(출처 보존) + 베이스 보존"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — Wazuh manager + 인텔 스택
+
+      동적 격상의 기반인 manager(상관 엔진)와 인텔 플랫폼을 확인한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      docker ps --format '{{.Names}}' | grep -ciE 'opencti|connector'
+      ```
+      ## ✅ 합격 기준
+      analysisd running + OpenCTI/connector 가동.
+    hint: 'wazuh-control analysisd + opencti/connector 수'
+    category: survey
+    points: 8
+    answer: |
+      echo "=== Wazuh 상관 엔진 ==="
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      echo "=== OpenCTI/connector 컨테이너 수 ==="
+      docker ps --format '{{.Names}}' | grep -ciE 'opencti|connector'
+    answer_detail: "analysisd가 빈도(frequency) 상관을 돌리는 엔진. OpenCTI/connector가 enrichment·자동화의 인텔 소스. 동적 격상의 기반."
+    verify:
+      type: output_contains
+      expect: 'analysisd'
+      field: stdout
+      semantic:
+        intent: "상관 엔진 + 인텔 스택 점검"
+        success_criteria: ["analysisd running", "opencti/connector 가동"]
+        acceptable_methods:
+          - "**[OSS] wazuh-control + docker ps (권장)**"
+          - "**[설명] analysisd=빈도 상관 엔진**"
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 평판 enrichment 격상 룰 (id 101302)
+
+      같은 경보라도 출발지 평판이 나쁘면 격상한다. enrichment로 붙은 reputation 필드를 룰이 본다.
+      wazuh-logtest로 격상을 검증하고 정리(베이스 보존).
+
+      ## 💻 실행 명령
+      ```bash
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w13_lr.bak
+      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name="edu_w13,">
+        <rule id="101302" level="12">
+          <decoded_as>json</decoded_as>
+          <field name="reputation">known-bad</field>
+          <description>EDU W13 - bad-reputation source, escalate</description>
+        </rule>
+      </group>
+      EOF'
+      echo '{"reputation":"known-bad","src_ip":"9.9.9.9"}' | sudo /var/ossec/bin/wazuh-logtest
+      sudo cp /tmp/w13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w13_lr.bak
+      ```
+      ## ✅ 합격 기준
+      logtest 에 rule `101302` level 12 격상이 발화한다.
+    hint: 'reputation 필드 격상 룰(101302) → logtest → cp 복원'
+    category: manipulation
+    points: 16
+    answer: |
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w13_lr.bak'
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"edu_w13r,\">
+        <rule id=\"101302\" level=\"12\">
+          <decoded_as>json</decoded_as>
+          <field name=\"reputation\">known-bad</field>
+          <description>EDU W13 bad-reputation source escalate</description>
+        </rule>
+      </group>
+      EOF"'
+      docker exec el34-siem sh -c 'cat > /tmp/w13r.json <<EOF
+      {"reputation":"known-bad","src_ip":"9.9.9.9"}
+      EOF'
+      echo "=== 평판 격상 logtest ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w13r.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/w13r.json'
+      docker exec el34-siem sh -c 'sudo cp /tmp/w13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w13_lr.bak; echo "복원 잔재=$(grep -c 101302 /var/ossec/etc/rules/local_rules.xml)"'
+    answer_detail: "enrichment(평판)이 붙은 reputation 필드가 known-bad면 level 12로 격상 — 같은 경보가 출발지 평판 때문에 우선순위가 오른다. 운영은 CDB list+<list lookup>로 src_ip 평판 조회."
+    verify:
+      type: output_contains
+      expect: '101302'
+      field: stdout
+      semantic:
+        intent: "평판 enrichment 기반 격상 룰 작성 + logtest 검증"
+        success_criteria: ["id 101302 작성", "logtest level 12 발화", "cp 복원 self-clean"]
+        acceptable_methods:
+          - "**[OSS] reputation field 룰 + wazuh-logtest (권장)**"
+          - "**[설명] enrichment=우선순위 변경**"
+    target_vm: siem
+
+  - order: 3
+    instruction: |
+      ## 🎯 반복 IOC 공격 — 같은 출발지에서 반복
+
+      빈도 신호를 만든다 — 같은 알려진 악성 출발지에서 반복 공격.
+
+      ## 💻 실행 명령
+      ```bash
+      for i in 1 2 3 4; do docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=ct13-$i'"; done
+      sleep 3
+      docker exec el34-web sh -c 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -c sqlmap'
+      ```
+      ## ✅ 합격 기준
+      반복 공격(sqlmap)이 audit에 여러 건 남는다.
+    hint: '같은 출처 sqlmap 4회 반복 → audit 다건'
+    category: recon
+    points: 10
+    answer: |
+      echo "=== 반복 IOC 공격 (4회) ==="
+      for i in 1 2 3 4; do docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=ct13-$i'"; done
+      sleep 3
+      echo "=== audit 의 sqlmap 반복 건수 ==="
+      docker exec el34-web sh -c 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -c sqlmap'
+    answer_detail: "같은 출발지(10.20.30.202)에서 sqlmap 반복 = 빈도 신호. 단발이면 P3지만 반복되면 빈도 룰이 격상한다. enrichment(평판)와 결합하면 즉시 P1."
+    verify:
+      type: output_contains
+      expect: 'sqlmap'
+      field: stdout
+      semantic:
+        intent: "반복 IOC 공격으로 빈도 신호 생성"
+        success_criteria: ["sqlmap 반복 공격", "audit 다건", "빈도 신호 이해"]
+        acceptable_methods:
+          - "**[OSS] 외부 attacker 반복 sqlmap (권장)**"
+          - "**[설명] 빈도=격상 신호**"
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 빈도 격상 룰 — 반복되면 고위험 (id 101301)
+
+      "120초 안에 3회 이상 매칭 → critical 격상" 룰을 쓰고, 반복 입력으로 wazuh-logtest 검증.
+
+      ## 💻 실행 명령
+      ```bash
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w13_lr.bak
+      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name="edu_w13f,">
+        <rule id="101300" level="5">
+          <decoded_as>json</decoded_as>
+          <field name="tool">sqlmap</field>
+          <description>EDU W13 base - known-bad tool</description>
+        </rule>
+        <rule id="101301" level="13" frequency="3" timeframe="120">
+          <if_matched_sid>101300</if_matched_sid>
+          <description>EDU W13 - repeated known-bad, escalate critical</description>
+        </rule>
+      </group>
+      EOF'
+      # 반복 입력(5줄) → 빈도 룰 발화
+      printf '%s\n%s\n%s\n%s\n%s\n' '{"tool":"sqlmap"}' '{"tool":"sqlmap"}' '{"tool":"sqlmap"}' '{"tool":"sqlmap"}' '{"tool":"sqlmap"}' | sudo /var/ossec/bin/wazuh-logtest
+      sudo cp /tmp/w13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w13_lr.bak
+      ```
+      ## ✅ 합격 기준
+      logtest 에 rule `101301` level 13 빈도 격상이 발화한다.
+    hint: 'base(101300)+frequency(101301) → 반복 입력 logtest 발화 → cp 복원'
+    category: manipulation
+    points: 18
+    answer: |
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w13_lr.bak'
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"edu_w13f,\">
+        <rule id=\"101300\" level=\"5\">
+          <decoded_as>json</decoded_as>
+          <field name=\"tool\">sqlmap</field>
+          <description>EDU W13 base known-bad tool</description>
+        </rule>
+        <rule id=\"101301\" level=\"13\" frequency=\"3\" timeframe=\"120\">
+          <if_matched_sid>101300</if_matched_sid>
+          <description>EDU W13 repeated known-bad escalate critical</description>
+        </rule>
+      </group>
+      EOF"'
+      docker exec el34-siem sh -c 'cat > /tmp/w13f.json <<EOF
+      {"tool":"sqlmap","src_ip":"9.9.9.9"}
+      {"tool":"sqlmap","src_ip":"9.9.9.9"}
+      {"tool":"sqlmap","src_ip":"9.9.9.9"}
+      {"tool":"sqlmap","src_ip":"9.9.9.9"}
+      {"tool":"sqlmap","src_ip":"9.9.9.9"}
+      EOF'
+      echo "=== 빈도 격상 logtest (5회 반복) ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w13f.json 2>&1 | grep -aE "id: .1013|level: .13|frequency:|Alert to be" | head -6; rm -f /tmp/w13f.json'
+      docker exec el34-siem sh -c 'sudo cp /tmp/w13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w13_lr.bak; echo "복원 잔재=$(grep -c 101301 /var/ossec/etc/rules/local_rules.xml)"'
+    answer_detail: "frequency=3 timeframe=120 + if_matched_sid 101300 → 120초내 base 룰 3회+ 반복 시 level 13 격상. 단발 sqlmap(level 5)이 반복되면 critical로. same_source_ip/same_field로 '같은 출처 반복'만 좁힐 수 있다."
+    verify:
+      type: output_contains
+      expect: '101301'
+      field: stdout
+      semantic:
+        intent: "빈도(frequency/timeframe) 기반 격상 룰 작성 + logtest 검증"
+        success_criteria: ["id 101301 frequency/timeframe", "반복 입력 시 level 13 발화", "cp 복원 self-clean"]
+        acceptable_methods:
+          - "**[OSS] frequency 룰 + 반복 입력 wazuh-logtest (권장)**"
+          - "**[OSS] if_matched_sid/group + same_source_ip**"
+          - "**[설명] 반복=동적 격상**"
+    target_vm: siem
+
+  - order: 5
+    instruction: |
+      ## 🎯 결합 분석 — enrichment + 빈도 → 동적 우선순위
+
+      두 신호를 결합하면 평결이 어떻게 바뀌는지 정리한다.
+
+      ## 💻 실행 명령
+      ```bash
+      echo "단발 평범 IP        → P3 (보통)"
+      echo "평판 불량(101302)   → P2 (주의)"
+      echo "평판 불량 + 반복(101301) → P1 (고위험, 자동 격상)"
+      ```
+      ## ✅ 합격 기준
+      enrichment + 빈도 결합이 P1 격상으로 이어짐을 정리한다.
+    hint: '평판 + 빈도 결합 → P1'
+    category: analysis
+    points: 8
+    answer: |
+      echo "=== 맥락 결합 → 동적 우선순위 ==="
+      echo "단발 평범 IP             → P3 (보통)"
+      echo "평판 불량(rule 101302)   → P2 (주의)"
+      echo "적대 국가(GeoIP)         → P2 (주의)"
+      echo "평판 불량 + 반복(101301) → P1 (고위험, 자동 격상)"
+      echo "→ enrichment(평판/지역) + 빈도(반복)가 결합되면 같은 경보가 P1로"
+    answer_detail: "맥락이 평결을 바꾼다 — enrichment(평판/지역/자산)와 빈도(반복)를 결합해 우선순위를 동적 조정. 분석가는 P1부터 본다. 정적 매칭(W12)을 넘은 CTI 운영의 성숙."
+    verify:
+      type: output_contains
+      expect: 'P1'
+      field: stdout
+      semantic:
+        intent: "enrichment + 빈도 결합의 동적 우선순위 이해"
+        success_criteria: ["맥락별 P3→P2→P1", "결합 격상 로직"]
+        acceptable_methods:
+          - "**[설명] 맥락 결합 우선순위 (권장)**"
+    target_vm: siem
+
+  - order: 6
+    instruction: |
+      ## 🎯 자동화 — OpenCTI Stream Connector → CDB sync
+
+      수작업 IOC 입력의 한계를 자동화로 넘는다. OpenCTI connector가 인텔을 실시간 수집·변환한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker ps --format '{{.Names}}' | grep -iE 'connector' | head
+      ```
+      ## ✅ 합격 기준
+      OpenCTI `connector` 들이 가동 중이다(자동화 기반).
+    hint: 'docker ps 의 connector(자동 sync 기반)'
+    category: survey
+    points: 8
+    answer: |
+      echo "=== OpenCTI connector (인텔 자동 수집/변환) ==="
+      docker ps --format '{{.Names}}' | grep -iE 'connector' | head
+      echo "(운영: connector가 OpenCTI indicator 변경 구독 → STIX→key:value → Wazuh CDB 자동 sync → 매칭룰 즉시 인식)"
+    answer_detail: "OpenCTI Stream Connector(또는 Python 스크립트)가 indicator 변경을 실시간 구독해 Wazuh CDB list로 자동 sync. 인텔이 들어오면 SIEM이 자동으로 알아보는 운영 자동화의 끝그림. el34엔 MITRE/import/export connector가 가동 중."
+    verify:
+      type: output_contains
+      expect: 'connector'
+      field: stdout
+      semantic:
+        intent: "인텔→CDB 자동화(Stream Connector) 이해"
+        success_criteria: ["connector 가동 확인", "OpenCTI→CDB sync 흐름"]
+        acceptable_methods:
+          - "**[OSS] docker ps connector (권장)**"
+          - "**[설명] 자동 sync 파이프라인**"
+    target_vm: siem
+
+  - order: 7
+    instruction: |
+      ## 🎯 반복 공격 수렴 — 같은 출처 (출처 보존)
+
+      반복 공격이 Wazuh로 수렴하는지(같은 출처 IP) 확인한다 — 빈도 룰의 입력원.
+
+      ## 💻 실행 명령
+      ```bash
+      for i in 1 2 3; do docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=ct13b-$i%27%20UNION%20SELECT%201--%20-'"; done
+      sleep 8
+      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.rule.groups|index(\"ids\"))|.data.src_ip" | sort | uniq -c | tail -3'
+      ```
+      ## ✅ 합격 기준
+      alerts.json 에 같은 출처 `10.20.30.202` 가 반복 집계된다.
+    hint: '반복 공격 → alerts.json 같은 src 10.20.30.202 다건'
+    category: detect
+    points: 14
+    answer: |
+      echo "=== 반복 공격(같은 출처) ==="
+      for i in 1 2 3; do docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=ct13b-$i%27%20UNION%20SELECT%201--%20-'"; done
+      sleep 8
+      echo "=== alerts.json 출처별 반복 집계 ==="
+      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.rule.groups|index(\"ids\"))|.data.src_ip" | sort | uniq -c | tail -3'
+    answer_detail: "반복 공격이 같은 출처 10.20.30.202로 alerts.json에 집계 — 출처 보존(SNAT 없음)이 빈도 상관의 전제. same_source_ip 빈도 룰이 이 반복을 격상한다."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "반복 공격이 같은 출처로 Wazuh에 수렴(빈도 입력원)"
+        success_criteria: ["같은 src 10.20.30.202 반복 집계", "출처 보존", "빈도 상관 전제"]
+        acceptable_methods:
+          - "**[OSS] 반복 공격 후 src 집계 (권장)**"
+          - "**[설명] 출처 보존→same_source_ip 빈도**"
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 종합 보고서 — 맥락이 평결을 바꾼다
+
+      STEP 1–7 을 동적 우선순위 관점으로 정리한다.
+
+      ## 💻 보고서 양식
+      ```markdown
+      # el34 W13 enrichment/빈도 보고서 (학번, 이름)
+      ## 1. enrichment (평판/지역/자산) — 평판 격상 룰 101302
+      ## 2. 빈도 (frequency/timeframe) — 빈도 격상 룰 101301
+      ## 3. 결합 → 동적 우선순위 (P3→P2→P1)
+      ## 4. 자동화 (OpenCTI Stream Connector → CDB)
+      ## 5. 출처 보존 → same_source_ip 빈도 상관
+      ```
+      ## ✅ 합격 기준
+      보고서에 enrichment + 빈도 격상이 포함된다.
+    hint: 'enrichment + 빈도 → 동적 우선순위 + 자동화'
+    category: report
+    points: 5
+    answer: |
+      cat <<'EOF'
+      # el34 W13 enrichment/빈도 보고서
+      ## 1. enrichment: 평판(known-bad)→101302 level12, 지역(GeoIP), 자산가치
+      ## 2. 빈도: frequency=3 timeframe=120 + if_matched_sid → 101301 level13
+      ## 3. 결합: 단발 P3 / 평판 P2 / 평판+반복 P1 (동적 격상)
+      ## 4. 자동화: OpenCTI Stream Connector → STIX→key:value → Wazuh CDB sync
+      ## 5. 출처 보존(10.20.30.202) → same_source_ip 빈도 상관 가능
+      ## 결론: 정적 매칭(W12)을 넘어 맥락(enrichment+빈도)이 평결을 동적으로 바꾼다
+      EOF
+    answer_detail: "동적 우선순위 = enrichment(맥락) + 빈도(반복). 같은 경보도 맥락에 따라 P1까지. 자동화(Stream Connector)로 운영 부담을 줄인다."
+    verify:
+      type: output_contains
+      expect: 'enrichment'
+      field: stdout
+      semantic:
+        intent: "enrichment + 빈도 동적 우선순위 종합 보고"
+        success_criteria: ["enrichment 격상", "빈도 격상", "결합 P1 + 자동화"]
+        acceptable_methods:
+          - "**[관리적] 보고서 양식 (권장)**"
+          - "**[설명] 동적 우선순위 흐름**"
+    target_vm: siem
+
+  - order: 9
+    instruction: |
+      ## 🎯 정리 확인 — 공유 매니저 보존
+
+      커스텀 룰(101300/101301/101302)을 self-clean 했으므로 잔재가 없어야 한다. 라이브 매니저는
+      재시작하지 않았다(logtest로만 검증).
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-siem sh -c 'for r in 101300 101301 101302; do echo "$r 잔재=$(grep -c $r /var/ossec/etc/rules/local_rules.xml)"; done; ls /tmp/w13_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      echo "---check done---"
+      ```
+      ## ✅ 합격 기준
+      101300/101301/101302 잔재 0 + `check done`.
+    hint: '커스텀 룰 3개 + 백업 잔재 0 확인'
+    category: cleanup
+    points: 5
+    answer: |
+      docker exec el34-siem sh -c 'for r in 101300 101301 101302; do echo "$r 잔재=$(grep -c $r /var/ossec/etc/rules/local_rules.xml)"; done; ls /tmp/w13_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      echo "---check done---"
+    answer_detail: "공유 매니저 보존 — 커스텀 룰 cp 복원, 라이브 무재시작. base local_rules.xml 원상태."
+    verify:
+      type: output_contains
+      expect: 'check done'
+      field: stdout
+      semantic:
+        intent: "커스텀 룰 정리 확인 — 공유 매니저 보존"
+        success_criteria: ["101300/101301/101302 잔재 0", "라이브 무재시작"]
+        acceptable_methods:
+          - "**[OSS] 잔재 점검 (권장)**"
+          - "**[설명] 공유 SIEM 보존**"
+    target_vm: siem
