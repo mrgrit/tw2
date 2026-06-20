@@ -1,0 +1,249 @@
+lab_id: standalone-attack-week06
+title: "권한 경계 넘기 — 무차별대입·IDOR·강제 브라우징 (A01·A07)"
+version: standalone-attack
+course: attack
+week: 6
+description: |
+  인가(authorization) 우회 — 강제 브라우징(링크 없는 경로), Broken Access Control(무인증 관리 기능),
+  IDOR(ID만 바꿔 남의 자원)로 권한 경계를 넘는다. juiceshop 대상. 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: medium
+duration_minutes: 170
+prerequisites:
+  - "W01–W05 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(강제브라우징) §3(A01) §4(IDOR) 숙지"
+objectives:
+  - "강제 브라우징으로 숨은 경로 접근"
+  - "Broken Access Control(무인증 관리) 식별"
+  - "접근 제어 일관성(보호 vs 노출) 비교 + IDOR 개념"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — juiceshop
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      juiceshop 도달.
+    hint: '도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+    answer_detail: "접근 제어 공격 대상 = juiceshop(A01/IDOR 취약)."
+    verify:
+      type: output_contains
+      expect: 'juice'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 강제 브라우징 — 링크 없는 문
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ftp=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'legal=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp/legal.md"
+      ```
+      ## ✅ 합격 기준
+      /ftp 디렉토리/파일에 직접 접근(200)한다.
+    hint: '/ftp 강제 브라우징'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 강제 브라우징 (/ftp) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ftp=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'legal=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp/legal.md"
+      echo "→ UI에 링크 없어도 /ftp 직접 접근 = 200(디렉토리/파일 노출). 접근 제어 누락"
+    answer_detail: "강제 브라우징 = 링크 없는 경로 직접 요청. /ftp가 200(디렉토리 리스팅 + 파일 노출). UI 숨김은 방어가 아니다."
+    verify:
+      type: output_contains
+      expect: 'ftp=200'
+      field: stdout
+      semantic:
+        intent: "강제 브라우징으로 숨은 경로 접근"
+        success_criteria: ["/ftp 200 접근", "접근제어 누락"]
+        acceptable_methods: ["**[OSS] curl /ftp (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 Broken Access Control (A01) — 무인증 관리
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
+      ```
+      ## ✅ 합격 기준
+      관리 엔드포인트가 무인증 접근(200)됨을 확인한다.
+    hint: '/rest/admin/application-configuration 무인증'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== Broken Access Control (A01, 무인증 관리) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
+      echo "→ 200 = 관리 설정이 인증 없이 노출(A01). 토큰 없이 접근 가능 = 인가 검사 누락"
+    answer_detail: "A01 Broken Access Control = 관리 전용이어야 할 /rest/admin/application-configuration이 무인증 200. 인가 검사 누락의 전형."
+    verify:
+      type: output_contains
+      expect: 'admincfg=200'
+      field: stdout
+      semantic:
+        intent: "Broken Access Control 식별"
+        success_criteria: ["무인증 관리 엔드포인트 200", "A01"]
+        acceptable_methods: ["**[OSS] curl 무인증 관리 (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 접근 제어 일관성 — 보호 vs 노출
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'users=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
+      ```
+      ## ✅ 합격 기준
+      보호됨(401)과 노출(200)의 불일치를 확인한다.
+    hint: '/api/Users(401) vs admin-config(200)'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 접근 제어 일관성 (보호 vs 노출) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'users=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
+      echo "→ /api/Users=401(보호됨) vs admin-config=200(노출). 같은 앱서도 인가 일관성 없음 = 공격 기회"
+    answer_detail: "접근 제어의 일관성 부재가 약점 — /api/Users는 401(보호)인데 /rest/admin/...은 200(노출). 일관성 없는 인가가 공격 표면."
+    verify:
+      type: output_contains
+      expect: 'users=401'
+      field: stdout
+      semantic:
+        intent: "접근 제어 일관성 비교"
+        success_criteria: ["보호(401) vs 노출(200) 불일치"]
+        acceptable_methods: ["**[OSS] 엔드포인트 비교 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 IDOR 개념/시도 — 순차 자원
+      ## 💻 실행 명령
+      ```bash
+      for i in 1 2 3; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'product$i=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/products/$i"; done; echo
+      ```
+      ## ✅ 합격 기준
+      순차 ID 접근(IDOR 표면)을 시도한다.
+    hint: '순차 ID /rest/products/$i'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== IDOR 시도 (순차 자원 ID) ==="
+      for i in 1 2 3; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'product$i=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/products/$i"; done; echo
+      echo "→ ID만 바꿔 순차 자원 접근. 소유권 검사 없으면 남의 자원 노출(IDOR). 보호 자원(basket/user)일수록 위험"
+    answer_detail: "IDOR = ID로 직접 참조하는 자원에 소유권 검사 없음. 순차 ID(1,2,3)를 바꿔 접근. products는 공개지만 basket/user 같은 보호 자원이 IDOR이면 치명적."
+    verify:
+      type: output_contains
+      expect: 'product1'
+      field: stdout
+      semantic:
+        intent: "IDOR 순차 자원 시도"
+        success_criteria: ["순차 ID 접근", "IDOR 개념"]
+        acceptable_methods: ["**[OSS] 순차 ID 요청 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 탐지 — 강제 브라우징 패턴
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/*access.log 2>/dev/null | grep -aE "/ftp|/rest/admin" | tail -5'
+      ```
+      ## ✅ 합격 기준
+      강제 브라우징/관리 접근이 access.log에 남음을 확인한다.
+    hint: 'access.log 의 /ftp /rest/admin 요청'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 강제 브라우징 탐지 (access.log) ==="
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/juice_access.log 2>/dev/null | grep -aE "/ftp|/rest/admin|/api/Users" | tail -6 || sudo tail -40 /var/log/apache2/access.log | grep -aE "/ftp|/rest/admin" | tail -6'
+      echo "→ 강제 브라우징/관리 접근이 access.log에 기록. 대량 404/순차 ID 요청은 IDS 패턴"
+    answer_detail: "접근 제어 공격 탐지 = access.log의 /ftp, /rest/admin, 순차 ID 요청 패턴. 대량 404/403은 강제 브라우징 신호."
+    verify:
+      type: output_contains
+      expect: 'ftp'
+      field: stdout
+      semantic:
+        intent: "강제 브라우징 access.log 탐지"
+        success_criteria: ["/ftp,/admin 요청 흔적"]
+        acceptable_methods: ["**[OSS] access.log grep (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 서버측 인가 검사
+      ## 💻 실행 명령
+      ```bash
+      echo "방어: 모든 자원에 서버측 인가(소유권/역할) 검사, 기본 deny. UI 숨김/순차ID회피는 방어 아님"
+      ```
+      ## ✅ 합격 기준
+      A01/IDOR 방어를 정리한다.
+    hint: '서버측 인가 검사, 기본 deny'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 접근 제어 방어 ==="
+      echo "① 서버측 인가 검사: 모든 자원 접근에 소유권/역할 확인(클라 검사 X)"
+      echo "② 기본 deny: 명시 허용 외 모두 차단"
+      echo "③ IDOR: 간접 참조(맵핑)/소유권 검증. UUID는 보조"
+      echo "→ UI 숨김·링크 제거·순차ID 회피는 방어가 아니다. 서버 인가가 근본"
+    answer_detail: "A01/IDOR 방어 = 서버측 인가 검사(소유권/역할) + 기본 deny. UI 숨김은 방어 아님(강제 브라우징으로 뚫림)."
+    verify:
+      type: output_contains
+      expect: '인가'
+      field: stdout
+      semantic:
+        intent: "접근 제어 방어 정리"
+        success_criteria: ["서버측 인가", "기본 deny"]
+        acceptable_methods: ["**[설명] 인가 검사 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 접근 제어 공격 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W06 접근 제어 보고서 (학번, 이름)
+      ## 1. 강제 브라우징 (/ftp)
+      ## 2. Broken Access Control (무인증 관리)
+      ## 3. 접근 제어 일관성 + IDOR
+      ## 4. 탐지 + 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 A01/IDOR 공격 + 방어가 포함된다.
+    hint: '강제브라우징+A01+IDOR+방어'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 공격 W06 접근 제어 보고서
+      ## 1. 강제 브라우징: /ftp 200(디렉토리/파일 노출, UI에 없는 경로)
+      ## 2. Broken Access(A01): /rest/admin/application-configuration 무인증 200
+      ## 3. 일관성: /api/Users 401(보호) vs admin-config 200(노출). IDOR=순차 자원 ID
+      ## 4. 탐지: access.log /ftp,/admin 패턴. 방어: 서버측 인가 검사+기본 deny
+      ## 결론: 인증보다 인가가 약하다(A01 1위). UI 숨김은 방어 아님 — 서버 인가가 근본
+      EOF
+    answer_detail: "접근 제어 공격 = 강제 브라우징+A01+IDOR. 인가 누락을 찾는다. 근본 방어는 서버측 인가 검사."
+    verify:
+      type: output_contains
+      expect: 'IDOR'
+      field: stdout
+      semantic:
+        intent: "접근 제어 종합 보고"
+        success_criteria: ["강제브라우징/A01/IDOR/방어"]
+        acceptable_methods: ["**[관리적] 접근제어 보고서 (권장)**"]
+    target_vm: web
