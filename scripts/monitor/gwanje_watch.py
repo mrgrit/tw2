@@ -94,11 +94,6 @@ def main():
     if new_done:
         reasons.append(f"phase완료: 배틀 {new_done} 종료")
 
-    # (3) 누적 — 마지막 보고 후 주목 사이클 N건
-    cycles_accum = st.get("cycles_accum", 0) + (1 if cycle_report else 0)
-    if cycles_accum >= ACCUM_CYCLES:
-        reasons.append(f"누적 주목 사이클 {cycles_accum}≥{ACCUM_CYCLES}")
-
     # (4) 유휴 마감 — 활성배틀 있었다가 지속 유휴
     active_n = len([b for b in (snap.get("active_battles") or []) if isinstance(b, dict)])
     orphan_ids = {o.get("battle_id") for o in (snap.get("orphans") or [])}
@@ -110,14 +105,15 @@ def main():
     if was_active and idle and idle_streak == IDLE_WRAP_CYCLES:  # 마감은 한 번만
         reasons.append(f"유휴 마감(활성→유휴 {idle_streak}사이클)")
 
-    report_tier = bool(reasons)
+    # 여기까지가 '실사유'(severity/phase/idle). 누적(3)은 메타 카운터라 억제 판정에서 제외한다.
+    real_reason = bool(reasons)
 
     # ── edge vs level: 지속되는 *동일* 조건은 매 사이클 재경보하지 않고 heartbeat 주기로 강등 ──
     # (예: Assessor 가 계속 다운이면 첫 사이클만 보고, 이후엔 HEARTBEAT_CYCLES 마다 재확인)
     HEARTBEAT_CYCLES = int(os.environ.get("GWANJE_LEVEL_HEARTBEAT", "5"))
     why_sig = "|".join(sorted(why))
     suppressed = st.get("suppressed", 0)
-    if cycle_report and not report_tier and why_sig and why_sig == st.get("last_why_sig"):
+    if cycle_report and not real_reason and why_sig and why_sig == st.get("last_why_sig"):
         # 직전과 신호 구성이 동일(=새 변화 없음) → heartbeat 전까지 침묵
         if suppressed + 1 < HEARTBEAT_CYCLES:
             cycle_report = False
@@ -126,6 +122,13 @@ def main():
             suppressed = 0  # heartbeat 도달 → 한 번 재경보
     else:
         suppressed = 0
+
+    # (3) 누적 — '실제 surfaced 된' CYCLE 만 카운트(지속-known 억제분 제외). 진짜 장기-스턱 안전망.
+    cycles_accum = st.get("cycles_accum", 0) + (1 if cycle_report else 0)
+    if cycles_accum >= ACCUM_CYCLES:
+        reasons.append(f"누적 주목 사이클 {cycles_accum}≥{ACCUM_CYCLES}")
+
+    report_tier = bool(reasons)
 
     # ── 상태 갱신 ────────────────────────────────────────────
     new_state = {
