@@ -1,0 +1,300 @@
+lab_id: standalone-soc-week03
+title: "웹 공격 vs 네트워크/웹 로그(Apache·ModSec·Suricata) 교차 분석"
+version: standalone-soc
+course: soc
+week: 3
+description: |
+  같은 웹 공격이 세 로그(Apache access·ModSec audit·Suricata eve)에 어떻게 다르게 남는지 교차 분석한다.
+  각 로그의 강점(전체 요청/WAF 판단/네트워크 시그니처)을 이해하고, 같은 출발지로 한 사건으로 상관하며,
+  Wazuh로 수렴함을 확인한다. 관측·분석 중심, 인프라 변경 없음. 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+difficulty: medium
+duration_minutes: 180
+prerequisites:
+  - "W01–W02 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §1(세 로그) §2(ModSec) §3(eve) §4(교차) 숙지"
+objectives:
+  - "ModSec audit에서 rule id/payload/응답코드 식별"
+  - "Apache access에서 요청 라인/응답코드(전체상) 분석"
+  - "Suricata eve에서 event_type 분포/시그니처 식별"
+  - "세 로그를 같은 출발지로 교차 상관 + Wazuh 수렴 확인"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 세 로그의 위치
+
+      웹 공격 분석의 세 소스를 확인한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo ls -la /var/log/apache2/dvwa_access.log /var/log/apache2/modsec_audit.log'
+      docker exec el34-ips sh -c 'ls -la /var/log/suricata/eve.json'
+      ```
+      ## ✅ 합격 기준
+      Apache access / ModSec audit / Suricata eve 세 로그가 존재한다.
+    hint: 'dvwa_access.log + modsec_audit.log + eve.json'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== Apache access + ModSec audit (web) ==="
+      docker exec el34-web sh -c 'sudo ls -la /var/log/apache2/dvwa_access.log /var/log/apache2/modsec_audit.log'
+      echo "=== Suricata eve (ips) ==="
+      docker exec el34-ips sh -c 'ls -la /var/log/suricata/eve.json'
+    answer_detail: "세 로그 = Apache access(전체 요청/응답), ModSec audit(WAF 판단), Suricata eve(네트워크). dvwa는 per-vhost access 로그(dvwa_access.log)."
+    verify:
+      type: output_contains
+      expect: 'audit'
+      field: stdout
+      semantic:
+        intent: "웹 공격 분석 세 로그 위치 확인"
+        success_criteria: ["access/audit/eve 존재"]
+        acceptable_methods:
+          - "**[OSS] 세 로그 ls (권장)**"
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 웹 공격 재현 — SQLi + XSS + 스캐너
+
+      세 로그를 채울 웹 공격을 재현한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A 'sqlmap/1.7' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw3%27%20UNION%20SELECT%201--%20-\""
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      echo "web attacks done"
+      ```
+      ## ✅ 합격 기준
+      SQLi/XSS/스캐너 공격이 재현된다.
+    hint: 'sqlmap UA SQLi + XSS curl'
+    category: recon
+    points: 10
+    answer: |
+      echo "=== SQLi (스캐너 UA) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A 'sqlmap/1.7' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw3%27%20UNION%20SELECT%201--%20-\""
+      echo "=== XSS ==="
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      sleep 3
+      echo "web attacks done"
+    answer_detail: "한 공격자가 SQLi/XSS/스캐너로 dvwa를 친다. 각각 세 로그에 다르게 남는다 — access(요청), audit(WAF rule), eve(네트워크)."
+    verify:
+      type: output_contains
+      expect: 'done'
+      field: stdout
+      semantic:
+        intent: "웹 공격 재현 — 세 로그에 흔적 생성"
+        success_criteria: ["SQLi/XSS/스캐너"]
+        acceptable_methods:
+          - "**[OSS] attacker curl SQLi/XSS (권장)**"
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 ModSec audit 분석 — 왜 막혔나 (rule/payload/응답)
+
+      WAF audit에서 어떤 rule이 걸렸고 응답코드가 무엇인지 식별한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{status:.response.status, remote:.transaction.remote_address}"'
+      ```
+      ## ✅ 합격 기준
+      ModSec rule id(942/941/949110)와 응답코드를 식별한다.
+    hint: 'modsec audit 의 9xxxxx rule + response.status'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== ModSec 걸린 rule 분포 ==="
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      echo "=== 응답코드 + 출발지 ==="
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{status:.response.status, remote:.transaction.remote_address}"'
+      echo "→ 942=SQLi, 941=XSS, 913=scanner, 949110=anomaly 차단. status 403=차단"
+    answer_detail: "ModSec audit는 '왜 막혔나'를 답한다 — rule id(942 SQLi/941 XSS/913 scanner)가 어떤 payload에 걸려 949110 누적 차단(403)으로. remote_address=실제 출발지."
+    verify:
+      type: output_contains
+      expect: '942'
+      field: stdout
+      semantic:
+        intent: "ModSec audit로 rule/payload/응답 식별"
+        success_criteria: ["rule id 942/941/949", "응답코드 403", "remote_address"]
+        acceptable_methods:
+          - "**[OSS] modsec audit rule + status (권장)**"
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 Apache access 분석 — 요청 전체상
+
+      access 로그에서 요청 라인과 응답코드를 본다(WAF 판단 없이 모든 요청의 사실).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -10 /var/log/apache2/dvwa_access.log'
+      ```
+      ## ✅ 합격 기준
+      access 로그에 공격 요청 라인 + 응답코드(403 등)가 보인다.
+    hint: 'dvwa_access.log 의 요청 라인 + status'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== Apache access (dvwa) — 요청 전체상 ==="
+      docker exec el34-web sh -c 'sudo tail -10 /var/log/apache2/dvwa_access.log'
+      echo "=== 응답코드 분포 ==="
+      docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/dvwa_access.log | grep -oE "\" [0-9]{3} " | sort | uniq -c'
+      echo "→ access는 모든 요청(client IP, 요청라인, status)을 기록 — 탐지는 없지만 전체상"
+    answer_detail: "Apache access는 모든 요청을 기록 — client IP, 요청 라인, 응답코드(403 차단/200 통과). WAF 판단은 없지만 '무엇이 들어왔나'의 전체상. ModSec이 못 본 정상 요청도 여기 있다."
+    verify:
+      type: output_contains
+      expect: '403'
+      field: stdout
+      semantic:
+        intent: "Apache access로 요청 전체상/응답코드 분석"
+        success_criteria: ["요청 라인", "응답코드 분포", "전체상 이해"]
+        acceptable_methods:
+          - "**[OSS] access.log 요청/status (권장)**"
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 Suricata eve 분석 — 네트워크 관점
+
+      eve.json에서 출발지의 event_type 분포와 시그니처를 본다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.src_ip==\"10.20.30.202\")|.event_type" | sort | uniq -c'
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\")|.alert.signature" | sort | uniq -c | tail -5'
+      ```
+      ## ✅ 합격 기준
+      eve의 event_type 분포(`alert` 등)와 시그니처를 식별한다.
+    hint: 'eve.json event_type 분포 + alert signature'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 출발지 10.20.30.202 의 event_type 분포 ==="
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.src_ip==\"10.20.30.202\")|.event_type" | sort | uniq -c'
+      echo "=== alert 시그니처 ==="
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\")|.alert.signature" | sort | uniq -c | tail -5'
+      echo "→ alert(시그니처)/http(트랜잭션)/flow(세션). WAF가 못 본 네트워크 공격도 잡음"
+    answer_detail: "Suricata eve는 한 흐름을 alert(시그니처)/http(메타)/flow(세션)로 본다. 네트워크 관점 — 포트 스캔 등 비-HTTP 공격도 잡는 게 강점. WAF(L7)와 상호 보완."
+    verify:
+      type: output_contains
+      expect: 'alert'
+      field: stdout
+      semantic:
+        intent: "Suricata eve event_type/시그니처 분석"
+        success_criteria: ["event_type 분포", "alert 시그니처"]
+        acceptable_methods:
+          - "**[OSS] eve event_type + signature (권장)**"
+    target_vm: ips
+
+  - order: 6
+    instruction: |
+      ## 🎯 교차 상관 — 세 로그 같은 출발지
+
+      세 로그의 출발지가 같은 공격자(10.20.30.202)인지 교차 확인한다.
+
+      ## 💻 실행 명령
+      ```bash
+      echo "ModSec:"; docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "10\.20\.30\.202" | head -1'
+      echo "Apache:"; docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/dvwa_access.log | grep -oE "10\.20\.30\.202" | head -1'
+      echo "Suricata:"; docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\")|.src_ip" | grep -m1 "10.20.30.202"'
+      ```
+      ## ✅ 합격 기준
+      세 로그 모두 출발지 `10.20.30.202`로 상관된다.
+    hint: '세 로그의 10.20.30.202 교차 매칭'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 세 로그 교차 상관 (같은 출발지?) ==="
+      echo "[ModSec audit]"; docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "10\.20\.30\.202" | head -1'
+      echo "[Apache access]"; docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/dvwa_access.log | grep -oE "10\.20\.30\.202" | head -1'
+      echo "[Suricata eve]"; docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\")|.src_ip" | grep -m1 "10.20.30.202"'
+      echo "→ 세 로그 모두 10.20.30.202 = 한 공격자 (el34 출처 보존)"
+    answer_detail: "교차 상관 = 세 로그의 출발지가 같으면 한 사건. ModSec remote_address = Apache client IP = Suricata src_ip = 10.20.30.202. 한 로그만 보면 놓치는 것을 교차로 잡는다."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "세 로그를 같은 출발지로 교차 상관"
+        success_criteria: ["세 로그 10.20.30.202", "한 공격자 상관"]
+        acceptable_methods:
+          - "**[OSS] 세 로그 출발지 매칭 (권장)**"
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 SIEM 통합 — 세 로그가 한 경보 스트림으로
+
+      web/ips agent가 ship한 로그가 Wazuh로 수렴했는지 확인한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|.rule.description" | tail -5'
+      ```
+      ## ✅ 합격 기준
+      Wazuh에 출발지의 웹/네트워크 경보가 수렴해 있다.
+    hint: 'alerts.json 의 src 10.20.30.202 경보'
+    category: detect
+    points: 12
+    answer: |
+      echo "=== Wazuh 수렴 (출발지 10.20.30.202) ==="
+      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|{r:.rule.id,d:.rule.description}" | tail -5'
+      echo "→ 세 로그를 일일이 안 열어도 SIEM에서 한 출발지의 사건이 보인다"
+    answer_detail: "web agent(apache/json) + ips agent(eve)가 Wazuh로 ship → alerts.json 한 스트림. SIEM에서 출발지로 묶어 보면 세 로그를 통합한 사건이 한눈에."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "세 로그가 Wazuh로 수렴 확인"
+        success_criteria: ["alerts.json 출발지 경보", "SIEM 통합 이해"]
+        acceptable_methods:
+          - "**[OSS] alerts.json 출발지 경보 (권장)**"
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 교차 분석 보고서
+
+      STEP 1–7을 세 로그 교차 분석 보고서로 종합한다.
+
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC W03 웹 공격 교차 분석 보고서 (학번, 이름)
+      ## 1. ModSec (rule/payload/응답)
+      ## 2. Apache access (요청 전체상)
+      ## 3. Suricata eve (event_type/시그니처)
+      ## 4. 교차 상관 (같은 출발지)
+      ## 5. SIEM 통합 결론
+      ```
+      ## ✅ 합격 기준
+      보고서에 세 로그 교차 분석이 포함된다.
+    hint: '세 로그 강점 + 교차 상관'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # SOC W03 웹 공격 교차 분석 보고서
+      ## 1. ModSec: 942(SQLi)/941(XSS)/913(scanner) → 949110 차단(403), remote 10.20.30.202
+      ## 2. Apache access: GET /?id=...UNION... 403 (요청 전체상 + client IP)
+      ## 3. Suricata eve: alert(시그니처)+http+flow, src 10.20.30.202
+      ## 4. 교차 상관: 세 로그 모두 10.20.30.202 = 한 공격자
+      ## 5. SIEM 통합: web/ips agent → alerts.json 한 스트림, 출발지로 사건 종합
+      ## 결론: 한 공격도 세 로그에 다르게 남는다 — 교차로 봐야 전체상(차단됐어도 다른 경로 성공 여부 등)
+      EOF
+    answer_detail: "교차 분석 = 각 로그의 강점(access 전체상/audit WAF판단/eve 네트워크)을 합쳐 한 사건으로. 한 로그만 보면 놓치는 것을 교차로 잡는 게 SOC 분석의 핵심."
+    verify:
+      type: output_contains
+      expect: '교차'
+      field: stdout
+      semantic:
+        intent: "세 로그 교차 분석 종합 보고"
+        success_criteria: ["세 로그 강점", "교차 상관", "통합 결론"]
+        acceptable_methods:
+          - "**[관리적] 교차 분석 보고서 (권장)**"
+    target_vm: web
