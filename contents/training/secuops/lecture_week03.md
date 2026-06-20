@@ -769,7 +769,7 @@ ssh att@192.168.0.202
 # 비밀번호: 1
 ```
 
-el34-attacker(외부 .202) 에서 nikto 를 실행한다. nikto 는 ext tier 의 10.20.30.202 에서 fw 의 10.20.30.1:80 으로 요청을 보내고, fw(nftables)가 내부로 forward 하고, dmz 의 web Apache 가 Host 헤더로 vhost 를 선택해 처리한다(el34 엔 HAProxy 없음).
+el34-attacker(외부 .202) 에서 nikto 를 실행한다. nikto 는 ext tier 의 10.20.30.202 에서 fw 의 10.20.30.1:80 으로 요청을 보내고, fw(nftables)가 내부로 forward 하고, dmz 의 web Apache 가 Host 헤더로 vhost 를 선택해 처리한다.
 
 ```bash
 # el34-attacker(외부 .202) 에서 (학습 환경 한정)
@@ -780,7 +780,7 @@ nikto -h http://10.20.30.1/ -vhost juice.6v6.lab -maxtime 60s
 
 - `nikto` — 명령 이름.
 - `-h http://10.20.30.1/` — target host. fw 의 ext NIC. 그 뒤 web Apache 가 vhost 분기.
-- `-vhost juice.6v6.lab` — HTTP Host 헤더. fw 의 HAProxy 가 juice 백엔드로 라우팅.
+- `-vhost juice.6v6.lab` — HTTP Host 헤더. web 의 Apache 가 juice vhost 로 라우팅.
 - `-maxtime 60s` — 최대 실행 시간 60초. 학습용으로 짧게 잡았다.
 
 60초 안에 수백 개의 URL 이 시도된다. 각 시도가 HTTP request 한 건이다.

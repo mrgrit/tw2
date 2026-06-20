@@ -40,7 +40,7 @@
 | 카운터 (packets/bytes) | 룰이 매칭한 횟수·바이트 | **차단 효과의 증거** (운영자가 매일 본다) |
 | named set (객체/Alias) | IP·포트의 재사용 그룹 | "악성 IP 목록 한 곳에서 관리" |
 | DNAT / SNAT | 목적지 / 출발지 주소 변환 | DNAT=공개, SNAT=내부 위장 |
-| web Apache (L7) | 7계층 reverse proxy + WAF (web 컨테이너) | Host 헤더로 vhost 라우팅. 방화벽 NAT 과 역할 분담 (el34 엔 HAProxy 없음) |
+| web Apache (L7) | 7계층 reverse proxy + WAF (web 컨테이너) | Host 헤더로 vhost 라우팅. 방화벽 NAT 과 역할 분담 |
 
 > **버려도 되는 깊이**: Netfilter 5 hook 의 hook 우선순위 내부, conntrack helper 모듈 목록,
 > iptables-translate 같은 마이그레이션 도구, nft 의 internal data structure — 이런 건 운영자가
@@ -245,7 +245,7 @@ nft add rule ip six_nat postrouting oifname "eth1" ip saddr 10.20.40.0/24 \
 
 ### 6.4 web Apache(L7) ↔ 방화벽 NAT(L4) — 역할 분담
 
-el34 는 fw 에 HAProxy 가 없다. L7 라우팅은 **web 컨테이너의 Apache**(vhost), L4 주소변환은 **fw 의
+el34 의 L7 라우팅은 **web 컨테이너의 Apache**(vhost), L4 주소변환은 **fw 의
 nft NAT** 가 맡는다 — 다른 호스트, 다른 계층.
 
 | 도구 | 위치 | 계층 | 어떻게 라우팅하나 | 예 |
