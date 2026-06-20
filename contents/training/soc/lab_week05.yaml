@@ -1,0 +1,294 @@
+lab_id: standalone-soc-week05
+title: "경보 폭주 vs 경보 분석(level·groups·빈도)·오탐 판정·억제"
+version: standalone-soc
+course: soc
+week: 5
+description: |
+  SOC의 진짜 적 = 경보 폭주(alert fatigue). 수만 건을 level/groups/빈도로 분류하고, 오탐을 판정하고,
+  억제(suppression)해 진짜 위협만 남긴다. 분석은 Wazuh alerts.json, 억제는 level 0 룰(logtest 검증).
+  관측·분석 중심. 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+difficulty: medium
+duration_minutes: 180
+prerequisites:
+  - "W01–W04 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2-§4(분류 3축) §5(오탐) §6(억제) 숙지"
+objectives:
+  - "alerts.json을 level/groups/빈도로 분류"
+  - "폭주의 원인(top rule/출발지) 식별"
+  - "오탐 판정 기준 적용"
+  - "level 0 억제 룰 작성 + logtest 검증 + 보존"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 경보량
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c "\"rule\""'
+      ```
+      ## ✅ 합격 기준
+      analysisd running + 경보가 다수 수집돼 있다.
+    hint: 'analysisd + alerts.json 건수'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== manager ==="
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      echo "=== 최근 경보량(2000줄 중 rule 건수) ==="
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c "\"rule\""'
+    answer_detail: "경보량이 곧 폭주의 척도. 다수 경보를 그대로 보면 alert fatigue — 분류·억제로 줄인다."
+    verify:
+      type: output_contains
+      expect: 'analysisd'
+      field: stdout
+      semantic:
+        intent: "경보량 점검"
+        success_criteria: ["analysisd", "경보 다수"]
+        acceptable_methods: ["**[OSS] alerts.json 건수 (권장)**"]
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 경보 폭주 재현 — 반복 공격
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1'
+      for i in 1 2 3 4 5; do docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw5-$i%27%20UNION%20SELECT%201--%20-'"; done
+      echo "flood done"
+      ```
+      ## ✅ 합격 기준
+      반복 공격으로 경보 다발이 생성된다.
+    hint: 'nmap + 웹 SQLi 반복 → 경보 다발'
+    category: recon
+    points: 10
+    answer: |
+      echo "=== 스캔 + 웹 공격 반복 (폭주) ==="
+      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      for i in 1 2 3 4 5; do docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw5-$i%27%20UNION%20SELECT%201--%20-'"; done
+      sleep 6
+      echo "flood done"
+    answer_detail: "반복 공격이 Suricata/ModSec 경보 다발을 만든다 — 실제 SOC의 폭주 상황 재현."
+    verify:
+      type: output_contains
+      expect: 'done'
+      field: stdout
+      semantic:
+        intent: "경보 폭주 재현"
+        success_criteria: ["스캔+웹 반복", "경보 다발"]
+        acceptable_methods: ["**[OSS] 반복 공격 (권장)**"]
+    target_vm: siem
+
+  - order: 3
+    instruction: |
+      ## 🎯 level 분포 분석 — 심각도별
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "\"level=\"+(.rule.level|tostring)" | sort | uniq -c | sort -rn'
+      ```
+      ## ✅ 합격 기준
+      level별 분포로 고위험부터 거른다.
+    hint: 'jq .rule.level 분포'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== level 분포 (심각도별) ==="
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "\"level=\"+(.rule.level|tostring)" | sort | uniq -c | sort -rn'
+      echo "→ 폭주의 대부분은 낮은 level. 높은 level(12+)부터 본다"
+    answer_detail: "level로 첫 칼질 — 0~4 정보성(대부분 무시), 7+ 주목, 12+ 고위험. 폭주의 대부분이 낮은 level이라 높은 것부터 보면 효율적."
+    verify:
+      type: output_contains
+      expect: 'level='
+      field: stdout
+      semantic:
+        intent: "level 분포로 심각도 분류"
+        success_criteria: ["level별 집계", "고위험 우선"]
+        acceptable_methods: ["**[OSS] jq level 분포 (권장)**"]
+    target_vm: siem
+
+  - order: 4
+    instruction: |
+      ## 🎯 groups 분포 분석 — 폭주 원인 종류
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc .rule.groups | sort | uniq -c | sort -rn | head'
+      ```
+      ## ✅ 합격 기준
+      어떤 그룹(ids 등)이 폭주하는지 식별한다.
+    hint: 'jq .rule.groups 분포'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== groups 분포 (종류별 폭주) ==="
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc .rule.groups | sort | uniq -c | sort -rn | head'
+      echo "→ 압도적 그룹(ids/syscheck 등)이 폭주의 원인 소스"
+    answer_detail: "그룹 분포로 '무엇이 폭주의 원인인가'를 본다. 한 그룹(ids/syscheck)이 압도적이면 그 소스에 노이즈가 있다는 신호."
+    verify:
+      type: output_contains
+      expect: 'ids'
+      field: stdout
+      semantic:
+        intent: "groups 분포로 폭주 원인 종류 식별"
+        success_criteria: ["그룹별 집계", "압도 그룹 식별"]
+        acceptable_methods: ["**[OSS] jq groups 분포 (권장)**"]
+    target_vm: siem
+
+  - order: 5
+    instruction: |
+      ## 🎯 빈도 분석 — top rule/출발지
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "\"id=\"+(.rule.id|tostring)" | sort | uniq -c | sort -rn | head'
+      ```
+      ## ✅ 합격 기준
+      폭주의 top rule을 식별한다.
+    hint: 'jq .rule.id 빈도 top'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== top rule (빈도) ==="
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "\"id=\"+(.rule.id|tostring)" | sort | uniq -c | sort -rn | head'
+      echo "=== top 출발지 ==="
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc ".data.src_ip // empty" | sort | uniq -c | sort -rn | head -5'
+      echo "→ 한 rule/출발지가 폭주 대부분 = 오탐 후보 or 집중 공격"
+    answer_detail: "빈도로 노이즈의 정체를 찾는다 — 한 rule이 폭주의 대부분이면 그 rule을 의심(오탐 or 진행형 공격), 한 출발지가 폭주면 집중 공격 or 노이즈 소스."
+    verify:
+      type: output_contains
+      expect: 'id='
+      field: stdout
+      semantic:
+        intent: "빈도로 top rule/출발지 식별"
+        success_criteria: ["top rule", "top 출발지"]
+        acceptable_methods: ["**[OSS] jq id/src 빈도 (권장)**"]
+    target_vm: siem
+
+  - order: 6
+    instruction: |
+      ## 🎯 오탐 판정 — 노이즈 vs 진짜
+
+      ## 💻 실행 명령
+      ```bash
+      echo "오탐 판정 기준:"
+      echo "① 정상 업무? (모니터링 봇/정기 스캔) ② 맥락 양성? (내부 자산 정상동작) ③ 빈도 규칙적? (자동화=규칙적, 공격=버스트)"
+      ```
+      ## ✅ 합격 기준
+      오탐 판정 기준을 적용해 노이즈/진짜를 가른다.
+    hint: '정상업무/맥락/빈도패턴으로 오탐 판정'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 오탐(false positive) 판정 ==="
+      echo "① 정상 업무인가? — healthcheck 봇, 정기 취약점 스캔 = 오탐"
+      echo "② 맥락이 양성인가? — 내부 모니터링 자산의 정상 동작 = 오탐"
+      echo "③ 빈도가 규칙적인가? — 자동화 정상작업=규칙적 / 공격=불규칙 버스트"
+      echo "→ 오탐이면 억제(suppress), 진짜면 격상(W04 커스텀 룰)"
+    answer_detail: "폭주 경보가 오탐인지 판정 — 정상 업무/양성 맥락/규칙적 빈도면 오탐. 판정 결과로 억제(노이즈) or 격상(진짜)을 가른다."
+    verify:
+      type: output_contains
+      expect: '오탐'
+      field: stdout
+      semantic:
+        intent: "오탐 판정 기준 적용"
+        success_criteria: ["정상업무/맥락/빈도 기준", "억제 vs 격상 결정"]
+        acceptable_methods: ["**[설명] 오탐 판정 기준 (권장)**"]
+    target_vm: siem
+
+  - order: 7
+    instruction: |
+      ## 🎯 억제 룰 — level 0 suppression
+
+      오탐으로 판정한 노이즈를 level 0으로 억제한다(정상 패턴만 좁게). logtest 검증 → 정리.
+
+      ## 💻 실행 명령
+      ```bash
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw5_lr.bak
+      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name="soc_w5,">
+        <rule id="100450" level="0">
+          <decoded_as>json</decoded_as>
+          <field name="noise">healthcheck</field>
+          <description>SOC W05 - suppress benign healthcheck noise</description>
+        </rule>
+      </group>
+      EOF'
+      echo '{"noise":"healthcheck","src_ip":"10.0.0.5"}' | sudo /var/ossec/bin/wazuh-logtest
+      sudo cp /tmp/socw5_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw5_lr.bak
+      ```
+      ## ✅ 합격 기준
+      억제 룰 `100450`(level 0)이 매치된다(level 0 = alert 미생성 = 억제).
+    hint: 'level 0 억제 룰(100450) → logtest → cp 복원'
+    category: manipulation
+    points: 16
+    answer: |
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw5_lr.bak'
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"soc_w5,\">
+        <rule id=\"100450\" level=\"0\">
+          <decoded_as>json</decoded_as>
+          <field name=\"noise\">healthcheck</field>
+          <description>SOC W05 suppress benign healthcheck noise</description>
+        </rule>
+      </group>
+      EOF"'
+      docker exec el34-siem sh -c 'cat > /tmp/socw5.json <<EOF
+      {"noise":"healthcheck","src_ip":"10.0.0.5"}
+      EOF'
+      echo "=== 억제 룰 logtest (level 0 = 미경보) ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw5.json 2>&1 | grep -aE "id:|level:" | head -4; rm -f /tmp/socw5.json'
+      docker exec el34-siem sh -c 'sudo cp /tmp/socw5_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw5_lr.bak; echo "복원 잔재=$(grep -c 100450 /var/ossec/etc/rules/local_rules.xml)"'
+    answer_detail: "억제 = 노이즈 rule을 level 0(미기록)으로. healthcheck 같은 정상 패턴만 좁게 매치(너무 넓으면 진짜를 놓침). logtest에서 rule 100450이 level 0으로 매치 = alert 안 만듦. cp 복원으로 보존."
+    verify:
+      type: output_contains
+      expect: '100450'
+      field: stdout
+      semantic:
+        intent: "level 0 억제 룰 작성 + logtest 검증 + 보존"
+        success_criteria: ["id 100450 level 0", "정상 패턴만 좁게", "cp 복원"]
+        acceptable_methods:
+          - "**[OSS] level 0 억제 룰 + wazuh-logtest (권장)**"
+          - "**[설명] 좁은 조건으로 위협 보존**"
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 경보 관리 보고서
+
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC W05 경보 관리 보고서 (학번, 이름)
+      ## 1. 폭주 현황 (level/groups/빈도 분포)
+      ## 2. 폭주 원인 (top rule/출발지)
+      ## 3. 오탐 판정 (노이즈 vs 진짜)
+      ## 4. 억제 조치 (level 0, 좁은 조건)
+      ```
+      ## ✅ 합격 기준
+      보고서에 분류 + 오탐 판정 + 억제가 포함된다.
+    hint: '분포+원인+오탐+억제'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # SOC W05 경보 관리 보고서
+      ## 1. 폭주 현황: level 분포(대부분 저level), groups(ids/syscheck 압도), 빈도 top rule
+      ## 2. 원인: 반복 공격(진짜) + 모니터링 노이즈(오탐) 혼재
+      ## 3. 오탐 판정: healthcheck/정기스캔=오탐, 불규칙 버스트=진짜
+      ## 4. 억제: 오탐 노이즈를 level 0(좁은 조건)으로 suppress → 화면에 진짜만
+      ## 결론: 분류(level/groups/빈도)→판정→억제로 alert fatigue 해소, 진짜 위협에 집중
+      EOF
+    answer_detail: "경보 관리 = 분류 3축(level/groups/빈도) → 오탐 판정 → 억제. SOC의 지속가능성은 폭주를 다스리는 데 달렸다."
+    verify:
+      type: output_contains
+      expect: '억제'
+      field: stdout
+      semantic:
+        intent: "경보 관리 종합 보고"
+        success_criteria: ["분류 3축", "오탐 판정", "억제 조치"]
+        acceptable_methods: ["**[관리적] 경보 관리 보고서 (권장)**"]
+    target_vm: siem
