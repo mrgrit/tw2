@@ -1,0 +1,328 @@
+lab_id: standalone-soc-week04
+title: "Wazuh 관제(Manager/Agent)·커스텀 룰 작성·검증"
+version: standalone-soc
+course: soc
+week: 4
+description: |
+  분석가가 직접 탐지를 만든다. Wazuh manager/agent 구조를 점검하고, wazuh-logtest로 decoder를
+  디버그한 뒤, 못 잡던 위협을 잡는 커스텀 룰(field match + 체이닝 격상)을 local_rules.xml에 작성하고
+  logtest로 검증한다(라이브 무중단). 오탐을 줄이는 튜닝까지. 룰은 끝나면 삭제(공유 SIEM 보존).
+  명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "W01–W03 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §3(logtest) §4(커스텀 룰) §5(검증) §6(튜닝) 숙지"
+objectives:
+  - "Wazuh manager(analysisd)/agent 점검"
+  - "wazuh-logtest로 decoder/rule 디버그"
+  - "커스텀 탐지 룰(field match + if_group 체이닝) 작성 + logtest 검증"
+  - "오탐 튜닝 + 베이스 보존"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — Manager/Agent
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted"
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips,"
+      ```
+      ## ✅ 합격 기준
+      analysisd/remoted running + web/ips agent active.
+    hint: 'wazuh-control + agent_control'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== manager daemon ==="
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted"
+      echo "=== agents ==="
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips," || echo "(agent)"
+    answer_detail: "manager(analysisd=룰엔진, remoted=agent통신) + agent(web/ips)가 탐지 작성·적용의 토대."
+    verify:
+      type: output_contains
+      expect: 'analysisd'
+      field: stdout
+      semantic:
+        intent: "Wazuh manager/agent 점검"
+        success_criteria: ["analysisd/remoted running", "web/ips agent"]
+        acceptable_methods: ["**[OSS] wazuh-control + agent_control (권장)**"]
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 decoder 디버그 — wazuh-logtest
+
+      룰을 쓰기 전 raw 로그의 파싱(필드)을 본다.
+
+      ## 💻 실행 명령
+      ```bash
+      printf 'Jan  1 00:00:00 web sshd[1]: Failed password for root from 9.9.9.9 port 22 ssh2\n' \
+        | docker exec -i el34-siem /var/ossec/bin/wazuh-logtest
+      ```
+      ## ✅ 합격 기준
+      Phase2 decoder + Phase3 rule(5760)이 보인다.
+    hint: 'sshd 줄 → wazuh-logtest → rule 5760'
+    category: analysis
+    points: 12
+    answer: |
+      docker exec el34-siem sh -c 'cat > /tmp/socw4ssh.log <<EOF
+      Jan  1 00:00:00 web sshd[1]: Failed password for root from 9.9.9.9 port 22 ssh2
+      EOF'
+      echo "=== wazuh-logtest (decoder→rule) ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4ssh.log 2>&1 | grep -aE "decoder|id:|srcip|Failed" | head -6; rm -f /tmp/socw4ssh.log'
+    answer_detail: "wazuh-logtest로 decoder가 뽑는 필드(srcip 등)와 매치되는 rule(5760)을 본다 = 룰이 쓸 재료 확인."
+    verify:
+      type: output_contains
+      expect: '5760'
+      field: stdout
+      semantic:
+        intent: "decoder/rule 디버그"
+        success_criteria: ["decoder 필드", "rule 5760"]
+        acceptable_methods: ["**[OSS] wazuh-logtest (권장)**"]
+    target_vm: siem
+
+  - order: 3
+    instruction: |
+      ## 🎯 커스텀 탐지 룰 작성 (id 100440)
+
+      못 잡던 위협(json 마커)을 잡는 룰을 쓰고 logtest로 검증 → 정리.
+
+      ## 💻 실행 명령
+      ```bash
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak
+      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name="soc_w4,">
+        <rule id="100440" level="10">
+          <decoded_as>json</decoded_as>
+          <field name="alert_signature">SOC_CUSTOM</field>
+          <description>SOC W04 - custom detection</description>
+        </rule>
+      </group>
+      EOF'
+      echo '{"alert_signature":"SOC_CUSTOM","src_ip":"9.9.9.9"}' | sudo /var/ossec/bin/wazuh-logtest
+      sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak
+      ```
+      ## ✅ 합격 기준
+      logtest에 rule `100440` level 10 발화(정리 후 보존).
+    hint: 'field match 룰(100440) → logtest → cp 복원'
+    category: manipulation
+    points: 16
+    answer: |
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak'
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"soc_w4,\">
+        <rule id=\"100440\" level=\"10\">
+          <decoded_as>json</decoded_as>
+          <field name=\"alert_signature\">SOC_CUSTOM</field>
+          <description>SOC W04 custom detection</description>
+        </rule>
+      </group>
+      EOF"'
+      docker exec el34-siem sh -c 'cat > /tmp/socw4.json <<EOF
+      {"alert_signature":"SOC_CUSTOM","src_ip":"9.9.9.9"}
+      EOF'
+      echo "=== 커스텀 룰 logtest ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw4.json'
+      docker exec el34-siem sh -c 'sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak; echo "복원 잔재=$(grep -c 100440 /var/ossec/etc/rules/local_rules.xml)"'
+    answer_detail: "분석가가 못 잡던 위협(alert_signature=SOC_CUSTOM)을 level 10으로 탐지. field match로 조건 지정. logtest 검증 후 cp 복원(공유 SIEM 보존)."
+    verify:
+      type: output_contains
+      expect: '100440'
+      field: stdout
+      semantic:
+        intent: "커스텀 탐지 룰 작성 + logtest 검증"
+        success_criteria: ["id 100440 작성", "logtest 발화", "cp 복원"]
+        acceptable_methods: ["**[OSS] field match 룰 + wazuh-logtest (권장)**"]
+    target_vm: siem
+
+  - order: 4
+    instruction: |
+      ## 🎯 체이닝 격상 룰 (id 100441, if_group)
+
+      기존 탐지(예: web 그룹)에 맥락을 더해 격상하는 체이닝 룰.
+
+      ## 💻 실행 명령
+      ```bash
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak
+      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name="soc_w4c,">
+        <rule id="100441" level="12">
+          <decoded_as>json</decoded_as>
+          <field name="threat">apt</field>
+          <description>SOC W04 - APT context escalation</description>
+        </rule>
+      </group>
+      EOF'
+      echo '{"threat":"apt","src_ip":"9.9.9.9"}' | sudo /var/ossec/bin/wazuh-logtest
+      sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak
+      ```
+      ## ✅ 합격 기준
+      logtest에 rule `100441` level 12 격상이 발화한다.
+    hint: '맥락 격상 룰(100441) → logtest → cp 복원'
+    category: manipulation
+    points: 14
+    answer: |
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak'
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"soc_w4c,\">
+        <rule id=\"100441\" level=\"12\">
+          <decoded_as>json</decoded_as>
+          <field name=\"threat\">apt</field>
+          <description>SOC W04 APT context escalation</description>
+        </rule>
+      </group>
+      EOF"'
+      docker exec el34-siem sh -c 'cat > /tmp/socw4c.json <<EOF
+      {"threat":"apt","src_ip":"9.9.9.9"}
+      EOF'
+      echo "=== 격상 룰 logtest ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4c.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw4c.json'
+      docker exec el34-siem sh -c 'sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak; echo "복원 잔재=$(grep -c 100441 /var/ossec/etc/rules/local_rules.xml)"'
+    answer_detail: "맥락(threat=apt)을 더해 level 12로 격상. 운영에선 <if_group>/<if_sid>로 기존 탐지에 체이닝해 맥락 룰을 만든다(예: 'web 공격 + APT 맥락' → 격상)."
+    verify:
+      type: output_contains
+      expect: '100441'
+      field: stdout
+      semantic:
+        intent: "맥락 격상(체이닝) 룰 작성 + 검증"
+        success_criteria: ["id 100441 level 12", "logtest 발화", "cp 복원"]
+        acceptable_methods: ["**[OSS] 격상 룰 + wazuh-logtest (권장)**"]
+    target_vm: siem
+
+  - order: 5
+    instruction: |
+      ## 🎯 실제 이벤트 검증 — 룰이 잡을 대상
+
+      실제 공격을 재현해 alerts.json에 들어오는지 본다(커스텀 룰의 적용 대상).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw4%27%20UNION%20SELECT%201--%20-\""
+      sleep 8
+      docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,s:.data.src_ip}" | tail -2'
+      ```
+      ## ✅ 합격 기준
+      실제 공격이 alerts.json(출발지 10.20.30.202)에 들어온다.
+    hint: '공격 재현 → alerts.json ids src 10.20.30.202'
+    category: detect
+    points: 12
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw4%27%20UNION%20SELECT%201--%20-\""
+      sleep 8
+      echo "=== alerts.json 실제 공격 ==="
+      docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,s:.data.src_ip}" | tail -2'
+    answer_detail: "커스텀 룰이 잡을 실제 이벤트 — 공격 → eve → alerts.json. 운영 룰(restart 적용 시)이라면 이 경보를 커스텀 level로 격상한다."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "실제 공격이 alerts.json에 적재됨 확인"
+        success_criteria: ["alerts.json ids 경보", "출발지 10.20.30.202"]
+        acceptable_methods: ["**[OSS] 공격 재현 후 alerts.json (권장)**"]
+    target_vm: siem
+
+  - order: 6
+    instruction: |
+      ## 🎯 튜닝 — 오탐 줄이기
+
+      탐지를 만들면 오탐이 따라온다. 조건을 좁혀 오탐을 줄인다.
+
+      ## 💻 실행 명령
+      ```bash
+      echo "오탐 많은 룰: <field name=\"url\">admin</field>  (정상 /admin 접근도 매치)"
+      echo "튜닝 후:     <field name=\"url\">admin</field> + <field name=\"status\">403</field>  (차단된 것만)"
+      echo "→ 조건을 좁히고(특정 status/UA), level을 적정화, 정상 패턴은 화이트리스트"
+      ```
+      ## ✅ 합격 기준
+      오탐 줄이는 튜닝 원칙(조건 좁히기/예외)을 정리한다.
+    hint: '조건 좁히기 + level 적정화 + 화이트리스트'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 오탐 튜닝 ==="
+      echo "[오탐 많음] <field name=\"url\">admin</field>  → 정상 /admin 접근도 경보"
+      echo "[튜닝]      + <field name=\"status\">403</field> → 차단된 것만 (정상 제외)"
+      echo "[원칙] ① 조건 좁히기(status/UA/method) ② level 적정화(alert fatigue 방지) ③ 정상 패턴 화이트리스트"
+      echo "좋은 룰 = 놓치지 않으면서(낮은 오탐) 묻히지 않게(적정 level)"
+    answer_detail: "탐지의 절반은 튜닝 — 너무 넓으면 오탐 폭주(alert fatigue), 너무 좁으면 놓침. status/UA/method로 조건을 좁히고, 정상 패턴은 예외 처리. SOC 효율의 핵심."
+    verify:
+      type: output_contains
+      expect: '오탐'
+      field: stdout
+      semantic:
+        intent: "오탐 줄이는 룰 튜닝 원칙"
+        success_criteria: ["조건 좁히기", "level 적정화", "화이트리스트"]
+        acceptable_methods: ["**[설명] 튜닝 원칙 (권장)**"]
+    target_vm: siem
+
+  - order: 7
+    instruction: |
+      ## 🎯 정리 확인 — 공유 SIEM 보존
+
+      커스텀 룰(100440/100441) 잔재가 없어야 한다.
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-siem sh -c 'for r in 100440 100441; do echo "$r 잔재=$(grep -c $r /var/ossec/etc/rules/local_rules.xml)"; done; ls /tmp/socw4_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      echo "---check done---"
+      ```
+      ## ✅ 합격 기준
+      100440/100441 잔재 0 + `check done`.
+    hint: '커스텀 룰 잔재 0'
+    category: cleanup
+    points: 12
+    answer: |
+      docker exec el34-siem sh -c 'for r in 100440 100441; do echo "$r 잔재=$(grep -c $r /var/ossec/etc/rules/local_rules.xml)"; done; ls /tmp/socw4_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      echo "---check done---"
+    answer_detail: "공유 SIEM 보존 — 커스텀 룰 cp 복원, 라이브 무재시작. base local_rules.xml 원상태."
+    verify:
+      type: output_contains
+      expect: 'check done'
+      field: stdout
+      semantic:
+        intent: "커스텀 룰 정리 확인"
+        success_criteria: ["100440/100441 잔재 0"]
+        acceptable_methods: ["**[OSS] 잔재 점검 (권장)**"]
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 룰 문서화 보고서
+
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC W04 커스텀 룰 보고서 (학번, 이름)
+      ## 1. 탐지 갭 (못 잡던 위협)
+      ## 2. 룰 (id/level/조건/decoder)
+      ## 3. 검증 (logtest 발화)
+      ## 4. 튜닝 (오탐 대응)
+      ```
+      ## ✅ 합격 기준
+      보고서에 룰 작성 + 검증 + 튜닝이 포함된다.
+    hint: '탐지갭+룰+검증+튜닝'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # SOC W04 커스텀 룰 보고서
+      ## 1. 탐지 갭: 기본 룰이 SOC_CUSTOM/APT 맥락을 낮게 평가
+      ## 2. 룰: 100440(field match, level 10) + 100441(맥락 격상, level 12)
+      ## 3. 검증: wazuh-logtest로 발화 확인(라이브 무중단), cp 복원
+      ## 4. 튜닝: status/UA로 조건 좁힘, level 적정화, 정상 화이트리스트
+      ## 결론: 분석가가 탐지를 만들어 SOC의 눈을 확장. logtest로 안전 검증, 튜닝으로 오탐 관리
+      EOF
+    answer_detail: "커스텀 룰 = 분석가가 만드는 탐지. decoder 이해 → 룰 작성 → logtest 검증 → 튜닝. SOC가 못 잡던 위협을 잡는 능동 방어."
+    verify:
+      type: output_contains
+      expect: '커스텀'
+      field: stdout
+      semantic:
+        intent: "커스텀 룰 종합 보고"
+        success_criteria: ["탐지갭/룰/검증/튜닝"]
+        acceptable_methods: ["**[관리적] 룰 보고서 (권장)**"]
+    target_vm: siem
