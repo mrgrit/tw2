@@ -1,0 +1,503 @@
+lab_id: standalone-secuops-week08
+title: "중간고사 — 한 침입 사슬을 5종 장비(fw/IDS/WAF/osquery/SIEM)로 끝까지 막기"
+version: standalone-secuops
+course: secuops
+week: 8
+description: |
+  W01–W07 종합 실기. 한 외부 침입자(출처 10.20.30.202, el34 는 SNAT 안 함 → 출처 보존)가
+  정찰 → 웹 침투(SQLi) → 호스트 발판의 사슬을 시도한다. 운영자(너)는 5종 장비를 모두 동원해
+  각 단계를 알맞은 장비로 끊고, 증거를 제시하고, 마지막에 출처 IP 로 5계층을 한 타임라인으로 엮는다.
+  el34 에는 HAProxy 가 없다 — 공개 진입은 el34-fw(nftables DNAT), L7 라우팅+WAF 는 el34-web(Apache+ModSec).
+  모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-<comp>` 로. 각 단계 self-clean.
+difficulty: hard
+duration_minutes: 240
+prerequisites:
+  - "W01–W07 통과 (방화벽/IDS/WAF/osquery/엔드포인트 IR)"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec (컨테이너 root)"
+  - "lecture §2(kill chain) §5(판단표) §6(상관) 숙지"
+objectives:
+  - "5종 장비(fw/ips/web/host/siem)의 가용성 점검"
+  - "정찰(스캐너 UA)을 IDS 룰(sid 9008001)로 탐지"
+  - "웹 침투(SQLi)를 WAF anomaly 누적(942→949110)으로 차단 확인"
+  - "방화벽 정책·DNAT 경로 점검 (HAProxy 아님)"
+  - "호스트 발판(리스너 38088/계정 w08user)을 osquery 로 사냥 + self-clean"
+  - "5계층 흔적의 SIEM 수렴 + 출처 IP 상관 타임라인 + 종합 보고"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 5종 장비가 모두 살아있나
+
+      중간고사 시작 전, 동원할 5종 장비의 가용성을 확인한다(fw/ips/web/host/siem).
+
+      ## 💻 실행 명령
+      ```bash
+      echo "=== fw nftables ==="; docker exec el34-fw sh -c 'sudo nft list ruleset 2>/dev/null | wc -l'
+      echo "=== ips suricata ==="; docker exec el34-ips sh -c 'suricata -V 2>/dev/null'
+      echo "=== web modsec ==="; docker exec el34-web sh -c 'sudo apache2ctl -M 2>/dev/null | grep -i security'
+      echo "=== host osquery ==="; docker exec el34-web osqueryi --version
+      echo "=== siem agents ==="; docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips,"
+      ```
+      ## ✅ 합격 기준
+      osquery 5.x + suricata + modsec + web/ips agent 가 모두 응답한다.
+    hint: 'fw nft / ips suricata -V / web modsec+osquery / siem agent_control'
+    category: survey
+    points: 8
+    answer: |
+      echo "=== fw nftables (정책 줄 수) ==="
+      docker exec el34-fw sh -c 'sudo nft list ruleset 2>/dev/null | wc -l'
+      echo "=== ips suricata ==="
+      docker exec el34-ips sh -c 'suricata -V 2>/dev/null'
+      echo "=== web modsec ==="
+      docker exec el34-web sh -c 'sudo apache2ctl -M 2>/dev/null | grep -i security'
+      echo "=== host osquery ==="
+      docker exec el34-web osqueryi --version
+      echo "=== siem agents ==="
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips," || echo "(agent 확인)"
+    answer_detail: "5종 장비 가용성 확인 = 종합 대응의 전제. fw(nftables)·ips(Suricata)·web(Apache+ModSec)·host(osquery)·siem(Wazuh manager + web/ips agent)."
+    verify:
+      type: output_contains
+      expect: '5.23'
+      field: stdout
+      semantic:
+        intent: "5종 장비 가용성 점검"
+        success_criteria: ["nftables 정책 존재", "Suricata 동작", "ModSec 로드", "osquery 5.x", "web/ips agent active"]
+        acceptable_methods:
+          - "**[OSS] 각 컨테이너 버전/상태 질의 (권장)**"
+          - "**[설명] 5계층 = 다층 방어 전제**"
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 ① 정찰 재현 — 스캐너 UA (WAF 가 913 으로 본다)
+
+      외부 공격자(10.20.30.202)가 스캐너(sqlmap UA)로 표면을 훑는다. WAF audit 에 스캐너 탐지(913)가
+      남는다. 같은 UA 는 다음 단계에서 네가 만들 IDS 룰로 IPS 에도 잡힌다(두 장비 관점 교차).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "정찰 응답:%{http_code}\n" -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=w08mt1"'
+      sleep 3
+      docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -c "913"'
+      docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -o "sqlmap" | head -1'
+      ```
+      ## ✅ 합격 기준
+      WAF audit 에 스캐너 탐지(`913`)가 남는다.
+    hint: '외부 attacker 의 sqlmap UA 요청 → modsec audit 의 913'
+    category: recon
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "정찰 응답:%{http_code}\n" -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=w08mt1"'
+      sleep 3
+      echo "=== modsec audit 913 scanner ==="
+      docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -c "913"'
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "913[0-9]{3}" | sort -u'
+    answer_detail: "스캐너 UA(sqlmap)는 CRS 913xxx(scanner detection)로 audit 에 기록. 방화벽은 L4 라 UA 를 못 본다 — 정찰은 IDS/WAF 의 영역."
+    verify:
+      type: output_contains
+      expect: '913'
+      field: stdout
+      semantic:
+        intent: "스캐너 UA 정찰을 WAF(913)로 식별"
+        success_criteria: ["modsec audit 에 913xxx", "sqlmap UA 흔적", "방화벽이 못 보는 층위 이해"]
+        acceptable_methods:
+          - "**[OSS] 외부 attacker sqlmap UA → audit 913 (권장)**"
+          - "**[설명] L4(fw) vs L7(WAF) 가시성 차이**"
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 ① IDS 룰 — 스캐너 UA 탐지(sid 9008001) 작성→reload→트리거→정리
+
+      정찰을 사슬 초기에 끊으려면 IDS 가 잡아야 한다. Suricata `local.rules` 에 스캐너 UA 탐지 룰
+      (sid **9008001**, fast_pattern)을 추가→syntax→reload→트리거→eve 확인→**sid 로 삭제(베이스 보존)**.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert http any any -> any any (msg:\"el34 W08 sqlmap scanner UA\"; http.user_agent; content:\"sqlmap\"; nocase; fast_pattern; classtype:web-application-attack; sid:9008001; rev:1;)
+      EOF"'
+      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -2'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=w08mt3"'
+      sleep 4
+      docker exec el34-ips sh -c 'sudo grep "9008001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature, src:.src_ip}"'
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9008001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+      ```
+      ## ✅ 합격 기준
+      eve.json 에 `el34 W08 sqlmap` 시그니처가 잡힌다(정리 후 베이스 보존).
+    hint: 'local.rules 에 sqlmap UA fast_pattern 룰(9008001) → reload → 트리거 → eve → sid 삭제'
+    category: manipulation
+    points: 15
+    answer: |
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert http any any -> any any (msg:\"el34 W08 sqlmap scanner UA\"; http.user_agent; content:\"sqlmap\"; nocase; fast_pattern; classtype:web-application-attack; sid:9008001; rev:1;)
+      EOF"'
+      echo "=== syntax ==="
+      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -2'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=w08mt3"'
+      sleep 4
+      echo "=== eve.json alert ==="
+      docker exec el34-ips sh -c 'sudo grep "9008001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature, src:.src_ip}"'
+      echo "=== 정리(베이스 보존) ==="
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9008001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
+    answer_detail: "같은 sqlmap UA 를 WAF 는 HTTP 의미(913)로, IDS 는 네트워크 UA 문자열로 본다. fast_pattern 으로 prefilter. 끝나면 sid 로 삭제해 base 룰(1000001–5) 보존."
+    verify:
+      type: output_contains
+      expect: 'W08 sqlmap'
+      field: stdout
+      semantic:
+        intent: "정찰(스캐너 UA)을 커스텀 IDS 룰로 탐지 + 베이스 보존"
+        success_criteria: ["sid 9008001 룰 작성·reload", "eve.json 에 시그니처 트리거", "sid 삭제로 base 보존"]
+        acceptable_methods:
+          - "**[OSS] http.user_agent fast_pattern 룰 (권장)**"
+          - "**[OSS] suricatasc reload-rules**"
+          - "**[설명] WAF/IDS 의 같은 사건 다른 관점**"
+    target_vm: ips
+
+  - order: 4
+    instruction: |
+      ## 🎯 ② 웹 침투 재현 — SQLi → 403
+
+      정찰에 이어 SQLi(UNION SELECT)로 웹앱 침투를 시도한다. dvwa 는 차단 모드 → WAF 가 403 으로 막는다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '침투 응답:%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=w08mt4%27%20UNION%20SELECT%20user,password%20FROM%20users\""
+      ```
+      ## ✅ 합격 기준
+      응답이 `403`(WAF 차단)이다.
+    hint: 'attacker 의 UNION SELECT → dvwa 403'
+    category: response
+    points: 12
+    answer: |
+      echo "=== SQLi 침투 시도 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '침투 응답:%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=w08mt4%27%20UNION%20SELECT%20user,password%20FROM%20users\""
+    answer_detail: "SQLi(UNION SELECT)는 dvwa(차단 모드)에서 WAF anomaly 누적 → 949110 → 403. osquery 는 이 네트워크 단계를 못 본다 — 웹 침투는 WAF 의 영역."
+    verify:
+      type: output_contains
+      expect: '403'
+      field: stdout
+      semantic:
+        intent: "SQLi 웹 침투가 WAF 에 차단(403)됨을 확인"
+        success_criteria: ["UNION SELECT 요청", "응답 403", "차단 모드 vhost(dvwa) 이해"]
+        acceptable_methods:
+          - "**[OSS] 외부 attacker SQLi → 403 (권장)**"
+          - "**[설명] 차단(dvwa) vs 탐지만(juice) 모드 차이**"
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 ② WAF 확인 — 942(SQLi) + 949110(anomaly 누적 차단)
+
+      SQLi 가 단일 룰이 아니라 anomaly score 누적으로 차단됨을 audit 에서 확인한다(W05 복습).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=w08mt5%27%20UNION%20SELECT%201,2--%20-\""
+      sleep 3
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "94[29]1[0-9]{2}" | sort -u'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{status:.response.status, remote:.transaction.remote_address}"'
+      ```
+      ## ✅ 합격 기준
+      audit 에 `949110`(anomaly 누적 차단)이 보인다.
+    hint: 'SQLi 재현 후 audit 의 942100 + 949110, remote_address=공격자'
+    category: detect
+    points: 15
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=w08mt5%27%20UNION%20SELECT%201,2--%20-\""
+      sleep 3
+      echo "=== audit 의 942/949 룰 ==="
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "94[29]1[0-9]{2}" | sort -u'
+      echo "=== 마지막 audit 요약 ==="
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{status:.response.status, remote:.transaction.remote_address}"'
+    answer_detail: "942100(SQLi) 매치가 anomaly score 를 올리고, 949110(Inbound Anomaly Score Exceeded)에서 누적 임계 초과로 403. 단일 룰이 아닌 누적 결정. remote_address=10.20.30.202(출처 보존)."
+    verify:
+      type: output_contains
+      expect: '949110'
+      field: stdout
+      semantic:
+        intent: "WAF anomaly 누적 차단(942→949110) 메커니즘 확인"
+        success_criteria: ["audit 에 942100 + 949110", "remote_address=공격자(보존)", "누적 점수 이해"]
+        acceptable_methods:
+          - "**[OSS] audit grep 94x + jq (권장)**"
+          - "**[설명] anomaly score 누적 차단**"
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 방화벽 점검 — 정책·DNAT 경로 (HAProxy 아님)
+
+      모든 공격은 fw 를 거쳐 들어온다. nftables 정책과 **DNAT(공개 → web 10.20.32.80)** 경로를 점검한다.
+      L7 라우팅+WAF 는 fw 가 아니라 el34-web 의 Apache 다(el34 에 HAProxy 없음). 정책은 **수정 금지**(점검만).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-fw sh -c 'sudo nft list table ip six_nat 2>/dev/null | grep -iE "dnat|10.20.32.80" | head'
+      docker exec el34-fw sh -c 'sudo nft list ruleset 2>/dev/null | grep -ciE "dnat"'
+      echo "L7 라우팅/WAF = el34-web Apache vhost (HAProxy 없음, 출처 IP SNAT 없이 보존)"
+      ```
+      ## ✅ 합격 기준
+      DNAT 매핑(공개 → web `10.20.32.80`)이 보인다.
+    hint: 'nft list table ip six_nat 의 DNAT → 10.20.32.80; HAProxy 아님'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== DNAT 테이블 (공개 → web 10.20.32.80) ==="
+      docker exec el34-fw sh -c 'sudo nft list table ip six_nat 2>/dev/null | grep -iE "dnat|10.20.32" | head'
+      echo "=== DNAT 규칙 수 ==="
+      docker exec el34-fw sh -c 'sudo nft list ruleset 2>/dev/null | grep -ciE "dnat"'
+      echo "L7 라우팅/WAF = el34-web Apache vhost (HAProxy 없음)"
+    answer_detail: "el34-fw = nftables(inet six_filter 필터 + ip six_nat DNAT). 공개 80/443 → DNAT → web 10.20.32.80. SNAT 없음 → 출처 IP 보존. L7 라우팅/WAF 는 web 의 Apache+ModSec — HAProxy 는 el34 에 없다."
+    verify:
+      type: output_contains
+      expect: '10.20.32.80'
+      field: stdout
+      semantic:
+        intent: "방화벽 정책·DNAT 경로 점검 (HAProxy 부재 이해)"
+        success_criteria: ["six_nat DNAT 테이블", "공개→web 10.20.32.80 매핑", "L7/WAF=Apache(HAProxy 아님)"]
+        acceptable_methods:
+          - "**[OSS] nft list table ip six_nat (권장)**"
+          - "**[설명] fw=L4 DNAT / web=L7 WAF 분리, 출처 보존**"
+    target_vm: fw
+
+  - order: 7
+    instruction: |
+      ## 🎯 ③ 호스트 발판 1 — 비표준 포트 리스너(38088) → osquery 사냥 → 정리
+
+      웹 침투를 발판으로 호스트에 비표준 리스너를 심는다(MITRE T1571). 네트워크 장비가 못 보는 호스트
+      내부를 osquery 로 사냥하고 즉시 종료한다(self-clean).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'nohup python3 -m http.server 38088 >/dev/null 2>&1 & echo listener_started'
+      sleep 1
+      docker exec el34-web osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=38088;'
+      docker exec el34-web sh -c 'pkill -f "http.server 38088"; echo killed'
+      ```
+      ## ✅ 합격 기준
+      osquery 가 포트 `38088` 리스너를 잡는다(종료 후 잔재 0).
+    hint: 'python3 리스너 38088 → osquery listening_ports JOIN processes → pkill'
+    category: response
+    points: 12
+    answer: |
+      docker exec el34-web sh -c 'nohup python3 -m http.server 38088 >/dev/null 2>&1 & echo listener_started'
+      sleep 1
+      echo "=== osquery 리스너 사냥 (포트의 주인 프로세스) ==="
+      docker exec el34-web osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=38088;'
+      docker exec el34-web sh -c 'pkill -f "http.server 38088"; echo killed'
+      echo "self-clean done"
+    answer_detail: "비표준 리스너는 listening_ports ⨝ processes 로 '어느 프로세스가 그 포트를 듣나' 식별. 방화벽/IDS 는 호스트 내부 리스너를 못 본다 — osquery 의 영역. 종료로 contain."
+    verify:
+      type: output_contains
+      expect: '38088'
+      field: stdout
+      semantic:
+        intent: "호스트 발판(리스너)을 osquery 로 사냥 + 종료"
+        success_criteria: ["listening_ports JOIN processes 에 38088", "주인 프로세스 식별", "pkill contain"]
+        acceptable_methods:
+          - "**[OSS] osquery JOIN 으로 포트 소유 추적 (권장)**"
+          - "**[설명] 호스트 내부 = 네트워크 장비 사각**"
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 ③ 호스트 발판 2 — 백도어 계정(w08user) + cron → osquery 사냥 → 정리
+
+      지속 접근을 위한 백도어 계정과 cron persistence 를 심는다(T1136/T1053). osquery users/crontab 로
+      식별하고 제거한다(self-clean, 베이스 계정/cron 보존).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'userdel -r w08user 2>/dev/null; useradd -m -s /bin/bash -u 1098 w08user && echo account_created'
+      docker exec el34-web sh -c 'echo "* * * * * root /tmp/.w08.sh" > /etc/cron.d/w08_backdoor'
+      docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w08user";'
+      docker exec el34-web osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%w08_backdoor%";'
+      docker exec el34-web sh -c 'userdel -r w08user 2>/dev/null; rm -f /etc/cron.d/w08_backdoor; echo cleaned'
+      ```
+      ## ✅ 합격 기준
+      osquery 가 `w08user` 계정을 잡는다(제거 후 잔재 0).
+    hint: 'useradd w08user + cron.d → osquery users/crontab → userdel + rm'
+    category: response
+    points: 13
+    answer: |
+      docker exec el34-web sh -c 'userdel -r w08user 2>/dev/null; useradd -m -s /bin/bash -u 1098 w08user && echo account_created'
+      docker exec el34-web sh -c 'echo "* * * * * root /tmp/.w08.sh" > /etc/cron.d/w08_backdoor'
+      echo "=== osquery 계정 사냥 ==="
+      docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w08user";'
+      echo "=== osquery cron persistence 사냥 ==="
+      docker exec el34-web osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%w08_backdoor%";'
+      docker exec el34-web sh -c 'userdel -r w08user 2>/dev/null; rm -f /etc/cron.d/w08_backdoor; echo cleaned'
+      echo "self-clean done"
+    answer_detail: "백도어 계정(users 의 이상 uid/shell) + cron persistence(crontab) 는 osquery 로 사냥. Wazuh FIM 도 /etc/cron.d 변경을 잡는다. userdel+rm 로 contain, 베이스 계정/cron 보존."
+    verify:
+      type: output_contains
+      expect: 'w08user'
+      field: stdout
+      semantic:
+        intent: "호스트 발판(계정+cron persistence)을 osquery 로 사냥 + 제거"
+        success_criteria: ["users 에 w08user", "crontab 에 w08_backdoor", "userdel+rm 로 베이스 보존"]
+        acceptable_methods:
+          - "**[OSS] osquery users + crontab (권장)**"
+          - "**[OSS] Wazuh FIM 교차**"
+          - "**[설명] persistence baseline 대조**"
+    target_vm: web
+
+  - order: 9
+    instruction: |
+      ## 🎯 SIEM 수렴 — 5계층 흔적이 Wazuh 로 모이나
+
+      종합의 핵심 — 개별 장비가 아니라 5계층 흔적이 **SIEM 한 곳으로 수렴**하는지 확인한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips,"
+      docker exec el34-siem sh -c 'tail -n 400 /var/ossec/logs/alerts/alerts.json | grep -iE "suricata|modsec|sql|integrity|syscheck" | tail -4'
+      ```
+      ## ✅ 합격 기준
+      web/ips agent Active + 최근 다계층 경보가 수집돼 있다.
+    hint: 'agent_control web/ips Active + alerts.json 의 suricata/modsec/syscheck'
+    category: detect
+    points: 8
+    answer: |
+      echo "=== Wazuh agents ==="
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips," || echo "(agent)"
+      echo "=== 최근 다계층 경보 ==="
+      docker exec el34-siem sh -c 'tail -n 400 /var/ossec/logs/alerts/alerts.json | grep -iE "suricata|modsec|sql|integrity|syscheck" | tail -4' || echo "(최근 경보 적재 대기)"
+      echo "siem 수렴 확인"
+    answer_detail: "ips(003)+web(004) agent 의 경보가 한 Wazuh manager 로 수렴. IDS·WAF·호스트 흔적이 한 화면에서 한 사건으로. 통합 가시성이 종합 평가의 핵심."
+    verify:
+      type: output_contains
+      expect: 'web'
+      field: stdout
+      semantic:
+        intent: "5계층 흔적의 SIEM(Wazuh) 수렴 확인"
+        success_criteria: ["web/ips agent Active", "다계층 경보 수집", "통합 가시성 이해"]
+        acceptable_methods:
+          - "**[OSS] agent_control + alerts.json (권장)**"
+          - "**[설명] 개별 도구 → 통합 관제**"
+    target_vm: siem
+
+  - order: 10
+    instruction: |
+      ## 🎯 상관 분석 — 출처 IP 로 5계층을 한 타임라인으로
+
+      el34 는 SNAT 를 안 하므로 모든 계층이 같은 출처 IP(10.20.30.202)를 본다. 이것이 5개의 관점을
+      하나의 사건으로 엮는 키다. IDS 의 src_ip 와 WAF 의 remote_address 가 같은 IP 임을 확인한다.
+
+      ## 💻 실행 명령
+      ```bash
+      echo "=== IDS 가 본 출처 ==="; docker exec el34-ips sh -c 'sudo grep -E "\"event_type\":\"alert\"" /var/log/suricata/eve.json | tail -1 | jq -c "{src:.src_ip,sig:.alert.signature}"'
+      echo "=== WAF 가 본 출처 ==="; docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "10\.20\.30\.202" | head -1'
+      ```
+      ## ✅ 합격 기준
+      양쪽이 같은 출처 IP `10.20.30.202` 를 가리킨다.
+    hint: 'eve.json src_ip == modsec remote_address == 10.20.30.202 (출처 보존)'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== IDS(eve.json) 가 본 출처 ==="
+      docker exec el34-ips sh -c 'sudo grep -E "\"event_type\":\"alert\"" /var/log/suricata/eve.json | tail -1 | jq -c "{src:.src_ip,sig:.alert.signature}"' 2>/dev/null || echo "(eve alert)"
+      echo "=== WAF(modsec) 가 본 출처 ==="
+      docker exec el34-web sh -c 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -oE "10\.20\.30\.202" | head -1'
+      echo "→ 두 장비가 같은 출처 10.20.30.202 를 가리킴 = 한 사건"
+    answer_detail: "출처 IP 보존(SNAT 없음)이 상관의 핵심. IDS src_ip = WAF remote_address = 10.20.30.202 → 정찰·침투·발판이 한 공격자의 한 사슬임을 입증. 시각까지 더하면 완전한 타임라인."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "출처 IP 로 5계층을 한 타임라인으로 상관"
+        success_criteria: ["IDS src_ip = WAF remote_address", "10.20.30.202(보존)", "한 공격자 한 사슬 입증"]
+        acceptable_methods:
+          - "**[OSS] eve.json src_ip + modsec remote_address 대조 (권장)**"
+          - "**[설명] SNAT 부재 → 출처 보존 → 상관 가능**"
+    target_vm: web
+
+  - order: 11
+    instruction: |
+      ## 🎯 종합 보고서 — 사슬 단계별 끊은 장비 + 증거
+
+      STEP 1–10 을 한 침입 사슬의 단계별로 정리한다(어느 장비로 끊었나 + 증거 + 출처 상관).
+
+      ## 💻 보고서 양식
+      ```markdown
+      # el34 W08 중간고사 보고서 (학번, 이름)
+      ## 1. 사슬 개요 (출처 10.20.30.202, 정찰→침투→발판)
+      ## 2. 단계별 대응 (장비/증거)
+      ## 3. 출처 IP 상관 타임라인 (5계층)
+      ## 4. 다층 방어 결론 — 단일 장비로 못 막는 이유
+      ```
+      ## ✅ 합격 기준
+      보고서에 5계층 단계별 표 + 출처 상관이 포함된다.
+    hint: '단계별 장비/증거 표 + 출처 IP 상관'
+    category: report
+    points: 5
+    answer: |
+      cat <<'EOF'
+      # el34 W08 중간고사 보고서
+      ## 1. 사슬 개요: 외부 공격자 10.20.30.202 → 정찰 → 웹 침투(SQLi) → 호스트 발판
+      ## 2. 단계별 대응 (5계층)
+      | 단계 | 공격 | 끊은 장비 | 증거 |
+      |------|------|-----------|------|
+      | ① 정찰 | sqlmap UA | IDS(sid 9008001) + WAF(913) | eve.json sig / audit 913 |
+      | ② 침투 | SQLi UNION | WAF(942→949110) | audit 403 + remote 10.20.30.202 |
+      | (입구) | — | fw(nftables DNAT) | six_nat 공개→10.20.32.80 |
+      | ③ 발판 | 리스너 38088 | osquery(listening_ports) | JOIN pid:port |
+      | ③ 발판 | 계정 w08user + cron | osquery(users/crontab) | uid 1098 / cron.d |
+      | (수렴) | — | SIEM(Wazuh) | web/ips agent alerts |
+      ## 3. 상관: 모든 계층이 출처 10.20.30.202(SNAT 없음) → 한 사슬
+      ## 4. 결론: fw 는 호스트 내부를, osquery 는 네트워크 정찰을 못 본다 → 다층 방어 + SIEM 수렴이 정답
+      EOF
+    answer_detail: "중간고사의 핵심은 단일 장비 실력이 아니라 '사슬 전체를 어느 장비로 끊을지' 판단 + 5계층 통합. 출처 IP 보존이 상관의 키."
+    verify:
+      type: output_contains
+      expect: '5계층'
+      field: stdout
+      semantic:
+        intent: "사슬 단계별 대응 + 출처 상관 종합 보고"
+        success_criteria: ["단계별 장비/증거 표", "출처 IP 상관", "다층 방어 결론"]
+        acceptable_methods:
+          - "**[관리적] 보고서 양식 (권장)**"
+          - "**[설명] 판단 프레임워크 적용**"
+    target_vm: web
+
+  - order: 12
+    instruction: |
+      ## 🎯 정리 확인 — 공유 인프라 베이스 보존
+
+      각 단계 self-clean 했으므로 실습 흔적(w08user / w08_backdoor / 38088 리스너 / sid 9008001)이
+      남아 있지 않아야 한다.
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-web sh -c 'id w08user 2>/dev/null && echo "USER 잔재!" || echo "user ok"; ls /etc/cron.d/w08_backdoor 2>/dev/null && echo "cron 잔재!" || echo "cron ok"; pgrep -f "http.server 38088" && echo "리스너 잔재!" || echo "listener ok"'
+      docker exec el34-ips sh -c 'sudo grep -c "9008001" /etc/suricata/rules/local.rules'
+      echo "---check done---"
+      ```
+      ## ✅ 합격 기준
+      실습 흔적이 0 이고 `check done` 이 출력된다(IDS local.rules 의 9008001 = 0).
+    hint: '계정/cron/리스너/IDS룰 잔재 0 확인'
+    category: cleanup
+    points: 5
+    answer: |
+      docker exec el34-web sh -c 'id w08user 2>/dev/null && echo "USER 잔재!" || echo "user ok"; ls /etc/cron.d/w08_backdoor 2>/dev/null && echo "cron 잔재!" || echo "cron ok"; pgrep -f "http.server 38088" && echo "리스너 잔재!" || echo "listener ok"'
+      echo "=== IDS local.rules 의 9008001 잔재 수 ==="
+      docker exec el34-ips sh -c 'sudo grep -c "9008001" /etc/suricata/rules/local.rules'
+      echo "---check done---"
+    answer_detail: "공유 인프라에선 self-clean 이 필수. 계정/cron/리스너/IDS 룰을 끝까지 남기지 않는다(base 룰 1000001–5 + 정상 계정/정책 보존)."
+    verify:
+      type: output_contains
+      expect: 'check done'
+      field: stdout
+      semantic:
+        intent: "실습 아티팩트 정리 확인 — 공유 인프라 보존"
+        success_criteria: ["계정/cron/리스너 잔재 0", "IDS 9008001 = 0", "base 보존"]
+        acceptable_methods:
+          - "**[OSS] 잔재 일괄 점검 (권장)**"
+          - "**[설명] 공유 인프라 정리 의무**"
+    target_vm: web
