@@ -1,0 +1,266 @@
+lab_id: standalone-attack-week09
+title: "scapy 패킷 크래프팅·비정상 스캔 vs 패킷 분석·네트워크 탐지룰"
+version: standalone-attack
+course: attack
+week: 9
+description: |
+  scapy로 패킷을 직접 조립해 SYN 스캔·비정상 스캔(FIN/XMAS/NULL)을 하고, 대규모 스캔의 Suricata 탐지와
+  비정상 플래그 탐지룰을 다룬다. 공격은 el34-attacker(scapy 2.7), 방어는 Suricata. 룰은 self-clean.
+  인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "W01–W08 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(scapy) §3(비정상 스캔) §4(탐지) 숙지"
+objectives:
+  - "scapy로 SYN 패킷 크래프팅 + open 포트 식별"
+  - "비정상 스캔(FIN/XMAS/NULL) 수행"
+  - "대규모 스캔의 Suricata 탐지 + 비정상 플래그 탐지룰"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — scapy
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker python3 -c "import scapy; print('scapy', scapy.__version__)"
+      ```
+      ## ✅ 합격 기준
+      scapy 사용 가능.
+    hint: 'python3 import scapy'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker python3 -c "import scapy; print('scapy', scapy.__version__)"
+    answer_detail: "scapy = 패킷 직접 조립 라이브러리. raw socket(root) 필요 — attacker 컨테이너는 root."
+    verify:
+      type: output_contains
+      expect: 'scapy'
+      field: stdout
+      semantic:
+        intent: "scapy 점검"
+        success_criteria: ["scapy 버전"]
+        acceptable_methods: ["**[OSS] import scapy (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 SYN 크래프팅 — open 포트 식별
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker python3 -c "from scapy.all import *; ans,u=sr(IP(dst='10.20.30.1')/TCP(dport=[22,80,443,8001,8002,3306],flags='S'),timeout=4,verbose=0); print('open:', sorted(p[1].sport for p in ans if p[1][TCP].flags==0x12))"
+      ```
+      ## ✅ 합격 기준
+      scapy SYN 스캔으로 open 포트를 식별한다.
+    hint: 'scapy sr SYN → SYN-ACK(0x12)=open'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== scapy SYN 크래프팅 ==="
+      docker exec el34-attacker python3 -c "from scapy.all import *; ans,u=sr(IP(dst='10.20.30.1')/TCP(dport=[22,80,443,8001,8002,3306,5432],flags='S'),timeout=4,verbose=0); print('open:', sorted(p[1].sport for p in ans if p[1][TCP].flags==0x12))"
+      echo "→ SYN 보내 SYN-ACK(0x12) 받으면 open, RST(0x14) 받으면 closed"
+    answer_detail: "scapy로 SYN 직접 조립 → 응답 플래그로 포트 상태 판정(SYN-ACK=open). nmap이 자동화하는 걸 수동으로 — 플래그 임의 조작 가능."
+    verify:
+      type: output_contains
+      expect: 'open:'
+      field: stdout
+      semantic:
+        intent: "scapy SYN 크래프팅 + open 식별"
+        success_criteria: ["open 포트 식별"]
+        acceptable_methods: ["**[OSS] scapy sr SYN (권장)**"]
+    target_vm: ips
+
+  - order: 3
+    instruction: |
+      ## 🎯 비정상 스캔 — FIN/XMAS/NULL
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='F'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='FPU'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags=0),timeout=2,verbose=0); print('FIN/XMAS/NULL sent')"
+      ```
+      ## ✅ 합격 기준
+      비정상 플래그 스캔(FIN/XMAS/NULL)을 전송한다.
+    hint: 'flags=F / FPU / 0'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 비정상 스캔 (FIN/XMAS/NULL) ==="
+      docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='F'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='FPU'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags=0),timeout=2,verbose=0); print('FIN/XMAS/NULL sent')"
+      echo "→ FIN(F)/XMAS(FPU)/NULL(0) — 표준 아닌 플래그로 일부 필터/스택 우회 시도"
+    answer_detail: "비정상 스캔 = 표준 SYN 대신 FIN/XMAS/NULL 플래그. 일부 stateless 필터/오래된 스택 우회. scapy라 임의 플래그 조립 가능(nmap도 -sF/-sX/-sN)."
+    verify:
+      type: output_contains
+      expect: 'sent'
+      field: stdout
+      semantic:
+        intent: "비정상 플래그 스캔"
+        success_criteria: ["FIN/XMAS/NULL 전송"]
+        acceptable_methods: ["**[OSS] scapy 비정상 플래그 (권장)**"]
+    target_vm: ips
+
+  - order: 4
+    instruction: |
+      ## 🎯 대규모 스캔 → Suricata 탐지
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=(1,200),flags='S'),timeout=6,verbose=0); print('mass scan sent')"
+      sleep 5
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
+      ```
+      ## ✅ 합격 기준
+      대규모 스캔이 Suricata에 scan으로 탐지된다.
+    hint: 'scapy dport=(1,200) 대량 → eve scan'
+    category: detect
+    points: 14
+    answer: |
+      echo "=== 대규모 SYN 스캔 (1-200 포트) ==="
+      docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=(1,200),flags='S'),timeout=6,verbose=0); print('mass scan sent')"
+      sleep 5
+      echo "=== Suricata scan 탐지 ==="
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
+      echo "→ 대량 SYN(200포트)이 Suricata 임계 초과 → scan 탐지. 소량은 임계 미달(은밀)"
+    answer_detail: "소량 스캔(W09-2)은 임계 미달이지만 대량(200포트)은 Suricata 스캔 임계 초과 → 'scan' 탐지. 공격자는 느린/소량으로 회피, 방어자는 임계 튜닝."
+    verify:
+      type: output_contains
+      expect: 'scan'
+      field: stdout
+      semantic:
+        intent: "대규모 스캔의 Suricata 탐지"
+        success_criteria: ["scan 시그니처 탐지", "임계 개념"]
+        acceptable_methods: ["**[OSS] 대량 scapy 스캔 → eve (권장)**"]
+    target_vm: ips
+
+  - order: 5
+    instruction: |
+      ## 🎯 패킷 분석 — 응답 플래그 해석
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker python3 -c "from scapy.all import *; a=sr1(IP(dst='10.20.30.1')/TCP(dport=80,flags='S'),timeout=3,verbose=0); print('flags:', a[TCP].flags if a else 'no-resp')"
+      ```
+      ## ✅ 합격 기준
+      응답 패킷의 플래그를 해석한다(SA=open).
+    hint: 'sr1 응답 flags 해석'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 패킷 분석 (응답 플래그) ==="
+      docker exec el34-attacker python3 -c "from scapy.all import *; a=sr1(IP(dst='10.20.30.1')/TCP(dport=80,flags='S'),timeout=3,verbose=0); print('port 80 응답 flags:', str(a[TCP].flags) if a else 'no-resp')"
+      echo "→ SA(SYN-ACK)=open, RA(RST-ACK)=closed, no-resp=filtered. 플래그가 포트 상태를 말한다"
+    answer_detail: "응답 플래그 해석 = 패킷 분석의 핵심. SA(0x12)=open, RA(0x14)=closed, 무응답=filtered. scapy로 raw 응답을 직접 검사."
+    verify:
+      type: output_contains
+      expect: 'flags'
+      field: stdout
+      semantic:
+        intent: "응답 플래그 패킷 분석"
+        success_criteria: ["플래그 해석(SA/RA)"]
+        acceptable_methods: ["**[OSS] scapy sr1 응답 분석 (권장)**"]
+    target_vm: ips
+
+  - order: 6
+    instruction: |
+      ## 🎯 네트워크 탐지룰 — NULL 스캔 (sid 9409001)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert tcp any any -> any any (msg:\"W9 NULL scan detected\"; flags:0; sid:9409001; rev:1;)
+      EOF"'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'; sleep 2
+      docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=80,flags=0),timeout=2,verbose=0); print('null sent')"
+      sleep 4
+      docker exec el34-ips sh -c 'sudo grep "9409001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature}"'
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+      ```
+      ## ✅ 합격 기준
+      NULL 스캔 탐지룰(9409001)이 발화한다(정리 후 보존).
+    hint: 'flags:0 룰(9409001) → NULL 스캔 → eve → 삭제'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== NULL 스캔 탐지룰 작성 + 문법 검증 ==="
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert tcp any any -> any any (msg:\"W9 NULL scan detected\"; flags:0; sid:9409001; rev:1;)
+      EOF"'
+      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -2'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules >/dev/null'; sleep 2
+      docker exec el34-attacker python3 -c "from scapy.all import *; [sr(IP(dst='10.20.30.1')/TCP(dport=p,flags=0),timeout=1,verbose=0) for p in (80,443,22,8001)]; print('null sent')"
+      sleep 4
+      echo "=== eve 탐지(베스트에포트) ==="
+      docker exec el34-ips sh -c 'sudo grep -c "9409001" /var/log/suricata/eve.json'
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "rule_removed (잔재=$(grep -c 9409001 /etc/suricata/rules/local.rules))"'
+    answer_detail: "비정상 스캔은 시그니처로 잡는다 — NULL 스캔(flags:0)은 정상 트래픽엔 없어 명확한 탐지 대상. Suricata flags:0 룰(9409001) 작성→문법검증(suricata -T)→reload. 끝나면 sed 삭제로 base 보존."
+    verify:
+      type: output_contains
+      expect: 'successfully'
+      field: stdout
+      semantic:
+        intent: "비정상 플래그 탐지룰"
+        success_criteria: ["sid 9409001 발화", "삭제 보존"]
+        acceptable_methods: ["**[OSS] flags:0 룰 (권장)**"]
+    target_vm: ips
+
+  - order: 7
+    instruction: |
+      ## 🎯 은밀 vs 탐지
+      ## 💻 실행 명령
+      ```bash
+      echo "소량/느린 스캔=임계 미달(은밀) / 대량/빠른=탐지. 비정상 플래그=시그니처 탐지 위험. trade-off"
+      ```
+      ## ✅ 합격 기준
+      은밀과 탐지의 trade-off를 정리한다.
+    hint: '소량 은밀 vs 대량 탐지'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 은밀 vs 탐지 ==="
+      echo "소량/느린 SYN 스캔: 임계 미달 → 은밀(but 느림)"
+      echo "대량/빠른 스캔: 빠르나 Suricata scan 임계 초과 → 탐지"
+      echo "비정상 플래그(NULL/XMAS): 일부 필터 우회하나 명확한 시그니처라 탐지 쉬움"
+      echo "→ 공격자는 속도/은밀 trade-off. 방어자는 임계 튜닝 + 비정상 플래그 룰"
+    answer_detail: "스캔의 은밀-탐지 trade-off — 소량/느림은 은밀하나 비효율, 대량은 빠르나 탐지. 비정상 플래그는 우회 시도지만 시그니처로 잡힌다."
+    verify:
+      type: output_contains
+      expect: '은밀'
+      field: stdout
+      semantic:
+        intent: "은밀 vs 탐지 trade-off"
+        success_criteria: ["속도/은밀 trade-off"]
+        acceptable_methods: ["**[설명] trade-off (권장)**"]
+    target_vm: ips
+
+  - order: 8
+    instruction: |
+      ## 🎯 scapy 공격 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W09 scapy 보고서 (학번, 이름)
+      ## 1. SYN 크래프팅 (open 포트)
+      ## 2. 비정상 스캔 (FIN/XMAS/NULL)
+      ## 3. 대규모 스캔 탐지 + 탐지룰
+      ## 4. 은밀 vs 탐지
+      ```
+      ## ✅ 합격 기준
+      보고서에 scapy 크래프팅 + 탐지가 포함된다.
+    hint: '크래프팅+비정상+탐지'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 공격 W09 scapy 보고서
+      ## 1. SYN 크래프팅: sr(TCP flags=S) → SYN-ACK(0x12)=open 식별
+      ## 2. 비정상 스캔: FIN(F)/XMAS(FPU)/NULL(0) — 필터 우회 시도
+      ## 3. 탐지: 대량 SYN(200포트)→Suricata scan, NULL 스캔→flags:0 룰(9409001)
+      ## 4. trade-off: 소량 은밀 vs 대량 탐지. 비정상 플래그는 시그니처로 잡힘
+      ## 결론: 패킷 직접 조립(scapy)으로 유연한 스캔, 단 비정상/대량은 탐지된다
+      EOF
+    answer_detail: "scapy = 패킷 수준 제어. 크래프팅/비정상 스캔의 유연성 vs 탐지. 네트워크 계층 공격의 기초."
+    verify:
+      type: output_contains
+      expect: 'scapy'
+      field: stdout
+      semantic:
+        intent: "scapy 종합 보고"
+        success_criteria: ["크래프팅/비정상/탐지"]
+        acceptable_methods: ["**[관리적] scapy 보고서 (권장)**"]
+    target_vm: ips
