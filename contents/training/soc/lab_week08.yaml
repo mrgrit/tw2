@@ -1,0 +1,316 @@
+lab_id: standalone-soc-week08
+title: "중간고사 — 흩어진 로그를 교차 분석해 하나의 공격 서사로 종합"
+version: standalone-soc
+course: soc
+week: 8
+description: |
+  SOC W01–W07 종합 실기. 다단계 공격(스캔→웹→SSH 무차별 대입)을 재현하고, 네 소스(Suricata eve·
+  ModSec/access·auth.log·alerts.json)를 교차 분석해 한 공격자의 서사로 종합하고, ATT&CK 매핑·우선순위·
+  에스컬레이션을 판정한다. 관측·분석 종합. 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+difficulty: hard
+duration_minutes: 220
+prerequisites:
+  - "W01–W07 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(분석 순서) §3(서사) 숙지"
+objectives:
+  - "네 소스 교차 분석"
+  - "출처/시간으로 한 공격자 상관"
+  - "ATT&CK 서사 구성"
+  - "우선순위/에스컬레이션 + 침투 여부 판정"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 네 분석 소스
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      ls /var/log/auth.log; docker exec el34-ips sh -c 'ls /var/log/suricata/eve.json'
+      ```
+      ## ✅ 합격 기준
+      SIEM + auth.log + eve 등 분석 소스가 준비됐다.
+    hint: 'analysisd + auth.log + eve'
+    category: survey
+    points: 8
+    answer: |
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      ls /var/log/auth.log
+      docker exec el34-ips sh -c 'ls /var/log/suricata/eve.json'
+      echo "4소스 준비: auth.log(인증)/eve(네트워크)/modsec(웹)/alerts.json(SIEM)"
+    answer_detail: "교차 분석의 네 소스 — 인증(auth.log), 웹(ModSec/access), 네트워크(eve), 통합(alerts.json)."
+    verify:
+      type: output_contains
+      expect: 'analysisd'
+      field: stdout
+      semantic:
+        intent: "네 분석 소스 점검"
+        success_criteria: ["SIEM + auth + eve"]
+        acceptable_methods: ["**[OSS] 소스 점검 (권장)**"]
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 다단계 공격 재현 — 스캔→웹→인증
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw8%27%20UNION%20SELECT%201--%20-\""
+      for u in root admin oracle test; do ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 $u@127.0.0.1 exit 2>/dev/null; done
+      echo "multi-stage done"
+      ```
+      ## ✅ 합격 기준
+      스캔/웹/인증 3단계가 재현된다.
+    hint: 'nmap + 웹 + ssh 브루트'
+    category: recon
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw8%27%20UNION%20SELECT%201--%20-\""
+      for u in root admin oracle test; do ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 $u@127.0.0.1 exit 2>/dev/null; done
+      sleep 6
+      echo "multi-stage done"
+    answer_detail: "정찰(스캔)→침투(SQLi)→자격증명(SSH 대입) 다단계 — 네 소스에 흩어진 흔적을 남긴다."
+    verify:
+      type: output_contains
+      expect: 'done'
+      field: stdout
+      semantic:
+        intent: "다단계 공격 재현"
+        success_criteria: ["스캔/웹/인증"]
+        acceptable_methods: ["**[OSS] 3단계 공격 (권장)**"]
+    target_vm: siem
+
+  - order: 3
+    instruction: |
+      ## 🎯 네트워크 분석 — Suricata eve
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.alert.signature" | sort | uniq -c | tail -5'
+      ```
+      ## ✅ 합격 기준
+      네트워크 단계(스캔/sqlmap)를 식별한다.
+    hint: 'eve alert signature for .202'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 네트워크(Suricata eve) — 출발지 10.20.30.202 alert ==="
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.src_ip" | sort | uniq -c'
+      echo "=== 시그니처 종류 ==="
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.alert.signature" | sort | uniq -c | tail -5'
+    answer_detail: "네트워크 단계 — 출발지 10.20.30.202의 alert(스캔/SQLi 시그니처)가 eve에 다수. 네트워크 관점의 공격 증거."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "네트워크 분석"
+        success_criteria: ["eve 시그니처", "출발지"]
+        acceptable_methods: ["**[OSS] eve signature (권장)**"]
+    target_vm: ips
+
+  - order: 4
+    instruction: |
+      ## 🎯 웹 분석 — ModSec + access
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      ```
+      ## ✅ 합격 기준
+      웹 침투 단계(942/949110)를 식별한다.
+    hint: 'modsec rule 분포'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 웹(ModSec) ==="
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      echo "=== 웹(access 응답코드) ==="
+      docker exec el34-web sh -c 'sudo tail -30 /var/log/apache2/dvwa_access.log | grep -oE "\" [0-9]{3} " | sort | uniq -c'
+    answer_detail: "웹 단계 — 942(SQLi)→949110 차단(403). access로 요청 전체상."
+    verify:
+      type: output_contains
+      expect: '942'
+      field: stdout
+      semantic:
+        intent: "웹 분석"
+        success_criteria: ["rule 942/949110", "응답코드"]
+        acceptable_methods: ["**[OSS] modsec + access (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 인증 분석 — auth.log
+      ## 💻 실행 명령
+      ```bash
+      grep -aoE "Invalid user [a-z]+" /var/log/auth.log | sort | uniq -c | sort -rn | head
+      ```
+      ## ✅ 합격 기준
+      인증 단계(Invalid user 다발)를 식별한다.
+    hint: 'auth.log Invalid user 분포'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 인증(auth.log) ==="
+      grep -aoE "Invalid user [a-z]+" /var/log/auth.log | sort | uniq -c | sort -rn | head
+      echo "=== 성공 여부 ==="; grep -ac Accepted /var/log/auth.log
+      echo "→ Invalid user 다발 = 무차별 대입(T1110), Accepted로 침투 여부 판정"
+    answer_detail: "인증 단계 — Invalid user 다발(여러 계정)=무차별 대입. Accepted 유무로 침투 여부."
+    verify:
+      type: output_contains
+      expect: 'Invalid user'
+      field: stdout
+      semantic:
+        intent: "인증 분석"
+        success_criteria: ["Invalid user 다발", "성공 여부"]
+        acceptable_methods: ["**[OSS] auth.log (권장)**"]
+    target_vm: siem
+
+  - order: 6
+    instruction: |
+      ## 🎯 SIEM 종합 — alerts.json 수렴
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|.rule.groups" | sort | uniq -c | head'
+      ```
+      ## ✅ 합격 기준
+      SIEM에 다소스 경보가 수렴해 있다.
+    hint: 'alerts.json src .202 그룹 분포'
+    category: detect
+    points: 10
+    answer: |
+      echo "=== SIEM 수렴 (출발지 10.20.30.202 그룹) ==="
+      docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|.rule.groups" | sort | uniq -c | head'
+    answer_detail: "네 소스가 Wazuh로 수렴 — 출발지로 묶으면 다단계 경보가 한 곳에."
+    verify:
+      type: output_contains
+      expect: 'ids'
+      field: stdout
+      semantic:
+        intent: "SIEM 다소스 수렴"
+        success_criteria: ["src 그룹 분포"]
+        acceptable_methods: ["**[OSS] alerts.json 수렴 (권장)**"]
+    target_vm: siem
+
+  - order: 7
+    instruction: |
+      ## 🎯 교차 상관 — 출처/시간으로 묶기
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -8'
+      ```
+      ## ✅ 합격 기준
+      같은 출처(10.20.30.202)의 경보를 시간순 체인으로 묶는다.
+    hint: 'src .202 시간순 체인'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 교차 상관 (출처 10.20.30.202 시간순) ==="
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -8'
+      echo "→ 같은 출처 + 시간순 = 한 공격자의 단계적 체인"
+    answer_detail: "교차 상관 — 네 소스를 출발지+시간으로 묶으면 단편이 한 서사가 된다."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "출처/시간 교차 상관"
+        success_criteria: ["출처 묶기", "시간순"]
+        acceptable_methods: ["**[OSS] 시간순+src (권장)**"]
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 ATT&CK 서사 — 단계별 매핑
+      ## 💻 실행 명령
+      ```bash
+      echo "T0 스캔 → T1046 정찰 / T1 SQLi → T1190 침투 / T2 SSH대입 → T1110 자격증명"
+      ```
+      ## ✅ 합격 기준
+      공격을 ATT&CK 서사(시간순+기술)로 종합한다.
+    hint: 'T1046→T1190→T1110 서사'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== ATT&CK 공격 서사 ==="
+      echo "T0 포트 스캔(10.20.30.202)  → TA0043 정찰 / T1046"
+      echo "T1 SQLi 침투(같은 출처)      → TA0001 초기침투 / T1190"
+      echo "T2 SSH 무차별 대입(다발)     → TA0006 자격증명 / T1110"
+      echo "T3 Accepted 유무            → 침투 성공 판정"
+      echo "→ 한 공격자가 정찰→웹침투→인증공격. ATT&CK 단계 일관"
+    answer_detail: "공격 서사 = 시간순 + ATT&CK 단계 + 출처 일관 + 증거. '한 공격자가 무엇을 했나'를 한 문장씩."
+    verify:
+      type: output_contains
+      expect: 'T1190'
+      field: stdout
+      semantic:
+        intent: "ATT&CK 서사 종합"
+        success_criteria: ["T1046→T1190→T1110", "시간순 서사"]
+        acceptable_methods: ["**[관리적] ATT&CK 서사 (권장)**"]
+    target_vm: siem
+
+  - order: 9
+    instruction: |
+      ## 🎯 우선순위/에스컬레이션 — 침투 여부
+      ## 💻 실행 명령
+      ```bash
+      echo "공격 출처 Accepted:"; grep -aE "Accepted .* from 10.20.30.202|Accepted .* from 192.168.0.202" /var/log/auth.log | wc -l
+      echo "정찰→침투 체인 진행 = P2 에스컬레이션. 공격 출처 Accepted 있으면 P1(침해)"
+      ```
+      ## ✅ 합격 기준
+      체인+침투여부로 P1~P4 + 에스컬레이션을 판정한다.
+    hint: '체인 진행=P2, 공격출처 Accepted=P1'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 침투 성공 여부 (공격 출처 Accepted) ==="
+      grep -aE "Accepted .* from 10\.20\.30\.202|Accepted .* from 192\.168\.0\.202" /var/log/auth.log | wc -l
+      echo "=== 판정 ==="
+      echo "정찰→침투 체인 진행(성공 흔적 없음) = P2 에스컬레이션(L2/IR로)"
+      echo "공격 출처에서 Accepted 발견 시 = P1 침해(즉시 IR)"
+    answer_detail: "판정 = 체인 깊이 + 침투 여부. 공격 출처의 Accepted(성공)가 없으면 '시도(P2)', 있으면 '침해(P1)'. 체인 진행형이라 L2/IR로 에스컬레이션."
+    verify:
+      type: output_contains
+      expect: 'P2'
+      field: stdout
+      semantic:
+        intent: "우선순위/에스컬레이션 + 침투 판정"
+        success_criteria: ["체인 기반 P1~P4", "공격출처 Accepted로 침투 판정"]
+        acceptable_methods: ["**[OSS] 공격출처 Accepted 확인 + 판정 (권장)**"]
+    target_vm: siem
+
+  - order: 10
+    instruction: |
+      ## 🎯 중간고사 종합 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC W08 중간고사 보고서 (학번, 이름)
+      ## 1. 네 소스 분석 (네트워크/웹/인증/SIEM)
+      ## 2. 교차 상관 (출처/시간)
+      ## 3. ATT&CK 서사 (T1046→T1190→T1110)
+      ## 4. 우선순위/에스컬레이션 + 침투 여부
+      ```
+      ## ✅ 합격 기준
+      보고서에 교차 분석 + 서사 + 판정이 포함된다.
+    hint: '4소스+상관+서사+판정'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # SOC W08 중간고사 보고서
+      ## 1. 네 소스: eve(스캔/sqlmap)+ModSec(942/949110)+auth.log(Invalid user 다발)+alerts.json 수렴
+      ## 2. 교차 상관: 모두 출처 10.20.30.202(웹/네트워크), 시간순 체인
+      ## 3. ATT&CK 서사: T1046 정찰 → T1190 웹침투 → T1110 인증공격
+      ## 4. 판정: 정찰→침투 체인 진행, 공격출처 Accepted 없음 → P2 에스컬레이션(시도/차단)
+      ## 결론: 한 로그는 단편, 교차로 봐야 한 공격자의 서사가 보인다
+      EOF
+    answer_detail: "중간고사 = 네 소스 교차 → 상관 → ATT&CK 서사 → 판정. SOC 분석가의 종합 능력 = 흩어진 단편을 한 서사로."
+    verify:
+      type: output_contains
+      expect: '서사'
+      field: stdout
+      semantic:
+        intent: "교차 분석 종합 보고"
+        success_criteria: ["4소스", "서사", "판정"]
+        acceptable_methods: ["**[관리적] 종합 보고서 (권장)**"]
+    target_vm: siem
