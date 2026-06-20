@@ -1,0 +1,260 @@
+lab_id: standalone-soc-week12
+title: "내부 위협 — 권한 남용을 UEBA로 잡고 증거를 보전하기"
+version: standalone-soc
+course: soc
+week: 12
+description: |
+  인가된 사용자의 권한 남용을 행위(UEBA)로 잡는다. sudo 남용 + 데이터 staging을 재현하고, auth.log/osquery로
+  비정상 행위를 식별·헌팅하고, 증거를 보전(해시)하고, 유출 채널을 격리하고, 복구한다. 내부 위협 IR은
+  증거 보전·법무 협업이 핵심. staging/룰은 self-clean(공유 인프라 보존). 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "W02(인증)·W09(IR) 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(UEBA) §4(유출) §5(증거보전) 숙지"
+objectives:
+  - "행위 baseline 대비 편차(UEBA)로 내부 위협 식별"
+  - "권한 남용(sudo) + 데이터 staging 헌팅"
+  - "증거 보전(해시) + 유출 채널 격리"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 행위 소스
+      ## 💻 실행 명령
+      ```bash
+      ls /var/log/auth.log; docker exec el34-web osqueryi --version
+      ```
+      ## ✅ 합격 기준
+      auth.log(로그인/sudo) + osquery(파일/프로세스) 준비.
+    hint: 'auth.log + osquery'
+    category: survey
+    points: 8
+    answer: |
+      ls -la /var/log/auth.log
+      docker exec el34-web osqueryi --version
+      echo "UEBA 소스: auth.log(로그인/sudo 행위) + osquery(파일/프로세스 행위)"
+    answer_detail: "UEBA = 행위 분석. 호스트 auth.log(로그인 시각/sudo) + osquery(파일 접근/staging)가 행위 소스."
+    verify:
+      type: output_contains
+      expect: '5.23'
+      field: stdout
+      semantic:
+        intent: "행위 소스 점검"
+        success_criteria: ["auth.log + osquery"]
+        acceptable_methods: ["**[OSS] 소스 점검 (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 내부 위협 재현 — sudo 남용 + staging
+      ## 💻 실행 명령
+      ```bash
+      echo 1 | sudo -S id >/dev/null 2>&1   # 권한 사용(auth.log sudo)
+      docker exec el34-web sh -c 'tar czf /tmp/socw12_exfil.tar.gz /etc/passwd /etc/hostname 2>/dev/null; echo staged'
+      echo "insider done"
+      ```
+      ## ✅ 합격 기준
+      sudo 사용 + 데이터 staging(아카이브)이 재현된다.
+    hint: 'sudo + tar 민감파일 staging'
+    category: recon
+    points: 10
+    answer: |
+      echo "=== 권한 사용 (auth.log sudo) ==="
+      echo 1 | sudo -S id >/dev/null 2>&1; echo "sudo used"
+      echo "=== 데이터 staging (민감 파일 압축) ==="
+      docker exec el34-web sh -c 'tar czf /tmp/socw12_exfil.tar.gz /etc/passwd /etc/hostname 2>/dev/null; echo staged'
+      echo "insider done"
+    answer_detail: "내부 위협 = 인가된 사용자의 비정상 행위. sudo 권한 사용 + 민감 파일 압축(staging, 유출 준비). 시그니처가 아닌 행위로 잡는다."
+    verify:
+      type: output_contains
+      expect: 'done'
+      field: stdout
+      semantic:
+        intent: "내부 위협(권한남용+staging) 재현"
+        success_criteria: ["sudo 사용", "데이터 staging"]
+        acceptable_methods: ["**[OSS] sudo + tar staging (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 UEBA Identify — 비정상 행위
+      ## 💻 실행 명령
+      ```bash
+      grep -aE "sudo:.*COMMAND" /var/log/auth.log | tail -8
+      ```
+      ## ✅ 합격 기준
+      sudo 권한 사용 패턴을 식별한다.
+    hint: 'auth.log sudo COMMAND 패턴'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== sudo 권한 사용 (UEBA) ==="
+      grep -aE "sudo:.*COMMAND" /var/log/auth.log | tail -8
+      echo "=== 로그인 시각(야간?) ==="
+      grep -a "Accepted" /var/log/auth.log | tail -5
+      echo "→ baseline 대비: 갑작스런 sudo 다발/야간 로그인 = 행위 편차(내부 위협 신호)"
+    answer_detail: "UEBA Identify = baseline 대비 편차. sudo COMMAND 로그(권한 사용) + 로그인 시각(야간?). 평소와 다른 행위가 신호 — 시그니처 없는 내부자를 행위로 잡는다."
+    verify:
+      type: output_contains
+      expect: 'COMMAND'
+      field: stdout
+      semantic:
+        intent: "UEBA로 비정상 행위 식별"
+        success_criteria: ["sudo COMMAND 패턴", "행위 편차"]
+        acceptable_methods: ["**[OSS] auth.log sudo/시각 (권장)**"]
+    target_vm: siem
+
+  - order: 4
+    instruction: |
+      ## 🎯 Hunt — 권한 남용 + staging
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web osqueryi --json 'SELECT path,size FROM file WHERE path="/tmp/socw12_exfil.tar.gz";'
+      ```
+      ## ✅ 합격 기준
+      데이터 staging 아카이브를 헌팅한다.
+    hint: 'osquery file exfil 아카이브'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 데이터 staging 헌팅 (osquery file) ==="
+      docker exec el34-web osqueryi --json 'SELECT path,size FROM file WHERE path="/tmp/socw12_exfil.tar.gz";'
+      echo "→ 민감 파일 압축(/tmp/*.tar.gz of /etc) = 유출 직전 staging. 대량 읽기+압축+전송 = 유출 체인"
+    answer_detail: "Hunt = staging 흔적. 민감 파일 아카이브(osquery file)는 유출 직전 신호. 대량 파일 접근 + 압축 + 외부 전송이 유출 체인."
+    verify:
+      type: output_contains
+      expect: 'exfil'
+      field: stdout
+      semantic:
+        intent: "데이터 staging 헌팅"
+        success_criteria: ["staging 아카이브", "유출 체인 인지"]
+        acceptable_methods: ["**[OSS] osquery file staging (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 증거 보전 — 변경 없이 해시
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sha256sum /tmp/socw12_exfil.tar.gz; stat -c "%y %s" /tmp/socw12_exfil.tar.gz'
+      ```
+      ## ✅ 합격 기준
+      증거(해시/타임스탬프)를 변경 없이 보전한다.
+    hint: 'sha256sum + stat (증거 보전)'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 증거 보전 (해시 + 타임스탬프, 변경 금지) ==="
+      docker exec el34-web sh -c 'sha256sum /tmp/socw12_exfil.tar.gz; stat -c "%y %s bytes" /tmp/socw12_exfil.tar.gz'
+      echo "→ 내부 위협은 법적 대응 동반 → 증거(해시/시각)를 변경 없이 보전. 함부로 삭제 금지"
+    answer_detail: "내부 위협 IR의 최우선 = 증거 보전. 파일 해시(sha256)+타임스탬프를 기록해 무결성 입증(법무/포렌식). 기술 대응 전에 증거부터."
+    verify:
+      type: output_contains
+      expect: 'socw12_exfil'
+      field: stdout
+      semantic:
+        intent: "증거 보전(해시/타임스탬프)"
+        success_criteria: ["sha256 해시", "타임스탬프", "변경 없이"]
+        acceptable_methods: ["**[OSS] sha256sum + stat (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 Contain — 유출 채널 격리 (sid 9512001)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert http any any -> any any (msg:\"SOC W12 data exfil archive\"; http.uri; content:\".tar.gz\"; sid:9512001; rev:1;)
+      EOF"'
+      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -1; sudo suricatasc -c reload-rules'
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9512001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+      ```
+      ## ✅ 합격 기준
+      유출 채널 격리 룰(9512001)이 작성·검증·정리된다.
+    hint: '유출(.tar.gz) 탐지 룰(9512001) → syntax → reload → 삭제'
+    category: manipulation
+    points: 12
+    answer: |
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert http any any -> any any (msg:\"SOC W12 data exfil archive\"; http.uri; content:\".tar.gz\"; nocase; sid:9512001; rev:1;)
+      EOF"'
+      echo "=== syntax 검증 ==="
+      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -1'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules >/dev/null'
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9512001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "유출채널 rule_removed (잔재=$(grep -c 9512001 /etc/suricata/rules/local.rules))"'
+    answer_detail: "Contain = 유출 채널 차단(.tar.gz 전송 탐지 룰 9512001) + 계정 권한 동결. 내부 위협은 증거 보전 후 격리. 운영은 DLP+계정잠금."
+    verify:
+      type: output_contains
+      expect: 'rule_removed'
+      field: stdout
+      semantic:
+        intent: "유출 채널 격리 룰"
+        success_criteria: ["sid 9512001", "syntax 검증", "정리"]
+        acceptable_methods: ["**[OSS] 유출 탐지 룰 (권장)**"]
+    target_vm: ips
+
+  - order: 7
+    instruction: |
+      ## 🎯 Recover — 비인가 접근 제거 + 복구
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'rm -f /tmp/socw12_exfil.tar.gz; ls /tmp/socw12_exfil.tar.gz 2>/dev/null && echo "잔재!" || echo clean'
+      ```
+      ## ✅ 합격 기준
+      (증거 보전 후) staging 제거 + 잔재 0.
+    hint: '증거 보전 후 staging 제거'
+    category: response
+    points: 12
+    answer: |
+      echo "=== Recover (증거 보전 후 staging 제거) ==="
+      docker exec el34-web sh -c 'rm -f /tmp/socw12_exfil.tar.gz; ls /tmp/socw12_exfil.tar.gz 2>/dev/null && echo "잔재!" || echo clean'
+      echo "→ 증거(해시)는 보전했으므로 staging 제거 가능. 계정 권한 검토/동결, 재발 감시"
+    answer_detail: "Recover = 증거 보전 후 staging 제거 + 비인가 권한 회수. 내부 위협은 HR/법무 협의 하에 진행 — 기술 대응과 절차가 함께."
+    verify:
+      type: output_contains
+      expect: 'clean'
+      field: stdout
+      semantic:
+        intent: "증거 보전 후 staging 제거 + 복구"
+        success_criteria: ["staging 제거", "잔재 0", "법무 협업 인지"]
+        acceptable_methods: ["**[OSS] rm + 잔재 점검 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 내부 위협 IR 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC W12 내부 위협 IR 보고서 (학번, 이름)
+      ## 1. UEBA 식별 (행위 편차)
+      ## 2. 헌팅 (권한 남용 + staging)
+      ## 3. 증거 보전 (해시/타임스탬프)
+      ## 4. 격리/복구 (법무 협업)
+      ```
+      ## ✅ 합격 기준
+      보고서에 UEBA + 증거 보전 + 법무 협업이 포함된다.
+    hint: 'UEBA+증거보전+법무'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # SOC W12 내부 위협 IR 보고서
+      ## 1. UEBA 식별: sudo 권한 남용 + (야간) 로그인 = baseline 대비 행위 편차
+      ## 2. 헌팅: 민감 파일 staging(/tmp/socw12_exfil.tar.gz) = 유출 직전
+      ## 3. 증거 보전: 파일 sha256 해시 + 타임스탬프 기록(법무/포렌치 대비, 변경 금지)
+      ## 4. 격리/복구: 유출 채널 차단(9512001) + 계정 권한 동결, HR/법무 협업
+      ## 결론: 내부 위협은 시그니처가 아닌 행위(UEBA)로 잡고, 증거 보전이 최우선
+      EOF
+    answer_detail: "내부 위협 IR = UEBA(행위) 식별 + staging 헌팅 + 증거 보전(법적) + 격리/복구(법무 협업). 외부 위협과 다른 절차."
+    verify:
+      type: output_contains
+      expect: 'UEBA'
+      field: stdout
+      semantic:
+        intent: "내부 위협 IR 종합 보고"
+        success_criteria: ["UEBA", "증거 보전", "법무 협업"]
+        acceptable_methods: ["**[관리적] 내부 위협 IR 보고서 (권장)**"]
+    target_vm: siem
