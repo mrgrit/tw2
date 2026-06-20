@@ -1,0 +1,285 @@
+lab_id: standalone-soc-week14
+title: "AI 자율 관제와 Active Response로 자동 대응 (야간 무인 SOC)"
+version: standalone-soc
+course: soc
+week: 14
+description: |
+  사람 없이도 1차 대응하는 자동화 SOC를 다룬다. Active Response(자동 firewall-drop) 설계를 점검하고,
+  고위험 자동 대응 룰을 설계(logtest)하고, 안전장치(timeout/화이트리스트)로 자가 DoS를 막고, AI 자율
+  트리아지(룰+인텔+빈도)를 이해한다. Active Response는 점검·설계만(공유 인프라 실제 차단 금지).
+  명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "W04(룰)·W13(인텔) 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(Active Response) §3(안전장치) §4(AI 자율) 숙지"
+objectives:
+  - "Active Response(자동 대응) 설계 점검"
+  - "고위험 자동 대응 룰 설계(logtest)"
+  - "안전장치(timeout/화이트리스트)로 자가 DoS 방지"
+  - "AI 자율 트리아지 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — Wazuh + Active Response 설정
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|execd"
+      docker exec el34-siem sh -c 'grep -c active-response /var/ossec/etc/ossec.conf'
+      ```
+      ## ✅ 합격 기준
+      analysisd/execd(대응 실행) + active-response 설정 확인.
+    hint: 'wazuh-control execd + active-response 설정'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== Wazuh 대응 데몬 ==="
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|execd"
+      echo "=== active-response 설정 수 ==="
+      docker exec el34-siem sh -c 'grep -c active-response /var/ossec/etc/ossec.conf'
+    answer_detail: "자동 대응 토대 = analysisd(평결) + execd(대응 실행) + active-response 설정. execd가 firewall-drop 등을 실행."
+    verify:
+      type: output_contains
+      expect: 'execd'
+      field: stdout
+      semantic:
+        intent: "Wazuh 자동 대응 토대 점검"
+        success_criteria: ["analysisd/execd", "active-response 설정"]
+        acceptable_methods: ["**[OSS] wazuh-control + ossec.conf (권장)**"]
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 야간 위협 재현 — 고위험 공격
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw14%27%20UNION%20SELECT%201--%20-\""
+      echo "night threat done"
+      ```
+      ## ✅ 합격 기준
+      고위험 공격(자동 대응 대상)이 재현된다.
+    hint: '고위험 공격(sqlmap SQLi)'
+    category: recon
+    points: 8
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw14%27%20UNION%20SELECT%201--%20-\""
+      sleep 3
+      echo "night threat done"
+    answer_detail: "야간/주말 위협 — 사람이 적을 때. 고위험 공격은 자동 대응(Active Response)의 대상."
+    verify:
+      type: output_contains
+      expect: 'done'
+      field: stdout
+      semantic:
+        intent: "고위험 야간 위협 재현"
+        success_criteria: ["고위험 공격"]
+        acceptable_methods: ["**[OSS] 공격 (권장)**"]
+    target_vm: siem
+
+  - order: 3
+    instruction: |
+      ## 🎯 Active Response 점검 — 자동 대응 설계
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'grep -nE "active-response|firewall-drop|command|timeout" /var/ossec/etc/ossec.conf | head'
+      docker exec el34-siem sh -c 'ls -la /var/ossec/logs/active-responses.log 2>/dev/null || echo "(트리거 시 기록)"'
+      ```
+      ## ✅ 합격 기준
+      ossec.conf의 active-response/firewall-drop 설계를 점검한다.
+    hint: 'ossec.conf active-response/firewall-drop'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== Active Response 설계 (ossec.conf) ==="
+      docker exec el34-siem sh -c 'grep -nE "active-response|firewall-drop|command|timeout" /var/ossec/etc/ossec.conf | head'
+      echo "=== 실행 로그 경로 ==="
+      docker exec el34-siem sh -c 'ls -la /var/ossec/logs/active-responses.log 2>/dev/null || echo "(트리거 시 기록)"'
+      echo "→ command(firewall-drop) + active-response(level/timeout) 매핑. el34 기본은 주석 템플릿(미활성)"
+    answer_detail: "Active Response = command(무엇을: firewall-drop) + active-response(언제: level≥N, 얼마나: timeout) 매핑. execd가 실행, active-responses.log에 기록. el34 기본은 주석(미활성)."
+    verify:
+      type: output_contains
+      expect: 'active-response'
+      field: stdout
+      semantic:
+        intent: "Active Response 설계 점검"
+        success_criteria: ["active-response/firewall-drop", "실행 로그 경로"]
+        acceptable_methods: ["**[OSS] ossec.conf 점검 (권장)**"]
+    target_vm: siem
+
+  - order: 4
+    instruction: |
+      ## 🎯 자동 대응 룰 설계 — 고위험 트리거 (id 101410)
+      ## 💻 실행 명령
+      ```bash
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw14_lr.bak
+      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name="soc_w14,">
+        <rule id="101410" level="13">
+          <decoded_as>json</decoded_as>
+          <field name="threat">critical</field>
+          <description>SOC W14 - auto-response trigger (level 13)</description>
+        </rule>
+      </group>
+      EOF'
+      echo '{"threat":"critical","src_ip":"10.20.30.202"}' | sudo /var/ossec/bin/wazuh-logtest
+      sudo cp /tmp/socw14_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw14_lr.bak
+      ```
+      ## ✅ 합격 기준
+      자동 대응 트리거 룰(101410, level 13)이 발화한다(active-response가 잡을 level).
+    hint: 'level 13 룰(101410) → logtest (AR 트리거 level)'
+    category: manipulation
+    points: 14
+    answer: |
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw14_lr.bak'
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"soc_w14,\">
+        <rule id=\"101410\" level=\"13\">
+          <decoded_as>json</decoded_as>
+          <field name=\"threat\">critical</field>
+          <description>SOC W14 auto-response trigger level 13</description>
+        </rule>
+      </group>
+      EOF"'
+      docker exec el34-siem sh -c 'cat > /tmp/socw14.json <<EOF
+      {"threat":"critical","src_ip":"10.20.30.202"}
+      EOF'
+      echo "=== 자동 대응 트리거 룰 logtest ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw14.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw14.json'
+      docker exec el34-siem sh -c 'sudo cp /tmp/socw14_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw14_lr.bak; echo "복원 잔재=$(grep -c 101410 /var/ossec/etc/rules/local_rules.xml)"'
+    answer_detail: "자동 대응은 level 임계로 트리거 — level 13 룰(101410)이 발화하면 active-response(level≥12)가 firewall-drop을 자동 실행. logtest로 룰 발화 검증(실제 AR은 공유라 미활성)."
+    verify:
+      type: output_contains
+      expect: '101410'
+      field: stdout
+      semantic:
+        intent: "고위험 자동 대응 트리거 룰 설계"
+        success_criteria: ["level 13 룰 발화", "AR 트리거 level", "cp 복원"]
+        acceptable_methods: ["**[OSS] 고위험 룰 + logtest (권장)**"]
+    target_vm: siem
+
+  - order: 5
+    instruction: |
+      ## 🎯 안전장치 — 자가 DoS 방지
+      ## 💻 실행 명령
+      ```bash
+      echo "timeout: 600초 자동 해제(영구 차단 방지)"
+      echo "화이트리스트: 내부/중요 IP 절대 차단 안 함"
+      echo "level 임계: level>=12(높은 확신)에만 자동 대응, 낮으면 사람 확인"
+      ```
+      ## ✅ 합격 기준
+      자동화 안전장치(timeout/화이트리스트/임계)를 정리한다.
+    hint: 'timeout/화이트리스트/level 임계'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 자동 대응 안전장치 (자가 DoS 방지) ==="
+      echo "① timeout: 600초 후 자동 해제 — 오탐이어도 영구 차단 방지"
+      echo "② 화이트리스트: 내부/중요 IP는 절대 차단 안 함"
+      echo "③ level 임계: level>=12(높은 확신)에만 자동 대응. 낮으면 사람 확인"
+      echo "→ 안전장치 없는 자동 대응 = 오탐 한 번에 정상 서비스 마비(자가 DoS)"
+    answer_detail: "자동화의 양날 — 잘못되면 자가 DoS. timeout(자동 해제)+화이트리스트(예외)+level 임계(확신)로 안전. 자동 대응은 빠르되 안전장치 필수."
+    verify:
+      type: output_contains
+      expect: 'timeout'
+      field: stdout
+      semantic:
+        intent: "자동화 안전장치 정리"
+        success_criteria: ["timeout/화이트리스트/임계", "자가 DoS 방지"]
+        acceptable_methods: ["**[설명] 안전장치 (권장)**"]
+    target_vm: siem
+
+  - order: 6
+    instruction: |
+      ## 🎯 AI 자율 트리아지 — 자동 분류
+      ## 💻 실행 명령
+      ```bash
+      echo "자동 트리아지: 룰(W04)+인텔(W13)+빈도(W05) → 우선순위 자동 / 상관(W06) → 캠페인 / 보고 → 요약만"
+      ```
+      ## ✅ 합격 기준
+      AI/룰 자율 트리아지의 동작을 정리한다.
+    hint: '룰+인텔+빈도 자동 분류'
+    category: analysis
+    points: 8
+    answer: |
+      echo "=== AI 자율 트리아지 ==="
+      echo "자동 분류: 룰(W04) + 인텔(W13) + 빈도(W05) → 우선순위 자동 결정"
+      echo "자동 상관: 같은 출발지 경보 → 캠페인(W06)"
+      echo "자동 보고: 사람에겐 요약만(고위험 N건/자동차단 M건)"
+      echo "→ tw2 gwanje 관제가 예(deterministic 규칙 + 선택적 AI). 사람은 검증+모르는 위협(L3)"
+    answer_detail: "AI 자율 관제 = 1차 트리아지 자동화. 룰+인텔+빈도로 분류, 상관으로 캠페인, 요약 보고. 사람은 자동화 검증 + 모르는 위협 심층(L3)에 집중."
+    verify:
+      type: output_contains
+      expect: '자동'
+      field: stdout
+      semantic:
+        intent: "AI 자율 트리아지 이해"
+        success_criteria: ["자동 분류/상관/보고", "사람 역할 재배치"]
+        acceptable_methods: ["**[설명] 자율 트리아지 (권장)**"]
+    target_vm: siem
+
+  - order: 7
+    instruction: |
+      ## 🎯 무인 대응 효과 — 24/7 적시성
+      ## 💻 실행 명령
+      ```bash
+      echo "무인 자동화: 야간/주말 위협에 수 초 내 자동 대응 → 적시성 + 처리량, 사람은 고난도에 집중"
+      ```
+      ## ✅ 합격 기준
+      무인 자동 대응의 효과를 정리한다.
+    hint: '24/7 적시성'
+    category: analysis
+    points: 8
+    answer: |
+      echo "=== 무인 대응 효과 ==="
+      echo "야간/주말 고위험 위협 → AI 트리아지 + Active Response 자동 대응(수 초)"
+      echo "→ 24/7 적시성(사람 부재 시간 커버) + 처리량. 사람은 자동화 거른 것/고난도에 집중"
+      echo "단, 안전장치 + 사람 검증 루프 필수(완전 무인은 위험)"
+    answer_detail: "무인 자동화 = 24/7 적시성 + 처리량. 단 안전장치 + 사람 검증 루프 필수 — 완전 자동은 자가 DoS/오탐 위험. 자동화는 사람을 대체가 아닌 증폭."
+    verify:
+      type: output_contains
+      expect: '적시성'
+      field: stdout
+      semantic:
+        intent: "무인 자동 대응 효과 이해"
+        success_criteria: ["24/7 적시성", "사람 검증 루프"]
+        acceptable_methods: ["**[설명] 무인 효과 (권장)**"]
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 자동 대응 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC W14 자동 대응 보고서 (학번, 이름)
+      ## 1. Active Response 설계(firewall-drop/level/timeout)
+      ## 2. 자동 대응 룰(101410)
+      ## 3. 안전장치(timeout/화이트리스트/임계)
+      ## 4. AI 자율 트리아지 + 무인 효과
+      ```
+      ## ✅ 합격 기준
+      보고서에 Active Response + 안전장치 + AI 자율이 포함된다.
+    hint: 'AR+안전장치+AI자율'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # SOC W14 자동 대응 보고서
+      ## 1. Active Response: command(firewall-drop)+active-response(level>=12, timeout 600)
+      ## 2. 자동 대응 룰: level 13(101410) 발화 → AR 자동 firewall-drop
+      ## 3. 안전장치: timeout(자동해제)+화이트리스트(예외)+level 임계(확신) → 자가 DoS 방지
+      ## 4. AI 자율: 룰+인텔+빈도 자동 트리아지, 사람은 검증+L3. 24/7 적시성
+      ## 결론: 야간 무인 SOC = AI 트리아지 + Active Response, 단 안전장치+사람 검증 필수
+      EOF
+    answer_detail: "자동 대응 = Active Response(자동 조치) + AI 자율 트리아지(자동 분류). 24/7 적시성, 단 안전장치+사람 검증으로 자가 DoS 방지."
+    verify:
+      type: output_contains
+      expect: 'Active Response'
+      field: stdout
+      semantic:
+        intent: "자동 대응 종합 보고"
+        success_criteria: ["Active Response", "안전장치", "AI 자율"]
+        acceptable_methods: ["**[관리적] 자동 대응 보고서 (권장)**"]
+    target_vm: siem
