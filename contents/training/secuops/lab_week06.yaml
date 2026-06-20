@@ -1,0 +1,1014 @@
+lab_id: standalone-secuops-week06
+title: osquery 호스트 가시화 — 158 테이블 + SQL JOIN + 헌팅 10 + FIM + R/B/P
+version: standalone-non-ai
+course: secuops
+week: 6
+description: |
+  el34 의 4 호스트 (bastion / fw / ips / web) 에 설치된 osquery 5.23.0 으로 OS-as-SQL
+  가시화. 158 테이블 + 6 핵심 (processes / users / file / listening_ports /
+  authorized_keys / crontab) + SQL JOIN 3 패턴 + 헌팅 10 + FIM (file_paths +
+  file_events) + scheduled query 시뮬 + R/B/P (새 user / SSH key / cron backdoor →
+  5 헌팅 매치) + Wazuh ship + 종합 보고서. 한 cycle.
+difficulty: medium
+duration_minutes: 200
+prerequisites:
+  - "W01-W05 통과"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec (컨테이너 root)"
+  - "lecture §1-§12 (158 테이블 + JOIN + FIM + W11 비교) 숙지"
+objectives:
+  - "osqueryi 5.23.0 + 158 테이블 카테고리 분류"
+  - "6 핵심 테이블 (processes/users/file/listening_ports/authorized_keys/crontab)"
+  - "SQL JOIN — processes + listening_ports / process_open_sockets"
+  - "헌팅 10 패턴 (on_disk=0 / 새 user / SSH key / cron / SUID / 외부 outbound)"
+  - "FIM 설정 (file_paths + file_events)"
+  - "osqueryd scheduled query 시뮬"
+  - "R/B/P — 호스트 침해 시뮬 + 5 헌팅 매치"
+  - "Wazuh ship 검증 (W10 예고)"
+  - "종합 보고서"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 MISSION — osqueryi 진입 + version + 158 테이블 가시화
+
+      el34 4 호스트의 osquery 5.23.0 설치 상태 + 158 테이블 확인 + osqueryd daemon
+      미운영 확인.
+
+      ## 💻 실행 명령
+
+      ```bash
+      for h in bastion fw ips web; do
+        printf "%-8s " "$h"
+        docker exec el34-$h sh -c 'sudo osqueryi --version' 2>&1
+      done
+
+      # 1 호스트의 osquery_info
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT version, build_distro, instance_id FROM osquery_info LIMIT 1;"'
+
+      # 158 테이블 카운트
+      docker exec el34-web sh -c 'sudo osqueryi ".tables" 2>&1 | wc -l'
+
+      # 카테고리 별 테이블 sample
+      docker exec el34-web sh -c 'sudo osqueryi ".tables" 2>&1 | grep -E "process|user|file|listening|cron|crypto|kernel" | head -15'
+
+      # osqueryd daemon 상태 (el34 는 미운영 예상)
+      docker exec el34-web sh -c 'sudo systemctl status osqueryd 2>&1 | head -3'
+      docker exec el34-web sh -c 'sudo ls /etc/osquery/ 2>&1'
+      ```
+
+      ## 📋 확인 사항 (실측 2026-05-12)
+
+      - 4 호스트 모두 `osqueryi version 5.23.0`
+      - osquery_info: `version 5.23.0`, build_distro `centos7` (osquery 빌드 환경), instance_id UUID
+      - 158 테이블 (line 1 의 `.tables` 헤더 포함)
+      - osqueryd 미운영 (`Unit osqueryd.service could not be found` 또는 inactive)
+      - /etc/osquery/ 없음 (config 미존재)
+
+      ## 💡 왜 이걸 하는가?
+
+      운영 인수 30초 — 4 호스트 osquery 설치 상태 + 버전 + 테이블 + 데몬 운영 여부 확인.
+      el34 는 osqueryi ad-hoc only — W10 에서 daemon + config 본격 도입.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 4 호스트 5.23.0 + 158 테이블
+      - **운영 패치 권장 (W10)**: osquery.conf 작성 + osqueryd enable + Wazuh ship
+    hint: 'osqueryi --version + osqueryi ".tables"'
+    category: survey
+    points: 10
+    answer: |
+      for h in bastion fw ips web; do
+        printf "%-8s " "$h"
+        docker exec el34-$h sh -c 'sudo osqueryi --version' 2>&1
+      done
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT version, build_distro, instance_id FROM osquery_info LIMIT 1;"'
+      docker exec el34-web sh -c 'sudo osqueryi ".tables" 2>&1 | wc -l'
+      docker exec el34-web sh -c 'sudo osqueryi ".tables" 2>&1 | grep -E "process|user|file|listening|cron|crypto|kernel" | head -15'
+      docker exec el34-web sh -c 'sudo systemctl status osqueryd 2>&1 | head -3'
+      docker exec el34-web sh -c 'sudo ls /etc/osquery/ 2>&1'
+    answer_detail: '4 호스트 osquery 5.23.0 + 158 테이블. osqueryd 미운영 + /etc/osquery 없음 (ad-hoc only).'
+    verify:
+      type: output_contains
+      expect: '5.23.0'
+      field: stdout
+      semantic:
+        intent: "osquery 5.23.0 4 호스트 + 158 테이블 baseline"
+        success_criteria:
+          - "4 호스트 5.23.0"
+          - "158 테이블"
+          - "osqueryd 미운영"
+        acceptable_methods:
+          - "**[OSS] osqueryi --version**"
+          - "**[OSS] osqueryi --json SELECT FROM osquery_info**"
+          - "**[OSS] osqueryi .tables | wc -l**"
+          - "**[OSS] osqueryi .schema <table>** — 컬럼 확인"
+          - "**[OSS] systemctl status osqueryd** — daemon 운영 여부"
+          - "**[OSS] /etc/osquery/osquery.conf** — config 위치"
+          - "**[OSS] /var/log/osquery/** — log path"
+          - "**[OSS] osqueryctl config-check** — config 검증"
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 MISSION — 6 핵심 테이블 쿼리 (processes / users / file / listening_ports / authorized_keys / crontab)
+
+      lecture §4.2 의 6 핵심 테이블 각각 ad-hoc 쿼리 + 결과 분석.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. processes
+      echo "=== processes (Wazuh + osquery 5개) ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name, cmdline FROM processes ORDER BY pid DESC LIMIT 5;"' 2>&1 | python3 -m json.tool 2>&1 | head -30
+
+      # 2. users
+      echo "=== users (uid >= 1000) ==="
+      docker exec el34-bastion sh -c 'sudo osqueryi --json "SELECT username, uid, shell, directory FROM users WHERE uid >= 1000;"' 2>&1
+
+      # 3. file (/etc/passwd metadata)
+      echo "=== file /etc/passwd ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path, mode, uid, mtime, size FROM file WHERE path = \"/etc/passwd\";"' 2>&1
+
+      # 4. listening_ports
+      echo "=== listening_ports ==="
+      docker exec el34-fw sh -c 'sudo osqueryi --json "SELECT port, protocol, address, pid FROM listening_ports WHERE address NOT LIKE \"127.%\" LIMIT 5;"' 2>&1
+
+      # 5. authorized_keys
+      echo "=== authorized_keys ==="
+      docker exec el34-bastion sh -c 'sudo osqueryi --json "SELECT uid, key_type, comment FROM authorized_keys;"' 2>&1 | head -20
+
+      # 6. crontab
+      echo "=== crontab ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT * FROM crontab;"' 2>&1 | head -20
+      ```
+
+      ## 📋 확인 사항
+
+      - processes: pid + name + cmdline (Wazuh / Apache / Suricata 등)
+      - users: uid >= 1000 의 사용자 (ccc 또는 비슷)
+      - file: /etc/passwd 의 mode / uid / mtime / size
+      - listening_ports: 22 (sshd), 80 (apache or haproxy), 443
+      - authorized_keys: uid 별 key 목록
+      - crontab: /etc/crontab + cron.d 의 entry
+
+      ## 💡 왜 이걸 하는가?
+
+      6 핵심 테이블이 운영 인수의 90% cover. 매 cycle 첫 점검.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 6 테이블 모두 데이터 출력
+      - **운영 활용**: 각 호스트 별 baseline 캡처 후 diff 추적
+    hint: 'osqueryi --json "SELECT ... FROM <table> WHERE ...;"'
+    category: query
+    points: 15
+    answer: |
+      echo "=== processes ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name, cmdline FROM processes ORDER BY pid DESC LIMIT 5;"' 2>&1
+      echo "=== users ==="
+      docker exec el34-bastion sh -c 'sudo osqueryi --json "SELECT username, uid, shell, directory FROM users WHERE uid >= 1000;"' 2>&1
+      echo "=== file ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path, mode, uid, mtime, size FROM file WHERE path = \"/etc/passwd\";"' 2>&1
+      echo "=== listening_ports ==="
+      docker exec el34-fw sh -c 'sudo osqueryi --json "SELECT port, protocol, address, pid FROM listening_ports WHERE address NOT LIKE \"127.%\" LIMIT 5;"' 2>&1
+      echo "=== authorized_keys ==="
+      docker exec el34-bastion sh -c 'sudo osqueryi --json "SELECT uid, key_type, comment FROM authorized_keys;"' 2>&1
+      echo "=== crontab ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT * FROM crontab;"' 2>&1
+    answer_detail: '6 핵심 테이블 (processes/users/file/listening_ports/authorized_keys/crontab) ad-hoc 쿼리'
+    verify:
+      type: output_contains
+      expect: processes
+      field: stdout
+      semantic:
+        intent: "6 핵심 테이블 baseline 쿼리"
+        success_criteria: ["6 테이블 모두 출력"]
+        acceptable_methods:
+          - "**[OSS] osqueryi --json**"
+          - "**[OSS] SELECT pid, name, cmdline FROM processes**"
+          - "**[OSS] SELECT FROM users WHERE uid >= 1000**"
+          - "**[OSS] SELECT FROM file WHERE path = ...**"
+          - "**[OSS] SELECT FROM listening_ports WHERE address NOT LIKE 127.%**"
+          - "**[OSS] SELECT FROM authorized_keys**"
+          - "**[OSS] SELECT FROM crontab**"
+          - "**[OSS] baseline 캡처 + diff 추적**"
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 MISSION — SQL JOIN 3 패턴 (port + process / outbound + C2 / SSH 신뢰 매트릭스)
+
+      lecture §5 의 3 JOIN 케이스 — port-process / outbound-C2 / SSH 매트릭스.
+
+      ## 💻 실행 명령
+
+      ```bash
+      echo "=== 1. listening_ports JOIN processes ==="
+      docker exec el34-fw sh -c 'sudo osqueryi --json "
+        SELECT l.port, l.protocol, l.address, p.pid, p.name, p.path
+        FROM listening_ports l
+        JOIN processes p ON l.pid = p.pid
+        WHERE l.address NOT IN (\"127.0.0.1\", \"::1\");
+      "' 2>&1 | python3 -m json.tool 2>&1 | head -30
+
+      echo "=== 2. process_open_sockets JOIN processes (outbound 443) ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "
+        SELECT p.name, p.pid, p.cmdline, s.remote_address, s.remote_port
+        FROM process_open_sockets s
+        JOIN processes p ON s.pid = p.pid
+        WHERE s.remote_port = 443
+        LIMIT 5;
+      "' 2>&1
+
+      echo "=== 3. users JOIN authorized_keys (SSH 신뢰 매트릭스) ==="
+      docker exec el34-bastion sh -c 'sudo osqueryi --json "
+        SELECT u.username, u.uid, u.directory, a.key_type, a.comment
+        FROM users u
+        JOIN authorized_keys a USING (uid);
+      "' 2>&1
+      ```
+
+      ## 📋 확인 사항
+
+      - JOIN 1: 외부 노출 port 별 (22 sshd / 80 haproxy or apache / 443) process 식별
+      - JOIN 2: outbound 443 — 보통 Wazuh agent 의 manager 통신 (10.20.32.100:1514)
+      - JOIN 3: SSH 신뢰 매트릭스 — uid 별 key 목록
+
+      ## 💡 왜 이걸 하는가?
+
+      JOIN 이 osquery 의 강점. SQL 의 모든 표현력 활용 → 단순 ps + ss 로 못 만드는 표.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 3 JOIN 결과 출력
+      - **운영 활용**:
+        - JOIN 1 — 비인가 listener (web shell) 즉시 발견
+        - JOIN 2 — C2 callback 헌팅
+        - JOIN 3 — 신규 key 추가 추적 baseline
+    hint: 'JOIN processes / process_open_sockets / authorized_keys'
+    category: query
+    points: 15
+    answer: |
+      echo "=== JOIN 1 ==="
+      docker exec el34-fw sh -c 'sudo osqueryi --json "SELECT l.port, l.protocol, l.address, p.pid, p.name FROM listening_ports l JOIN processes p ON l.pid = p.pid WHERE l.address NOT IN (\"127.0.0.1\", \"::1\");"' 2>&1
+      echo "=== JOIN 2 ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT p.name, s.remote_address, s.remote_port FROM process_open_sockets s JOIN processes p ON s.pid = p.pid WHERE s.remote_port = 443 LIMIT 5;"' 2>&1
+      echo "=== JOIN 3 ==="
+      docker exec el34-bastion sh -c 'sudo osqueryi --json "SELECT u.username, u.uid, a.key_type, a.comment FROM users u JOIN authorized_keys a USING (uid);"' 2>&1
+    answer_detail: '3 JOIN (port-process / outbound-C2 / SSH 매트릭스)'
+    verify:
+      type: output_contains
+      expect: 'pid'
+      field: stdout
+      semantic:
+        intent: "SQL JOIN 3 패턴"
+        success_criteria: ["3 JOIN 결과"]
+        acceptable_methods:
+          - "**[OSS] listening_ports JOIN processes ON pid**"
+          - "**[OSS] process_open_sockets JOIN processes**"
+          - "**[OSS] users JOIN authorized_keys USING (uid)**"
+          - "**[OSS] LEFT/RIGHT/INNER JOIN**"
+          - "**[OSS] outbound 443 C2 헌팅**"
+          - "**[OSS] 비인가 listener 식별**"
+          - "**[OSS] SSH 신뢰 매트릭스**"
+          - "**[OSS] JOIN + WHERE + GROUP BY**"
+    target_vm: bastion
+
+  - order: 4
+    instruction: |
+      ## 🎯 MISSION — 헌팅 쿼리 5 패턴 (on_disk / SUID / 비표준 shell / cron / outbound)
+
+      lecture §6 의 10 패턴 중 가장 흔한 5 — disk 없는 process / SUID / 비표준 shell /
+      cron entry / outbound C2.
+
+      ## 💻 실행 명령
+
+      ```bash
+      echo "=== 1. disk 없는 process (malware 의심) ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name, path, cmdline FROM processes WHERE on_disk = 0;"' 2>&1
+
+      echo "=== 2. SUID binary ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path, username FROM suid_bin LIMIT 10;"' 2>&1
+
+      echo "=== 3. 비표준 shell ==="
+      docker exec el34-bastion sh -c 'sudo osqueryi --json "SELECT username, shell FROM users WHERE shell NOT IN (\"/bin/bash\", \"/bin/sh\", \"/sbin/nologin\", \"/usr/sbin/nologin\", \"/bin/false\");"' 2>&1
+
+      echo "=== 4. cron entry 모두 ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT command, path FROM crontab;"' 2>&1
+
+      echo "=== 5. cmdline 의 wget/curl/base64 ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name, cmdline FROM processes WHERE cmdline LIKE \"%base64%\" OR cmdline LIKE \"%wget%\" OR cmdline LIKE \"%curl%\";"' 2>&1
+      ```
+
+      ## 📋 확인 사항
+
+      - 5 헌팅 모두 실행 + JSON 응답
+      - 정상 환경에서 대부분 빈 array (`[]`) — anomaly 없음
+      - SUID 는 표준 (sudo, su, passwd, ping 등) 출력
+      - 비표준 shell 은 zsh 등 (없을 수도)
+      - cron 은 /etc/crontab + cron.d 표준 entry
+      - curl/wget cmdline 은 보통 빈 array (정상 운영)
+
+      ## 💡 왜 이걸 하는가?
+
+      운영 인수 시 5 헌팅이 baseline. 비정상 발견 시 추가 조사.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 비정상 결과 없음 (모두 standard)
+      - **위험 1**: on_disk=0 의 process — fileless malware
+      - **위험 2**: 새 SUID binary — 권한 상승
+      - **위험 3**: zsh / ksh 등 비표준 shell — 사용자 추가 흔적
+      - **위험 4**: 비표준 cron entry — backdoor
+      - **위험 5**: cmdline 의 외부 download — post-exploit
+    hint: 'on_disk=0 + suid_bin + cron + cmdline LIKE %wget%'
+    category: hunt
+    points: 20
+    answer: |
+      echo "=== 1. on_disk=0 ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name, path FROM processes WHERE on_disk = 0;"' 2>&1
+      echo "=== 2. SUID ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path, username FROM suid_bin LIMIT 10;"' 2>&1
+      echo "=== 3. 비표준 shell ==="
+      docker exec el34-bastion sh -c 'sudo osqueryi --json "SELECT username, shell FROM users WHERE shell NOT IN (\"/bin/bash\", \"/bin/sh\", \"/sbin/nologin\", \"/usr/sbin/nologin\", \"/bin/false\");"' 2>&1
+      echo "=== 4. crontab ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT command, path FROM crontab;"' 2>&1
+      echo "=== 5. cmdline external download ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name, cmdline FROM processes WHERE cmdline LIKE \"%base64%\" OR cmdline LIKE \"%wget%\" OR cmdline LIKE \"%curl%\";"' 2>&1
+    answer_detail: '5 헌팅 (on_disk=0 / SUID / 비표준 shell / crontab / cmdline external)'
+    verify:
+      type: output_contains
+      expect: 'crontab'
+      field: stdout
+      semantic:
+        intent: "헌팅 5 패턴 (W01 깊이 baseline 점검)"
+        success_criteria: ["5 헌팅 실행"]
+        acceptable_methods:
+          - "**[OSS] WHERE on_disk = 0** — fileless"
+          - "**[OSS] SELECT FROM suid_bin** — 권한 상승"
+          - "**[OSS] WHERE shell NOT IN (...)** — 비표준"
+          - "**[OSS] SELECT FROM crontab** — backdoor"
+          - "**[OSS] WHERE cmdline LIKE %wget%** — downloader"
+          - "**[OSS] hidden dir SELECT path FROM file WHERE path LIKE /.%**"
+          - "**[OSS] world-writable mode LIKE %7**"
+          - "**[OSS] baseline diff 추적**"
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 MISSION — FIM 설정 (file_paths + file_events) + osquery.conf 시뮬
+
+      lecture §7 — FIM 의 inotify + file_paths + file_events. el34 의 osqueryd 미운영
+      이므로 시뮬 (osquery.conf 작성 + 검증만, 실 적용은 W10).
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. osquery.conf FIM 패치 작성 (시뮬)
+      docker exec el34-web sh -c 'sudo mkdir -p /etc/osquery 2>/dev/null'
+      docker exec el34-web sh -c 'sudo bash -c "cat > /tmp/osquery_w07.conf <<EOF
+      {
+        \"options\": {
+          \"logger_path\": \"/var/log/osquery\",
+          \"host_identifier\": \"hostname\"
+        },
+        \"file_paths\": {
+          \"system_etc\": [
+            \"/etc/passwd\",
+            \"/etc/shadow\",
+            \"/etc/sudoers\",
+            \"/etc/sudoers.d/%%\"
+          ],
+          \"ssh_keys\": [
+            \"/root/.ssh/%%\"
+          ],
+          \"cron_paths\": [
+            \"/etc/crontab\",
+            \"/etc/cron.d/%%\"
+          ],
+          \"apache_config\": [
+            \"/etc/apache2/sites-enabled/%%\",
+            \"/etc/apache2/conf-enabled/%%\"
+          ]
+        },
+        \"schedule\": {
+          \"file_changes\": {
+            \"query\": \"SELECT target_path, action, time, category, hashed FROM file_events;\",
+            \"interval\": 60,
+            \"removed\": false
+          }
+        }
+      }
+      EOF"'
+
+      # 2. JSON syntax 검증
+      docker exec el34-web sh -c 'python3 -m json.tool /tmp/osquery_w07.conf 2>&1 | tail -3'
+
+      # 3. osqueryctl config-check (있다면)
+      docker exec el34-web sh -c 'sudo osqueryctl config-check /tmp/osquery_w07.conf 2>&1 | head'
+
+      # 4. 시뮬 — file_paths 카테고리 별 path 수
+      echo "=== file_paths 카테고리 별 ==="
+      docker exec el34-web sh -c 'python3 -c "
+      import json
+      c=json.load(open(\"/tmp/osquery_w07.conf\"))
+      for cat, paths in c[\"file_paths\"].items():
+          print(f\"  {cat}: {len(paths)} path\")
+      "'
+
+      # 5. inotify max_user_watches 확인 (FIM capacity)
+      docker exec el34-web sh -c 'cat /proc/sys/fs/inotify/max_user_watches'
+
+      # cleanup (lab 임시 파일만)
+      docker exec el34-web sh -c 'sudo rm -f /tmp/osquery_w07.conf'
+      ```
+
+      ## 📋 확인 사항
+
+      - JSON syntax pass (no parse error)
+      - 4 카테고리 (system_etc / ssh_keys / cron_paths / apache_config)
+      - schedule.file_changes interval 60
+      - inotify max_user_watches = 8192 또는 비슷 (kernel default)
+
+      ## 💡 왜 이걸 하는가?
+
+      FIM 의 표준 패턴. 4 카테고리가 운영 환경의 frequent target. inotify 한계 인지
+      (수만 path 감시 시 limit 상향 필요).
+
+      ## 🔍 결과 해석
+
+      - **정상**: JSON pass + 4 카테고리 + inotify > 8192
+      - **운영 권장**:
+        - osqueryd enable 후 실 운영 (W10)
+        - file_events log 모니터
+        - inotify limit 부족 시 `sysctl -w fs.inotify.max_user_watches=524288`
+    hint: 'osquery.conf 의 file_paths + schedule.file_changes'
+    category: configuration
+    points: 18
+    answer: |
+      docker exec el34-web sh -c 'sudo mkdir -p /etc/osquery 2>/dev/null'
+      docker exec el34-web sh -c 'sudo bash -c "cat > /tmp/osquery_w07.conf <<EOF
+      {
+        \"file_paths\": {
+          \"system_etc\": [\"/etc/passwd\", \"/etc/shadow\", \"/etc/sudoers\", \"/etc/sudoers.d/%%\"],
+          \"ssh_keys\": [\"/root/.ssh/%%\"],
+          \"cron_paths\": [\"/etc/crontab\", \"/etc/cron.d/%%\"],
+          \"apache_config\": [\"/etc/apache2/sites-enabled/%%\"]
+        },
+        \"schedule\": {
+          \"file_changes\": {\"query\": \"SELECT target_path, action, time, category FROM file_events;\", \"interval\": 60, \"removed\": false}
+        }
+      }
+      EOF"'
+      docker exec el34-web sh -c 'python3 -m json.tool /tmp/osquery_w07.conf 2>&1 | tail -3'
+      docker exec el34-web sh -c 'python3 -c "import json; c=json.load(open(\"/tmp/osquery_w07.conf\")); [print(f\"  {cat}: {len(p)} path\") for cat,p in c[\"file_paths\"].items()]"'
+      docker exec el34-web sh -c 'cat /proc/sys/fs/inotify/max_user_watches'
+      docker exec el34-web sh -c 'sudo rm -f /tmp/osquery_w07.conf'
+    answer_detail: 'FIM 시뮬 — 4 카테고리 file_paths + schedule.file_changes + inotify limit'
+    verify:
+      type: output_contains
+      expect: system_etc
+      field: stdout
+      semantic:
+        intent: "FIM osquery.conf 시뮬"
+        success_criteria: ["4 카테고리", "JSON pass", "inotify max"]
+        acceptable_methods:
+          - "**[OSS] osquery.conf 의 file_paths**"
+          - "**[OSS] %% recursive glob**"
+          - "**[OSS] schedule.file_changes interval 60**"
+          - "**[OSS] inotify max_user_watches 확인**"
+          - "**[OSS] osqueryctl config-check**"
+          - "**[OSS] file_events 테이블 컬럼**"
+          - "**[OSS] differential vs snapshot**"
+          - "**[OSS] file_paths_query (dynamic) — advanced**"
+    cleanup: |
+      docker exec el34-web sh -c 'sudo rm -f /tmp/osquery_w07.conf' 2>/dev/null
+      true
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 MISSION — scheduled query 시뮬 + log format 분석
+
+      osqueryd 미운영 환경에서 schedule 의 query 결과 format 시뮬 (osqueryi 로 같은
+      쿼리 실행 + JSON 결과 분석).
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. schedule 의 process_snapshot 시뮬
+      echo "=== process_snapshot 시뮬 ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name, path, on_disk FROM processes ORDER BY pid LIMIT 5;"' 2>&1
+
+      # 2. schedule 의 listening_ports 시뮬
+      echo "=== listening_ports 시뮬 ==="
+      docker exec el34-fw sh -c 'sudo osqueryi --json "SELECT port, address, pid FROM listening_ports WHERE address NOT LIKE \"127.%\";"' 2>&1
+
+      # 3. log format 비교 — osqueryi 의 단순 JSON vs osqueryd 의 differential
+      echo
+      echo "=== osqueryd log format (시뮬) ==="
+      cat <<'EOF'
+      # /var/log/osquery/osqueryd.results.log 의 한 라인 예
+      {"name":"new_users_hourly","hostIdentifier":"web","calendarTime":"...","action":"added","columns":{"username":"newuser","uid":"1001"}}
+      EOF
+
+      # 4. 실 osqueryd 운영 시 query 결과를 Wazuh agent 가 ship
+      echo
+      echo "=== Wazuh ship 권장 설정 (W10) ==="
+      cat <<'EOF'
+      <localfile>
+        <log_format>json</log_format>
+        <location>/var/log/osquery/osqueryd.results.log</location>
+      </localfile>
+      EOF
+      ```
+
+      ## 📋 확인 사항
+
+      - schedule 의 query 실행 결과 (JSON array)
+      - osqueryd log format 시뮬 (differential vs snapshot)
+      - Wazuh agent ship 권장 설정
+
+      ## 💡 왜 이걸 하는가?
+
+      W10 의 본격 통합 전 schedule 의 결과 format 인지. 운영 표준 — interval 60-600,
+      differential (`removed: false`) + 중요 query 는 snapshot.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 2 시뮬 쿼리 결과 + log format 이해
+      - **운영 권장**:
+        1. interval 60: listening_ports / processes
+        2. interval 600: users / authorized_keys / crontab
+        3. interval 3600: package / suid_bin / file (size 큰 쿼리)
+    hint: 'osqueryi 로 schedule 쿼리 결과 시뮬 + log format'
+    category: configuration
+    points: 12
+    answer: |
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name, path, on_disk FROM processes ORDER BY pid LIMIT 5;"' 2>&1
+      docker exec el34-fw sh -c 'sudo osqueryi --json "SELECT port, address, pid FROM listening_ports WHERE address NOT LIKE \"127.%\";"' 2>&1
+      echo "log format 시뮬:"
+      cat <<'EOF'
+      {"name":"new_users_hourly","action":"added","columns":{"username":"newuser","uid":"1001"}}
+      EOF
+      echo "Wazuh ship 권장:"
+      cat <<'EOF'
+      <localfile>
+        <log_format>json</log_format>
+        <location>/var/log/osquery/osqueryd.results.log</location>
+      </localfile>
+      EOF
+    answer_detail: 'schedule query 시뮬 + log format + Wazuh ship 권장'
+    verify:
+      type: output_contains
+      expect: 'columns'
+      field: stdout
+      semantic:
+        intent: "scheduled query 시뮬 + log format"
+        success_criteria: ["query 결과", "log format 이해"]
+        acceptable_methods:
+          - "**[OSS] osqueryi 로 schedule 쿼리 사전 검증**"
+          - "**[OSS] osqueryd log format 의 JSON 라인**"
+          - "**[OSS] differential (action: added/removed)**"
+          - "**[OSS] snapshot (모든 row)**"
+          - "**[OSS] interval 60/600/3600 선택 기준**"
+          - "**[OSS] schedule_splay_percent — 분산 polling**"
+          - "**[OSS] Wazuh agent <localfile> ship**"
+          - "**[OSS] packs — incident-response / vuln-management**"
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 MISSION — **R/B/P** Red 가 호스트 침해 시뮬 → Blue 5 헌팅 매치 → Purple 권장
+
+      lecture §16 의 R/B/P. **Red** 가 web 호스트에 새 user / SSH key / cron 추가 →
+      **Blue** 가 5 osquery 헌팅 매치 → **Purple** 의 scheduled query 자동화 권장 + cleanup.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # === Red — 호스트 침해 시뮬 ===
+      echo "[Red 1] 새 사용자 fakeintruder (uid 1099)"
+      docker exec el34-web sh -c 'sudo useradd -m -s /bin/bash -u 1099 fakeintruder 2>/dev/null && echo "created"'
+
+      echo "[Red 2] /root/.ssh/authorized_keys 에 FAKEKEY 추가"
+      docker exec el34-web sh -c 'sudo bash -c "echo \"ssh-rsa AAAAB3NzaFAKEKEY fakeintruder@evil\" >> /root/.ssh/authorized_keys"'
+
+      echo "[Red 3] /etc/cron.d/w07_backdoor 추가"
+      docker exec el34-web sh -c 'sudo bash -c "echo \"* * * * * root /tmp/backdoor.sh\" > /etc/cron.d/w07_backdoor"'
+
+      sleep 2
+
+      # === Blue — 5 osquery 헌팅 ===
+      echo
+      echo "[Blue 1] 새 사용자 헌팅"
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT username, uid, shell FROM users WHERE uid = 1099;"' 2>&1
+
+      echo "[Blue 2] FAKEKEY 검색"
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT key_type, key FROM authorized_keys WHERE key LIKE \"%FAKEKEY%\";"' 2>&1
+
+      echo "[Blue 3] /etc/cron.d 의 새 entry"
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT command, path FROM crontab WHERE path LIKE \"%w07_backdoor%\";"' 2>&1
+
+      echo "[Blue 4] /etc/cron.d/ 의 file metadata"
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path, mtime, size FROM file WHERE path = \"/etc/cron.d/w07_backdoor\";"' 2>&1
+
+      echo "[Blue 5] /tmp/backdoor.sh 의 file metadata (없을 것)"
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path, mode, size FROM file WHERE path = \"/tmp/backdoor.sh\";"' 2>&1
+
+      # === Purple — scheduled query 권장 + 카운트 ===
+      echo
+      echo "[Purple] 헌팅 매치 카운트"
+      U=$(docker exec el34-web sh -c 'sudo osqueryi --json "SELECT username FROM users WHERE uid = 1099;"' 2>&1 | python3 -c "import json,sys; d=json.loads(sys.stdin.read() or \"[]\"); print(len(d))")
+      K=$(docker exec el34-web sh -c 'sudo osqueryi --json "SELECT key FROM authorized_keys WHERE key LIKE \"%FAKEKEY%\";"' 2>&1 | python3 -c "import json,sys; d=json.loads(sys.stdin.read() or \"[]\"); print(len(d))")
+      C=$(docker exec el34-web sh -c 'sudo osqueryi --json "SELECT command FROM crontab WHERE path LIKE \"%w07_backdoor%\";"' 2>&1 | python3 -c "import json,sys; d=json.loads(sys.stdin.read() or \"[]\"); print(len(d))")
+      echo "users: $U / authorized_keys: $K / crontab: $C  (각 1+ 이 정상)"
+
+      echo
+      echo "[Purple] scheduled query 권장 (시뮬):"
+      cat <<'EOF'
+      {
+        "schedule": {
+          "new_users_hourly": {"query": "SELECT username, uid FROM users WHERE uid >= 1000;", "interval": 3600, "removed": false},
+          "ssh_keys_change": {"query": "SELECT u.username, a.key_type, a.comment FROM users u JOIN authorized_keys a USING (uid);", "interval": 600, "removed": false},
+          "cron_changes": {"query": "SELECT command, path FROM crontab;", "interval": 600}
+        }
+      }
+      EOF
+
+      # === Cleanup (실험 종료) ===
+      echo
+      echo "[Cleanup] 침해 흔적 제거"
+      docker exec el34-web sh -c 'sudo userdel -r fakeintruder 2>/dev/null; sudo sed -i "/FAKEKEY/d" /root/.ssh/authorized_keys; sudo rm -f /etc/cron.d/w07_backdoor'
+      sleep 1
+      echo "확인 — 헌팅 결과 비어 있어야:"
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT username FROM users WHERE uid = 1099;"' 2>&1
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT key FROM authorized_keys WHERE key LIKE \"%FAKEKEY%\";"' 2>&1
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT command FROM crontab WHERE path LIKE \"%w07_backdoor%\";"' 2>&1
+      ```
+
+      ## 📋 확인 사항
+
+      - **Red 3 침해**: 모두 성공 (created / appended / written)
+      - **Blue 5 헌팅**:
+        - user fakeintruder 검출 (1 row)
+        - FAKEKEY 검출 (1 row)
+        - cron entry 검출 (1 row)
+        - file metadata (mtime + size)
+      - **Purple 카운트**: users 1 / authorized_keys 1 / crontab 1
+      - **Cleanup 후**: 3 헌팅 모두 빈 array `[]`
+
+      ## 💡 왜 이걸 하는가?
+
+      Purple Team standard cycle. 호스트 침해의 표준 3 패턴 (user / key / cron) 을 직접
+      재현 + 5 osquery 헌팅 매치 + scheduled query 자동화 권장 + cleanup. baseline diff
+      가 어떻게 동작하는지 가시화.
+
+      ## 🔍 결과 해석 + 운영 권장 5
+
+      - **정상**: Red 침해 후 5 헌팅 모두 매치 + cleanup 후 0
+      - **운영 권장**:
+        1. scheduled query interval 600 — users + authorized_keys + crontab
+        2. FIM 의 file_paths — /root/.ssh, /etc/cron.d, /etc/sudoers.d
+        3. Wazuh agent ship — log 의 단일 수집 (W10)
+        4. baseline 캡처 — 매주 + diff
+        5. SUID + on_disk=0 + 비표준 shell 은 별도 alert 룰
+    hint: 'Red useradd + authorized_keys + cron / Blue 5 osquery / Purple scheduled query 권장 / cleanup'
+    category: redblue
+    points: 25
+    answer: |
+      echo "=== Red — 침해 시뮬 ==="
+      docker exec el34-web sh -c 'sudo useradd -m -s /bin/bash -u 1099 fakeintruder 2>/dev/null && echo created'
+      docker exec el34-web sh -c 'sudo bash -c "echo \"ssh-rsa AAAAB3NzaFAKEKEY fake@evil\" >> /root/.ssh/authorized_keys"'
+      docker exec el34-web sh -c 'sudo bash -c "echo \"* * * * * root /tmp/backdoor.sh\" > /etc/cron.d/w07_backdoor"'
+      sleep 2
+      echo
+      echo "=== Blue — 5 헌팅 ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT username, uid FROM users WHERE uid = 1099;"' 2>&1
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT key_type, key FROM authorized_keys WHERE key LIKE \"%FAKEKEY%\";"' 2>&1
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT command, path FROM crontab WHERE path LIKE \"%w07_backdoor%\";"' 2>&1
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path, mtime, size FROM file WHERE path = \"/etc/cron.d/w07_backdoor\";"' 2>&1
+      echo
+      echo "=== Purple — scheduled query 권장 ==="
+      cat <<'EOF'
+      "new_users_hourly": {"interval": 3600, "removed": false}
+      "ssh_keys_change": {"interval": 600, "removed": false}
+      "cron_changes": {"interval": 600}
+      EOF
+      echo
+      echo "=== Cleanup ==="
+      docker exec el34-web sh -c 'sudo userdel -r fakeintruder 2>/dev/null; sudo sed -i "/FAKEKEY/d" /root/.ssh/authorized_keys; sudo rm -f /etc/cron.d/w07_backdoor'
+    answer_detail: 'Red 침해 3 (user/key/cron) → Blue 5 헌팅 매치 → Purple scheduled query 권장 → cleanup.'
+    verify:
+      type: output_contains
+      expect: fakeintruder
+      field: stdout
+      semantic:
+        intent: "R/B/P — 호스트 침해 시뮬 + 5 헌팅"
+        success_criteria:
+          - "Red 3 침해 성공"
+          - "Blue 5 헌팅 매치"
+          - "Purple 권장"
+          - "Cleanup 후 0"
+        acceptable_methods:
+          - "**[OSS] useradd / authorized_keys / cron 침해**"
+          - "**[OSS] osquery users / authorized_keys / crontab 헌팅**"
+          - "**[OSS] osquery file metadata mtime / size**"
+          - "**[OSS] scheduled query 자동화**"
+          - "**[OSS] FIM file_paths 보강**"
+          - "**[OSS] Wazuh agent ship**"
+          - "**[OSS] baseline diff 추적**"
+          - "**[OSS] cleanup 1 cycle**"
+    cleanup: |
+      docker exec el34-web sh -c 'sudo userdel -r fakeintruder 2>/dev/null; sudo sed -i "/FAKEKEY/d" /root/.ssh/authorized_keys; sudo rm -f /etc/cron.d/w07_backdoor' 2>/dev/null
+      true
+    target_vm: bastion
+
+  - order: 8
+    instruction: |
+      ## 🎯 MISSION — 트러블슈팅 시뮬 (lecture §10 의 'no such column' + daemon)
+
+      lecture §10.1 의 'no such column' 오류 시뮬 + osqueryi `.schema` 로 정확한 컬럼
+      식별 → 복구.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. 잘못된 컬럼 사용 시뮬 (실제 에러 발생)
+      echo "=== 잘못된 쿼리 (예상: error) ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT name FROM osquery_info;" 2>&1' | head -3
+
+      # 2. .schema 로 정확한 컬럼 확인
+      echo "=== osquery_info 스키마 ==="
+      docker exec el34-web sh -c 'sudo osqueryi ".schema osquery_info" 2>&1' | head -5
+
+      # 3. processes 의 정확한 컬럼 (운영 자주 헷갈림)
+      echo "=== processes 스키마 (일부) ==="
+      docker exec el34-web sh -c 'sudo osqueryi ".schema processes" 2>&1' | head -15
+
+      # 4. 복구 — 올바른 컬럼 사용
+      echo "=== 복구 ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT version, instance_id FROM osquery_info LIMIT 1;"' 2>&1
+
+      # 5. daemon 운영 시 흔한 트러블 (시뮬)
+      echo
+      echo "=== osqueryd 운영 시 트러블슈팅 cheat sheet ==="
+      cat <<'EOF'
+      증상: scheduled query 결과 없음
+        → systemctl status osqueryd
+        → journalctl -u osqueryd --since "5 min ago"
+        → /var/log/osquery/ 디렉토리 권한
+        → osqueryctl config-check
+      증상: FIM 미동작
+        → cat /proc/sys/fs/inotify/max_user_watches
+        → osquery.conf 의 file_paths syntax
+        → osquery.conf 의 schedule 의 file_changes
+      증상: query 성능 (큰 host 환경)
+        → 좁은 path (LIKE %% glob 주의)
+        → LIMIT
+        → schedule_splay_percent
+      EOF
+      ```
+
+      ## 📋 확인 사항
+
+      - 명령 1: `Error: no such column: name` (예상 에러)
+      - 명령 2: `CREATE TABLE osquery_info(build_distro TEXT, ...)`  schema 출력
+      - 명령 3: processes 의 컬럼 (pid, parent, name, path, cmdline, ...)
+      - 명령 4: 복구 — version + instance_id 출력
+      - 명령 5: 트러블슈팅 cheat sheet
+
+      ## 💡 왜 이걸 하는가?
+
+      운영 중 'no such column' 이 가장 흔한 오류. .schema 명령 + LIMIT 0 패턴이 사전 검증.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 에러 → schema 확인 → 복구
+      - **운영 권장**:
+        1. 신규 쿼리 작성 전 `.schema <table>` 점검
+        2. `SELECT * FROM <table> LIMIT 1` 로 컬럼 확인
+        3. osquery 공식 문서 (schema.osquery.io) reference
+        4. 다른 host 의 osquery 버전 차이 인지 (5.x 와 5.23 의 schema 차이)
+    hint: 'osqueryi 의 .schema <table>'
+    category: troubleshooting
+    points: 12
+    answer: |
+      echo "=== 잘못된 쿼리 ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT name FROM osquery_info;" 2>&1' | head -3
+      echo "=== schema ==="
+      docker exec el34-web sh -c 'sudo osqueryi ".schema osquery_info" 2>&1' | head -5
+      echo "=== processes schema ==="
+      docker exec el34-web sh -c 'sudo osqueryi ".schema processes" 2>&1' | head -15
+      echo "=== 복구 ==="
+      docker exec el34-web sh -c 'sudo osqueryi --json "SELECT version, instance_id FROM osquery_info LIMIT 1;"' 2>&1
+      echo "=== cheat sheet ==="
+      cat <<'EOF'
+      systemctl status osqueryd / journalctl -u osqueryd / config-check
+      EOF
+    answer_detail: '에러 → .schema 확인 → 복구. 운영 권장 — .schema 사전 점검.'
+    verify:
+      type: output_contains
+      expect: schema
+      field: stdout
+      semantic:
+        intent: "트러블슈팅 — no such column → schema → 복구"
+        success_criteria:
+          - "에러 발생"
+          - "schema 확인"
+          - "복구"
+        acceptable_methods:
+          - "**[OSS] osqueryi .schema <table>**"
+          - "**[OSS] SELECT * FROM <table> LIMIT 1**"
+          - "**[OSS] schema.osquery.io reference**"
+          - "**[OSS] systemctl status osqueryd**"
+          - "**[OSS] journalctl -u osqueryd**"
+          - "**[OSS] osqueryctl config-check**"
+          - "**[OSS] /proc/sys/fs/inotify/max_user_watches**"
+          - "**[OSS] schedule_splay_percent — 분산 polling**"
+    target_vm: web
+
+  - order: 9
+    instruction: |
+      ## 🎯 MISSION — Wazuh agent ship 검증 (W10 예고)
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. 4 호스트 의 Wazuh agent 상태
+      for h in bastion fw ips web; do
+        printf "%-8s " "$h"
+        docker exec el34-$h sh -c 'sudo /var/ossec/bin/wazuh-control status 2>&1 | grep -c "is running"'
+      done
+
+      # 2. ossec.conf 의 osquery 모니터링 설정 (있다면)
+      docker exec el34-web sh -c 'sudo grep -B1 -A3 "osquery" /var/ossec/etc/ossec.conf 2>&1 | head -15'
+
+      # 3. manager 에서 4 agent 활성
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -lc 2>&1 | head -10'
+
+      # 4. W10 권장 ship 설정 (시뮬)
+      echo
+      echo "=== W10 권장 ossec.conf patch (시뮬) ==="
+      cat <<'EOF'
+      <ossec_config>
+        <localfile>
+          <log_format>json</log_format>
+          <location>/var/log/osquery/osqueryd.results.log</location>
+        </localfile>
+      </ossec_config>
+      EOF
+      ```
+
+      ## 📋 확인 사항
+
+      - 4 호스트 모두 wazuh-control "is running" 개수 > 5 (11 daemon 중)
+      - ossec.conf 에 osquery 설정 (현재는 없을 수도 — W10 의 patch)
+      - manager 에서 4 agent 활성
+      - W10 권장 patch (`<localfile>` + `log_format json`)
+
+      ## 💡 왜 이걸 하는가?
+
+      W10 의 본격 통합 전 ship 동작 사전 점검. 4 agent 모두 활성 + manager 와 통신
+      OK 면 W10 의 osqueryd + Wazuh integration 적용 즉시 가능.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 4 agent 활성 + manager 통신 OK
+      - **운영 권장**:
+        1. osqueryd 미운영 → W10 에서 enable + osquery.conf 작성
+        2. ossec.conf 에 osquery localfile 추가 → manager ingest
+        3. dashboard 의 osquery panel — W10 학습
+    hint: 'Wazuh agent 4 호스트 + ossec.conf 의 osquery'
+    category: integration
+    points: 10
+    answer: |
+      for h in bastion fw ips web; do
+        printf "%-8s " "$h"
+        docker exec el34-$h sh -c 'sudo /var/ossec/bin/wazuh-control status 2>&1 | grep -c "is running"'
+      done
+      docker exec el34-web sh -c 'sudo grep -B1 -A3 "osquery" /var/ossec/etc/ossec.conf 2>&1 | head -15'
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -lc 2>&1 | head -10'
+      cat <<'EOF'
+      W10 권장:
+      <localfile>
+        <log_format>json</log_format>
+        <location>/var/log/osquery/osqueryd.results.log</location>
+      </localfile>
+      EOF
+    answer_detail: '4 agent 활성 검증 + ossec.conf 의 osquery + W10 권장 patch'
+    verify:
+      type: output_contains
+      expect: 'localfile'
+      field: stdout
+      semantic:
+        intent: "Wazuh ship 사전 검증 (W10 예고)"
+        success_criteria: ["4 agent 활성", "W10 권장"]
+        acceptable_methods:
+          - "**[OSS] /var/ossec/bin/wazuh-control status**"
+          - "**[OSS] /var/ossec/etc/ossec.conf**"
+          - "**[OSS] manager agent_control -lc**"
+          - "**[OSS] <localfile><log_format>json</log_format>**"
+          - "**[OSS] osquery results.log + Wazuh decoder**"
+          - "**[관리적] W10 통합 logical flow**"
+          - "**[관리적] dashboard 의 osquery panel**"
+          - "**[관리적] alert 우선순위 — anomaly 패턴**"
+    target_vm: web
+
+  - order: 10
+    instruction: |
+      ## 🎯 MISSION — W06 종합 보고서
+
+      ## 💻 산출물 형식
+
+      ```markdown
+      # el34 W06 osquery 호스트 가시화 보고서 (학번, 이름)
+
+      ## 1. STEP 1-9 결과 표
+      | Step | 영역 | 결과 |
+      | 1 | 4 호스트 5.23.0 + 158 테이블 | pass |
+      | 2 | 6 핵심 테이블 | pass |
+      | 3 | SQL JOIN 3 패턴 | pass |
+      | 4 | 헌팅 5 패턴 | pass |
+      | 5 | FIM 시뮬 | pass |
+      | 6 | scheduled query 시뮬 | pass |
+      | 7 | R/B/P 침해 시뮬 + 5 헌팅 | pass |
+      | 8 | 트러블슈팅 schema | pass |
+      | 9 | Wazuh ship 검증 | pass |
+
+      ## 2. R/B/P 측정 (STEP 7)
+      - Red 3 침해 (user / key / cron) 모두 성공
+      - Blue 5 헌팅 모두 매치
+      - cleanup 후 0
+
+      ## 3. 운영 권장 5
+      1. osqueryd 도입 (W10) + osquery.conf 작성
+      2. FIM 4 카테고리 (system_etc / ssh_keys / cron_paths / apache_config)
+      3. scheduled query interval (60/600/3600 단계)
+      4. Wazuh agent ship + manager 통합 (W10)
+      5. 헌팅 10 패턴 정기 점검 (분기 baseline diff)
+
+      ## 4. W08 (중간고사) 준비도
+      - W01-W06 의 7 도구 통합 (fw / ips / web / host)
+      - R/B/P cycle 의 표준 형식
+      - 본인 gap: ...
+
+      ## 5. 본인 학습 gap
+      ...
+      ```
+
+      ## 📋 확인 사항
+
+      - 5 섹션
+      - 9 step 표
+      - R/B/P 측정
+      - 운영 권장 5
+      - W08 준비도
+
+      ## 💡 왜 이걸 하는가?
+
+      W08 중간고사 직전 — W01-W06 7 주차 학습 통합. 호스트 가시화의 표준 운영 audit.
+
+      ## 🔍 결과 해석
+
+      - **A**: 5 섹션 + 9 step + 운영 권장 5 + gap
+      - **C**: 일부 누락 → 재제출
+    hint: 마크다운 1페이지
+    category: synthesis
+    points: 13
+    answer: |
+      cat <<'EOF'
+      # el34 W06 osquery 보고서
+
+      ## 1. STEP 1-9 결과
+      (9 row 표)
+
+      ## 2. R/B/P (STEP 7)
+      Red 3 침해 → Blue 5 헌팅 매치 → cleanup 0
+
+      ## 3. 운영 권장 5
+      osqueryd / FIM / scheduled / Wazuh / 헌팅 10
+
+      ## 4. W08 중간고사 준비도
+
+      ## 5. 본인 gap
+      EOF
+    answer_detail: 종합 보고서
+    verify:
+      type: output_contains
+      expect: osquery
+      field: stdout
+      semantic:
+        intent: "W06 종합"
+        success_criteria: ["9 step", "R/B/P 측정", "운영 권장 5", "W08 준비도"]
+        acceptable_methods:
+          - "**[관리적] 마크다운 5 섹션**"
+          - "**[관리적] ISMS-P 2.9.3 / 2.10.5 / 2.5.4 매핑**"
+          - "**[관리적] NIST CSF DE.CM (Continuous Monitoring)**"
+          - "**[관리적] MITRE ATT&CK 매핑 (T1136 user / T1098 account / T1053 cron)**"
+          - "**[관리적] 분기 baseline diff 운영**"
+          - "**[관리적] alert fatigue + scheduled query interval 최적화**"
+          - "**[관리적] W08 중간고사 logical flow**"
+          - "**[관리적] 본인 학습 gap**"
+    target_vm: web
