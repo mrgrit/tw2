@@ -125,9 +125,9 @@ sudo systemctl restart tw2-api
 ## 4. el34 Assessor 연동 계약
 
 tw2 가 호출하는 el34 외부 표면(읽기 전용, 부작용 0). 기준 엔드포인트는
-**`http://192.168.0.151:9201`**, header `X-API-Key: ccc-api-key-2026` 입니다(vhost `*.6v6.lab` 유지):
+**`http://192.168.0.151:9201`**, header `X-API-Key: ccc-api-key-2026` 입니다(vhost `*.el34.lab` 유지):
 
-- **채점** `POST http://{vm_ip}/assess` — header `Host: assessor.6v6.lab` + `X-API-Key`.
+- **채점** `POST http://{vm_ip}/assess` — header `Host: assessor.el34.lab` + `X-API-Key`.
   `port_map['assessor']`(예: `:9201`) 가 있으면 직접 포트 우선. body `{battle_id?, checks:[{id,type,target,params}]}`,
   type ∈ `file_exists|file_contains|file_hash|process_running|port_listening|log_contains|wazuh_alert|fim_change|command_ran`.
   resp `{collected_at, results:[{id,passed,evidence,raw?}]}`.

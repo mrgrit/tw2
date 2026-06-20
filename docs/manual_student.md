@@ -38,13 +38,13 @@ tw2 가 채점·모니터링할 **el34** 인프라가 기동되어 있어야 합
   (juiceshop · dvwa · neobank · govportal · mediforum · adminconsole · aicompanion).
 - **외부 공격자 VM** (`192.168.0.202`): 망 밖에서 타깃의 공개 포트로만 침입하는 outsider 발판.
   외부 공격자의 출처 IP 가 Suricata / ModSec / Wazuh 전 계층에 보존됩니다.
-- **웹 외부 진입**: `192.168.0.161` (vhost `*.6v6.lab` 유지).
+- **웹 외부 진입**: `192.168.0.161` (vhost `*.el34.lab` 유지).
 
 다음 표면이 중앙 서버에서 접속 가능해야 채점/모니터링이 동작합니다.
 
 | 대상 | 포트/표면 | 용도 |
 |------|-----------|------|
-| 타깃 VM | 80 / 443 + vhost `*.6v6.lab` | 취약 앱 + `assessor.6v6.lab`(채점) |
+| 타깃 VM | 80 / 443 + vhost `*.el34.lab` | 취약 앱 + `assessor.el34.lab`(채점) |
 | 타깃 VM | 9201 | Assessor API (`X-API-Key`) — 채점 표면 |
 | 타깃 VM | ssh `ccc` | 타깃 접속 자격 |
 | 공격자 VM | ssh `att` | 외부 공격자(outsider) 발판 |

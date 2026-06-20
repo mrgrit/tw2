@@ -335,7 +335,7 @@ rule-files:
   "proto": "6",
   "tx_id": 0,
   "http": {
-    "hostname": "juice.6v6.lab",
+    "hostname": "juice.el34.lab",
     "url": "/test_w03_1",
     "http_user_agent": "TestUA/1.0",
     "http_method": "GET",
@@ -616,7 +616,7 @@ docker exec el34-ips sh -c 'echo "alert http any any -> any any (msg:\"el34 sqlm
 docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
 
 # 3. 트리거
-docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.6v6.lab" http://10.20.30.1/'
+docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.el34.lab" http://10.20.30.1/'
 sleep 3
 
 # 4. eve.json alert event 검증
@@ -658,7 +658,7 @@ graph LR
 
 ```bash
 docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do
-    curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.6v6.lab" http://10.20.30.1/
+    curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.el34.lab" http://10.20.30.1/
 done'
 sleep 5
 ```
@@ -762,7 +762,7 @@ threshold.config 의 두 keyword 는 별개다.
 
 **1. Red — 공격 재현.**
 
-학생이 bastion 경유로 el34-attacker 에 들어가서 fw 너머의 web (juice 6v6.lab) 에 nikto 를 실행한다. 학습 환경 안에서만 실행해야 한다.
+학생이 bastion 경유로 el34-attacker 에 들어가서 fw 너머의 web (juice el34.lab) 에 nikto 를 실행한다. 학습 환경 안에서만 실행해야 한다.
 
 ```bash
 ssh att@192.168.0.202
@@ -773,14 +773,14 @@ el34-attacker(외부 .202) 에서 nikto 를 실행한다. nikto 는 ext tier 의
 
 ```bash
 # el34-attacker(외부 .202) 에서 (학습 환경 한정)
-nikto -h http://10.20.30.1/ -vhost juice.6v6.lab -maxtime 60s
+nikto -h http://10.20.30.1/ -vhost juice.el34.lab -maxtime 60s
 ```
 
 각 옵션의 의미는 다음과 같다.
 
 - `nikto` — 명령 이름.
 - `-h http://10.20.30.1/` — target host. fw 의 ext NIC. 그 뒤 web Apache 가 vhost 분기.
-- `-vhost juice.6v6.lab` — HTTP Host 헤더. web 의 Apache 가 juice vhost 로 라우팅.
+- `-vhost juice.el34.lab` — HTTP Host 헤더. web 의 Apache 가 juice vhost 로 라우팅.
 - `-maxtime 60s` — 최대 실행 시간 60초. 학습용으로 짧게 잡았다.
 
 60초 안에 수백 개의 URL 이 시도된다. 각 시도가 HTTP request 한 건이다.
@@ -796,7 +796,7 @@ eve.json 의 http event 한 줄 예시는 다음과 같다 (dmz NIC 측).
  "event_type":"http",
  "src_ip":"10.20.31.1",
  "dest_ip":"10.20.32.80",
- "http":{"hostname":"juice.6v6.lab",
+ "http":{"hostname":"juice.el34.lab",
          "url":"/admin/",
          "http_user_agent":"Mozilla/5.00 (Nikto/2.5.0) ...",
          "http_method":"GET",
@@ -810,7 +810,7 @@ eve.json 의 http event 한 줄 예시는 다음과 같다 (dmz NIC 측).
 
 학생이 자기 host 의 web browser 에서 다음 URL 에 접속한다.
 
-- URL: `https://dashboard.6v6.lab` (el34-wazuh-dashboard, 10.20.32.120:5601).
+- URL: `https://dashboard.el34.lab` (el34-wazuh-dashboard, 10.20.32.120:5601).
 - self-signed 인증서 경고는 `Advanced` → `Proceed to ...` 로 통과한다.
 
 UI 클릭 흐름은 다음과 같다.
@@ -895,7 +895,7 @@ echo | openssl s_client -connect 10.20.30.1:443 -servername malicious-c2.example
 - `-servername malicious-c2.example` — SNI 에 의심 도메인을 명시한다. 정상 운영 목록에 없는 임의의 이름이다.
 - `-verify_return_error` — 인증서 검증 실패 시 즉시 종료.
 
-학습 환경 web 의 정상 SNI 는 `juice.6v6.lab`, `dvwa.6v6.lab` 같은 6v6 내부 도메인이다. `malicious-c2.example` 은 그 목록에 없다.
+학습 환경 web 의 정상 SNI 는 `juice.el34.lab`, `dvwa.el34.lab` 같은 6v6 내부 도메인이다. `malicious-c2.example` 은 그 목록에 없다.
 
 **2. 발생하는 로그/아티팩트.**
 
@@ -929,7 +929,7 @@ UI 클릭 흐름은 다음과 같다.
 
 **Detail 분석.**
 
-- tls.sni 가 정상 운영 도메인 (예: `juice.6v6.lab`) 이 아니라 임의의 도메인 (`malicious-c2.example`) 이다. 의심 신호다.
+- tls.sni 가 정상 운영 도메인 (예: `juice.el34.lab`) 이 아니라 임의의 도메인 (`malicious-c2.example`) 이다. 의심 신호다.
 - ja3.hash 가 학습 환경의 정상 client (Chrome, curl, Apache health probe) 의 ja3 와 다르면 도구 시그니처일 가능성이 있다.
 - src_ip 가 `10.20.30.202` 면 el34-attacker 에서 직접 발생한 traffic 이다. 정상 운영 traffic 의 src 는 보통 bastion (10.20.30.201) 이나 외부 client 다.
 
@@ -945,7 +945,7 @@ UI 클릭 흐름은 다음과 같다.
 
 다음 세 가지를 적용한다.
 
-- **새 alert 룰 추가.** `alert tls any any -> any any (msg:"Suspicious TLS SNI - Non-Operational Domain"; tls.sni; content:!"6v6.lab"; classtype:bad-unknown; sid:9004011; rev:1;)` 같은 룰. 운영 도메인이 아닌 SNI 에 alert.
+- **새 alert 룰 추가.** `alert tls any any -> any any (msg:"Suspicious TLS SNI - Non-Operational Domain"; tls.sni; content:!"el34.lab"; classtype:bad-unknown; sid:9004011; rev:1;)` 같은 룰. 운영 도메인이 아닌 SNI 에 alert.
 - **ja3 hash 매칭 룰.** `alert tls any any -> any any (msg:"Known Bad ja3 Fingerprint"; ja3.hash; content:"...known bad..."; classtype:trojan-activity; sid:9004012; rev:1;)`.
 - **dashboard 의 SNI top N panel 추가.** 일별 SNI 빈도를 시각화해 baseline 을 직접 본다.
 

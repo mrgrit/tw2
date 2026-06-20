@@ -25,7 +25,7 @@
   - 타깃 `192.168.0.151` (ssh ccc/1) — 패킷흐름 **FW→IPS(Suricata)→WAF(Apache+ModSec)→앱**, 컨테이너 `el34-*`(fw/ips/web/siem + 취약앱 juiceshop·dvwa·neobank·govportal·mediforum·adminconsole·aicompanion + bastion).
   - 외부 공격자 `192.168.0.202` (att/1, **별도 VM**) — 웹 진입 `192.168.0.161` 로 공격, **출처 IP가 Suricata/ModSec/Wazuh 전 계층에 보존**.
   - **Assessor** `192.168.0.151:9201` (헤더 `X-API-Key: ccc-api-key-2026`) — RED/BLUE 결정론 체크(file/log/port/process/wazuh_alert).
-  - vhost `*.6v6.lab` 유지(.161 Host 헤더/포트분기), 내부망 10.20.30/31/32/40.x.
+  - vhost `*.el34.lab` 유지(.161 Host 헤더/포트분기), 내부망 10.20.30/31/32/40.x.
 - 학생 인프라 등록은 **타깃(el34, .151) + 공격자(.202) 2개**.
 - **외부 공격자 명령 로그는 수집 안 됨** → 공격 채점은 `command_ran` 대신 **타깃 인프라의 공격 흔적**
   (ModSec/Suricata/Wazuh + 출처 IP·payload 상관)으로 한다. el34 미보유 텔레메트리(SSH auth·Windows/Sysmon·

@@ -32,7 +32,7 @@ el34 인프라는 **공유 실습장**이다. 타깃은 단일 VM `192.168.0.151
 
 | 표면 | 용도 |
 |------|------|
-| 80, 443 | 7개 vhost (`*.6v6.lab`: juiceshop, dvwa, neobank, govportal, mediforum, adminconsole, aicompanion) |
+| 80, 443 | 7개 vhost (`*.el34.lab`: juiceshop, dvwa, neobank, govportal, mediforum, adminconsole, aicompanion) |
 | 9201 | **Assessor API** (`X-API-Key: ccc-api-key-2026`) — 결정론 RED/BLUE 체크 |
 | bastion SSH | 점프 호스트 (el34-bastion) |
 | 외부 공격자 SSH | 192.168.0.202 (att/1) — pentest 도구 + 공격 발사대 |

@@ -250,7 +250,7 @@ nft NAT** 가 맡는다 — 다른 호스트, 다른 계층.
 
 | 도구 | 위치 | 계층 | 어떻게 라우팅하나 | 예 |
 |------|------|-----|-------------------|-----|
-| Apache vhost | web 컨테이너 | L7 (HTTP) | **Host 헤더** | `juice.6v6.lab` → int juiceshop |
+| Apache vhost | web 컨테이너 | L7 (HTTP) | **Host 헤더** | `juice.el34.lab` → int juiceshop |
 | nft NAT | fw 컨테이너 | L4 (TCP/IP) | **포트/IP** | tcp 8088 → 10.20.32.80:80 |
 
 **규칙**: fw 가 공인 .161 의 80/443 을 web 으로 보내면 그 뒤 Apache 가 Host 헤더로 vhost 를 고른다.

@@ -38,7 +38,7 @@
 - **타깃** `192.168.0.151` (ssh ccc/1) — 패킷 흐름 FW→IPS→WAF→앱, 컨테이너 `el34-*`.
 - **외부 공격자** `192.168.0.202` (att/1, 별도 VM) — 웹 진입 `192.168.0.161` 로 공격, **출처 IP가 전 계층(Suricata·ModSec·Wazuh)에 보존**.
 - **Assessor** `192.168.0.151:9201` (헤더 `X-API-Key`) — RED/BLUE 결정론적 체크(파일/로그/포트/프로세스/Wazuh 경보).
-- 취약 웹: dvwa·juiceshop·neobank·govportal·mediforum·adminconsole·aicompanion (vhost `*.6v6.lab` 유지).
+- 취약 웹: dvwa·juiceshop·neobank·govportal·mediforum·adminconsole·aicompanion (vhost `*.el34.lab` 유지).
 
 ## 주요 기능
 

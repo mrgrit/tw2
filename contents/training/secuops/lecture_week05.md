@@ -318,22 +318,22 @@ el34 실측 (`<script>alert(1)</script>`):
 └── ... (30+ 파일)
 
 /etc/apache2/sites-enabled/
-├── 000-landing.conf              ← 6v6.lab 랜딩
-├── 010-juice.conf                ← juice.6v6.lab → int juiceshop:3000
+├── 000-landing.conf              ← el34.lab 랜딩
+├── 010-juice.conf                ← juice.el34.lab → int juiceshop:3000
 ├── 020-dvwa.conf
 ├── 030-neobank.conf
 ├── 040-govportal.conf
 ├── 050-mediforum.conf
 ├── 060-admin.conf
 ├── 070-ai.conf
-├── 080-portal.conf               ← portal.6v6.lab → dmz portal (운영)
-├── 090-siem.conf                 ← siem.6v6.lab → wazuh-dashboard
-└── 100-bastion.conf              ← bastion.6v6.lab → ext bastion
+├── 080-portal.conf               ← portal.el34.lab → dmz portal (운영)
+├── 090-siem.conf                 ← siem.el34.lab → wazuh-dashboard
+└── 100-bastion.conf              ← bastion.el34.lab → ext bastion
 
 /var/log/apache2/
 ├── access.log                    ← 모든 vhost 통합
 ├── error.log
-├── juice_access.log              ← juice.6v6.lab 만 (별도 access log)
+├── juice_access.log              ← juice.el34.lab 만 (별도 access log)
 ├── modsec_audit.log              ← JSON 형식 audit (Wazuh ingest)
 └── ... (vhost 별 access log)
 ```
@@ -383,13 +383,13 @@ graph LR
     AI[aicompanion:3005]
     EXT --> HAP
     HAP --> APACHE
-    APACHE -->|juice.6v6.lab| JS
-    APACHE -->|dvwa.6v6.lab| DVWA
-    APACHE -->|neobank.6v6.lab| NB
-    APACHE -->|govportal.6v6.lab| GP
-    APACHE -->|mediforum.6v6.lab| MF
-    APACHE -->|admin.6v6.lab| AC
-    APACHE -->|ai.6v6.lab| AI
+    APACHE -->|juice.el34.lab| JS
+    APACHE -->|dvwa.el34.lab| DVWA
+    APACHE -->|neobank.el34.lab| NB
+    APACHE -->|govportal.el34.lab| GP
+    APACHE -->|mediforum.el34.lab| MF
+    APACHE -->|admin.el34.lab| AC
+    APACHE -->|ai.el34.lab| AI
     style APACHE fill:#d29922,color:#fff
 ```
 
@@ -413,7 +413,7 @@ graph LR
   "request": {
     "request_line": "GET /?q=<script>alert(1)</script> HTTP/1.1",
     "headers": {
-      "host": "juice.6v6.lab",
+      "host": "juice.el34.lab",
       "user-agent": "curl/7.81.0",
       "accept": "*/*",
       "x-forwarded-for": "10.20.30.202"
@@ -434,7 +434,7 @@ graph LR
       "Warning. Operator GE matched 5 at TX:inbound_anomaly_score. [file \"RESPONSE-980-CORRELATION.conf\"] [id \"980130\"] [msg \"Inbound Anomaly Score Exceeded (Total Inbound Score: 15 - SQLI=0,XSS=15,RFI=0,LFI=0,RCE=0,PHPI=0,HTTP=0,SESS=0): individual paranoia level scores: 15, 0, 0, 0\"]"
     ],
     "error_messages": [
-      "[file \"apache2_util.c\"] [line 271] [level 3] [client 10.20.30.202] ModSecurity: Warning. detected XSS using libinjection. [id \"941100\"] ... [hostname \"juice.6v6.lab\"] [uri \"/\"] [unique_id \"agJO...\"]",
+      "[file \"apache2_util.c\"] [line 271] [level 3] [client 10.20.30.202] ModSecurity: Warning. detected XSS using libinjection. [id \"941100\"] ... [hostname \"juice.el34.lab\"] [uri \"/\"] [unique_id \"agJO...\"]",
       ...
     ]
   }
@@ -760,9 +760,9 @@ graph LR
 
 | 시나리오 | Red 명령 | Blue 1차 (ModSec) | Blue 2차 (audit log) | Purple Gap | Purple 권장 |
 |---------|---------|------------------|---------------------|-----------|------------|
-| **① XSS** | `curl 'http://juice.6v6.lab/search?q=<script>alert(1)</script>'` | 941100 (XSS) + 941110 (script tag) + 941160 (event handler) → score 15 → 403 | audit log 의 messages[] = 3 룰 매치 | paranoia 1 에서 941180 (DOM XSS) 누락 | paranoia 2 + tx.crs_exclusions_xenforo=1 |
-| **② SQLi UNION** | `curl 'http://juice.6v6.lab/items?id=1 UNION SELECT 1,2,3'` | 942100 (SQLi detection lib) + 942270 (UNION SELECT) → score 10 → 403 | audit log 의 unique_id 로 추적 | paranoia 1 에서 942180 (basic SQLi keyword) 만 매치 = score 5 | paranoia 2 → 3 으로 UNION + comment + hex 룰 활성 |
-| **③ scanner UA** | `curl -A 'sqlmap/1.6' http://juice.6v6.lab/` | 913100 (SCANNER nikto/sqlmap UA) → score 2 (alert only, paranoia 1) | audit log 의 REQUEST_HEADERS 의 User-Agent | paranoia 1 의 anomaly threshold 5 → 미만 → 통과 | scanner UA 의 즉시 차단 = SecRuleUpdateActionById 913100 "deny,status:403" |
+| **① XSS** | `curl 'http://juice.el34.lab/search?q=<script>alert(1)</script>'` | 941100 (XSS) + 941110 (script tag) + 941160 (event handler) → score 15 → 403 | audit log 의 messages[] = 3 룰 매치 | paranoia 1 에서 941180 (DOM XSS) 누락 | paranoia 2 + tx.crs_exclusions_xenforo=1 |
+| **② SQLi UNION** | `curl 'http://juice.el34.lab/items?id=1 UNION SELECT 1,2,3'` | 942100 (SQLi detection lib) + 942270 (UNION SELECT) → score 10 → 403 | audit log 의 unique_id 로 추적 | paranoia 1 에서 942180 (basic SQLi keyword) 만 매치 = score 5 | paranoia 2 → 3 으로 UNION + comment + hex 룰 활성 |
+| **③ scanner UA** | `curl -A 'sqlmap/1.6' http://juice.el34.lab/` | 913100 (SCANNER nikto/sqlmap UA) → score 2 (alert only, paranoia 1) | audit log 의 REQUEST_HEADERS 의 User-Agent | paranoia 1 의 anomaly threshold 5 → 미만 → 통과 | scanner UA 의 즉시 차단 = SecRuleUpdateActionById 913100 "deny,status:403" |
 
 ### 시간선 — XSS 공격 의 1 사건 흐름
 
@@ -855,7 +855,7 @@ docker exec el34-web sh -c 'sudo grep -l "tx.paranoia_level" /etc/apache2/sites-
 ### 실습 3 — XSS 공격 + audit log 분석 (20분)
 
 ```bash
-docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "%{http_code}\n" -H "Host: juice.6v6.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "%{http_code}\n" -H "Host: juice.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
 # 403 응답
 
 sleep 2
@@ -868,7 +868,7 @@ docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq 
 ### 실습 4 — SQLi 공격 + audit (20분)
 
 ```bash
-docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: juice.6v6.lab' \"http://10.20.30.1/?q=1' OR '1'='1\""
+docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?q=1' OR '1'='1\""
 sleep 2
 docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"942[0-9]+\"\\]"'
 ```
@@ -899,7 +899,7 @@ echo '<LocationMatch "/api/legacy/">
 ```bash
 # Red — 5 공격 burst
 for payload in "?q=<script>alert(1)</script>" "?q=1'OR'1'='1" "?q=../../etc/passwd" "?q=;cat /etc/passwd" "?q=<?php system('id'); ?>"; do
-  docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code} ' -H 'Host: juice.6v6.lab' 'http://10.20.30.1/$payload'"
+  docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code} ' -H 'Host: juice.el34.lab' 'http://10.20.30.1/$payload'"
 done
 sleep 5
 
@@ -980,11 +980,11 @@ attacker VM 내부에서 다음 두 줄을 짧은 간격으로 보낸다.
 ```bash
 # attacker VM 내부 (학습 환경 한정)
 curl -s -o /dev/null -w "%{http_code}\n" \
-    -H "Host: juice.6v6.lab" \
+    -H "Host: juice.el34.lab" \
     "http://10.20.30.1/search?q=%3Cscript%3Ealert(1)%3C/script%3E"
 
 curl -s -o /dev/null -w "%{http_code}\n" \
-    -H "Host: juice.6v6.lab" \
+    -H "Host: juice.el34.lab" \
     "http://10.20.30.1/search?q=%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E"
 ```
 
@@ -1092,7 +1092,7 @@ ssh el34-attacker
 
 # attacker VM 내부 (학습 환경 한정)
 curl -s -o /dev/null -w "%{http_code}\n" \
-    -H "Host: juice.6v6.lab" \
+    -H "Host: juice.el34.lab" \
     "http://10.20.30.1/login?username=admin%27%20OR%20%271%27%3D%271&password=any"
 ```
 
@@ -1182,7 +1182,7 @@ ssh el34-attacker
 
 # attacker VM 내부 (학습 환경 한정)
 curl -s -o /dev/null -w "%{http_code}\n" \
-    -H "Host: juice.6v6.lab" \
+    -H "Host: juice.el34.lab" \
     -X POST \
     -d "comment=오늘 SELECT 와 WHERE 절을 학습했어요. 정말 재미있네요." \
     http://10.20.30.1/api/comment
