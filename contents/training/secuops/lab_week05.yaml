@@ -1,0 +1,870 @@
+lab_id: standalone-secuops-week05
+title: Apache + ModSecurity v2 + OWASP CRS 3.3.2 — 설정 / audit / 5 공격 차단 / R/B/P / exception
+version: standalone-non-ai
+course: secuops
+week: 5
+description: |
+  el34-web 의 Apache 2.4 + mod_security2 + OWASP CRS 3.3.2 + 11 vhost reverse proxy
+  + SecAuditLogFormat JSON 의 실 운영. 설정 점검 → audit log 정확한 구조 분석 → XSS /
+  SQLi / LFI / RCE / PHP 5 공격 차단 검증 + anomaly score 추적 → paranoia 시뮬 →
+  exception 작성 → R/B/P (5 공격 anomaly summary + paranoia 권장) → Wazuh ship 검증 →
+  종합 보고서. 한 cycle.
+difficulty: medium
+duration_minutes: 200
+prerequisites:
+  - "W01-W04 통과"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec (컨테이너 root)"
+  - "lecture §1-§9 (5 phase / anomaly / audit log 정확한 구조) 숙지"
+objectives:
+  - "modsecurity.conf 의 6 키 + 11 vhost 점검"
+  - "audit log JSON 정확한 구조 + messages[] embedded metadata 파싱"
+  - "5 공격 (XSS/SQLi/LFI/RCE/PHP) 차단 + 매칭 룰 ID 추출"
+  - "anomaly score 누적 (실측 XSS=15 = 941100+941110+941160)"
+  - "remote_address = 실제 공격자 IP (el34 가 fw 에서 SNAT 안 함 → 출처 보존) 이해"
+  - "paranoia 1 / 2 시뮬 + 영향 분석"
+  - "exception 작성 (LocationMatch + SecRuleRemoveById)"
+  - "R/B/P 5 공격 + 980130 correlation summary"
+  - "Wazuh agent ship 검증 (W10 예고) + 종합 보고서"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 MISSION — modsecurity.conf 6 핵심 키 + CRS 3.3.2 + 11 vhost 점검
+
+      운영 인수 첫 점검. Apache + mod_security2 모듈 + CRS 버전 + audit log 설정 + 11
+      vhost 활성 확인.
+
+      ## 💻 실행 명령
+
+      ```bash
+      docker exec el34-web sh -c 'sudo apache2ctl -M 2>&1 | grep -i security'
+      docker exec el34-web sh -c 'sudo dpkg -l | grep -E "modsec|crs"'
+      docker exec el34-web sh -c 'sudo grep -E "^SecRuleEngine|^SecRequestBodyAccess|^SecResponseBodyAccess|^SecAuditLog|^SecAuditLogFormat|^SecAuditLogParts|^SecAuditLogType" /etc/modsecurity/modsecurity.conf'
+      docker exec el34-web sh -c 'sudo ls /usr/share/modsecurity-crs/rules/ | wc -l'
+      docker exec el34-web sh -c 'sudo wc -l /usr/share/modsecurity-crs/rules/REQUEST-941-APPLICATION-ATTACK-XSS.conf'
+      docker exec el34-web sh -c 'sudo ls /etc/apache2/sites-enabled/'
+      docker exec el34-web sh -c 'sudo ls -la /var/log/apache2/modsec_audit.log'
+      ```
+
+      ## 📋 확인 사항 (실측 2026-05-12)
+
+      - `security2_module (shared)` — 모듈 로드
+      - `modsecurity-crs 3.3.2-1` — CRS 버전
+      - 7 라인: `SecRuleEngine On` / `SecRequestBodyAccess On` / `SecResponseBodyAccess On` /
+        `SecAuditLog /var/log/apache2/modsec_audit.log` / `SecAuditLogFormat JSON` /
+        `SecAuditLogType Serial` / `SecAuditLogParts ABCFHZ`
+      - 30+ 룰 파일 + 941 XSS 파일 884 라인
+      - 11 vhost (000-landing ~ 100-bastion)
+      - audit log root:root 640
+
+      ## 💡 왜 이걸 하는가?
+
+      운영 인수 30초 안에 정책 본체 + audit format + vhost 11개 확인. production WAF
+      minimum bar.
+
+      ## 🔍 결과 해석 + 트러블슈팅
+
+      - **비정상 1**: 모듈 미로드 → `a2enmod security2 && reload apache2`
+      - **비정상 2**: SecRuleEngine DetectionOnly → log 만, 차단 X → production 부적합
+      - **비정상 3**: format 이 JSON 아님 → Wazuh decoder 부적합
+      - **비정상 4**: vhost 11 아님 → docker-compose 의 vhost mount 점검
+    hint: 'apache2ctl -M | grep security; grep SecRuleEngine /etc/modsecurity/modsecurity.conf'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-web sh -c 'sudo apache2ctl -M 2>&1 | grep -i security'
+      docker exec el34-web sh -c 'sudo dpkg -l | grep -E "modsec|crs"'
+      docker exec el34-web sh -c 'sudo grep -E "^SecRuleEngine|^SecRequestBodyAccess|^SecResponseBodyAccess|^SecAuditLog|^SecAuditLogFormat|^SecAuditLogParts|^SecAuditLogType" /etc/modsecurity/modsecurity.conf'
+      docker exec el34-web sh -c 'sudo ls /usr/share/modsecurity-crs/rules/ | wc -l'
+      docker exec el34-web sh -c 'sudo wc -l /usr/share/modsecurity-crs/rules/REQUEST-941-APPLICATION-ATTACK-XSS.conf'
+      docker exec el34-web sh -c 'sudo ls /etc/apache2/sites-enabled/'
+      docker exec el34-web sh -c 'sudo ls -la /var/log/apache2/modsec_audit.log'
+    answer_detail: 'security2_module + CRS 3.3.2 + 7 핵심 키 + 30+ 룰 + 11 vhost + audit log'
+    verify:
+      type: output_contains
+      expect: SecRuleEngine
+      field: stdout
+      semantic:
+        intent: "ModSec 정책 본체 6 키 + CRS + 11 vhost"
+        success_criteria: ["security2_module", "CRS 3.3.2", "SecRuleEngine On", "JSON", "11 vhost"]
+        acceptable_methods:
+          - "**[OSS] apache2ctl -M | grep security**"
+          - "**[OSS] dpkg -l | grep modsec**"
+          - "**[OSS] grep SecRuleEngine modsecurity.conf**"
+          - "**[OSS] grep SecAuditLogFormat — JSON**"
+          - "**[OSS] ls /usr/share/modsecurity-crs/rules/**"
+          - "**[OSS] ls /etc/apache2/sites-enabled/**"
+          - "**[OSS] apache2ctl configtest**"
+          - "**[OSS] modsecurity.conf-recommended baseline**"
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 MISSION — audit log 정확한 JSON 구조 + messages[] embedded metadata 파싱
+
+      lecture §5.5 — `audit_data.messages[]` 가 JSON object 가 아니라 **단일 string** 에
+      `[key "value"]` 형식이 embedded. 단순 `.messages[].id` 추출 안 됨.
+
+      ## 💻 실행 명령
+
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "keys"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq ".transaction"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{line:.request.request_line, host:.request.headers.host, remote:.transaction.remote_address}"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{status:.response.status}"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{msgs:(.audit_data.messages | length), errs:(.audit_data.error_messages | length)}"'
+      # ⚠️ messages 의 정확한 형식 — jq + regex
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]" | sort -u'
+      ```
+
+      ## 📋 확인 사항
+
+      - **keys**: `["audit_data", "request", "response", "transaction"]` 4 sub-section
+      - **transaction**: `remote_address: 10.20.30.202` (실제 attacker, el34 출처 보존) / `local_address: 10.20.32.80` (web)
+      - **request**: `host: <공격 vhost>`, `remote_address: 10.20.30.202` (실제 attacker)
+      - **response**: status 200 또는 403
+      - **audit_data**: messages count / error_messages count
+      - **매치 룰**: `[id "941100"]` `[id "941110"]` ... (embedded format)
+
+      ## 💡 왜 이걸 하는가?
+
+      audit log 분석 자동화 시 messages[] 의 정확한 형식 인지 필수. 많은 운영자가
+      `.messages[].id` 로 parse 시도 → silent fail.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 4 sub-section + jq + regex 결합 추출
+      - **운영 권장**: jq + grep / Python regex 결합. Wazuh decoder (W10) 가 manager 측 parse
+    hint: 'jq + grep -oE — messages 의 [id "X"] embedded format'
+    category: analysis
+    points: 15
+    answer: |
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "keys"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq ".transaction"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{line:.request.request_line, host:.request.headers.host, remote:.transaction.remote_address}"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{msgs:(.audit_data.messages | length)}"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]" | sort -u'
+    answer_detail: '4 sub-section + jq + regex 결합. remote_address = 실제 attacker (el34 출처 보존).'
+    verify:
+      type: output_contains
+      expect: transaction
+      field: stdout
+      semantic:
+        intent: "audit log JSON 구조 + messages 정규식 추출"
+        success_criteria: ["4 sub-section", "messages embedded", "regex 추출", "remote_address 보존"]
+        acceptable_methods:
+          - "**[OSS] jq keys**"
+          - "**[OSS] jq -r '.audit_data.messages[]' | grep -oE [id]**"
+          - "**[OSS] Python re.findall**"
+          - "**[OSS] Wazuh decoder regex**"
+          - "**[OSS] transaction.remote_address** — 실 client IP (el34 출처 보존)"
+          - "**[OSS] remote_address = 실제 attacker (보존)**"
+          - "**[OSS] SecAuditLogParts H — messages 위치**"
+          - "**[OSS] SecAuditLogParts ABCFHZ 의 각 의미**"
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 MISSION — XSS 공격 + 941xxx 매치 + anomaly score 15 가시화
+
+      lecture §4.4 의 실측 재현 — XSS 가 941100 + 941110 + 941160 의 3 CRITICAL 룰 매치 →
+      score 15 → 949110 block + 980130 correlation summary.
+
+      ## 💻 실행 명령
+
+      ```bash
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]" | sort -u'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "paranoia-level/[0-9]+" | head -1'
+      ```
+
+      ## 📋 확인 사항 (실측 2026-05-12)
+
+      - **응답: 403** (block)
+      - **매치 룰**: `[id "941100"]` `[id "941110"]` `[id "941160"]` + `[id "949110"]` + `[id "980130"]`
+      - **anomaly score**: `Total Score: 15`
+      - **summary**: `SQLI=0,XSS=15,RFI=0,LFI=0,RCE=0,PHPI=0`
+      - **paranoia-level/1**
+
+      ## 💡 왜 이걸 하는가?
+
+      anomaly scoring 누적 수학 실증. 1 payload → 여러 룰 매치 → score 누적 → block.
+      운영 IR 시 980130 summary 가 한 줄 요약 → 5분 → 30초.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 403 + 941 3 매치 + score 15 + XSS=15
+      - **누적 의미**: XSS critical 3 × 5 = 15 ≥ threshold 5 → block
+      - **paranoia 2 효과**: 941180 등 추가 룰 → score 더 누적
+    hint: 'curl <script> → 403 → 941xxx + score 15'
+    category: redblue
+    points: 20
+    answer: |
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      sleep 2
+      echo "매치 룰:"
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]" | sort -u'
+      echo "score:"
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+"'
+      echo "summary:"
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+"'
+      echo "paranoia:"
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "paranoia-level/[0-9]+" | head -1'
+    answer_detail: 'XSS → 403 + 941100/110/160 + score 15 + XSS=15 SQLI=0 + paranoia-level/1'
+    verify:
+      type: output_contains
+      expect: '941100'
+      field: stdout
+      semantic:
+        intent: "XSS 차단 + 941xxx 매치 + score 15"
+        success_criteria: ["403", "941100+941110+941160", "Total Score: 15", "XSS=15"]
+        acceptable_methods:
+          - "**[OSS] curl <script> 페이로드**"
+          - "**[OSS] grep -oE [id \"X\"]**"
+          - "**[OSS] Total Score grep**"
+          - "**[OSS] 949110 block + 980130 correlation**"
+          - "**[OSS] libinjection 941100 vs regex 941110/160**"
+          - "**[OSS] paranoia-level/1 tag**"
+          - "**[OSS] severity CRITICAL → score 5**"
+          - "**[OSS] threshold 5 → block decision**"
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 MISSION — SQLi + 942xxx + libinjection fingerprint
+
+      SQL Injection 페이로드 → 942xxx 룰 매치 + libinjection fingerprint 확인 + encoding
+      bypass 시뮬.
+
+      ## 💻 실행 명령
+
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '응답: %{http_code}\n' -H 'Host: dvwa.6v6.lab' \"http://10.20.30.1/?q=1' OR '1'='1\""
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"94[0-9]+\"\]" | sort -u'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+|SQLI=[0-9]+"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "fingerprint .[a-zA-Z0-9_\\&]+." | head -1'
+
+      # encoding bypass 시뮬
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '응답: %{http_code}\n' -H 'Host: dvwa.6v6.lab' \"http://10.20.30.1/?q=1%27%20UNION%20SELECT\""
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"94[0-9]+\"\]" | sort -u'
+      ```
+
+      ## 📋 확인 사항
+
+      - **응답: 403** (block)
+      - **942xxx 매치**: `[id "942100"]` (libinjection) + `[id "942130"]`/`[id "942140"]`
+      - **anomaly score**: 5+ (libinjection critical → score 5)
+      - **fingerprint**: `'1&1'` 또는 비슷 (libinjection 표현)
+      - **encoding bypass**: 동일 942xxx 매치 (CRS normalize 효과)
+
+      ## 💡 왜 이걸 하는가?
+
+      libinjection 의 SQL fingerprint 는 정규식 기반보다 정확. encoding bypass 도 CRS 가
+      normalize 후 매치 → paranoia 1 에서도 효과.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 403 + 942xxx + fingerprint
+      - **IR 활용**: fingerprint 가 attack vector 식별 단서
+      - **paranoia 2 효과**: comment 우회 (`/*X*/UNION`) 매치
+    hint: "curl '1' OR '1'='1' → 942xxx + libinjection fingerprint"
+    category: redblue
+    points: 18
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '응답: %{http_code}\n' -H 'Host: dvwa.6v6.lab' \"http://10.20.30.1/?q=1' OR '1'='1\""
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"94[0-9]+\"\]" | sort -u'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+|SQLI=[0-9]+"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "fingerprint .[a-zA-Z0-9_\\&]+." | head -1'
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '응답: %{http_code}\n' -H 'Host: dvwa.6v6.lab' \"http://10.20.30.1/?q=1%27%20UNION%20SELECT\""
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"94[0-9]+\"\]" | sort -u'
+    answer_detail: 'SQLi → 403 + 942xxx + libinjection fingerprint. encoding bypass 도 매치.'
+    verify:
+      type: output_contains
+      expect: '942'
+      field: stdout
+      semantic:
+        intent: "SQLi 차단 + libinjection fingerprint"
+        success_criteria: ["403", "942xxx", "Total Score", "SQLI"]
+        acceptable_methods:
+          - "**[OSS] curl '1' OR '1'='1'**"
+          - "**[OSS] libinjection fingerprint**"
+          - "**[OSS] URL encoding bypass + CRS normalize**"
+          - "**[OSS] paranoia 2/3 정교한 변형**"
+          - "**[OSS] 942130/140 SQL keyword**"
+          - "**[OSS] 949110 block + 980130 SQLI**"
+          - "**[OSS] paranoia-level/1 vs 2 차이**"
+          - "**[OSS] 942xxx UNION SELECT 변형**"
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 MISSION — LFI / RCE / PHP 3 공격 추가 + 카테고리 분포
+
+      LFI (path traversal) / RCE (cmd injection) / PHP injection 3 공격 → 각각 930xxx /
+      932xxx / 933xxx 룰 매치 + 카테고리 분포 분석.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # LFI
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=../../etc/passwd"'
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"93[0-9]+\"\]" | sort -u'
+
+      # RCE
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=;cat%20/etc/passwd"'
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"932[0-9]+\"\]" | sort -u'
+
+      # PHP
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"'
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"933[0-9]+\"\]" | sort -u'
+
+      # 카테고리 분포 (최근 50 transaction)
+      docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "\[id \"[0-9]+\"\]" | sort | uniq -c | sort -rn | head -10'
+      ```
+
+      ## 📋 확인 사항
+
+      - **LFI 응답: 403** + `[id "930100"]`/`[id "930110"]`/`[id "930120"]` (path traversal)
+      - **RCE 응답: 403** + `[id "932100"]`/`[id "932160"]` (unix command)
+      - **PHP 응답: 403** + `[id "933100"]`/`[id "933170"]` (PHP tag injection)
+      - **카테고리 분포 top 10**: 941+942+930+932+933 + 949+980
+
+      ## 💡 왜 이걸 하는가?
+
+      OWASP Top 10 A03 (Injection) 5 sub-type 모두 cover. 5/5 차단 = production WAF 표준.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 3 공격 모두 403 + 각 카테고리 매치
+      - **IR 활용**: 카테고리 top 10 이 우선순위 단서
+      - **paranoia 2 효과**: null byte injection 등 정교한 LFI 변형 매치
+    hint: 'LFI ../../etc/passwd / RCE ;cat / PHP <?php'
+    category: redblue
+    points: 20
+    answer: |
+      echo "=== LFI ==="
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=../../etc/passwd"'
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"93[0-9]+\"\]" | sort -u'
+      echo "=== RCE ==="
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=;cat%20/etc/passwd"'
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"932[0-9]+\"\]" | sort -u'
+      echo "=== PHP ==="
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"'
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"933[0-9]+\"\]" | sort -u'
+      echo "=== 카테고리 분포 ==="
+      docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "\[id \"[0-9]+\"\]" | sort | uniq -c | sort -rn | head -10'
+    answer_detail: 'LFI 930 + RCE 932 + PHP 933 모두 403. 카테고리 top 10 가시화.'
+    verify:
+      type: output_contains
+      expect: '930'
+      field: stdout
+      semantic:
+        intent: "LFI/RCE/PHP 3 공격 + 카테고리 분포"
+        success_criteria: ["LFI 930xxx", "RCE 932xxx", "PHP 933xxx", "카테고리 top 10"]
+        acceptable_methods:
+          - "**[OSS] LFI ../../etc/passwd → 930**"
+          - "**[OSS] RCE ;cat → 932**"
+          - "**[OSS] PHP <?php → 933**"
+          - "**[OSS] OWASP Top 10 A03 매핑**"
+          - "**[OSS] URL encoding 변형**"
+          - "**[OSS] paranoia 2 — null byte / multi-byte**"
+          - "**[OSS] 카테고리 분포 top 10 IR 우선순위**"
+          - "**[OSS] 949110 + 980130 결합**"
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 MISSION — 공격자 IP 식별: remote_address (el34 출처 보존)
+
+      el34 는 fw 가 SNAT 하지 않아 ModSec audit 의 `transaction.remote_address` 가 **곧 실제 공격자 IP**
+      다 (X-Forwarded-For 없이도). 그래서 IP 기반 ModSec/차단 룰을 remote_address 로 바로 작성할 수 있다.
+
+      ## 💻 실행 명령
+
+      ```bash
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      sleep 2
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{remote:.transaction.remote_address, xff:.request.headers.\"x-forwarded-for\"}"'
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.error_messages[0]" | grep -oE "client [0-9.]+"'
+
+      echo
+      echo "=== el34: remote_address 가 곧 공격자 → IP 룰 직접 작성 ==="
+      cat <<'EOF'
+      SecRule REMOTE_ADDR "@ipMatch 10.20.30.202" \
+          "id:9006001,phase:1,deny,status:403,msg:'attacker IP block'"
+      EOF
+      echo "=== (참고) src 를 가리는 reverse-proxy 환경이라면 XFF 신뢰가 필요 ==="
+      cat <<'EOF'
+      RemoteIPHeader X-Forwarded-For
+      RemoteIPInternalProxy 10.20.31.0/24
+      EOF
+      ```
+
+      ## 📋 확인 사항
+
+      - `{remote: "10.20.30.202", xff: null}` — el34 는 remote_address 가 곧 공격자 IP, XFF 불필요
+      - error_messages 의 `client 10.20.30.202` — Apache 가 본 실제 source (보존)
+      - IP 룰을 `REMOTE_ADDR` 로 바로 작성 가능
+
+      ## 💡 왜 이걸 하는가?
+
+      많은 reverse-proxy 환경은 src 를 프록시 IP 로 가려 XFF 신뢰 설정이 필요하다. el34 는 fw 가 출처를
+      보존하므로 그 복잡성 없이 remote_address 로 바로 공격자를 식별·차단한다 — 운영이 단순해진다.
+
+      ## 🔍 결과 해석 + 운영 함의
+
+      - **정상(el34)**: remote_address = 실제 공격자(10.20.30.202), xff = null
+      - **참고**: src 를 가리는 환경에서는 mod_remoteip + RemoteIPInternalProxy(신뢰 subnet)로 XFF 신뢰.
+        단 신뢰 안 되는 곳의 XFF 는 스푸핑 위험
+    hint: 'jq "{remote, xff}" — el34 는 remote_address 가 곧 실제 공격자'
+    category: analysis
+    points: 12
+    answer: |
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.6v6.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      sleep 2
+      echo "=== remote_address (el34 출처 보존) ==="
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{remote:.transaction.remote_address, xff:.request.headers.\"x-forwarded-for\"}"'
+      echo "=== error_messages client ==="
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.error_messages[0]" | grep -oE "client [0-9.]+"'
+      echo
+      echo "=== el34: REMOTE_ADDR 직접 IP 룰 ==="
+      cat <<'EOF'
+      SecRule REMOTE_ADDR "@ipMatch 10.20.30.202" "id:9006001,phase:1,deny,status:403"
+      EOF
+    answer_detail: 'el34 는 remote_address = 실제 공격자(10.20.30.202), xff=null. IP 룰을 REMOTE_ADDR 로 바로 작성. (src 가리는 환경만 XFF 신뢰 필요.)'
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "el34 출처 보존 — remote_address 가 곧 공격자 IP"
+        success_criteria: ["remote_address 10.20.30.202", "xff null", "REMOTE_ADDR IP 룰"]
+        acceptable_methods:
+          - "**[OSS] jq transaction.remote_address — 실제 공격자(보존)**"
+          - "**[OSS] SecRule REMOTE_ADDR @ipMatch — 직접 IP 차단**"
+          - "**[OSS] error_messages 의 client IP**"
+          - "**[참고] mod_remoteip — src 가리는 환경의 XFF 신뢰**"
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 MISSION — paranoia 1 vs 2 시뮬 + 룰 카운트 비교
+
+      lecture §4.2 — paranoia 1 (default) vs 2 시뮬. paranoia 2 활성 시 추가 룰 카운트 +
+      false-positive 시나리오 예측.
+
+      ## 💻 실행 명령
+
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "paranoia-level/[0-9]+" | head -1'
+
+      # paranoia 2 룰 카운트 (각 카테고리)
+      echo "=== paranoia-level/2 룰 카운트 ==="
+      docker exec el34-web sh -c 'for f in REQUEST-941* REQUEST-942* REQUEST-930* REQUEST-932* REQUEST-933*; do
+        cnt=$(sudo grep -c "paranoia-level/2" /usr/share/modsecurity-crs/rules/$f 2>/dev/null || echo 0)
+        echo "  $f: $cnt 룰"
+      done'
+
+      # paranoia 2 적용 패턴 (시뮬)
+      echo
+      echo "=== vhost 단위 paranoia 2 적용 (시뮬) ==="
+      cat <<'EOF'
+      # /etc/apache2/sites-available/010-juice.conf 의 <VirtualHost> 안:
+      SecAction "id:9006020,phase:1,nolog,pass,setvar:tx.paranoia_level=2"
+      EOF
+
+      # false-positive 시나리오
+      echo
+      echo "=== false-positive 예상 ==="
+      echo "정상: 사용자가 rich text editor 에 '<b>tag</b> 사용법'을 입력"
+      echo "  paranoia 1 → 통과 (HTML 의 단순 b tag 안전)"
+      echo "  paranoia 2 → '<b' tag injection 의심 → 차단 가능"
+      echo "운영 권장: legacy / rich-text vhost 는 paranoia 1 유지"
+      ```
+
+      ## 📋 확인 사항
+
+      - 현재 paranoia: `paranoia-level/1`
+      - paranoia 2 룰 카운트 — 카테고리별 (XSS 30+, SQLi 20+, LFI 10+ 등)
+      - 적용 SecAction 패턴 (시뮬)
+      - false-positive 시나리오 예측
+
+      ## 💡 왜 이걸 하는가?
+
+      paranoia upgrade 는 운영 trade-off. vhost 별 paranoia 운영 (legacy 1, REST API 2-3)
+      이 production 표준.
+
+      ## 🔍 결과 해석 + 5 권장
+
+      1. 모든 vhost 동시 paranoia 변경 금지 (분기적 단계적)
+      2. DetectionOnly 모드에서 1주 audit 후 On 전환
+      3. vhost 별 paranoia (rich text 1, REST API 2)
+      4. paranoia 2 에서 새로 매치된 룰 ID 트래킹
+      5. 분기별 exception 예산화
+    hint: 'grep paranoia-level/2 /usr/share/modsecurity-crs/rules/'
+    category: configuration
+    points: 12
+    answer: |
+      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "paranoia-level/[0-9]+" | head -1'
+      echo "=== paranoia-level/2 룰 카운트 ==="
+      docker exec el34-web sh -c 'for f in REQUEST-941* REQUEST-942* REQUEST-930* REQUEST-932* REQUEST-933*; do
+        cnt=$(sudo grep -c "paranoia-level/2" /usr/share/modsecurity-crs/rules/$f 2>/dev/null || echo 0)
+        echo "  $f: $cnt 룰"
+      done'
+      echo
+      echo "=== paranoia 2 적용 SecAction ==="
+      cat <<'EOF'
+      SecAction "id:9006020,phase:1,nolog,pass,setvar:tx.paranoia_level=2"
+      EOF
+      echo
+      echo "=== false-positive ==="
+      echo "rich text editor 의 '<b>tag</b>' → paranoia 2 차단 가능"
+      echo "운영 권장: legacy/rich-text vhost 는 paranoia 1 유지"
+    answer_detail: 'paranoia 1 → 2 시뮬. 카테고리별 추가 룰 카운트. false-positive 예측 + 5 권장.'
+    verify:
+      type: output_contains
+      expect: paranoia
+      field: stdout
+      semantic:
+        intent: "paranoia 1 vs 2 영향"
+        success_criteria: ["paranoia-level/1", "paranoia 2 룰 카운트", "false-positive 예측"]
+        acceptable_methods:
+          - "**[OSS] grep paranoia-level/2**"
+          - "**[OSS] vhost SecAction setvar**"
+          - "**[OSS] DetectionOnly → On**"
+          - "**[OSS] false-positive 예측 — rich text**"
+          - "**[OSS] 분기적 단계적 upgrade**"
+          - "**[OSS] crs-setup.conf vs vhost**"
+          - "**[OSS] paranoia 3/4 RFI/RCE base64**"
+          - "**[OSS] tx.paranoia_level vs detection_paranoia_level**"
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 MISSION — exception 작성 (LocationMatch + SecRuleRemoveById)
+
+      lecture §7 — 가장 좁은 범위 exception. LocationMatch + SecRuleRemoveById + git
+      audit + 자가 점검.
+
+      ## 💻 실행 명령
+
+      ```bash
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/admin/comments?text=<b>hi</b>"'
+      sleep 2
+
+      echo "=== exception 작성 (시뮬) ==="
+      cat <<'EOF'
+      <LocationMatch "^/admin/comments$">
+          SecRuleRemoveById 941100
+          # 또는 좁게: SecRuleUpdateTargetById 941100 "!ARGS:text"
+      </LocationMatch>
+      EOF
+
+      echo
+      echo "=== 운영 절차 6 단계 ==="
+      cat <<'EOF'
+      1. /etc/apache2/conf-available/modsec-w06-exception.conf 작성
+      2. sudo a2enconf modsec-w06-exception
+      3. sudo apache2ctl configtest
+      4. sudo systemctl reload apache2 (downtime 0)
+      5. audit log 모니터 — 매치 변화
+      6. git PR + 사유 주석 + ticket # + 분기 검토
+      EOF
+
+      echo
+      echo "=== 자가 점검 5 질문 ==="
+      cat <<'EOF'
+      Q1. 실 공격 차단 가림? (No 여야)
+      Q2. URL/param 범위 좁은가? (Yes)
+      Q3. 분기 검토 잡혔는가? (Yes)
+      Q4. reproducer 확보? (Yes)
+      Q5. application 측 수정 대체 가능? (No 일 때만 exception)
+      EOF
+      ```
+
+      ## 📋 확인 사항
+
+      - baseline 응답
+      - exception 패턴 (LocationMatch 권장)
+      - 운영 절차 6 단계
+      - 자가 점검 5 질문
+
+      ## 💡 왜 이걸 하는가?
+
+      광범위 exception 누적 = 보안 약화. 좁은 범위 + git audit + 분기 검토 = 표준.
+
+      ## 🔍 결과 해석
+
+      - **운영 권장 5**:
+        1. LocationMatch + SecRuleRemoveById > SecRuleUpdateTargetById > SecRuleRemoveById 단독
+        2. git PR + 사유 + ticket # + lifetime
+        3. 분기 검토 — 누적 영향
+        4. application 측 수정 우선
+        5. DetectionOnly 검증 후 적용
+    hint: '<LocationMatch "/api/legacy/"> SecRuleRemoveById 941100 </LocationMatch>'
+    category: operations
+    points: 12
+    answer: |
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.6v6.lab" "http://10.20.30.1/admin/comments?text=<b>hi</b>"'
+      sleep 2
+      echo "=== exception (시뮬) ==="
+      cat <<'EOF'
+      <LocationMatch "^/admin/comments$">
+          SecRuleRemoveById 941100
+      </LocationMatch>
+      EOF
+      echo "=== 운영 절차 ==="
+      cat <<'EOF'
+      1. /etc/apache2/conf-available/modsec-w06-exception.conf
+      2. a2enconf + configtest + reload
+      3. audit log 모니터
+      4. git PR + ticket # + 분기 검토
+      EOF
+      echo "=== 자가 점검 ==="
+      cat <<'EOF'
+      Q1-Q5 (실 공격 가림 / 범위 좁음 / 분기 검토 / reproducer / app 측 대체)
+      EOF
+    answer_detail: 'baseline + LocationMatch 시뮬 + 운영 6 단계 + 자가 점검 5 질문.'
+    verify:
+      type: output_contains
+      expect: LocationMatch
+      field: stdout
+      semantic:
+        intent: "exception 좁은 범위 작성 + 자가 점검"
+        success_criteria: ["LocationMatch 패턴", "운영 절차 6", "자가 점검 5"]
+        acceptable_methods:
+          - "**[OSS] LocationMatch + SecRuleRemoveById**"
+          - "**[OSS] SecRuleUpdateTargetById !ARGS:param**"
+          - "**[OSS] git PR + ticket + 분기 검토**"
+          - "**[OSS] DetectionOnly 검증**"
+          - "**[OSS] audit log 매치 변화 모니터**"
+          - "**[OSS] application 측 수정 우선**"
+          - "**[OSS] exception lifetime 명시**"
+          - "**[OSS] 누적 영향 분기 측정**"
+    target_vm: web
+
+  - order: 9
+    instruction: |
+      ## 🎯 MISSION — **R/B/P** 5 공격 burst + 980130 summary + paranoia 권장
+
+      **Red** 5 공격 (XSS / SQLi / LFI / RCE / PHP) → **Blue** audit log 카테고리 분포 →
+      **Purple** 980130 correlation + paranoia tuning 5 권장.
+
+      ## 💻 실행 명령
+
+      ```bash
+      BEFORE=$(docker exec el34-web sh -c 'sudo wc -l /var/log/apache2/modsec_audit.log | awk "{print \$1}"')
+      echo "baseline audit lines: $BEFORE"
+      echo
+      echo "=== Red 5 공격 ==="
+      for payload in \
+        "?q=<script>alert(1)</script>" \
+        "?q=1'%20OR%20'1'='1" \
+        "?q=../../etc/passwd" \
+        "?q=;cat%20/etc/passwd" \
+        "?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"; do
+        code=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.6v6.lab' 'http://10.20.30.1/$payload'")
+        echo "  $payload → $code"
+      done
+      sleep 5
+
+      echo
+      echo "=== Blue — 카테고리 분포 (최근 5 transaction) ==="
+      docker exec el34-web sh -c 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "\[id \"[0-9]+\"\]" | sort | uniq -c | sort -rn | head -15'
+
+      echo
+      echo "=== Blue — 980130 summary (각 transaction) ==="
+      docker exec el34-web sh -c 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+"'
+
+      echo
+      echo "=== Purple — 5 차단 결과 ==="
+      docker exec el34-web sh -c 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq ".response.status"'
+
+      echo
+      echo "=== Purple — paranoia tuning 5 권장 ==="
+      cat <<'EOF'
+      1. paranoia 1 유지 (legacy 호환)
+      2. vhost 별 paranoia 2 (신규 API)
+      3. paranoia 3+ 금지 (production 부적합)
+      4. exception 누적 분기 검토
+      5. Wazuh 통합 (W10) — alert flood 통합 분석
+      EOF
+      ```
+
+      ## 📋 확인 사항
+
+      - 5 공격 모두 403 (성공률 5/5)
+      - 카테고리 분포 top 15 — 941+942+930+932+933+949+980 모두
+      - 980130 summary — 각 transaction 의 XSS/SQLI/LFI/RCE/PHP score
+      - response.status: 모두 403
+      - paranoia tuning 5 권장
+
+      ## 💡 왜 이걸 하는가?
+
+      Purple Team standard cycle. 5 공격 → ModSec 의 catched/missed ratio + paranoia
+      tuning 권장. production 분기 정책 검토 기반.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 5/5 차단 + 카테고리 분포 다양 + 980130 summary 5건
+      - **분석**:
+        - 카테고리 score 가 가장 큰 곳 (XSS=15 / LFI=5 등)
+        - 어느 공격이 lower score → threshold 못 채울 가능성
+        - paranoia 1 vs 2 trade-off 시뮬
+    hint: '5 공격 burst + 카테고리 분포 + 980130 summary + paranoia 권장'
+    category: redblue
+    points: 25
+    answer: |
+      BEFORE=$(docker exec el34-web sh -c 'sudo wc -l /var/log/apache2/modsec_audit.log | awk "{print \$1}"')
+      echo "baseline: $BEFORE"
+      echo "=== Red 5 ==="
+      for payload in \
+        "?q=<script>alert(1)</script>" \
+        "?q=1'%20OR%20'1'='1" \
+        "?q=../../etc/passwd" \
+        "?q=;cat%20/etc/passwd" \
+        "?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"; do
+        code=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.6v6.lab' 'http://10.20.30.1/$payload'")
+        echo "  $payload → $code"
+      done
+      sleep 5
+      echo "=== Blue — 카테고리 ==="
+      docker exec el34-web sh -c 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "\[id \"[0-9]+\"\]" | sort | uniq -c | sort -rn | head -15'
+      echo "=== Blue — 980130 ==="
+      docker exec el34-web sh -c 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+"'
+      echo "=== Purple — status ==="
+      docker exec el34-web sh -c 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq ".response.status"'
+      echo "=== Purple — paranoia 권장 5 ==="
+      echo "1. paranoia 1 유지 / 2. vhost 별 2 / 3. 3+ 금지 / 4. 분기 검토 / 5. Wazuh 통합"
+    answer_detail: 'Red 5 공격 → 5/5 차단 + 카테고리 분포 + 980130 + paranoia 5 권장.'
+    verify:
+      type: output_contains
+      expect: '980'
+      field: stdout
+      semantic:
+        intent: "R/B/P — 5 공격 + summary + paranoia 권장"
+        success_criteria: ["5/5 403", "카테고리 분포", "980130", "paranoia 5"]
+        acceptable_methods:
+          - "**[OSS] 5 공격 burst**"
+          - "**[OSS] grep -oE [id]**"
+          - "**[OSS] 980130 summary**"
+          - "**[OSS] response.status 검증**"
+          - "**[OSS] paranoia tuning**"
+          - "**[OSS] DetectionOnly → On**"
+          - "**[OSS] exception 분기 검토**"
+          - "**[OSS] Wazuh 통합**"
+    target_vm: bastion
+
+  - order: 10
+    instruction: |
+      ## 🎯 MISSION — Wazuh agent ship 검증 (W10 예고) + 종합 보고서
+
+      ## 💻 실행 명령
+
+      ```bash
+      docker exec el34-web sh -c 'sudo /var/ossec/bin/wazuh-control status 2>&1 | head -5'
+      docker exec el34-web sh -c 'sudo cat /var/ossec/etc/ossec.conf | grep -B1 -A3 "modsec_audit" | head -20'
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -lc 2>&1 | grep -i web | head -3'
+      docker exec el34-siem sh -c 'sudo tail -100 /var/ossec/logs/alerts/alerts.log 2>/dev/null | grep -iE "modsec|941|942" | tail -3'
+
+      echo
+      echo "=== 종합 보고서 형식 ==="
+      cat <<'EOF'
+      # el34 W05 ModSecurity 보고서
+
+      ## 1. STEP 1-9 결과 표 (9 row)
+      | Step | 영역 | 결과 |
+      | 1 | 6 키 + 11 vhost | pass |
+      | 2 | audit JSON + messages regex | pass |
+      | 3 | XSS score 15 | pass |
+      | 4 | SQLi libinjection | pass |
+      | 5 | LFI/RCE/PHP 카테고리 | pass |
+      | 6 | XFF vs remote | pass |
+      | 7 | paranoia 1/2 | pass |
+      | 8 | exception LocationMatch | pass |
+      | 9 | R/B/P 5 공격 5/5 | pass |
+
+      ## 2. R/B/P (STEP 9)
+      5 공격 모두 403 + 카테고리 분포 + 980130 summary
+
+      ## 3. 운영 권장 5
+      1. SecRuleEngine On + DetectionOnly migration
+      2. paranoia 1 → vhost 별 단계적 2
+      3. XFF 신뢰 또는 mod_remoteip
+      4. exception LocationMatch (좁은 범위) + git audit
+      5. Wazuh agent ship 자동화 (W10)
+
+      ## 4. W06 (osquery) 준비도
+      ## 5. 본인 학습 gap
+      EOF
+      ```
+
+      ## 📋 확인 사항
+
+      - web agent Active
+      - ossec.conf 의 modsec_audit.log
+      - manager 에서 web 보임
+      - 종합 보고서 5 섹션
+
+      ## 💡 왜 이걸 하는가?
+
+      W10 통합 전 ship 사전 점검 + W05 종합.
+
+      ## 🔍 결과 해석
+
+      - **정상**: agent Active + ossec.conf + manager 통신
+      - **A**: 5 섹션 + 9 step + 운영 권장 5 + W06(osquery) 준비도
+    hint: 'wazuh-control status + 종합 보고서'
+    category: synthesis
+    points: 16
+    answer: |
+      echo "=== web agent ==="
+      docker exec el34-web sh -c 'sudo /var/ossec/bin/wazuh-control status 2>&1 | head -5'
+      echo "=== ossec.conf 의 modsec_audit ==="
+      docker exec el34-web sh -c 'sudo cat /var/ossec/etc/ossec.conf | grep -B1 -A3 "modsec_audit" | head -20'
+      echo "=== manager web ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -lc 2>&1 | grep -i web | head -3'
+      echo "=== alerts.log ==="
+      docker exec el34-siem sh -c 'sudo tail -100 /var/ossec/logs/alerts/alerts.log 2>/dev/null | grep -iE "modsec|941" | tail -3'
+      echo
+      cat <<'EOF'
+      # el34 W05 ModSec 보고서
+      ## 1. STEP 1-9 (9 row 표)
+      ## 2. R/B/P (STEP 9) — 5/5 차단
+      ## 3. 운영 권장 5
+      ## 4. W06 (osquery) 준비도
+      ## 5. 본인 gap
+      EOF
+    answer_detail: 'web agent Active + ossec.conf + manager + 종합 보고서 5 섹션.'
+    verify:
+      type: output_contains
+      expect: ossec
+      field: stdout
+      semantic:
+        intent: "Wazuh ship + 종합"
+        success_criteria: ["agent Active", "ossec.conf modsec_audit", "종합 보고서"]
+        acceptable_methods:
+          - "**[OSS] /var/ossec/bin/wazuh-control status**"
+          - "**[OSS] ossec.conf <localfile>**"
+          - "**[OSS] manager agent_control -lc**"
+          - "**[OSS] alerts.log + alerts.json**"
+          - "**[관리적] ISMS-P 2.6.4 매핑**"
+          - "**[관리적] OWASP Top 10 매핑**"
+          - "**[관리적] MITRE ATT&CK**"
+          - "**[관리적] 본인 gap**"
+    target_vm: web
