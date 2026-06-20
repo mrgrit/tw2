@@ -1,0 +1,1112 @@
+lab_id: standalone-secuops-week03
+title: Suricata IDS — 데몬 + 설정 + 룰 작성 + eve.json 깊이 분석 + R/B/P + 트러블슈팅
+version: standalone-non-ai
+course: secuops
+week: 3
+description: |
+  el34-ips 의 Suricata 6.0.4 가 두 NIC sniff + 배포 룰셋 + eve.json JSON event 로
+  출력하는 흐름을 단계별 검증. 데몬 + suricata.yaml + dump-counters 의 drop rate +
+  event_type 8 종 jq pattern + flow_id 로 한 conn 의 모든 event 추적 + 새 alert 룰
+  작성·트리거 + suricata-update workflow + R/B/P (sqlmap UA × 5 → 10 alert + threshold
+  권장) + 트러블슈팅 시뮬 + 종합 보고서. 한 cycle.
+difficulty: medium
+duration_minutes: 200
+prerequisites:
+  - "W01-W02 통과 (특히 W02 의 nft/NAT 흐름 + el34 출처 IP 보존 이해)"
+  - "el34 호스트 SSH(`ssh ccc@192.168.0.151`) + docker exec (컨테이너 내부 root)"
+  - "lecture §1-§9 (Suricata 내부 + eve.json + 트러블슈팅) 숙지"
+objectives:
+  - "Suricata 4 모듈 (capture/decode/detect/output) + autofp + cluster_flow 이해"
+  - "suricata.yaml 의 af-packet / rule-files / eve-log / HOME_NET 4 키 점검"
+  - "dump-counters 의 drop rate 0% 목표 + stats.log 8초 주기"
+  - "eve.json 8 event_type 별 jq pattern + flow_id 로 conn 통합"
+  - "새 alert 룰 (sid 9004001 sqlmap UA) 작성·reload·트리거·검증"
+  - "suricata-update workflow + 룰셋(local.rules+suricata.rules) 관리"
+  - "R/B/P — sqlmap UA × 5 → 양 NIC 10 alert + threshold 권장"
+  - "트러블슈팅 — rule-files 미등록 + capture drop > 0 + sticky buffer 오류"
+  - "종합 보고서"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 MISSION — Suricata 데몬 상태 + version + uptime + 두 NIC sniff
+
+      운영 인수 첫 점검. 데몬 살아 있고 두 NIC (eth0 pipe / eth1 dmz) 모두 sniff 중인지
+      + Suricata 6.0.4 버전 + 가동 시간 확인. **autofp runmode** 가시화.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. 프로세스 + 시작 옵션
+      docker exec el34-ips sh -c 'pgrep -a Suricata'
+
+      # 2. version (suricatasc - Suricata 의 unix socket control)
+      docker exec el34-ips sh -c 'sudo suricatasc -c version'
+
+      # 3. uptime (초)
+      docker exec el34-ips sh -c 'sudo suricatasc -c uptime'
+
+      # 4. 두 NIC sniff stats (interface 별)
+      docker exec el34-ips sh -c 'sudo suricatasc -c iface-list'
+      ```
+
+      ## 📋 확인 사항 (실측 2026-05-12)
+
+      - **명령 1**: `<pid> suricata -i eth1 -i eth0 -c /etc/suricata/suricata.yaml --runmode autofp -l /var/log/suricata`
+        - `-i eth1 -i eth0`: 두 NIC (autofp 가 자동으로 thread group 분리)
+        - `--runmode autofp`: auto flow-pinned (cache-friendly)
+      - **명령 2**: `{"message":"6.0.4 RELEASE","return":"OK"}`
+      - **명령 3**: `{"message":31737,"return":"OK"}` (uptime 초)
+      - **명령 4**: `{"message":{"ifaces":["eth0","eth1"]},"return":"OK"}` — 두 NIC 모두
+
+      ## 💡 왜 이걸 하는가?
+
+      SOC 의 "alert 가 안 보일 때 첫 명령". Suricata 가 죽으면 모든 IDS alert 사라진다.
+      운영 인수 시 30초 안에 데몬 + 두 NIC + runmode + version 확인 가능.
+
+      ## 🔍 결과 해석 + 트러블슈팅
+
+      - **정상**: 프로세스 + version + uptime > 0 + 두 NIC
+      - **비정상 1**: 프로세스 없음 → `docker logs el34-ips | tail -50` 으로 시작 시
+        error 확인 (보통 suricata.yaml syntax 오류 또는 NIC 미존재)
+      - **비정상 2**: NIC 1개만 → entrypoint 의 `-i eth0 -i eth1` argv 점검
+      - **비정상 3**: uptime 짧음 (수십 초) → 데몬 crash + auto-restart 가능 → suricata.log
+        의 SIGSEGV / fatal 검토
+    hint: docker exec el34-ips sh -c 'pgrep -a Suricata; sudo suricatasc -c version'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 1. process ==="
+      docker exec el34-ips sh -c 'pgrep -a Suricata'
+      echo "=== 2. version ==="
+      docker exec el34-ips sh -c 'sudo suricatasc -c version'
+      echo "=== 3. uptime ==="
+      docker exec el34-ips sh -c 'sudo suricatasc -c uptime'
+      echo "=== 4. iface-list ==="
+      docker exec el34-ips sh -c 'sudo suricatasc -c iface-list'
+    answer_detail: |
+      pid + suricata 명령 (-i eth1 -i eth0 --runmode autofp). version 6.0.4 RELEASE.
+      uptime 정수 (초). iface-list 의 두 NIC.
+    verify:
+      type: output_contains
+      expect: '6.0.4'
+      field: stdout
+      semantic:
+        intent: "Suricata 데몬 + 두 NIC + version + uptime"
+        success_criteria:
+          - "Suricata 프로세스"
+          - "-i eth0 + -i eth1"
+          - "version 6.0.4"
+          - "uptime > 0"
+          - "iface-list 의 두 NIC"
+        acceptable_methods:
+          - "**[OSS] pgrep -a Suricata** — 표준"
+          - "**[OSS] ps -o pid,vsz,rss,cmd -p $(pgrep Suricata)** — 메모리 (800MB+ 정상)"
+          - "**[OSS] suricatasc -c version / uptime / iface-list** — socket"
+          - "**[OSS] systemctl status suricata** — host 환경 (컨테이너는 entrypoint)"
+          - "**[OSS] /var/log/suricata/suricata.log 의 시작 로그** — 룰 로드 카운트"
+          - "**[OSS] ss -lnp** — Suricata 는 listening port 없음, suricata-command.socket 만"
+          - "**[OSS] docker logs el34-ips** — entrypoint + stderr"
+          - "**[OSS] /etc/suricata/suricata.yaml 의 af-packet 정의** — 2 interface"
+    target_vm: ips
+
+  - order: 2
+    instruction: |
+      ## 🎯 MISSION — suricata.yaml 의 핵심 4 키 점검 (af-packet / rule-files / eve-log / HOME_NET)
+
+      Suricata 의 정책 본체 4 키. af-packet 미정의 = sniff 불가, rule-files 미정의 = 탐지
+      불가, eve-log 미정의 = 분석 불가, HOME_NET 부정확 = 룰 macro 오작동.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. af-packet 두 NIC + cluster-id + cluster-type
+      docker exec el34-ips sh -c 'sudo grep -A6 "^af-packet:" /etc/suricata/suricata.yaml | head -20'
+
+      # 2. default-rule-path + rule-files
+      docker exec el34-ips sh -c 'sudo grep -B1 -A5 "^rule-files:" /etc/suricata/suricata.yaml | head -10'
+      docker exec el34-ips sh -c 'sudo grep "^default-rule-path:" /etc/suricata/suricata.yaml'
+
+      # 3. eve-log enabled + types
+      docker exec el34-ips sh -c 'sudo grep -A10 "^outputs:" /etc/suricata/suricata.yaml | head -15'
+
+      # 4. HOME_NET / EXTERNAL_NET
+      docker exec el34-ips sh -c 'sudo grep -A2 "address-groups:" /etc/suricata/suricata.yaml | head -10'
+
+      # 5. syntax 검증 (변경 안 했으므로 OK 이어야 함)
+      docker exec el34-ips sh -c 'sudo suricata -T -c /etc/suricata/suricata.yaml 2>&1 | tail -3'
+      ```
+
+      ## 📋 확인 사항 (실측)
+
+      - **명령 1**: `af-packet:` 다음에 `- interface: eth0` + `cluster-id: 99` + `cluster-type: cluster_flow`, 그 다음 `- interface: eth1` + `cluster-id: 100`
+      - **명령 2**: `rule-files:` 에 `- local.rules` + `- suricata.rules`. (룰 파일은 `/etc/suricata/rules/`)
+      - **명령 3**: `outputs:` 의 `eve-log:` 에 `enabled: yes` + `filename: eve.json`
+      - **명령 4**: `HOME_NET: "[10.0.0.0/8,172.16.0.0/12,192.168.0.0/16]"` 또는 el34 의 4 subnet
+      - **명령 5**: `Notice: suricata: Configuration provided was successfully loaded. Exiting.`
+
+      ## 💡 왜 이걸 하는가?
+
+      운영 인수 시 2분 안에 정책 본체 점검. 변경 PR 검토 시 4 키 외 변경은 의심.
+
+      ## 🔍 결과 해석 + 트러블슈팅
+
+      - **정상**: 4 키 모두 정의 + syntax test pass
+      - **비정상 1**: af-packet 의 interface 가 1개 → `pgrep -a Suricata` 의 argv 점검
+      - **비정상 2**: rule-files 비어 있음 → 룰 0 로드 → 모든 traffic 통과
+      - **비정상 3**: HOME_NET 잘못 정의 → 룰의 `$HOME_NET` macro 가 wrong subnet → 무력
+      - **비정상 4**: syntax test 실패 → 정확한 줄/열 표시됨 → 수정 후 재시도
+    hint: docker exec el34-ips sh -c 'sudo grep -A6 "^af-packet:" /etc/suricata/suricata.yaml'
+    category: configuration
+    points: 12
+    answer: |
+      echo "=== 1. af-packet ==="
+      docker exec el34-ips sh -c 'sudo grep -A6 "^af-packet:" /etc/suricata/suricata.yaml | head -20'
+      echo "=== 2. rule-files ==="
+      docker exec el34-ips sh -c 'sudo grep -B1 -A5 "^rule-files:" /etc/suricata/suricata.yaml | head -10'
+      docker exec el34-ips sh -c 'sudo grep "^default-rule-path:" /etc/suricata/suricata.yaml'
+      echo "=== 3. eve-log ==="
+      docker exec el34-ips sh -c 'sudo grep -A10 "^outputs:" /etc/suricata/suricata.yaml | head -15'
+      echo "=== 4. HOME_NET ==="
+      docker exec el34-ips sh -c 'sudo grep -A2 "address-groups:" /etc/suricata/suricata.yaml | head -10'
+      echo "=== 5. syntax test ==="
+      docker exec el34-ips sh -c 'sudo suricata -T -c /etc/suricata/suricata.yaml 2>&1 | tail -3'
+    answer_detail: |
+      4 키 확인 + syntax test. af-packet 두 interface (cluster-id 99/100, cluster_flow).
+      rule-files 의 local + suricata.rules. eve-log enabled + filename. HOME_NET 의 RFC1918.
+      suricata -T pass.
+    verify:
+      type: output_contains
+      expect: af-packet
+      field: stdout
+      semantic:
+        intent: "suricata.yaml 4 핵심 키 + syntax test"
+        success_criteria:
+          - "af-packet 두 interface"
+          - "rule-files"
+          - "eve-log enabled"
+          - "HOME_NET"
+          - "syntax test pass"
+        acceptable_methods:
+          - "**[OSS] grep -A af-packet** — 두 interface + cluster"
+          - "**[OSS] grep default-rule-path + rule-files** — 룰 경로"
+          - "**[OSS] grep outputs / eve-log** — JSON 출력"
+          - "**[OSS] HOME_NET / EXTERNAL_NET macro** — 룰 변수"
+          - "**[OSS] suricata -T -c (config test)** — syntax 검증"
+          - "**[OSS] suricatasc -c ruleset-stats** — 로드 룰 카운트"
+          - "**[OSS] /var/log/suricata/suricata.log 의 시작 로그**"
+          - "**[OSS] suricata -V** — 빌드 옵션 + 활성 모듈"
+    target_vm: ips
+
+  - order: 3
+    instruction: |
+      ## 🎯 MISSION — dump-counters 의 drop rate 0% 검증 + stats.log
+
+      Suricata 의 자가 점검 메트릭. `capture.kernel_drops / decoder.pkts < 0.01%` 가
+      운영 목표. drop > 0 은 IDS gap.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. 핵심 counter (drop / pkts / bytes)
+      docker exec el34-ips sh -c 'sudo suricatasc -c dump-counters 2>&1 | python3 -c "
+      import json,sys
+      d=json.load(sys.stdin)
+      m=d.get(\"message\",{})
+      keys=[\"decoder.pkts\",\"decoder.bytes\",\"capture.kernel_packets\",\"capture.kernel_drops\",\"capture.kernel_ifdrops\",\"detect.alert\",\"flow.total\"]
+      for k in keys:
+        v=m.get(k,0)
+        print(f\"{k:35} {v}\")
+      pkts=m.get(\"decoder.pkts\",1)
+      drops=m.get(\"capture.kernel_drops\",0)
+      print(f\"\\ndrop_rate = {100*drops/max(pkts,1):.4f} %\")
+      "'
+
+      # 2. stats.log 의 8초 주기 self-check
+      docker exec el34-ips sh -c 'sudo tail -30 /var/log/suricata/stats.log 2>/dev/null | tail -20'
+
+      # 3. memcap 사용량 (flow / stream)
+      docker exec el34-ips sh -c 'sudo suricatasc -c memcap-show 2>&1'
+      ```
+
+      ## 📋 확인 사항
+
+      - **명령 1 출력**:
+        ```
+        decoder.pkts                        <integer>
+        decoder.bytes                       <integer>
+        capture.kernel_packets              <integer>  (= decoder.pkts ± drops)
+        capture.kernel_drops                0  ← 목표
+        capture.kernel_ifdrops              0  ← NIC 레벨 drop
+        detect.alert                        <integer>  (활성 alert 카운트)
+        flow.total                          <integer>
+
+        drop_rate = 0.0000 %
+        ```
+      - **명령 2 출력**: 통계 라인 다수 (decoder.pkts / decoder.bytes / capture.* / detect.alert)
+      - **명령 3 출력**: `{"flow":{"in_use":<bytes>,"max":<bytes>}, "stream":{...}, "applayer-proto-http":{...}}`
+
+      ## 💡 왜 이걸 하는가?
+
+      production 의 Suricata 운영자가 평소 점검하는 가장 중요한 메트릭. drop_rate > 0.01%
+      = IDS gap = 일부 트래픽이 미검사 통과. 즉시 조사 + 튜닝 필요.
+
+      ## 🔍 결과 해석 + 운영 권장
+
+      - **정상**: drop_rate < 0.01% + memcap 의 in_use < max 의 80%
+      - **위험 1**: drop_rate > 0.1% → `ring-size: 2048` → `8192` 상향 (af-packet 의
+        per-thread ring) + cluster_flow 분배 균형 확인
+      - **위험 2**: flow memcap full → `flow.memcap: 64mb → 128mb` 상향
+      - **위험 3**: stream memcap full → `stream.memcap: 64mb → 256mb` 상향
+      - **위험 4**: CPU 부족 (top 의 suricata 가 100% × 모든 core) → 룰 disable (ET POLICY /
+        ET HUNTING) 또는 NIC HW (10Gbps → 25Gbps, RSS 활성)
+    hint: docker exec el34-ips sh -c 'sudo suricatasc -c dump-counters | jq .message.capture'
+    category: monitoring
+    points: 15
+    answer: |
+      docker exec el34-ips sh -c 'sudo suricatasc -c dump-counters 2>&1 | python3 -c "
+      import json,sys
+      d=json.load(sys.stdin)
+      m=d.get(\"message\",{})
+      keys=[\"decoder.pkts\",\"decoder.bytes\",\"capture.kernel_packets\",\"capture.kernel_drops\",\"capture.kernel_ifdrops\",\"detect.alert\",\"flow.total\"]
+      for k in keys:
+        v=m.get(k,0)
+        print(f\"{k:35} {v}\")
+      pkts=m.get(\"decoder.pkts\",1)
+      drops=m.get(\"capture.kernel_drops\",0)
+      print(f\"\\ndrop_rate = {100*drops/max(pkts,1):.4f} %\")
+      "'
+      echo
+      echo "=== stats.log ==="
+      docker exec el34-ips sh -c 'sudo tail -30 /var/log/suricata/stats.log 2>/dev/null | tail -15'
+      echo
+      echo "=== memcap-show ==="
+      docker exec el34-ips sh -c 'sudo suricatasc -c memcap-show 2>&1 | head'
+    answer_detail: |
+      decoder.pkts / capture.kernel_drops / capture.kernel_ifdrops / detect.alert /
+      flow.total 5 counter + drop_rate 계산. stats.log 의 8초 주기 self-monitor.
+      memcap-show 의 flow / stream / app-layer 별 사용량. drop_rate 0% 목표.
+    verify:
+      type: output_contains
+      expect: drop_rate
+      field: stdout
+      semantic:
+        intent: "Suricata drop rate + memcap 운영 메트릭"
+        success_criteria:
+          - "decoder.pkts 출력"
+          - "capture.kernel_drops 출력"
+          - "drop_rate %"
+          - "stats.log"
+        acceptable_methods:
+          - "**[OSS] suricatasc -c dump-counters** — 100+ counter"
+          - "**[OSS] /var/log/suricata/stats.log** — 8초 주기"
+          - "**[OSS] suricatasc -c memcap-show** — flow/stream 메모리"
+          - "**[OSS] capture.kernel_drops vs decoder.pkts** — drop_rate 산정"
+          - "**[OSS] ring-size 상향 (8192)** — drop > 0 대응"
+          - "**[OSS] flow.tcp_reuse / ssn_memcap_drop** — TCP reassembly"
+          - "**[OSS] Wazuh agent 의 stats.log polling** — 자동 alert (W09)"
+          - "**[OSS] top + suricata CPU 사용량** — runmode 검토"
+    target_vm: ips
+
+  - order: 4
+    instruction: |
+      ## 🎯 MISSION — eve.json 8 event_type 별 jq pattern + flow_id 로 conn 통합
+
+      lecture §5 의 8 event_type 별 핵심 필드 jq 추출 + 같은 flow_id 의 모든 event 묶음
+      (한 conn 의 alert + http + flow 연결).
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 0. 새 HTTP 트래픽 발생 (분석 대상 확보)
+      for i in 1 2 3; do
+        docker exec el34-attacker sh -c "curl -s -o /dev/null -A 'TestUA/$i' -H 'Host: juice.6v6.lab' http://10.20.30.1/w04_test_$i"
+      done
+      sleep 4
+
+      # 1. event_type 분포 (최근 200 event)
+      docker exec el34-ips sh -c 'sudo tail -200 /var/log/suricata/eve.json | jq -r .event_type | sort | uniq -c | sort -rn'
+
+      # 2. HTTP event 의 핵심 필드
+      docker exec el34-ips sh -c 'sudo grep "\"event_type\":\"http\"" /var/log/suricata/eve.json | tail -1 | \
+          jq "{ts:.timestamp, url:.http.url, src:.src_ip,status:.http.status, ua:.http.http_user_agent}"'
+
+      # 3. TLS event 의 JA3 fingerprint
+      docker exec el34-ips sh -c 'sudo grep "\"event_type\":\"tls\"" /var/log/suricata/eve.json | tail -1 | \
+          jq "{sni:.tls.sni, ja3:.tls.ja3.hash, version:.tls.version}"'
+
+      # 4. flow event 의 양방향 bytes
+      docker exec el34-ips sh -c 'sudo grep "\"event_type\":\"flow\"" /var/log/suricata/eve.json | tail -1 | \
+          jq "{src:.src_ip, dst:.dest_ip, to_srv:.flow.bytes_toserver, to_cli:.flow.bytes_toclient, state:.flow.state}"'
+
+      # 5. 같은 flow_id 의 모든 event (한 conn 통합)
+      FLOW=$(docker exec el34-ips sh -c 'sudo tail -100 /var/log/suricata/eve.json | jq -r "select(.event_type==\"http\") | .flow_id" | tail -1')
+      echo "FLOW_ID=$FLOW"
+      docker exec el34-ips sh -c "sudo tail -500 /var/log/suricata/eve.json | jq -c 'select(.flow_id==$FLOW) | {ts:.timestamp, type:.event_type, iface:.in_iface}'"
+      ```
+
+      ## 📋 확인 사항 (실측)
+
+      - **명령 1**: 4+ event_type (flow 가 가장 많고 http / tls / alert / stats / fileinfo 등)
+      - **명령 2**: `{ts, url:"/w04_test_3", src:"10.20.30.202", status:200, ua:"TestUA/3"}`
+        - **src_ip** = 실제 attacker IP (el34 는 fw 가 SNAT 안 함 → 출처 보존, xff/HAProxy 불요)
+      - **명령 3**: `{sni:"...", ja3:"<32자 hash>", version:"TLS 1.3"}`
+      - **명령 4**: `{src, dst, to_srv:<bytes>, to_cli:<bytes>, state:"closed"}`
+      - **명령 5**: 같은 flow_id 의 event 2~5 개 (in_iface eth0 + eth1 둘 다 — 양 NIC sniff)
+
+      ## 💡 왜 이걸 하는가?
+
+      SOC 분석가의 일상 작업. 한 alert 의 context 를 알려면 flow_id 로 같은 conn 의 다른
+      event 추적이 필수. el34 는 `src_ip` 가 곧 실 client IP (출처 보존) 라 별도 xff 없이 바로 식별된다.
+
+      ## 🔍 결과 해석
+
+      - **정상**: 4+ event_type + src_ip 가 attacker IP (보존) + flow_id 매칭 2+
+      - **운영 활용**: alert 받으면 → flow_id 추출 → 같은 conn 의 http/tls/flow event 추적 →
+        full context 파악 → 5분 안에 IR 결정
+    hint: docker exec el34-ips sh -c 'sudo tail -200 /var/log/suricata/eve.json | jq -r .event_type | sort | uniq -c'
+    category: analysis
+    points: 18
+    answer: |
+      echo "=== 0. 새 트래픽 발생 ==="
+      for i in 1 2 3; do
+        docker exec el34-attacker sh -c "curl -s -o /dev/null -A 'TestUA/$i' -H 'Host: juice.6v6.lab' http://10.20.30.1/w04_test_$i"
+      done
+      sleep 4
+      echo
+      echo "=== 1. event_type 분포 ==="
+      docker exec el34-ips sh -c 'sudo tail -200 /var/log/suricata/eve.json | jq -r .event_type | sort | uniq -c | sort -rn'
+      echo
+      echo "=== 2. HTTP event ==="
+      docker exec el34-ips sh -c 'sudo grep "\"event_type\":\"http\"" /var/log/suricata/eve.json | tail -1 | jq "{ts:.timestamp, url:.http.url, src:.src_ip, status:.http.status, ua:.http.http_user_agent}"'
+      echo
+      echo "=== 3. TLS event ==="
+      docker exec el34-ips sh -c 'sudo grep "\"event_type\":\"tls\"" /var/log/suricata/eve.json | tail -1 | jq "{sni:.tls.sni, ja3:.tls.ja3.hash, version:.tls.version}"' 2>&1
+      echo
+      echo "=== 4. flow event ==="
+      docker exec el34-ips sh -c 'sudo grep "\"event_type\":\"flow\"" /var/log/suricata/eve.json | tail -1 | jq "{src:.src_ip, dst:.dest_ip, to_srv:.flow.bytes_toserver, to_cli:.flow.bytes_toclient, state:.flow.state}"'
+      echo
+      echo "=== 5. flow_id 매칭 ==="
+      FLOW=$(docker exec el34-ips sh -c 'sudo tail -100 /var/log/suricata/eve.json | jq -r "select(.event_type==\"http\") | .flow_id" | tail -1')
+      echo "FLOW_ID=$FLOW"
+      docker exec el34-ips sh -c "sudo tail -500 /var/log/suricata/eve.json | jq -c 'select(.flow_id==$FLOW) | {ts:.timestamp, type:.event_type, iface:.in_iface}'"
+    answer_detail: |
+      event_type 분포 + 4 type 별 jq pattern + flow_id 매칭. src_ip = 실제 attacker IP
+      (el34 출처 보존). flow_id 동일 event 가 2+ (양 NIC sniff).
+    verify:
+      type: output_contains
+      expect: flow_id
+      field: stdout
+      semantic:
+        intent: "eve.json 8 event_type + flow_id 추적"
+        success_criteria:
+          - "event_type 분포"
+          - "src_ip = attacker IP (보존)"
+          - "flow_id 매칭 event 2+"
+          - "TLS / flow event 핵심 필드"
+        acceptable_methods:
+          - "**[OSS] jq -r .event_type | sort | uniq -c** — 분포"
+          - "**[OSS] jq select + 필드 추출** — pattern"
+          - "**[OSS] src_ip** — el34 출처 보존, 실 client IP"
+          - "**[OSS] tls.ja3.hash + ja3s.hash** — TLS fingerprint"
+          - "**[OSS] flow.bytes_toserver / toclient** — 양방향 traffic"
+          - "**[OSS] flow_id 매칭** — 한 conn 통합"
+          - "**[OSS] in_iface 별 분포** — 양 NIC sniff 효과"
+          - "**[OSS] anomaly event** — decoder 비정상"
+    target_vm: ips
+
+  - order: 5
+    instruction: |
+      ## 🎯 MISSION — 새 alert 룰 작성 (sid 9004001 sqlmap UA) + reload + 트리거 + 검증
+
+      lecture §7 의 5분 cycle 전체 — `/etc/suricata/rules/local.rules` 에 새 룰 추가 →
+      `suricatasc -c reload-rules` (downtime 0) → curl 트리거 → eve.json 의 alert event
+      검증. 실패 시 트러블슈팅 (§9.1 rule-files 미등록).
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. 룰 append (>> 로 베이스 룰 보존, 기존 9004001 은 먼저 제거)
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules; sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert http any any -> any any (msg:\"el34 sqlmap UA detected\"; http.user_agent; content:\"sqlmap\"; nocase; classtype:web-application-attack; priority:2; sid:9004001; rev:1;)
+      EOF"'
+
+      # 2. 추가 확인 (베이스 1000001~ 도 유지)
+      docker exec el34-ips sh -c 'sudo cat /etc/suricata/rules/local.rules'
+
+      # 3. rule-files 등록 확인 (suricata.yaml 이미 local.rules 등록되어 있음)
+      docker exec el34-ips sh -c 'sudo grep "local.rules" /etc/suricata/suricata.yaml'
+
+      # 4. reload (downtime 0)
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+
+      # 5. 트리거 — sqlmap UA curl
+      sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.6v6.lab" http://10.20.30.1/'
+
+      # 6. eve.json 의 alert event 검증 (5초 후)
+      sleep 5
+      docker exec el34-ips sh -c 'sudo grep 9004001 /var/log/suricata/eve.json | tail -1 | jq .alert'
+
+      # 7. 트러블슈팅 — 룰 로드 카운트 (reload 가 성공했나)
+      docker exec el34-ips sh -c 'sudo grep "Loaded.*rules" /var/log/suricata/suricata.log | tail -3'
+      ```
+
+      ## 📋 확인 사항
+
+      - **명령 4 출력**: `{"message":"done","return":"OK"}`
+      - **명령 6 출력** (예상):
+        ```json
+        {
+          "action": "allowed",
+          "gid": 1,
+          "signature_id": 9004001,
+          "rev": 1,
+          "signature": "el34 sqlmap UA detected",
+          "category": "Web Application Attack",
+          "severity": 2
+        }
+        ```
+        - `action: "allowed"` — IDS 모드라 차단 안 함 (IPS 면 "blocked")
+        - `severity: 2` — priority:2 매핑
+      - **명령 7 출력**: `Loaded N rules` (N = 직전 reload 후 룰 카운트 + 1)
+
+      ## 💡 왜 이걸 하는가?
+
+      운영의 표준 룰 작성 사이클. 새 IOC 또는 신규 위협 시그니처 발견 시 5분 안에 적용
+      가능. reload-rules 가 downtime 0 → 운영 중 적용 가능.
+
+      ## 🔍 결과 해석 + 트러블슈팅
+
+      - **정상**: reload OK + alert event 1+ (양 NIC sniff 라 2+ 가능)
+      - **비정상 1 (rule-files 미등록)**:
+        - 증상: reload OK 지만 alert 없음
+        - 진단: `sudo cat /etc/suricata/suricata.yaml | grep local.rules` → 결과 없으면 등록 안 됨
+        - 해결: `sudo sed -i "/rule-files:/a\\  - local.rules" /etc/suricata/suricata.yaml` + reload
+      - **비정상 2 (sticky buffer 오타)**:
+        - 증상: reload OK 지만 룰 자체 load 실패
+        - 진단: `sudo grep "9004001" /var/log/suricata/suricata.log` 의 ERROR/WARN
+        - 해결: `http.user_agent` 가 Suricata 6 의 올바른 sticky buffer (5.x 는 `content + http_user_agent` 후위)
+      - **비정상 3 (in-flight pcap)**:
+        - 증상: reload 후 일정 시간 (수십 초) 동안 새 룰 매치 안 됨
+        - 원인: 진행 중 conn 은 옛 ruleset context. 새 conn 부터 새 룰 적용
+        - 해결: 새 curl 발생 (현재 lab 명령 5)
+    hint: 'sed -i "/sid:9004001/d" local.rules 후 >> 로 append → reload-rules → curl -A sqlmap → eve.json 9004001'
+    category: manipulation
+    points: 25
+    answer: |
+      echo "=== 1. local.rules 에 9004001 룰 append (베이스 룰 보존) ==="
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules; sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert http any any -> any any (msg:\"el34 sqlmap UA detected\"; http.user_agent; content:\"sqlmap\"; nocase; classtype:web-application-attack; priority:2; sid:9004001; rev:1;)
+      EOF"'
+      echo
+      echo "=== 2. 추가된 9004001 + 베이스(1000001~) 공존 확인 ==="
+      docker exec el34-ips sh -c 'sudo grep -oE "sid:(1000001|9004001)" /etc/suricata/rules/local.rules'
+      echo
+      echo "=== 3. rule-files 등록 ==="
+      docker exec el34-ips sh -c 'sudo grep "local.rules" /etc/suricata/suricata.yaml'
+      echo
+      echo "=== 4. reload ==="
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      sleep 2
+      echo
+      echo "=== 5. 트리거 ==="
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.6v6.lab" http://10.20.30.1/'
+      sleep 5
+      echo
+      echo "=== 6. alert event ==="
+      docker exec el34-ips sh -c 'sudo grep 9004001 /var/log/suricata/eve.json | tail -1 | jq .alert'
+      echo
+      echo "=== 7. 룰 로드 카운트 ==="
+      docker exec el34-ips sh -c 'sudo grep "Loaded.*rules" /var/log/suricata/suricata.log | tail -3'
+    answer_detail: |
+      9004001 룰 작성 (http.user_agent + content "sqlmap" + nocase) → reload OK →
+      curl 트리거 → alert event 적재 (severity 2, category Web Application Attack).
+      reload 가 downtime 0. 양 NIC sniff 라 alert 1-2 event.
+    verify:
+      type: output_contains
+      expect: '9004001'
+      field: stdout
+      semantic:
+        intent: "새 alert 룰 작성 + reload + 트리거 + 검증"
+        success_criteria:
+          - "local.rules 의 sid 9004001"
+          - "reload OK"
+          - "alert event 1+"
+          - "severity 2"
+          - "category Web Application Attack"
+        acceptable_methods:
+          - "**[OSS] /etc/suricata/rules/local.rules + http.user_agent + content** — 표준"
+          - "**[OSS] suricatasc -c reload-rules** — downtime 0"
+          - "**[OSS] suricata -T -S local.rules** — 사전 syntax 검증"
+          - "**[OSS] /var/log/suricata/fast.log** — 사람 친화 1줄 alert"
+          - "**[OSS] eve.json + jq select(.alert.signature_id==9004001)**"
+          - "**[OSS] reload 실패 시 suricata.log 의 ERROR 점검**"
+          - "**[OSS] sticky buffer 문법 (6.x: http.user_agent 전위)**"
+          - "**[OSS] threshold 룰 옵션 (W04 학습 예고)**"
+    cleanup: |
+      docker exec el34-ips sh -c "sudo sed -i '/sid:9004001/d' /etc/suricata/rules/local.rules" 2>/dev/null
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules' 2>/dev/null
+      true
+    target_vm: ips
+
+  - order: 6
+    instruction: |
+      ## 🎯 MISSION — 룰셋 구성 + suricata-update workflow
+
+      el34 의 Suricata 룰은 `local.rules`(사용자 정의) + `suricata.rules`(배포 룰셋) 두 파일로 구성된다
+      (rule-files 설정). 룰셋 갱신은 `suricata-update`(fetch→빌드→reload) 워크플로로 한다.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. rule-files 설정 — 어떤 룰 파일을 로드하나
+      docker exec el34-ips sh -c 'grep -A3 "^rule-files:" /etc/suricata/suricata.yaml'
+
+      # 2. 로드된 룰 수 (suricata.log)
+      docker exec el34-ips sh -c 'grep -iE "rule files processed|rules loaded" /var/log/suricata/suricata.log | tail -2'
+
+      # 3. suricata-update 등록 source (네트워크 — timeout 보호)
+      docker exec el34-ips sh -c 'timeout 20 sudo suricata-update list-sources 2>&1 | head -8 || echo "(skip)"'
+
+      # 4-5. 갱신 / 비활성 워크플로 (개념 — 실행 skip)
+      echo "  sudo suricata-update -q && sudo suricatasc -c reload-rules   # 갱신"
+      echo "  sudo suricata-update disable-sid <sid>                        # 특정 룰 비활성"
+      ```
+
+      ## 📋 확인 사항
+
+      - **명령 1**: `rule-files:` 에 `- local.rules` + `- suricata.rules` (el34 의 두 룰 파일)
+      - **명령 2**: 로드된 룰 수 (suricata.log 의 "rule files processed ... rules")
+      - **명령 3**: 등록 가능 source 목록 (et/open 등) — 네트워크 가능 시
+
+      ## 💡 왜 이걸 하는가?
+
+      Suricata 룰 운영 표준. 일반 운영자는 매일 fetch + reload 자동화 cron (새벽 4시) 으로
+      신규 위협 IOC 적용. 일부 카테고리 (ET POLICY / ET HUNTING) 는 false-positive 많아
+      disable 흔함.
+
+      ## 🔍 결과 해석 + 운영 권장
+
+      - **정상**: source 활성 + 카테고리 분포 출력
+      - **권장 1 (운영)**: 매일 04:00 cron — `suricata-update -q && suricatasc -c reload-rules`
+      - **권장 2 (사고 후)**: 신규 IOC 즉시 적용 — 수동 update 후 reload
+      - **권장 3 (오버헤드)**: 룰 75,000+ 환경에서 CPU 부담 시 ET POLICY / ET INFO /
+        ET HUNTING disable (10,000+ 룰 감소)
+      - **권장 4 (audit)**: `/etc/suricata/disable.conf` + `/etc/suricata/modify.conf` 를 git 추적
+    hint: docker exec el34-ips sh -c 'grep -A3 "^rule-files:" /etc/suricata/suricata.yaml' — local.rules + suricata.rules
+    category: ruleset
+    points: 12
+    answer: |
+      echo "=== 1. rule-files 설정 (로드 대상) ==="
+      docker exec el34-ips sh -c 'grep -A3 "^rule-files:" /etc/suricata/suricata.yaml'
+      echo
+      echo "=== 2. 로드된 룰 수 (suricata.log) ==="
+      docker exec el34-ips sh -c 'grep -iE "rule files processed|rules loaded|Loaded .* rules" /var/log/suricata/suricata.log | tail -2'
+      echo
+      echo "=== 3. suricata-update 등록 source (네트워크 — timeout 보호) ==="
+      docker exec el34-ips sh -c 'timeout 20 sudo suricata-update list-sources 2>&1 | head -8 || echo "(list-sources skip/offline)"'
+      echo
+      echo "=== 4-5. 갱신 / 비활성 워크플로 (개념 — 실행 skip) ==="
+      echo "  sudo suricata-update -q && sudo suricatasc -c reload-rules"
+      echo "  sudo suricata-update disable-sid <sid>"
+    answer_detail: |
+      el34 의 룰셋은 local.rules(사용자) + suricata.rules(배포)로 구성된다(rule-files). 룰 갱신은
+      suricata-update(fetch→빌드→reload) 워크플로로 하며, false-positive 많은 카테고리는 disable-sid 로 끈다.
+      (el34 는 ETOpen 전량이 아니라 curated 룰셋을 쓰므로 카테고리 분포는 환경마다 다르다.)
+    verify:
+      type: output_contains
+      expect: suricata.rules
+      field: stdout
+      semantic:
+        intent: "suricata-update workflow + 룰셋 구성(rule-files)"
+        success_criteria:
+          - "source 목록"
+          - "rule-files 의 local.rules + suricata.rules"
+          - "update / disable 명령 이해"
+        acceptable_methods:
+          - "**[OSS] suricata-update list-sources / list-enabled-sources**"
+          - "**[OSS] suricata-update -q** — fetch + 빌드"
+          - "**[OSS] disable-sid <sid> + enable-sid <sid>**"
+          - "**[OSS] /etc/suricata/disable.conf / modify.conf** — IaC"
+          - "**[OSS] cron 04:00 정기 update + reload** — 자동화"
+          - "**[OSS] git PR 의 disable.conf** — audit"
+          - "**[OSS] suricatasc -c ruleset-stats** — 로드 카운트 검증"
+          - "**[OSS] suricata-update enable-source et/pro <license>** — 상용 룰"
+    target_vm: ips
+
+  - order: 7
+    instruction: |
+      ## 🎯 MISSION — **R/B/P** sqlmap UA × 5 burst → 양 NIC alert count → threshold 권장
+
+      **Red** 가 attacker 에서 sqlmap UA 5회 burst → **Blue** 가 eve.json 의 9004001
+      alert 카운트 (5 ~ 10 예상, 양 NIC sniff) → **Purple** 이 false-positive 분석 +
+      threshold/suppression 권장 + cleanup.
+
+      ## 💻 사전 조건
+
+      STEP 5 의 9004001 룰이 활성 상태. 미활성이면 STEP 5 다시.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 0. 룰 활성 검증
+      docker exec el34-ips sh -c 'sudo grep -c "sid:9004001" /etc/suricata/rules/local.rules 2>/dev/null'
+      # 1 이면 OK, 0 이면 STEP 5 재실행
+
+      # 1. baseline — 현재 9004001 카운트
+      BEFORE=$(docker exec el34-ips sh -c 'sudo grep -c "9004001" /var/log/suricata/eve.json 2>/dev/null')
+      echo "baseline 9004001 카운트: $BEFORE"
+
+      # 2. Red — sqlmap UA 5 burst
+      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do
+          curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.6v6.lab" http://10.20.30.1/
+      done'
+      sleep 6
+
+      # 3. Blue — 9004001 카운트 변화
+      AFTER=$(docker exec el34-ips sh -c 'sudo grep -c "9004001" /var/log/suricata/eve.json 2>/dev/null')
+      DELTA=$((AFTER - BEFORE))
+      echo "after: $AFTER  delta: $DELTA"
+
+      # 4. Purple — alert 의 context (in_iface 분포)
+      echo "in_iface 분포 (양 NIC 효과):"
+      docker exec el34-ips sh -c 'sudo grep "9004001" /var/log/suricata/eve.json | tail -10 | jq -r .in_iface | sort | uniq -c'
+
+      # 5. Purple — 한 burst 의 정보 (src + url + xff + ua)
+      docker exec el34-ips sh -c 'sudo grep "9004001" /var/log/suricata/eve.json | tail -1 | \
+          jq "{ts:.timestamp, src:.src_ip, url:.http.url, src:.src_ip,ua:.http.http_user_agent, severity:.alert.severity}"'
+
+      # 6. Purple — threshold 권장 (실제 적용 안 함, 시뮬만)
+      echo "권장 threshold (event_filter, 60초 안 5건만):"
+      cat <<'EOF'
+      # /etc/suricata/threshold.config
+      event_filter gen_id 1, sig_id 9004001, type rate_filter, \
+          track by_src, count 5, seconds 60
+      EOF
+
+      # Cleanup (STEP 5 의 local.rules 도 함께)
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      ```
+
+      ## 📋 확인 사항
+
+      - **DELTA**: 5 ~ 10 (양 NIC sniff 효과 — 1 burst 가 1~2 alert 생성)
+      - **in_iface 분포**: `eth0` + `eth1` 모두 표시 (각각 5+ alert)
+      - **명령 5 출력**: `{ts, src:"10.20.30.202", url:"/", ua:"sqlmap/1.5", severity:2}`
+        - src 가 **실제 attacker IP (10.20.30.202)** — el34 는 fw 가 SNAT 하지 않아 출처 보존 (xff/HAProxy 불요)
+
+      ## 💡 왜 이걸 하는가?
+
+      Purple Team 표준 cycle — 룰 작성 후 운영 효과 측정. delta 가 5 미만 = sniff 누락 또는
+      reload 안 됨. delta 10 초과 = retry traffic 또는 양 NIC 외 추가 sniff.
+
+      ## 🔍 결과 해석 + 운영 권장
+
+      - **정상**: delta 5~10 + in_iface 균등 분포 + src 가 attacker IP (보존)
+      - **위험 — alert flood**: 만약 burst 가 1초에 100건이면 alert 도 200건 → SOC fatigue
+      - **권장 1**: threshold.config 의 `rate_filter` (60초 안 5건만)
+      - **권장 2**: 또는 룰 modifier `threshold:type both, track by_src, count 5, seconds 60`
+      - **권장 3**: production 의 `event_filter` 가 외부 통제 → 룰 수정 없이 변경 가능 (정석)
+    hint: 'docker exec el34-attacker sh -c "for i in 1 2 3 4 5; do curl -A sqlmap ...; done"; docker exec el34-ips grep -c 9004001 eve.json'
+    category: redblue
+    points: 25
+    answer: |
+      echo "=== 0. 룰 활성 확인 ==="
+      docker exec el34-ips sh -c 'sudo grep -c "sid:9004001" /etc/suricata/rules/local.rules 2>/dev/null'
+      echo
+      echo "=== 1. baseline ==="
+      BEFORE=$(docker exec el34-ips sh -c 'sudo grep -c "9004001" /var/log/suricata/eve.json 2>/dev/null')
+      echo "baseline: $BEFORE"
+      echo
+      echo "=== 2. Red 5 burst ==="
+      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.6v6.lab" http://10.20.30.1/; done'
+      sleep 6
+      echo
+      echo "=== 3. Blue 카운트 ==="
+      AFTER=$(docker exec el34-ips sh -c 'sudo grep -c "9004001" /var/log/suricata/eve.json 2>/dev/null')
+      echo "after: $AFTER  delta: $((AFTER - BEFORE))"
+      echo
+      echo "=== 4. Purple — in_iface 분포 ==="
+      docker exec el34-ips sh -c 'sudo grep "9004001" /var/log/suricata/eve.json | tail -10 | jq -r .in_iface | sort | uniq -c'
+      echo
+      echo "=== 5. Purple — alert context ==="
+      docker exec el34-ips sh -c 'sudo grep "9004001" /var/log/suricata/eve.json | tail -1 | jq "{ts:.timestamp, src:.src_ip, url:.http.url, src:.src_ip,ua:.http.http_user_agent, severity:.alert.severity}"'
+      echo
+      echo "=== 6. Purple — threshold 권장 (시뮬) ==="
+      cat <<'EOF'
+      # /etc/suricata/threshold.config
+      event_filter gen_id 1, sig_id 9004001, type rate_filter, track by_src, count 5, seconds 60
+      EOF
+      echo
+      echo "=== Cleanup ==="
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+    answer_detail: |
+      Red 5 burst → 5~10 alert (양 NIC). in_iface eth0 + eth1 균등. src=fw IP, xff=attacker.
+      severity 2. threshold 권장 — event_filter rate_filter (track by_src, 60s 5건).
+    verify:
+      type: output_contains
+      expect: delta
+      field: stdout
+      semantic:
+        intent: "R/B/P — 5 burst → 10 alert + threshold 권장"
+        success_criteria:
+          - "delta 5~10"
+          - "in_iface 양 NIC"
+          - "xff = attacker IP"
+          - "threshold 권장"
+        acceptable_methods:
+          - "**[OSS] 5 burst curl** — Red"
+          - "**[OSS] grep -c 9004001 eve.json** — Blue 카운트"
+          - "**[OSS] jq + alert context** — Purple 분석"
+          - "**[OSS] in_iface 별 분포** — 양 NIC 효과"
+          - "**[OSS] event_filter rate_filter** — alert flood 차단"
+          - "**[OSS] threshold modifier** — 룰 자체 포함"
+          - "**[OSS] suppression** — 특정 src 무조건 차단"
+          - "**[OSS] Wazuh dashboard 의 burst 시각화** (W09)"
+        negative_signs:
+          - "delta < 5 (sniff 누락 또는 reload 실패)"
+          - "in_iface 1개만 (양 NIC capture 실패)"
+    cleanup: |
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules' 2>/dev/null
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules' 2>/dev/null
+      true
+    target_vm: bastion
+
+  - order: 8
+    instruction: |
+      ## 🎯 MISSION — 트러블슈팅 시뮬 (lecture §9.1 rule-files 미등록)
+
+      lecture §9 의 4 패턴 중 가장 흔한 **rule-files 미등록** 시뮬. 일부러 wrong 경로로
+      룰 추가 → reload 후 alert 안 발생 → suricata.log 의 error 확인 → 복구.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. wrong 경로로 룰 작성 (rule-files 에 등록 안 된 경로)
+      docker exec el34-ips sh -c 'sudo bash -c "cat > /tmp/wrong_path.rules <<EOF
+      alert http any any -> any any (msg:\"el34 wrong path test\"; http.user_agent; content:\"WrongPathTest\"; nocase; sid:9004099; rev:1;)
+      EOF"'
+
+      # 2. reload (wrong 경로라 적용 안 됨)
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+
+      # 3. 트리거 (alert 안 발생할 것)
+      sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "WrongPathTest/1.0" -H "Host: juice.6v6.lab" http://10.20.30.1/'
+      sleep 4
+
+      # 4. 결과 — alert 없음 (예상)
+      echo "9004099 alert 카운트 (0 이 예상):"
+      docker exec el34-ips sh -c 'sudo grep -c "9004099" /var/log/suricata/eve.json 2>/dev/null'
+
+      # 5. 진단 — suricata.log 의 룰 로드 라인
+      docker exec el34-ips sh -c 'sudo tail -20 /var/log/suricata/suricata.log | grep -E "rule|Loaded|ERROR|WARN" | tail -5'
+      docker exec el34-ips sh -c 'sudo grep "9004099" /var/log/suricata/suricata.log | tail -3'    # 비어 있을 것
+
+      # 6. 복구 — 올바른 경로에 추가
+      docker exec el34-ips sh -c 'sudo bash -c "cat /tmp/wrong_path.rules >> /etc/suricata/rules/local.rules"'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+
+      # 7. 재 트리거 + 검증
+      sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "WrongPathTest/1.0" -H "Host: juice.6v6.lab" http://10.20.30.1/'
+      sleep 4
+      echo "9004099 alert 카운트 (1+ 가 정상):"
+      docker exec el34-ips sh -c 'sudo grep -c "9004099" /var/log/suricata/eve.json 2>/dev/null'
+
+      # Cleanup
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9004099/d" /etc/suricata/rules/local.rules; sudo rm -f /tmp/wrong_path.rules'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      ```
+
+      ## 📋 확인 사항
+
+      - **명령 4** (잘못된 경로): `0` (alert 없음 — 룰 로드 안 됨)
+      - **명령 5**: suricata.log 에 9004099 흔적 없음 (룰 자체 로드 안 됨)
+      - **명령 6**: 올바른 경로로 cp + reload
+      - **명령 7**: `1+` alert 발생 (복구 검증)
+
+      ## 💡 왜 이걸 하는가?
+
+      운영 중 가장 흔한 실수. wrong 경로 / rule-files 미등록 / 권한 오류 → 룰 silent fail.
+      진단 첫 명령은 항상 `suricata.log` 의 `Loaded ... rules` 카운트 + ERROR/WARN 라인.
+
+      ## 🔍 결과 해석 + 4 패턴 트러블슈팅
+
+      - **패턴 1 (시뮬)**: rule-files 미등록 / wrong 경로 → `Loaded N rules` 그대로(변화 없음)
+        (변화 없음) + alert 없음
+      - **패턴 2**: sticky buffer 오타 → `Loaded 65899 rules` 증가하나 매치 실패 →
+        `suricata.log` 에 `Error parsing signature` 라인
+      - **패턴 3**: capture drop > 0 → `dump-counters` 의 `kernel_drops` 증가 → ring-size
+        상향 또는 룰 disable
+      - **패턴 4**: TCP reassembly memcap → `dump-counters` 의 `tcp.ssn_memcap_drop` 증가
+        → `stream.memcap` 상향
+    hint: 'wrong 경로 룰 → reload → alert 없음 → suricata.log 점검 → 복구'
+    category: troubleshooting
+    points: 15
+    answer: |
+      echo "=== 1. wrong 경로 룰 작성 ==="
+      docker exec el34-ips sh -c 'sudo bash -c "cat > /tmp/wrong_path.rules <<EOF
+      alert http any any -> any any (msg:\"el34 wrong path test\"; http.user_agent; content:\"WrongPathTest\"; nocase; sid:9004099; rev:1;)
+      EOF"'
+      echo
+      echo "=== 2. reload (적용 안 됨) ==="
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      sleep 2
+      echo
+      echo "=== 3-4. 트리거 + alert 없음 검증 ==="
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "WrongPathTest/1.0" -H "Host: juice.6v6.lab" http://10.20.30.1/'
+      sleep 4
+      echo "9004099 카운트 (0 예상):"
+      docker exec el34-ips sh -c 'sudo grep -c "9004099" /var/log/suricata/eve.json 2>/dev/null'
+      echo
+      echo "=== 5. suricata.log 진단 ==="
+      docker exec el34-ips sh -c 'sudo tail -20 /var/log/suricata/suricata.log | grep -E "rule|Loaded|ERROR|WARN" | tail -5'
+      echo
+      echo "=== 6. 복구 — 올바른 경로 ==="
+      docker exec el34-ips sh -c 'sudo bash -c "cat /tmp/wrong_path.rules >> /etc/suricata/rules/local.rules"'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "WrongPathTest/1.0" -H "Host: juice.6v6.lab" http://10.20.30.1/'
+      sleep 4
+      echo "9004099 카운트 (1+ 정상):"
+      docker exec el34-ips sh -c 'sudo grep -c "9004099" /var/log/suricata/eve.json 2>/dev/null'
+      echo
+      echo "=== Cleanup ==="
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9004099/d" /etc/suricata/rules/local.rules; sudo rm -f /tmp/wrong_path.rules'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+    answer_detail: |
+      wrong 경로 룰 → reload → alert 없음 (예상) → suricata.log 에 흔적 없음 (룰 로드 안
+      됨) → 올바른 경로로 cp → reload → 트리거 → alert 1+ (복구 검증). 4 패턴 중 가장
+      흔한 운영 실수.
+    verify:
+      type: output_contains
+      expect: '9004099'
+      field: stdout
+      semantic:
+        intent: "트러블슈팅 — rule-files 미등록 → 복구"
+        success_criteria:
+          - "wrong 경로 룰 작성"
+          - "reload 후 alert 없음"
+          - "복구 후 alert 1+"
+        acceptable_methods:
+          - "**[OSS] suricata.log 의 Loaded N rules 카운트 비교**"
+          - "**[OSS] suricata.log 의 ERROR/WARN grep**"
+          - "**[OSS] suricatasc -c ruleset-stats** — 로드 검증"
+          - "**[OSS] /etc/suricata/suricata.yaml rule-files 검토**"
+          - "**[OSS] default-rule-path 의 절대 경로 확인**"
+          - "**[OSS] suricata -T -S <file>** — 사전 syntax test"
+          - "**[OSS] suricata -V** — 빌드 옵션"
+          - "**[OSS] git diff 의 IaC 변경 audit**"
+    cleanup: |
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9004099/d" /etc/suricata/rules/local.rules; sudo rm -f /tmp/wrong_path.rules' 2>/dev/null
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules' 2>/dev/null
+      true
+    target_vm: ips
+
+  - order: 9
+    instruction: |
+      ## 🎯 MISSION — Wazuh agent ship 검증 (W09 예고)
+
+      ips 의 Wazuh agent 가 eve.json 을 manager 로 ship 하는지 빠른 확인. 본 lab 은
+      ship 자체보다 ship 동작 검증 + W09 학습 logical flow.
+
+      ## 💻 실행 명령
+
+      ```bash
+      # 1. ips 의 Wazuh agent 상태
+      docker exec el34-ips sh -c 'sudo /var/ossec/bin/agent_control -i 2>&1 | head -10'
+      docker exec el34-ips sh -c 'sudo /var/ossec/bin/wazuh-control status 2>&1 | head -5'
+
+      # 2. agent.conf 의 eve.json 모니터링 설정
+      docker exec el34-ips sh -c 'sudo cat /var/ossec/etc/ossec.conf | grep -A3 "suricata" | head -15'
+
+      # 3. agent 의 logcollector 상태
+      docker exec el34-ips sh -c 'sudo cat /var/ossec/logs/ossec.log | grep -iE "suricata|eve" | tail -3'
+
+      # 4. manager 에서 ips agent 의 활성 통계
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -lc 2>&1 | grep -i ips | head -3'
+
+      # 5. manager 에서 최근 alert (Suricata 출처)
+      docker exec el34-siem sh -c 'sudo tail -100 /var/ossec/logs/alerts/alerts.log 2>/dev/null | grep -i "suricata\|Suricata" | tail -5'
+      ```
+
+      ## 📋 확인 사항
+
+      - **명령 1**: agent 가 Active 상태 + 11+ daemon running
+      - **명령 2**: ossec.conf 에 `<location>/var/log/suricata/eve.json</location>` 라인
+      - **명령 3**: agent 가 eve.json 모니터링 시작 메시지
+      - **명령 4**: manager 에서 ips agent 가 Active 표시
+      - **명령 5**: alerts.log 에 Suricata 출처 alert (있다면)
+
+      ## 💡 왜 이걸 하는가?
+
+      eve.json 이 ips 의 로컬 파일만 남으면 운영 가시성 부족. Wazuh agent → manager →
+      dashboard 로 통합되어야 SOC 의 단일 콘솔에서 모든 alert 분석 가능. W09 의 본격 통합
+      전 ship 동작 사전 점검.
+
+      ## 🔍 결과 해석
+
+      - **정상**: agent Active + ossec.conf 의 eve.json 모니터링 + manager 에서 ips 보임
+      - **비정상**: agent Inactive → `wazuh-control restart` + manager 키 재발급
+      - **비정상**: ossec.conf 에 eve.json 미설정 → W09 에서 설정
+    hint: docker exec el34-ips sh -c 'sudo /var/ossec/bin/wazuh-control status'
+    category: integration
+    points: 10
+    answer: |
+      echo "=== 1. ips agent 상태 ==="
+      docker exec el34-ips sh -c 'sudo /var/ossec/bin/agent_control -i 2>&1 | head -10'
+      docker exec el34-ips sh -c 'sudo /var/ossec/bin/wazuh-control status 2>&1 | head -5'
+      echo
+      echo "=== 2. ossec.conf 의 eve.json ==="
+      docker exec el34-ips sh -c 'sudo cat /var/ossec/etc/ossec.conf | grep -A3 "suricata" | head -15'
+      echo
+      echo "=== 3. agent log ==="
+      docker exec el34-ips sh -c 'sudo cat /var/ossec/logs/ossec.log | grep -iE "suricata|eve" | tail -3'
+      echo
+      echo "=== 4. manager 의 ips ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -lc 2>&1 | grep -i ips | head -3'
+      echo
+      echo "=== 5. alerts.log Suricata ==="
+      docker exec el34-siem sh -c 'sudo tail -100 /var/ossec/logs/alerts/alerts.log 2>/dev/null | grep -i "suricata" | tail -5'
+    answer_detail: |
+      ips 의 Wazuh agent 가 eve.json 을 ship → manager 의 alerts.log + dashboard 적재.
+      ossec.conf 의 localfile 설정 + agent Active + manager 에서 ips agent 가 보여야 함.
+      W09 에서 본격 통합.
+    verify:
+      type: output_contains
+      expect: ossec
+      field: stdout
+      semantic:
+        intent: "Wazuh agent ship 검증 (W09 예고)"
+        success_criteria:
+          - "wazuh agent Active"
+          - "ossec.conf 의 eve.json"
+          - "manager 에서 ips 보임"
+        acceptable_methods:
+          - "**[OSS] /var/ossec/bin/wazuh-control status** — 데몬"
+          - "**[OSS] /var/ossec/bin/agent_control -i** — agent info"
+          - "**[OSS] ossec.conf 의 <localfile>** — eve.json 모니터링"
+          - "**[OSS] ossec.log 의 시작 라인** — 모니터링 활성 확인"
+          - "**[OSS] manager 의 agent_control -lc** — 통신 통계"
+          - "**[OSS] alerts.log + alerts.json** — manager 의 통합 alert"
+          - "**[OSS] dashboard 의 Suricata visualization** (W09)"
+          - "**[OSS] /var/ossec/queue/agentd/ — ship buffer**"
+    target_vm: ips
+
+  - order: 10
+    instruction: |
+      ## 🎯 MISSION — W03 종합 보고서 (9 step + R/B/P + 트러블슈팅 + 운영 권장)
+
+      STEP 1-9 결과 + R/B/P 측정 + 트러블슈팅 결과 + W04 준비도를 종합한 1페이지
+      Markdown 보고서.
+
+      ## 💻 산출물 형식
+
+      ```markdown
+      # el34 W03 Suricata IDS 보고서 (학번, 이름)
+
+      ## 1. STEP 1-9 결과 표
+      | Step | 영역 | 결과 | 핵심 출력 |
+      |------|------|------|----------|
+      | 1 | 데몬 + 두 NIC + version | pass | Suricata 6.0.4 + uptime + iface-list |
+      | 2 | suricata.yaml 4 키 + syntax | pass | af-packet/rule-files/eve-log/HOME_NET |
+      | 3 | drop rate + stats | pass | drop_rate 0% |
+      | 4 | eve.json 8 type + flow_id | pass | 4+ type, flow_id 매칭 2+ |
+      | 5 | 새 alert 룰 9004001 | pass | reload OK + alert event |
+      | 6 | 룰셋 구성 + suricata-update | pass | local.rules + suricata.rules |
+      | 7 | R/B/P 5 burst | pass | delta 5~10, in_iface 양분 |
+      | 8 | 트러블슈팅 wrong path | pass | 적용 안 됨 → 복구 |
+      | 9 | Wazuh agent ship | pass | ossec.conf 설정 |
+
+      ## 2. R/B/P 핵심 측정 (STEP 7)
+      | 측정 | 값 |
+      | baseline 9004001 | N |
+      | 5 burst 후 alert | N+5~N+10 |
+      | in_iface 분포 | eth0 5+ / eth1 5+ |
+      | xff (실 client IP) | 10.20.30.202 |
+
+      ## 3. 운영 권장 5
+      1. threshold.config 의 event_filter (rate_filter / suppression)
+      2. suricata-update 자동 cron (04:00 daily)
+      3. drop_rate 0% 모니터링 + 임계 alert
+      4. local.rules + disable.conf git audit
+      5. ET POLICY / ET HUNTING / ET INFO 카테고리 검토 (false-positive 다수)
+
+      ## 4. 트러블슈팅 (STEP 8)
+      wrong 경로 룰 → suricata.log 의 Loaded N rules 카운트 비교 → 복구 1 cycle.
+
+      ## 5. W05 (룰 작성 심화) 준비도
+      - pcre / fast_pattern 이해 (정규식 + first-cut content)
+      - flowbits 의 다단계 공격 추적
+      - threshold modifier (룰 자체 포함) vs event_filter (외부 통제)
+      - 본인 gap: 룰셋의 ja3 / dns / smb 룰 패턴
+
+      ## 6. 본인 학습 gap
+      ...
+      ```
+
+      ## 📋 확인 사항
+
+      - 6 섹션 모두 작성
+      - 9 step 결과 표 완성
+      - R/B/P 측정값 정확
+      - 운영 권장 5
+      - W05 준비도 + 본인 gap
+
+      ## 💡 왜 이걸 하는가?
+
+      Suricata 운영 audit 표준. git PR 첨부 + 분기 검토.
+
+      ## 🔍 결과 해석
+
+      - **A**: 6 섹션 + 9 step 표 + R/B/P + 운영 권장 5 + gap
+      - **C**: 일부 누락 → 재제출
+    hint: 마크다운 1페이지
+    category: synthesis
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # el34 W03 Suricata IDS 보고서
+
+      ## 1. STEP 1-9 결과
+      (9 step 표)
+
+      ## 2. R/B/P (STEP 7)
+      Red 5 burst → delta 5~10, in_iface 균등, xff 가 attacker IP
+
+      ## 3. 운영 권장 5
+      threshold / cron update / drop_rate alert / git audit / 카테고리 검토
+
+      ## 4. 트러블슈팅 (STEP 8)
+      wrong path → suricata.log 카운트 비교 → 복구
+
+      ## 5. W05 준비도 + 6. gap
+      EOF
+    answer_detail: 1페이지 종합 보고서
+    verify:
+      type: output_contains
+      expect: Suricata
+      field: stdout
+      semantic:
+        intent: "W04 종합"
+        success_criteria:
+          - "9 step 표"
+          - "R/B/P 측정"
+          - "운영 권장 5"
+          - "트러블슈팅"
+          - "W05 준비도"
+        acceptable_methods:
+          - "**[관리적] 마크다운 표 + 6 섹션**"
+          - "**[관리적] ISMS-P 2.6.4 매핑**"
+          - "**[관리적] NIST DE.CM-1 (Network monitoring)**"
+          - "**[관리적] MITRE ATT&CK 매핑 (룰의 TTP)**"
+          - "**[관리적] alert fatigue + SOC tier 분석**"
+          - "**[관리적] 운영 권장 5+ (threshold / suppression / disable.conf / 9M+ sid / git audit)**"
+          - "**[관리적] W05 (룰 작성 심화) logical flow**"
+          - "**[관리적] 본인 학습 gap 자가 진단**"
+    target_vm: ips
