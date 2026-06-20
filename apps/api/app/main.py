@@ -16,7 +16,7 @@ from .db import Base, SessionLocal, engine
 from .models import Battle, User
 from .routers import (
     admin, auth, cohorts, feedback, graders, infras, battles, initiative, leaderboard, llm, me,
-    monitoring, scenarios, users,
+    monitoring, scenarios, training, users,
 )
 from .schema_upgrade import ensure_added_columns
 from .security import hash_password
@@ -121,3 +121,4 @@ app.include_router(admin.router)
 app.include_router(me.router)
 app.include_router(llm.router)
 app.include_router(initiative.router)
+app.include_router(training.router)

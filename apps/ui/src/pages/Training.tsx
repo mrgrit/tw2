@@ -1,0 +1,114 @@
+import React, { useEffect, useState } from 'react'
+import { api } from '../api.ts'
+import Markdown from '../components/Markdown.tsx'
+
+interface WeekInfo { week: number; lecture: boolean; lab: boolean }
+interface TrackInfo { track: string; label: string; weeks: WeekInfo[] }
+interface LabStep { order: number; instruction?: string; [k: string]: unknown }
+interface Lab { lab_id?: string; title?: string; description?: string; objectives?: string[]; steps?: LabStep[] }
+
+const cardStyle: React.CSSProperties = {
+  textAlign: 'left', padding: '12px 14px', background: 'var(--bg-2)',
+  border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', color: 'var(--fg)',
+}
+const w2 = (n: number): string => String(n).padStart(2, '0')
+
+export default function Training(): React.ReactElement {
+  const [tracks, setTracks] = useState<TrackInfo[]>([])
+  const [track, setTrack] = useState<TrackInfo | null>(null)
+  const [week, setWeek] = useState<number | null>(null)
+  const [tab, setTab] = useState<'lecture' | 'lab'>('lecture')
+  const [lecture, setLecture] = useState('')
+  const [lab, setLab] = useState<Lab | null>(null)
+  const [err, setErr] = useState('')
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    void (async () => {
+      setLoading(true); setErr('')
+      try { setTracks(await api<TrackInfo[]>('/training')) }
+      catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+      finally { setLoading(false) }
+    })()
+  }, [])
+
+  async function openWeek(t: TrackInfo, w: WeekInfo): Promise<void> {
+    setWeek(w.week); setTab(w.lecture ? 'lecture' : 'lab'); setLecture(''); setLab(null); setErr('')
+    try {
+      if (w.lecture) setLecture((await api<{ markdown: string }>(`/training/${t.track}/lecture/${w.week}`)).markdown)
+      if (w.lab) setLab(await api<Lab>(`/training/${t.track}/lab/${w.week}`))
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)) }
+  }
+
+  // ── 주차 상세 (강의/실습) ──
+  if (track && week != null) {
+    return (
+      <>
+        <button onClick={() => { setWeek(null); setLab(null); setLecture('') }} style={{ marginBottom: 12 }}>← {track.label} 주차 목록</button>
+        <h1 style={{ color: 'var(--primary)' }}>{track.label} — Week {w2(week)}</h1>
+        <div className="row" style={{ gap: 8, marginBottom: 12 }}>
+          {lecture && <button onClick={() => setTab('lecture')} style={{ fontWeight: tab === 'lecture' ? 700 : 400 }}>📖 강의</button>}
+          {lab && <button onClick={() => setTab('lab')} style={{ fontWeight: tab === 'lab' ? 700 : 400 }}>🧪 실습</button>}
+        </div>
+        {err && <div style={{ color: 'var(--danger)' }}>{err}</div>}
+        {tab === 'lecture' && lecture && <div className="card"><Markdown text={lecture} /></div>}
+        {tab === 'lab' && lab && (
+          <div className="card">
+            <h2 style={{ marginTop: 0 }}>{lab.title}</h2>
+            {lab.description && <Markdown text={lab.description} />}
+            {lab.objectives && lab.objectives.length > 0 && (
+              <>
+                <h4>학습 목표</h4>
+                <ul>{lab.objectives.map((o, i) => <li key={i}>{o}</li>)}</ul>
+              </>
+            )}
+            {(lab.steps || []).map((s, i) => (
+              <div key={i} style={{ borderTop: '1px solid var(--border)', paddingTop: 10, marginTop: 10 }}>
+                <Markdown text={s.instruction || `(step ${s.order})`} />
+              </div>
+            ))}
+          </div>
+        )}
+      </>
+    )
+  }
+
+  // ── 트랙의 주차 목록 ──
+  if (track) {
+    return (
+      <>
+        <button onClick={() => setTrack(null)} style={{ marginBottom: 12 }}>← 트랙 목록</button>
+        <h1 style={{ color: 'var(--primary)' }}>{track.label} <span style={{ fontSize: 14, color: 'var(--fg-dim)' }}>({track.track})</span></h1>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
+          {track.weeks.map(w => (
+            <button key={w.week} onClick={() => void openWeek(track, w)} style={{ ...cardStyle, minWidth: 150 }}>
+              <div style={{ fontWeight: 700 }}>Week {w2(w.week)}</div>
+              <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 4 }}>
+                {w.lecture ? '📖 강의 ' : ''}{w.lab ? '🧪 실습' : ''}
+              </div>
+            </button>
+          ))}
+        </div>
+      </>
+    )
+  }
+
+  // ── 트랙 목록 ──
+  return (
+    <>
+      <h1 style={{ color: 'var(--primary)' }}>Training</h1>
+      <p style={{ color: 'var(--fg-dim)' }}>강의(이론) + 실습(lab) 트레이닝 콘텐츠. el34 인프라 기반.</p>
+      {loading && <div>로딩...</div>}
+      {err && <div style={{ color: 'var(--danger)' }}>{err}</div>}
+      {!loading && tracks.length === 0 && <div style={{ color: 'var(--fg-dim)' }}>아직 등록된 트레이닝 콘텐츠가 없습니다.</div>}
+      <div className="row" style={{ flexWrap: 'wrap', gap: 12, marginTop: 16 }}>
+        {tracks.map(t => (
+          <button key={t.track} onClick={() => setTrack(t)} style={{ ...cardStyle, minWidth: 200 }}>
+            <div style={{ fontWeight: 700, fontSize: 16 }}>{t.label}</div>
+            <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 6 }}>{t.weeks.length}개 주차 · {t.track}</div>
+          </button>
+        ))}
+      </div>
+    </>
+  )
+}

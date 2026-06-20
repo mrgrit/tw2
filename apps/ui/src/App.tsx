@@ -9,6 +9,7 @@ import MyWork from './pages/MyWork.tsx'
 import Leaderboard from './pages/Leaderboard.tsx'
 import Admin from './pages/Admin.tsx'
 import Initiative from './pages/Initiative.tsx'
+import Training from './pages/Training.tsx'
 import Profile from './pages/Profile.tsx'
 import AskAI from './components/AskAI.tsx'
 import { getUser, isAdmin, isAuthed, logout } from './auth.ts'
@@ -30,6 +31,7 @@ function NavBar() {
         onClick={() => window.dispatchEvent(new Event('tubewar:battle:reset'))}>
         공방전
       </Link>
+      <Link to="/training">트레이닝</Link>
       <Link to="/mywork">내 워크북</Link>
       <Link to="/leaderboard">리더보드</Link>
       <Link to="/initiative">이니셔티브</Link>
@@ -71,6 +73,7 @@ export default function App() {
           <Route path="/mywork"      element={<RequireAuth><MyWork /></RequireAuth>} />
           <Route path="/leaderboard" element={<RequireAuth><Leaderboard /></RequireAuth>} />
           <Route path="/initiative"  element={<RequireAuth><Initiative /></RequireAuth>} />
+          <Route path="/training"    element={<RequireAuth><Training /></RequireAuth>} />
           <Route path="/admin"       element={<RequireAdmin><Admin /></RequireAdmin>} />
         </Routes>
       </main>
