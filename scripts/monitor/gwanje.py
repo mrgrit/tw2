@@ -238,6 +238,20 @@ def assessor_health():
     return eps
 
 
+def wazuh_activity():
+    """el34 Wazuh(실습 텔레메트리) 활동 — 실습(training)은 tw2 세션리스라 이게 사실상 유일한
+    학생활동 신호. GWANJE_WAZUH!=0 이면 wazuh_probe.collect()로 끌어온다(SSH·검수용).
+    실패는 graceful(절대 raise 안 함) — 무료 deterministic 기본 흐름을 깨지 않는다."""
+    if os.environ.get("GWANJE_WAZUH", "1").lower() in ("0", "false", "no"):
+        return {"_disabled": True}
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import wazuh_probe  # 동일 디렉터리
+        return wazuh_probe.collect(timeout=8)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def systemd_status():
     """tw2 는 비-systemd(포그라운드)일 수 있으므로 존재하지 않는 유닛은 'n/a'(거짓 down 금지).
     실제 유닛이 있으면 그 활성상태를 본다. 후보 유닛은 env TW2_UNITS 로 덮어쓸 수 있다."""
@@ -373,6 +387,7 @@ def main():
     svc = systemd_status()
     api_st, api_h = http_json(API + "/health")
     assessor = assessor_health()  # 시나리오 모니터링 라이브 증거원 도달성
+    wazuh = wazuh_activity()       # 실습(lab) 활동 — el34 Wazuh(세션리스 실습의 유일 신호)
 
     # ── 고아 배틀 탐지(active > 6h) + admin 엔드포인트 검증 ──
     orphans, new_orphans = [], []
@@ -442,6 +457,17 @@ def main():
         add(5, f"⚠Assessor 다운→라이브 모니터 불능(monitor배틀 {len(monitored_active)})")
     elif assessor_down:
         add(2, "Assessor 다운(활성 monitor배틀 없음)")
+    # el34 Wazuh 실습 활동 — 실습은 tw2 세션리스라 신규 alert/새 공격 시그니처가 유일한 활동 신호.
+    wz_new_sigs = []
+    if isinstance(wazuh, dict) and wazuh.get("ok"):
+        wz_prev_total = cur.get("wazuh_total", 0)
+        wz_growth = (wazuh.get("total") or 0) - wz_prev_total if wz_prev_total else 0
+        wz_new_sigs = sorted(set(wazuh.get("attack_sigs", [])) - set(cur.get("wazuh_sigs", []))) \
+            if cur.get("wazuh_sigs") else []
+        if not baseline and wz_growth > 0:
+            add(min(wz_growth // 5, 3), f"실습 Wazuh +{wz_growth}건")
+        if not baseline and wz_new_sigs:
+            add(4, f"⚠실습 새 공격 시그니처 {len(wz_new_sigs)}: {wz_new_sigs[:3]}")
 
     heartbeat_min = 25
     last_report = cur.get("last_report_kst")
@@ -463,9 +489,11 @@ def main():
             "activity_by_student": act_student, "submission_status": sub_status,
             "stuck_pending": sp, "new_submissions": new_subs, "new_feedback": new_fb,
             "progress": prog, "admin_probe": probe, "siem_delta": idx_delta, "siem_total": idx,
-            "journal": jl, "salience": sal, "salience_why": why,
+            "journal": jl, "wazuh": wazuh, "wazuh_new_sigs": wz_new_sigs,
+            "salience": sal, "salience_why": why,
             "heartbeat_due": hb_due, "should_report": should_report}
 
+    wz_ok = isinstance(wazuh, dict) and wazuh.get("ok")
     # 커서 저장
     json.dump({"last_event_id": max_ev, "last_activity_id": max_act,
                "last_submission_id": max_sub, "last_feedback_id": max_fb,
@@ -476,7 +504,10 @@ def main():
                "seen_scenarios": sorted(set(list(cur.get("seen_scenarios", [])) + scen_now)),
                "seen_fail_sigs": fail_sigs,
                "flagged_orphans": sorted(set(list(flagged) + [o["battle_id"] for o in orphans])),
-               "siem": idx if "_error" not in idx else prev_idx},
+               "siem": idx if "_error" not in idx else prev_idx,
+               "wazuh_total": (wazuh.get("total") if wz_ok else cur.get("wazuh_total", 0)),
+               "wazuh_sigs": sorted(set(list(cur.get("wazuh_sigs", []))
+                                        + (wazuh.get("attack_sigs", []) if wz_ok else [])))},
               open(CURSOR, "w"), ensure_ascii=False)
 
     ai = ai_summarize(snap, AGENT, MODEL)
@@ -499,6 +530,12 @@ def main():
     P(f"╔══ 관제 {snap['ts_kst']} KST {'[BASELINE]' if baseline else ''} ══")
     P(f"║ 스택: API={api_st} {'OK' if api_st==200 else '⚠'} | svc {'all-active' if not bad_svc else '⚠'+str(bad_svc)} | SIEM(중앙OS)={'OK' if ('_error' not in idx and '_disabled' not in idx) else ('비활성' if '_disabled' in idx else '⚠DOWN')} | Assessor={assessor_str}")
     P(f"║ 활성배틀 {len(active)} | 새채점이벤트 {len(new_events)} | 새활동 {new_act_total} | 새피드백 {len(new_fb)} | 채점대기 {sp}")
+    if isinstance(wazuh, dict) and wazuh.get("ok"):
+        top = "; ".join(f"{n}×{d.split(' - ')[-1][:24]}" for d, n in (wazuh.get("by_rule_top") or [])[:3])
+        P(f"║ 실습(Wazuh): alerts {wazuh.get('total')} | agent {wazuh.get('by_agent')}"
+          + (f"  ⚠새시그니처 {wz_new_sigs[:3]}" if wz_new_sigs else "") + (f"  | top: {top}" if top else ""))
+    elif isinstance(wazuh, dict) and not wazuh.get("_disabled"):
+        P(f"║ 실습(Wazuh): n/a ({wazuh.get('error','?')[:80]})")
     for b in active:
         if isinstance(b, dict) and "id" in b:
             co = b.get("cohort_id")

@@ -82,6 +82,10 @@ def main():
         reasons.append(f"그레이더 실패로그 {len(jl['grade_fail'])}")
     if snap.get("stack", {}).get("api_health") not in (200, None):
         reasons.append("API 헬스 실패")
+    # 실습(Wazuh) 신규 공격 시그니처 = material 실습 이벤트(주차/단계 전환 신호)
+    wz_new = snap.get("wazuh_new_sigs") or []
+    if wz_new:
+        reasons.append(f"실습 새 공격 시그니처 {len(wz_new)}: {wz_new[:3]}")
 
     # (2) phase 완료 — 배틀이 신규로 completed/cancelled 됐는가
     done_now = sorted({b.get("id") for b in (snap.get("recent_done") or [])
