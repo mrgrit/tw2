@@ -1,0 +1,372 @@
+lab_id: standalone-secuops-week09
+title: "SIEM의 두뇌 — Wazuh manager: decoder→rule→alert 평결 파이프라인"
+version: standalone-secuops
+course: secuops
+week: 9
+description: |
+  흩어진 로그를 Wazuh manager(el34-siem)가 어떻게 한 평결(alerts.json)로 모으는지 직접 본다.
+  manager daemon(analysisd=심장) 점검 → wazuh-logtest 로 decoder/rule 3 phase 디버그 →
+  local_rules.xml 커스텀 룰(id 100909)로 위협 격상(라이브 재시작 없이 logtest 검증) →
+  웹공격 재현으로 ingest 추적(출처 보존) → agent localfile 수집 점검 → 두 소스 수렴 확인.
+  커스텀 룰은 끝나면 그룹째 삭제(공유 manager 무중단·베이스 보존).
+  모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-<comp>` 로.
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "W08 통과 (5계층 + SIEM 수렴 개념)"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec (컨테이너 root)"
+  - "lecture §1(raw→decoder→rule→alert) §4(logtest) §5-§6(rule/커스텀룰) 숙지"
+objectives:
+  - "Wazuh manager daemon(analysisd 심장) + agent 점검"
+  - "wazuh-logtest 3 phase(pre-decode/decode/rule)로 decoder·rule 디버그"
+  - "local_rules.xml 커스텀 룰(id 100909) 격상 + logtest 발화 검증 + self-clean"
+  - "웹공격 재현 → alerts.json ids 그룹 ingest 추적(출처 보존)"
+  - "agent ossec.conf localfile 수집 소스 점검 + 두 소스 수렴 확인"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — manager의 심장(analysisd)이 뛰는가
+
+      Wazuh manager는 여러 daemon으로 돈다. decoder→rule 엔진인 **analysisd** 가 멈추면 평결이 안 나온다.
+      daemon 상태와 등록 agent(000 manager / 003 ips / 004 web)를 확인한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted|logcollector"
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "ips,|web,"
+      ```
+      ## ✅ 합격 기준
+      `wazuh-analysisd is running` + ips/web agent Active.
+    hint: 'wazuh-control status (analysisd 심장) + agent_control -l'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== manager daemon ==="
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted|logcollector"
+      echo "=== agents ==="
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "ips,|web," || echo "(agent)"
+    answer_detail: "analysisd=decoder→rule 심장, remoted=agent통신(1514), logcollector=수집. 셋 다 살아야 평결이 난다. 활성 agent ips(003)+web(004)가 두 ingest 소스."
+    verify:
+      type: output_contains
+      expect: 'analysisd'
+      field: stdout
+      semantic:
+        intent: "Wazuh manager daemon(analysisd) + agent 가용성 점검"
+        success_criteria: ["wazuh-analysisd running", "remoted/logcollector running", "ips/web agent active"]
+        acceptable_methods:
+          - "**[OSS] wazuh-control status (권장)**"
+          - "**[OSS] agent_control -l**"
+          - "**[설명] analysisd=평결 엔진**"
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 데이터 흐름 — 여러 소스가 한 alerts.json으로
+
+      manager의 출력은 `/var/ossec/logs/alerts/alerts.json` 한 곳이다. 어떤 그룹(소스)의 경보가
+      모여 있는지 분포를 본다 — ids(Suricata)·syscheck(FIM)·pam 등 서로 다른 소스가 한 평결 스트림으로.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc .rule.groups 2>/dev/null | sort | uniq -c | sort -rn | head -10'
+      ```
+      ## ✅ 합격 기준
+      그룹 분포에 `suricata`(ids) 등 복수 소스가 보인다.
+    hint: 'alerts.json 의 .rule.groups 분포 (여러 소스 수렴)'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== alerts.json 그룹 분포 (소스별) ==="
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc .rule.groups 2>/dev/null | sort | uniq -c | sort -rn | head -10'
+    answer_detail: "한 alerts.json에 ids/suricata(네트워크)+syscheck(FIM)+pam/sudo(인증) 등 서로 다른 계층의 경보가 수렴. 이것이 '한 평결 스트림'의 의미 — 개별 로그가 아니라 정규화된 사건들."
+    verify:
+      type: output_contains
+      expect: 'suricata'
+      field: stdout
+      semantic:
+        intent: "여러 소스가 한 alerts.json으로 수렴함을 그룹 분포로 확인"
+        success_criteria: ["그룹 분포 출력", "ids/suricata 등 복수 소스", "정규화된 평결 스트림 이해"]
+        acceptable_methods:
+          - "**[OSS] jq .rule.groups | uniq -c (권장)**"
+          - "**[설명] 다소스 수렴**"
+    target_vm: siem
+
+  - order: 3
+    instruction: |
+      ## 🎯 decoder — wazuh-logtest 3 phase 로 파싱 디버그
+
+      raw 로그가 평결이 되는 첫 단계 = decoder가 필드를 뽑는 것. `wazuh-logtest`에 sshd 인증실패 한 줄을
+      넣어 Phase1(pre-decode)→Phase2(decoder/필드)→Phase3(rule id/level)를 본다.
+
+      ## 💻 실행 명령
+      ```bash
+      echo 'Jan  1 00:00:00 web sshd[1]: Failed password for root from 9.9.9.9 port 22 ssh2' \
+        | docker exec -i el34-siem /var/ossec/bin/wazuh-logtest
+      ```
+      ## ✅ 합격 기준
+      Phase 3 에 rule id `5760`(sshd 다중 인증실패) 가 매치된다.
+    hint: 'sshd Failed password 한 줄 → wazuh-logtest → rule 5760'
+    category: analysis
+    points: 12
+    answer: |
+      docker exec el34-siem sh -c 'cat > /tmp/w09ssh.log <<EOF
+      Jan  1 00:00:00 web sshd[1]: Failed password for root from 9.9.9.9 port 22 ssh2
+      EOF'
+      echo "=== wazuh-logtest 3 phase (sshd) ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w09ssh.log 2>&1 | grep -E "Phase|decoder|id:|srcip|Failed" | head -8; rm -f /tmp/w09ssh.log'
+    answer_detail: "Phase2 에서 sshd decoder가 srcip/user를 뽑고, Phase3 에서 rule 5760(SSHD brute, MITRE T1110)이 매치돼 level이 부여된다. raw→필드→평결의 첫 두 단계."
+    verify:
+      type: output_contains
+      expect: '5760'
+      field: stdout
+      semantic:
+        intent: "wazuh-logtest 3 phase로 decoder→rule 파이프라인 디버그"
+        success_criteria: ["Phase2 decoder 필드 추출", "Phase3 rule 5760 매치", "raw→필드→평결 이해"]
+        acceptable_methods:
+          - "**[OSS] wazuh-logtest 표준입력 (권장)**"
+          - "**[설명] 3 phase 의미**"
+    target_vm: siem
+
+  - order: 4
+    instruction: |
+      ## 🎯 커스텀 룰 격상 — local_rules.xml (id 100909) → logtest 발화 → self-clean
+
+      특정 위협을 상위 level로 격상한다. `local_rules.xml`에 json 필드 매치 룰(id **100909**, level 11)을
+      추가하고, **라이브 manager 재시작 없이 `wazuh-logtest`로 발화를 검증**한 뒤 그룹째 삭제(베이스 보존).
+
+      ## 💻 실행 명령
+      ```bash
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w09_lr.bak    # 백업
+      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name="edu_w09,">
+        <rule id="100909" level="11">
+          <decoded_as>json</decoded_as>
+          <field name="eduw09">FIREME</field>
+          <description>EDU W09 - JSON marker escalated</description>
+        </rule>
+      </group>
+      EOF'
+      echo '{"eduw09":"FIREME","src_ip":"9.9.9.9"}' | sudo /var/ossec/bin/wazuh-logtest   # 발화 검증
+      sudo cp /tmp/w09_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w09_lr.bak   # self-clean
+      ```
+      ## ✅ 합격 기준
+      logtest Phase 3 에 rule `100909` level 11 이 발화한다(정리 후 베이스 보존).
+    hint: 'local_rules.xml에 json field 격상 룰(100909) → logtest 발화 → cp 복원'
+    category: manipulation
+    points: 18
+    answer: |
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w09_lr.bak'
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"edu_w09,\">
+        <rule id=\"100909\" level=\"11\">
+          <decoded_as>json</decoded_as>
+          <field name=\"eduw09\">FIREME</field>
+          <description>EDU W09 JSON marker escalated</description>
+        </rule>
+      </group>
+      EOF"'
+      docker exec el34-siem sh -c 'cat > /tmp/w09t.json <<EOF
+      {"eduw09":"FIREME","src_ip":"9.9.9.9"}
+      EOF'
+      echo "=== 커스텀 룰 발화 (wazuh-logtest, 라이브 무중단) ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w09t.json 2>&1 | grep -E "id:|level:|Alert to be" | head -4; rm -f /tmp/w09t.json'
+      echo "=== self-clean (베이스 복원) ==="
+      docker exec el34-siem sh -c 'sudo cp /tmp/w09_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w09_lr.bak; echo "잔재 100909 = $(grep -c 100909 /var/ossec/etc/rules/local_rules.xml)"'
+    answer_detail: "json decoder가 잡은 로그 중 eduw09=FIREME 필드를 level 11로 격상. wazuh-logtest는 룰셋을 새로 읽어 테스트 인스턴스에서 돌리므로 라이브 analysisd를 안 건드린다(공유 인프라 안전). 끝나면 cp 복원으로 베이스 그대로."
+    verify:
+      type: output_contains
+      expect: '100909'
+      field: stdout
+      semantic:
+        intent: "커스텀 룰로 위협 격상 + 라이브 무중단 검증 + 베이스 보존"
+        success_criteria: ["local_rules.xml에 id 100909 추가", "logtest Phase3 발화(level 11)", "cp 복원 self-clean"]
+        acceptable_methods:
+          - "**[OSS] local_rules.xml + wazuh-logtest (권장)**"
+          - "**[OSS] decoded_as/field 매치 격상**"
+          - "**[설명] logtest=라이브 무중단 검증**"
+    target_vm: siem
+
+  - order: 5
+    instruction: |
+      ## 🎯 ingest 추적 — 웹공격이 alerts.json까지 (출처 보존)
+
+      공격을 재현해 ingest 파이프라인이 실제로 도는지 본다. 외부 공격자 SQLi → Suricata eve →
+      Wazuh decoder → alerts.json `ids` 그룹. 출처 IP(10.20.30.202)가 그대로 보존돼 들어온다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=wz9%27%20UNION%20SELECT%201,2--%20-\""
+      sleep 8
+      docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,d:.rule.description,s:.data.src_ip}" | tail -2'
+      ```
+      ## ✅ 합격 기준
+      alerts.json ids 그룹에 출처 `10.20.30.202` 의 최근 경보가 적재된다.
+    hint: '외부 SQLi → sleep 8 → alerts.json ids 그룹 src 10.20.30.202'
+    category: detect
+    points: 15
+    answer: |
+      echo "=== 웹공격 재현 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=wz9%27%20UNION%20SELECT%201,2--%20-\""
+      sleep 8
+      echo "=== alerts.json ids 그룹 ingest (출처 보존) ==="
+      docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,d:.rule.description,s:.data.src_ip}" | tail -2'
+    answer_detail: "공격 → Suricata eve.json → (ips agent localfile json) → remoted → analysisd decoder → alerts.json ids 그룹. 출처 10.20.30.202 보존(SNAT 없음)으로 W08 상관과 연결. ingest 파이프라인 실증."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "공격 재현으로 IPS→Wazuh ingest 파이프라인 동작 + 출처 보존 확인"
+        success_criteria: ["alerts.json ids 그룹 최근 경보", "출처 10.20.30.202 보존", "eve→decoder→alert 흐름"]
+        acceptable_methods:
+          - "**[OSS] 공격 재현 후 alerts.json ids 관측 (권장)**"
+          - "**[설명] ingest 파이프라인 단계**"
+    target_vm: siem
+
+  - order: 6
+    instruction: |
+      ## 🎯 agent 수집 — ossec.conf의 localfile (가시성의 출발점)
+
+      manager가 받는 로그는 agent가 보낸다. web/ips agent의 `<localfile>` 이 어떤 소스를 수집하는지 본다.
+
+      ## 💻 실행 명령
+      ```bash
+      echo "=== web agent ==="; docker exec el34-web sh -c 'grep -c localfile /var/ossec/etc/ossec.conf; grep -A1 localfile /var/ossec/etc/ossec.conf | grep log_format | sort | uniq -c'
+      echo "=== ips agent ==="; docker exec el34-ips sh -c 'grep -A1 localfile /var/ossec/etc/ossec.conf | grep log_format | sort | uniq -c'
+      ```
+      ## ✅ 합격 기준
+      web agent 가 `apache`(ModSec audit) 등 소스를 수집함이 보인다.
+    hint: 'web/ips ossec.conf 의 localfile log_format (apache/json/syslog)'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== web agent localfile (modsec=apache) ==="
+      docker exec el34-web sh -c 'grep -c localfile /var/ossec/etc/ossec.conf; grep -A1 localfile /var/ossec/etc/ossec.conf | grep log_format | sort | uniq -c'
+      echo "=== ips agent localfile (eve=json) ==="
+      docker exec el34-ips sh -c 'grep -A1 localfile /var/ossec/etc/ossec.conf | grep log_format | sort | uniq -c'
+    answer_detail: "web agent: apache(modsec audit)+json+syslog, ips agent: json(suricata eve)+syslog. log_format이 decoder 선택의 1차 힌트. 수집 소스를 빼면 그 계층이 SIEM에서 사라진다 — 가시성의 출발점."
+    verify:
+      type: output_contains
+      expect: 'apache'
+      field: stdout
+      semantic:
+        intent: "agent localfile 수집 소스 점검"
+        success_criteria: ["web=apache(modsec) 수집", "ips=json(eve) 수집", "수집→가시성 관계 이해"]
+        acceptable_methods:
+          - "**[OSS] ossec.conf localfile log_format (권장)**"
+          - "**[설명] 수집 누락=가시성 소실**"
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 수렴 확인 — 두 소스 이상이 한 평결로
+
+      ingest 후 alerts.json에 네트워크(ids)와 호스트(syscheck/FIM 등) 여러 소스가 함께 들어있는지 본다.
+      단일 도구가 아니라 통합 관제의 핵심 = 다소스 수렴.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -1500 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck|pam|sca" | sort | uniq -c'
+      ```
+      ## ✅ 합격 기준
+      ids 외에 `syscheck`(FIM) 등 다른 소스도 함께 집계된다.
+    hint: 'alerts.json 그룹에서 ids/syscheck/pam 동시 집계'
+    category: analysis
+    points: 8
+    answer: |
+      echo "=== 다소스 수렴 집계 ==="
+      docker exec el34-siem sh -c 'tail -1500 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck|pam|sca" | sort | uniq -c'
+    answer_detail: "ids(네트워크)+syscheck(FIM/호스트)+pam(인증) 등이 한 alerts.json에 공존. 종합 관제의 핵심은 개별 도구가 아니라 통합 평결 스트림. W08의 5계층 수렴이 여기서 데이터로 확인된다."
+    verify:
+      type: output_contains
+      expect: 'syscheck'
+      field: stdout
+      semantic:
+        intent: "두 소스 이상이 한 alerts.json으로 수렴함을 데이터로 확인"
+        success_criteria: ["ids + syscheck 등 복수 그룹 집계", "통합 관제 이해"]
+        acceptable_methods:
+          - "**[OSS] 그룹 다중 집계 (권장)**"
+          - "**[설명] 다소스 수렴=통합 가시성**"
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 종합 보고서 — raw → decoder → rule → alert 평결 흐름
+
+      STEP 1–7 을 평결 파이프라인 관점으로 정리한다.
+
+      ## 💻 보고서 양식
+      ```markdown
+      # el34 W09 Wazuh manager 보고서 (학번, 이름)
+      ## 1. manager 심장 (analysisd) + agent
+      ## 2. 평결 파이프라인 (raw→decoder→rule→alert)
+      ## 3. wazuh-logtest 디버그 (sshd 5760) + 커스텀 룰 격상 (100909)
+      ## 4. ingest 추적 (웹공격→ids, 출처 보존) + 다소스 수렴
+      ## 5. 본인 발견 1건 + 베이스 보존(커스텀 룰 정리)
+      ```
+      ## ✅ 합격 기준
+      보고서에 decoder→rule→alert 흐름 + 커스텀 룰 격상이 포함된다.
+    hint: 'raw→decoder→rule→alert + logtest + 커스텀룰 + ingest'
+    category: report
+    points: 5
+    answer: |
+      cat <<'EOF'
+      # el34 W09 Wazuh manager 보고서
+      ## 1. 심장: wazuh-analysisd(decoder→rule) running, agent 000/003/004
+      ## 2. 평결 파이프라인
+      raw 로그 → [decoder] 필드 추출(src_ip,url) → [rule] level/group 부여 → alerts.json
+      ## 3. 디버그/격상
+      - wazuh-logtest 3 phase: sshd 줄 → decoder sshd → rule 5760(T1110)
+      - 커스텀 룰 100909(level 11): json field 매치 격상, logtest 발화 확인, cp 복원
+      ## 4. ingest/수렴
+      - 웹공격 → eve.json → alerts.json ids 그룹(src 10.20.30.202 보존)
+      - 다소스 수렴: ids + syscheck(FIM) + pam 한 스트림
+      ## 5. 결론: SIEM의 두뇌 = decoder/rule. 수집(localfile) 없으면 평결도 없다. 커스텀 룰 정리로 베이스 보존
+      EOF
+    answer_detail: "평결 파이프라인(raw→decoder→rule→alert)이 SIEM의 두뇌. logtest로 안전 디버그, 커스텀 룰로 격상, localfile로 수집. W10의 dashboard/active response로 이어진다."
+    verify:
+      type: output_contains
+      expect: 'decoder'
+      field: stdout
+      semantic:
+        intent: "평결 파이프라인 종합 보고"
+        success_criteria: ["raw→decoder→rule→alert 흐름", "logtest+커스텀룰", "ingest+수렴"]
+        acceptable_methods:
+          - "**[관리적] 보고서 양식 (권장)**"
+          - "**[설명] 파이프라인 단계**"
+    target_vm: siem
+
+  - order: 9
+    instruction: |
+      ## 🎯 정리 확인 — 공유 manager 베이스 보존
+
+      커스텀 룰(STEP 4)을 self-clean 했으므로 local_rules.xml 에 id 100909 / edu_w09 잔재가 없어야 한다.
+      라이브 manager는 재시작하지 않았다(logtest로만 검증).
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-siem sh -c 'echo "100909 잔재=$(grep -c 100909 /var/ossec/etc/rules/local_rules.xml)"; echo "edu_w09 잔재=$(grep -c edu_w09 /var/ossec/etc/rules/local_rules.xml)"; ls /tmp/w09_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      echo "---check done---"
+      ```
+      ## ✅ 합격 기준
+      100909/edu_w09 잔재 0 + `check done`.
+    hint: 'local_rules.xml 의 100909/edu_w09 잔재 0 확인'
+    category: cleanup
+    points: 7
+    answer: |
+      docker exec el34-siem sh -c 'echo "100909 잔재=$(grep -c 100909 /var/ossec/etc/rules/local_rules.xml)"; echo "edu_w09 잔재=$(grep -c edu_w09 /var/ossec/etc/rules/local_rules.xml)"; ls /tmp/w09_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      echo "---check done---"
+    answer_detail: "공유 manager는 절대 깨지 않는다 — 커스텀 룰은 wazuh-logtest로만 검증하고 끝나면 cp 복원. base local_rules.xml + analysisd 라이브 상태 보존."
+    verify:
+      type: output_contains
+      expect: 'check done'
+      field: stdout
+      semantic:
+        intent: "커스텀 룰 정리 확인 — 공유 manager 베이스 보존"
+        success_criteria: ["100909/edu_w09 잔재 0", "백업파일 정리", "라이브 manager 무중단"]
+        acceptable_methods:
+          - "**[OSS] 잔재 점검 (권장)**"
+          - "**[설명] 공유 SIEM 보존 의무**"
+    target_vm: siem
