@@ -1,0 +1,366 @@
+lab_id: standalone-secuops-week14
+title: "기다리지 말고 사냥하라 — Threat Hunting (가설 → 질의 → Sighting → 운영화)"
+version: standalone-secuops
+course: secuops
+week: 14
+description: |
+  경보를 기다리지 않고 능동적으로 사냥한다. 조용한 persistence(경보 안 뜸)를 가설로 추적해 osquery
+  스냅샷 + sysmon 이벤트로 끄집어내고, 발견을 STIX Sighting/ATT&CK/MISP TLP로 문서화하고, Wazuh 룰로
+  굳혀 재발 자동 탐지로 전환한다. 위협 헌팅 5단계를 한 바퀴. 실습 발판/룰은 끝나면 정리(보존).
+  명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-<comp>`(sysmon은 호스트 syslog).
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "W07(osquery)·W11(sysmon)·W12–W13(인텔/룰) 통과"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec"
+  - "lecture §2(5단계) §3(가설) §4(질의) §6(운영화) 숙지"
+objectives:
+  - "헌팅 텔레메트리(osquery+sysmon+Wazuh) 가용성"
+  - "ATT&CK 기반 가설 수립 + 잠복 persistence 재현"
+  - "osquery(계정/cron) + sysmon(인코딩 프로세스)로 선제 발견"
+  - "발견을 Wazuh 룰(id 101401)로 운영화(재발 자동 탐지)"
+  - "STIX Sighting/ATT&CK/MISP TLP 문서화·공유 + 베이스 보존"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 헌팅 텔레메트리(osquery + sysmon + Wazuh)
+
+      사냥하려면 캘 데이터가 있어야 한다. 세 텔레메트리 소스를 확인한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web osqueryi --version
+      systemctl is-active sysmon
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      ```
+      ## ✅ 합격 기준
+      osquery 5.x + sysmon active + analysisd running.
+    hint: 'osquery + sysmon active + Wazuh analysisd'
+    category: survey
+    points: 8
+    answer: |
+      echo "=== osquery (스냅샷) ==="
+      docker exec el34-web osqueryi --version
+      echo "=== sysmon (이벤트) ==="
+      systemctl is-active sysmon
+      echo "=== Wazuh (평결) ==="
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+    answer_detail: "헌팅의 전제 = 텔레메트리. osquery(현재 상태 스냅샷) + sysmon(과거 이벤트) + Wazuh(평결)를 결합해 '지금 있는 것 + 과거에 일어난 것'을 캔다."
+    verify:
+      type: output_contains
+      expect: 'active'
+      field: stdout
+      semantic:
+        intent: "헌팅 텔레메트리 3소스 가용성 점검"
+        success_criteria: ["osquery 5.x", "sysmon active", "analysisd running"]
+        acceptable_methods:
+          - "**[OSS] 3소스 상태 확인 (권장)**"
+          - "**[설명] 텔레메트리=헌팅 전제**"
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 가설 + 잠복 침투 재현 — 조용한 persistence
+
+      가설: "정찰이 있었으니(이전 주) 그 뒤 호스트에 persistence가 생겼을 것"(ATT&CK TA0003). 경보가
+      안 뜨는 조용한 발판(계정 huntme + cron)을 재현해 사냥 대상으로 둔다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'userdel -r huntme 2>/dev/null; useradd -m -s /bin/bash huntme && echo planted'
+      docker exec el34-web sh -c 'echo "*/5 * * * * root /tmp/.huntme.sh" > /etc/cron.d/huntme_persist'
+      ```
+      ## ✅ 합격 기준
+      잠복 발판(계정 `huntme` + cron)이 재현된다(아직 경보 없음).
+    hint: 'useradd huntme + cron huntme_persist (조용한 발판)'
+    category: response
+    points: 10
+    answer: |
+      echo "=== 가설: persistence(T1136/T1053)가 잠복했을 것 ==="
+      docker exec el34-web sh -c 'userdel -r huntme 2>/dev/null; useradd -m -s /bin/bash huntme && echo planted'
+      docker exec el34-web sh -c 'echo "*/5 * * * * root /tmp/.huntme.sh" > /etc/cron.d/huntme_persist; echo cron_planted'
+      echo "→ 경보는 안 떴다. 이제 가설로 사냥한다."
+    answer_detail: "능동 헌팅은 경보를 안 기다린다. 조용한 persistence(계정+cron)는 탐지룰이 없으면 안 뜬다 — 그래서 가설(ATT&CK persistence)을 세워 선제적으로 캔다."
+    verify:
+      type: output_contains
+      expect: 'planted'
+      field: stdout
+      semantic:
+        intent: "ATT&CK 기반 가설 수립 + 잠복 persistence 재현"
+        success_criteria: ["huntme 계정", "cron persistence", "가설(경보 없이 사냥) 이해"]
+        acceptable_methods:
+          - "**[OSS] useradd + cron (사냥 대상) (권장)**"
+          - "**[설명] 가설=ATT&CK persistence**"
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 질의 1 (osquery) — 비정상 계정 헌팅
+
+      가설을 데이터로 검증한다. osquery `users`로 예상 못한 계정을 캔다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE uid>=1000 AND shell LIKE "%/bash";'
+      ```
+      ## ✅ 합격 기준
+      헌팅으로 `huntme` 계정을 발견한다.
+    hint: 'osquery users WHERE uid>=1000 → huntme 발견'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== osquery 계정 헌팅 (uid>=1000 + bash shell) ==="
+      docker exec el34-web osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE uid>=1000 AND shell LIKE "%/bash";'
+    answer_detail: "가설(백도어 계정 T1136)을 osquery users로 검증 — uid>=1000 + 로그인 가능 shell로 좁혀 huntme를 끄집어낸다. baseline 계정 목록과 대조해 비정상을 식별."
+    verify:
+      type: output_contains
+      expect: 'huntme'
+      field: stdout
+      semantic:
+        intent: "가설을 osquery 질의로 검증 — 비정상 계정 발견"
+        success_criteria: ["users 헌팅으로 huntme 발견", "uid/shell 필터", "baseline 대조"]
+        acceptable_methods:
+          - "**[OSS] osquery users 헌팅 (권장)**"
+          - "**[설명] 가설→질의→발견**"
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 질의 2 (osquery) — persistence 벡터 헌팅
+
+      계정 외 다른 지속성 벡터(cron)도 캔다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%huntme%";'
+      ```
+      ## ✅ 합격 기준
+      cron persistence(`huntme_persist`)를 발견한다.
+    hint: 'osquery crontab WHERE path LIKE %huntme% → huntme_persist'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== osquery cron persistence 헌팅 ==="
+      docker exec el34-web osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%huntme%";'
+      echo "=== (보강) authorized_keys 벡터도 점검 ==="
+      docker exec el34-web osqueryi --json 'SELECT key_file,algorithm FROM authorized_keys LIMIT 3;' 2>/dev/null || echo "(authorized_keys 없음)"
+    answer_detail: "persistence는 한 벡터가 아니다 — 계정(users) 외 cron(crontab)·SSH키(authorized_keys)도 캔다. 헌팅은 가설의 여러 발현을 빠짐없이 질의한다."
+    verify:
+      type: output_contains
+      expect: 'huntme_persist'
+      field: stdout
+      semantic:
+        intent: "다중 persistence 벡터(cron) 헌팅"
+        success_criteria: ["crontab에서 huntme_persist", "다벡터 점검(cron/keys)"]
+        acceptable_methods:
+          - "**[OSS] osquery crontab/authorized_keys (권장)**"
+          - "**[설명] persistence 다벡터**"
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 질의 3 (sysmon) — 인코딩 프로세스 이벤트 헌팅
+
+      스냅샷이 놓치는 단명/인코딩 프로세스는 sysmon 이벤트에서 캔다(가설: 인코딩 셸 T1059/T1027).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web python3 -c "import base64; base64.b64decode('aGk=')  # w11 hunt sim"
+      sleep 2
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -ao "CommandLine>[^<]*" | head -1
+      ```
+      ## ✅ 합격 기준
+      sysmon 이벤트에서 인코딩(`b64decode`) 프로세스 흔적을 발견한다.
+    hint: '단명 인코딩 프로세스 → sysmon syslog 헌팅 (b64decode)'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 단명 인코딩 프로세스 재현(이미 종료) ==="
+      docker exec el34-web python3 -c "import base64; base64.b64decode('aGk=')  # w14 hunt sim" 2>/dev/null
+      sleep 5
+      echo "=== sysmon 이벤트 헌팅 (osquery 스냅샷은 못 잡는 단명) ==="
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -oaE "b64decode[^<]{0,60}" | head -1
+    answer_detail: "스냅샷(osquery)이 놓치는 단명/인코딩 프로세스는 sysmon ProcessCreate 이벤트에 남아있다. 헌팅은 스냅샷+이벤트를 결합해 '지금 없지만 과거에 일어난' 실행까지 캔다."
+    verify:
+      type: output_contains
+      expect: 'b64decode'
+      field: stdout
+      semantic:
+        intent: "sysmon 이벤트로 단명 인코딩 프로세스 헌팅(스냅샷 보완)"
+        success_criteria: ["sysmon syslog에서 b64decode", "스냅샷+이벤트 결합"]
+        acceptable_methods:
+          - "**[OSS] sysmon syslog 헌팅 (권장)**"
+          - "**[설명] 단명=이벤트 영역**"
+    target_vm: siem
+
+  - order: 6
+    instruction: |
+      ## 🎯 운영화 — 발견을 Wazuh 룰로 굳힘 (id 101401)
+
+      한 번 찾은 패턴은 룰로 굳혀 재발 시 자동 경보가 뜨게 한다(수동 헌팅 → 상시 자동 탐지). logtest 검증.
+
+      ## 💻 실행 명령
+      ```bash
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w14_lr.bak
+      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name="edu_w14,">
+        <rule id="101401" level="12">
+          <decoded_as>json</decoded_as>
+          <field name="hunt_finding">backdoor-account</field>
+          <description>EDU W14 - hunted persistence, auto-detect on recurrence</description>
+        </rule>
+      </group>
+      EOF'
+      echo '{"hunt_finding":"backdoor-account","user":"huntme"}' | sudo /var/ossec/bin/wazuh-logtest
+      sudo cp /tmp/w14_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w14_lr.bak
+      ```
+      ## ✅ 합격 기준
+      logtest 에 rule `101401` 발화(헌팅 발견의 운영화).
+    hint: '발견 패턴을 Wazuh 룰(101401)로 → logtest → cp 복원'
+    category: manipulation
+    points: 16
+    answer: |
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w14_lr.bak'
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"edu_w14,\">
+        <rule id=\"101401\" level=\"12\">
+          <decoded_as>json</decoded_as>
+          <field name=\"hunt_finding\">backdoor-account</field>
+          <description>EDU W14 hunted persistence auto-detect recurrence</description>
+        </rule>
+      </group>
+      EOF"'
+      docker exec el34-siem sh -c 'cat > /tmp/w14t.json <<EOF
+      {"hunt_finding":"backdoor-account","user":"huntme"}
+      EOF'
+      echo "=== 운영화 룰 logtest ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w14t.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/w14t.json'
+      docker exec el34-siem sh -c 'sudo cp /tmp/w14_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w14_lr.bak; echo "복원 잔재=$(grep -c 101401 /var/ossec/etc/rules/local_rules.xml)"'
+    answer_detail: "헌팅의 마무리 = 재발 자동 탐지. 수동으로 찾은 패턴(backdoor-account)을 Wazuh 룰 101401로 굳히면 다음엔 경보가 뜬다. 헌터의 1회 노력을 SIEM에 영구 저장. logtest 검증 후 cp 복원."
+    verify:
+      type: output_contains
+      expect: '101401'
+      field: stdout
+      semantic:
+        intent: "헌팅 발견을 Wazuh 룰로 운영화(재발 자동 탐지)"
+        success_criteria: ["id 101401 작성", "logtest 발화", "수동→자동 전환 이해", "cp 복원"]
+        acceptable_methods:
+          - "**[OSS] 발견 패턴 룰 + wazuh-logtest (권장)**"
+          - "**[설명] 헌팅→상시 탐지**"
+    target_vm: siem
+
+  - order: 7
+    instruction: |
+      ## 🎯 문서화/공유 — STIX Sighting + ATT&CK + MISP TLP
+
+      발견을 표준으로 남겨 재사용·공유한다.
+
+      ## 💻 실행 명령
+      ```bash
+      echo "STIX Sighting: huntme 계정(T1136) 관측 @ el34-web, 2026-..."
+      echo "ATT&CK: T1136 Create Account / T1053 Scheduled Task / T1059 Command Interpreter"
+      echo "MISP TLP: TLP:AMBER (제한 공유 — 내부/신뢰 파트너)"
+      ```
+      ## ✅ 합격 기준
+      발견이 STIX Sighting + ATT&CK + TLP 로 문서화된다.
+    hint: 'STIX Sighting + ATT&CK 매핑 + MISP TLP 등급'
+    category: report
+    points: 8
+    answer: |
+      echo "=== STIX Sighting (발견 관측 기록) ==="
+      echo "Sighting: indicator(huntme 계정 persistence)를 el34-web에서 관측"
+      echo "=== ATT&CK 매핑 ==="
+      echo "T1136 Create Account / T1053 Scheduled Task(cron) / T1059 Command Interpreter(b64)"
+      echo "=== MISP TLP 공유 등급 ==="
+      echo "TLP:AMBER — 제한 공유(내부/신뢰 파트너). 민감 발견은 TLP로 범위 통제"
+    answer_detail: "STIX Sighting='이 indicator를 실제로 봤다'는 관측 기록(indicator 신뢰도↑). ATT&CK로 단계 맥락, MISP TLP로 공유 범위(RED/AMBER/GREEN/CLEAR) 통제. OpenCTI/MISP에 올려 운영화."
+    verify:
+      type: output_contains
+      expect: 'Sighting'
+      field: stdout
+      semantic:
+        intent: "발견을 STIX Sighting/ATT&CK/TLP로 문서화·공유"
+        success_criteria: ["STIX Sighting", "ATT&CK 매핑", "MISP TLP 등급"]
+        acceptable_methods:
+          - "**[관리적] STIX Sighting + TLP (권장)**"
+          - "**[설명] 관측 기록=신뢰도**"
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 종합 보고서 — 헌팅 5단계 한 바퀴
+
+      STEP 1–7 을 위협 헌팅 5단계로 정리한다.
+
+      ## 💻 보고서 양식
+      ```markdown
+      # el34 W14 Threat Hunting 보고서 (학번, 이름)
+      ## 1. 가설 (ATT&CK persistence)
+      ## 2. 질의 (osquery 계정/cron + sysmon 인코딩)
+      ## 3. 발견 (huntme + cron + b64 프로세스)
+      ## 4. 문서화 (STIX Sighting/ATT&CK/TLP)
+      ## 5. 운영화 (Wazuh 룰 101401 → 재발 자동탐지)
+      ```
+      ## ✅ 합격 기준
+      보고서에 헌팅 5단계(가설→…→운영화)가 포함된다.
+    hint: '가설→질의→발견→문서화→운영화 5단계'
+    category: report
+    points: 5
+    answer: |
+      cat <<'EOF'
+      # el34 W14 Threat Hunting 보고서
+      ## 1. 가설: 정찰 후 persistence 잠복(ATT&CK TA0003)
+      ## 2. 질의: osquery users(계정)/crontab(cron) + sysmon(인코딩 프로세스)
+      ## 3. 발견: huntme 계정 + huntme_persist cron + b64decode 단명 프로세스
+      ## 4. 문서화: STIX Sighting + ATT&CK(T1136/T1053/T1059) + MISP TLP:AMBER
+      ## 5. 운영화: Wazuh 룰 101401 → 재발 시 자동 경보(수동→상시)
+      ## 결론: 경보를 기다리지 않고 가설로 사냥 → 발견을 표준화·자동화
+      EOF
+    answer_detail: "위협 헌팅 5단계 = 가설→질의→발견→문서화→운영화. 능동 방어의 핵심 — 잠복 침입을 선제 발견하고, 1회 발견을 상시 탐지로 굳힌다."
+    verify:
+      type: output_contains
+      expect: '가설'
+      field: stdout
+      semantic:
+        intent: "헌팅 5단계 종합 보고"
+        success_criteria: ["가설→질의→발견→문서화→운영화", "능동 방어 이해"]
+        acceptable_methods:
+          - "**[관리적] 보고서 양식 (권장)**"
+          - "**[설명] 5단계 루프**"
+    target_vm: web
+
+  - order: 9
+    instruction: |
+      ## 🎯 정리 확인 — 공유 인프라 보존
+
+      실습 발판(huntme 계정/cron)과 운영화 룰(101401)을 self-clean 했으므로 잔재가 없어야 한다.
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-web sh -c 'userdel -r huntme 2>/dev/null; rm -f /etc/cron.d/huntme_persist; id huntme 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /etc/cron.d/huntme_persist 2>/dev/null && echo "cron 잔재!" || echo "cron ok"'
+      docker exec el34-siem sh -c 'echo "101401 잔재=$(grep -c 101401 /var/ossec/etc/rules/local_rules.xml)"'
+      echo "---check done---"
+      ```
+      ## ✅ 합격 기준
+      huntme/cron/룰 잔재 0 + `check done`.
+    hint: 'huntme 계정/cron + 101401 잔재 0'
+    category: cleanup
+    points: 5
+    answer: |
+      docker exec el34-web sh -c 'userdel -r huntme 2>/dev/null; rm -f /etc/cron.d/huntme_persist; id huntme 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /etc/cron.d/huntme_persist 2>/dev/null && echo "cron 잔재!" || echo "cron ok"'
+      docker exec el34-siem sh -c 'echo "101401 잔재=$(grep -c 101401 /var/ossec/etc/rules/local_rules.xml)"'
+      echo "---check done---"
+    answer_detail: "헌팅 실습 발판(계정/cron)과 운영화 룰을 정리 — 공유 호스트/매니저 보존. (운영에선 101401 같은 룰은 영구 유지하지만, 공유 실습 환경이라 삭제.)"
+    verify:
+      type: output_contains
+      expect: 'check done'
+      field: stdout
+      semantic:
+        intent: "실습 발판/룰 정리 확인 — 공유 인프라 보존"
+        success_criteria: ["huntme 계정/cron 잔재 0", "101401 잔재 0", "보존"]
+        acceptable_methods:
+          - "**[OSS] 잔재 점검 (권장)**"
+          - "**[설명] 공유 보존**"
+    target_vm: web
