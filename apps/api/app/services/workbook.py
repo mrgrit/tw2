@@ -269,6 +269,80 @@ def build_doc(scn: dict, prefill: dict | None = None) -> Document:
     return doc
 
 
+# ── training 실습(lab) → 학생 워크북 ──
+def build_lab_doc(lab: dict, track_label: str = "", week: int | None = None) -> Document:
+    """training lab(yaml dict) → 학생 워크북 1부. 각 step 의 instruction + 붙여넣기 3칸(명령/결과/분석).
+
+    배틀 워크북과 동일 렌더러(render_md/paste_box)를 공유하되 RED/BLUE 대신 '실습 STEP' 으로 낸다.
+    답안(answer)은 싣지 않는다 — 학생이 채우는 빈 워크북(E.G/정답은 별도)."""
+    doc = Document()
+    normal = doc.styles["Normal"]
+    normal.font.name = KFONT
+    normal.font.size = Pt(10.5)
+    normal.element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), KFONT)
+
+    title = doc.add_heading(level=0)
+    wk = f"W{week:02d} " if week else ""
+    tr = title.add_run(f"{wk}{lab.get('title', '실습')}")
+    _kfont(tr)
+
+    meta = doc.add_paragraph()
+    mins = lab.get("duration_minutes", 0)
+    mr = meta.add_run(f"{track_label or lab.get('course','-')}  ·  난이도 {lab.get('difficulty','-')}"
+                      f"  ·  제한 {mins}분  ·  합격선 {int((lab.get('pass_threshold',0) or 0)*100)}%")
+    mr.italic = True
+    mr.font.size = Pt(9.5)
+    mr.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+    _kfont(mr)
+
+    info = doc.add_paragraph()
+    ir = info.add_run("이름: __________________    학번: __________________    날짜: __________________")
+    ir.font.size = Pt(11)
+    _kfont(ir)
+
+    doc.add_paragraph()
+    if lab.get("description"):
+        ov = doc.add_paragraph()
+        ovr = ov.add_run("■ 실습 개요")
+        ovr.bold = True; ovr.font.size = Pt(13); _kfont(ovr)
+        render_md(doc, lab["description"])
+    if lab.get("objectives"):
+        ob = doc.add_paragraph()
+        obr = ob.add_run("■ 학습 목표")
+        obr.bold = True; obr.font.size = Pt(13); _kfont(obr)
+        for o in lab["objectives"]:
+            bp = doc.add_paragraph(style="List Bullet")
+            add_inline(bp, str(o))
+
+    for st in sorted(lab.get("steps", []), key=lambda x: x.get("order", 0)):
+        doc.add_page_break()
+        order = st.get("order", "")
+        head = doc.add_paragraph()
+        hr = head.add_run(f"🧪 STEP {order}   (배점 {st.get('points',0)}점  ·  대상 {st.get('target_vm','-')}"
+                          f"  ·  {st.get('category','-')})")
+        hr.bold = True
+        hr.font.size = Pt(15)
+        hr.font.color.rgb = RGBColor(0x00, 0x40, 0xA0)
+        _kfont(hr)
+
+        render_md(doc, st.get("instruction", ""))
+
+        doc.add_paragraph()
+        boxes = [
+            ("▶ 실행한 명령 / 페이로드", 3.0, "여기에 실행한 명령을 입력하거나 캡처를 붙여넣으세요", True),
+            ("▶ 실행 결과 (출력/스크린샷)", 8.5, "여기에 결과 출력을 적거나 스크린샷을 붙여넣으세요 (Ctrl+V)", True),
+            ("▶ 설명 / 분석 (무엇을·왜 했고 결과를 어떻게 해석했나)", 3.5, "", False),
+        ]
+        for lab_, h, hint, mono in boxes:
+            lp = doc.add_paragraph()
+            lp.paragraph_format.space_before = Pt(6)
+            lr = lp.add_run(lab_)
+            lr.bold = True; lr.font.size = Pt(11); _kfont(lr)
+            paste_box(doc, h, hint=hint, content="", mono=mono)
+
+    return doc
+
+
 # ── 어댑터: DB ORM / 제출 저널 → 렌더러 입력 ──
 def scenario_to_dict(scenario, student_name: str | None = None) -> dict:
     """DB Scenario(ORM) → 워크북 dict. mission_red/blue 의 missions 배열을 펼친다."""

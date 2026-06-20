@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.ts'
+import { getToken } from '../auth.ts'
 import Markdown from '../components/Markdown.tsx'
 
 interface WeekInfo { week: number; lecture: boolean; lab: boolean }
@@ -32,6 +33,27 @@ export default function Training(): React.ReactElement {
     })()
   }, [])
 
+  const [dlBusy, setDlBusy] = useState(false)
+  async function downloadLabWorkbook(): Promise<void> {
+    if (!track || week == null) return
+    setDlBusy(true)
+    try {
+      const token = getToken()
+      const res = await fetch(`/training/${track.track}/lab/${week}/workbook`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: 'no-store',
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${track.track}-w${w2(week)}-lab.docx`
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) { setErr(`워크북 다운로드 실패: ${e instanceof Error ? e.message : String(e)}`) }
+    finally { setDlBusy(false) }
+  }
+
   async function openWeek(t: TrackInfo, w: WeekInfo): Promise<void> {
     setWeek(w.week); setTab(w.lecture ? 'lecture' : 'lab'); setLecture(''); setLab(null); setErr('')
     try {
@@ -54,7 +76,12 @@ export default function Training(): React.ReactElement {
         {tab === 'lecture' && lecture && <div className="card"><Markdown text={lecture} /></div>}
         {tab === 'lab' && lab && (
           <div className="card">
-            <h2 style={{ marginTop: 0 }}>{lab.title}</h2>
+            <div className="row" style={{ alignItems: 'center', gap: 10 }}>
+              <h2 style={{ marginTop: 0, flex: 1 }}>{lab.title}</h2>
+              <button onClick={() => void downloadLabWorkbook()} disabled={dlBusy}>
+                {dlBusy ? '내려받는 중…' : '📄 워크북(docx)'}
+              </button>
+            </div>
             {lab.description && <Markdown text={lab.description} />}
             {lab.objectives && lab.objectives.length > 0 && (
               <>
