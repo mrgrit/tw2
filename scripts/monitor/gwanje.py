@@ -60,13 +60,19 @@ try:
         DB_PATH = m.group(1)
 except Exception:  # noqa: BLE001  (system python fallback — token 기능만 빠짐)
     pass
-# .env 에서 OPENSEARCH_URL 직접 파싱(systemd 가 .env 를 API 프로세스에만 주입하므로)
+# .env 에서 OPENSEARCH_URL 직접 파싱(systemd 가 .env 를 API 프로세스에만 주입하므로).
+# OS_CONFIGURED=False 면 중앙 SIEM 비활성 → 로컬 9201(구 tubewar OS)을 tw2 SIEM 으로 오인하지 않는다.
+OS_CONFIGURED = False
 try:
     for ln in open(os.path.join(REPO, ".env")):
-        if ln.startswith("OPENSEARCH_URL="):
+        if ln.startswith("OPENSEARCH_URL=") and ln.split("=", 1)[1].strip():
             OS_URL = ln.split("=", 1)[1].strip().strip('"').strip("'")
+            OS_CONFIGURED = True
 except Exception:  # noqa: BLE001
     pass
+
+# tw2 :9301 은 비-systemd 포그라운드 프로세스 → 진짜 로그는 파일. journalctl(구 :9200) 아님.
+TW2_LOG = os.environ.get("TW2_LOG_FILE", "/tmp/tw2-api.log")
 
 
 # ── 관제 에이전트 레지스트리(요금 나오는 API 는 기본 차단) ──────────
@@ -192,16 +198,58 @@ def load_cursor():
 
 
 def os_indices():
+    # OPENSEARCH_URL 미설정이면 중앙 SIEM 비활성 — 로컬 9201(구 tubewar OS)을 프로브하지 않는다.
+    if not OS_CONFIGURED:
+        return {"_disabled": "중앙 OpenSearch 미설정(OPENSEARCH_URL 없음 — tw2 SIEM은 el34 Wazuh). 로컬 9201은 구 tubewar OS 라 무시."}
     st, data = http_json(OS_URL + "/_cat/indices/tubewar-*?format=json&h=index,docs.count")
     if isinstance(data, list):
         return {d["index"]: int(d.get("docs.count") or 0) for d in data}
     return {"_disabled": "중앙 OpenSearch 비활성(tw2: TUBEWAR_LAB_MONITOR=0 — SIEM은 el34 Wazuh 사용)"}
 
 
-def systemd_status():
-    out = {}
-    for svc in ("tw2-api", "tw2-ui"):
+def assessor_health():
+    """시나리오 모니터링의 라이브 증거원(Assessor) 도달성 — gwanje 가 그동안 안 보던 핵심 신호.
+    infras 에 등록된 el34 인프라의 resolve 규칙(port_map['assessor'] → :port)으로 엔드포인트를
+    만들어 TCP 프로브. 다운이면 auto_monitor 가 학생 진척을 전혀 못 본다(=라이브 관제 불능)."""
+    import socket
+    eps = {}
+    try:
+        con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        rows = con.execute("SELECT DISTINCT vm_ip, port_map FROM infras").fetchall()
+        con.close()
+    except Exception as e:  # noqa: BLE001
+        return {"_error": str(e)}
+    for vm_ip, pm in rows:
         try:
+            port = (json.loads(pm or "{}") or {}).get("assessor")
+        except Exception:  # noqa: BLE001
+            port = None
+        if not port:
+            continue  # attacker 등 assessor 미보유 인프라
+        key = f"{vm_ip}:{port}"
+        if key in eps:
+            continue
+        try:
+            s = socket.create_connection((vm_ip, int(port)), timeout=3)
+            s.close()
+            eps[key] = True
+        except Exception:  # noqa: BLE001
+            eps[key] = False
+    return eps
+
+
+def systemd_status():
+    """tw2 는 비-systemd(포그라운드)일 수 있으므로 존재하지 않는 유닛은 'n/a'(거짓 down 금지).
+    실제 유닛이 있으면 그 활성상태를 본다. 후보 유닛은 env TW2_UNITS 로 덮어쓸 수 있다."""
+    out = {}
+    units = os.environ.get("TW2_UNITS", "tw2-api,tw2-ui").split(",")
+    for svc in [u.strip() for u in units if u.strip()]:
+        try:
+            exists = subprocess.run(["systemctl", "cat", svc],
+                                    capture_output=True, text=True, timeout=6).returncode == 0
+            if not exists:
+                out[svc] = "n/a"  # 유닛 부재 → 비-systemd 구동. liveness 는 API 헬스로 본다.
+                continue
             r = subprocess.run(["systemctl", "is-active", svc],
                                capture_output=True, text=True, timeout=6)
             out[svc] = r.stdout.strip() or r.stderr.strip()
@@ -211,12 +259,24 @@ def systemd_status():
 
 
 def journal_health(since):
-    try:
-        out = subprocess.run(
-            ["journalctl", "-u", "tubewar-api", "--since", since, "--no-pager", "-o", "cat"],
-            capture_output=True, text=True, timeout=15).stdout
-    except Exception as e:  # noqa: BLE001
-        return {"_error": str(e)}
+    # tw2(:9301)는 비-systemd 포그라운드 → 진짜 로그는 TW2_LOG 파일. 있으면 그걸 읽고,
+    # 없을 때만 journalctl(구 :9200 서비스라 주의)로 폴백한다.
+    src = ""
+    if os.path.exists(TW2_LOG):
+        try:
+            with open(TW2_LOG, errors="replace") as f:
+                out = "".join(f.readlines()[-1500:])  # 최근 1500줄(델타 근사)
+            src = TW2_LOG
+        except Exception as e:  # noqa: BLE001
+            return {"_error": str(e), "source": TW2_LOG}
+    else:
+        try:
+            out = subprocess.run(
+                ["journalctl", "-u", "tubewar-api", "--since", since, "--no-pager", "-o", "cat"],
+                capture_output=True, text=True, timeout=15).stdout
+            src = "journalctl:tubewar-api(구:9200?)"
+        except Exception as e:  # noqa: BLE001
+            return {"_error": str(e)}
     lines = out.splitlines()
     err, timeouts, a_ok, a_bad, b_ok, b_bad, gfail = [], 0, 0, 0, 0, 0, []
     for ln in lines:
@@ -238,7 +298,7 @@ def journal_health(since):
             err.append(ln[-200:])
     return {"lines": len(lines), "errors": err[-10:], "timeouts": timeouts,
             "assess_ok": a_ok, "assess_bad": a_bad, "bulk_ok": b_ok,
-            "bulk_bad": b_bad, "grade_fail": gfail[-5:]}
+            "bulk_bad": b_bad, "grade_fail": gfail[-5:], "source": src}
 
 
 def main():
@@ -303,14 +363,16 @@ def main():
 
     idx = os_indices()
     prev_idx = cur.get("siem", {})
+    # 정수 docs.count 만 델타 계산(_disabled/_error 같은 문자열 sentinel 은 건너뛴다).
     idx_delta = {k: {"now": v, "delta": v - prev_idx.get(k, 0)}
-                 for k, v in (idx.items() if "_error" not in idx else [])
-                 if (v - prev_idx.get(k, 0)) != 0}
+                 for k, v in idx.items()
+                 if isinstance(v, int) and (v - prev_idx.get(k, 0)) != 0}
 
     since = cur.get("last_run_kst") or (kst - dt.timedelta(minutes=8)).strftime("%Y-%m-%d %H:%M:%S")
     jl = journal_health(since)
     svc = systemd_status()
     api_st, api_h = http_json(API + "/health")
+    assessor = assessor_health()  # 시나리오 모니터링 라이브 증거원 도달성
 
     # ── 고아 배틀 탐지(active > 6h) + admin 엔드포인트 검증 ──
     orphans, new_orphans = [], []
@@ -371,8 +433,15 @@ def main():
     add(min(len(jl.get("errors", [])) * 2, 6), f"로그오류 {len(jl.get('errors', []))}")
     add(3 * bool(jl.get("assess_bad") or jl.get("bulk_bad")), "assess/bulk 실패")
     add(4 * bool(new_orphans), f"신규 고아배틀 {new_orphans}")
-    add(3 * any(v != "active" for v in svc.values()), "서비스 비정상")
+    add(3 * any(v not in ("active", "n/a") for v in svc.values()), "서비스 비정상")
     add(4 * (api_st != 200), "API 헬스 실패")
+    # Assessor(라이브 증거원) 다운 — monitor=bastion/claude 활성배틀이 있으면 라이브 관제 불능 강신호.
+    monitored_active = [b for b in active if isinstance(b, dict) and b.get("monitor") in ("bastion", "claude")]
+    assessor_down = isinstance(assessor, dict) and "_error" not in assessor and any(v is False for v in assessor.values())
+    if assessor_down and monitored_active:
+        add(5, f"⚠Assessor 다운→라이브 모니터 불능(monitor배틀 {len(monitored_active)})")
+    elif assessor_down:
+        add(2, "Assessor 다운(활성 monitor배틀 없음)")
 
     heartbeat_min = 25
     last_report = cur.get("last_report_kst")
@@ -386,7 +455,8 @@ def main():
     should_report = baseline or sal >= 5 or hb_due
 
     snap = {"ts_kst": kst.strftime("%Y-%m-%d %H:%M:%S"), "baseline": baseline,
-            "stack": {"api_health": api_st, "services": svc, "opensearch": ("_error" not in idx and "_disabled" not in idx)},
+            "stack": {"api_health": api_st, "services": svc, "opensearch": ("_error" not in idx and "_disabled" not in idx),
+                      "assessor": assessor},
             "active_battles": active, "orphans": orphans, "recent_done": recent_done,
             "new_events_count": len(new_events), "new_events": new_events,
             "activity_new_total": new_act_total, "activity_by_kind": act_kind,
@@ -418,9 +488,16 @@ def main():
         return
 
     P = print
-    bad_svc = [k for k, v in svc.items() if v != "active"]
+    bad_svc = [k for k, v in svc.items() if v not in ("active", "n/a")]
+    if isinstance(assessor, dict) and "_error" not in assessor:
+        a_up = [k for k, v in assessor.items() if v]
+        a_dn = [k for k, v in assessor.items() if not v]
+        assessor_str = ("n/a" if not assessor else
+                        (f"OK({len(a_up)})" if not a_dn else f"⚠DOWN {a_dn}"))
+    else:
+        assessor_str = "?"
     P(f"╔══ 관제 {snap['ts_kst']} KST {'[BASELINE]' if baseline else ''} ══")
-    P(f"║ 스택: API={api_st} {'OK' if api_st==200 else '⚠'} | svc {'all-active' if not bad_svc else '⚠'+str(bad_svc)} | SIEM(중앙OS)={'OK' if ('_error' not in idx and '_disabled' not in idx) else ('비활성' if '_disabled' in idx else '⚠DOWN')}")
+    P(f"║ 스택: API={api_st} {'OK' if api_st==200 else '⚠'} | svc {'all-active' if not bad_svc else '⚠'+str(bad_svc)} | SIEM(중앙OS)={'OK' if ('_error' not in idx and '_disabled' not in idx) else ('비활성' if '_disabled' in idx else '⚠DOWN')} | Assessor={assessor_str}")
     P(f"║ 활성배틀 {len(active)} | 새채점이벤트 {len(new_events)} | 새활동 {new_act_total} | 새피드백 {len(new_fb)} | 채점대기 {sp}")
     for b in active:
         if isinstance(b, dict) and "id" in b:
@@ -437,7 +514,7 @@ def main():
                                   for r in sub_status if "grade_status" in r))
     j = jl
     warn = j.get("errors") or j.get("grade_fail") or j.get("assess_bad") or j.get("timeouts") or j.get("bulk_bad")
-    P(f"║ 로그({j.get('lines')}줄): assess {j.get('assess_ok')}ok/{j.get('assess_bad')}bad "
+    P(f"║ 로그[{j.get('source','?')}]({j.get('lines')}줄): assess {j.get('assess_ok')}ok/{j.get('assess_bad')}bad "
       f"| bulk {j.get('bulk_ok')}ok/{j.get('bulk_bad')}bad | timeout {j.get('timeouts')} "
       f"| gradeFail {len(j.get('grade_fail', []))} | err {len(j.get('errors', []))} {'⚠' if warn else 'OK'}")
     if idx_delta:
