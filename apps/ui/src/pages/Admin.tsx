@@ -1044,7 +1044,7 @@ function GradersTab() {
               setF({ ...f, provider, model: provider === 'cc' ? 'claude-haiku-4-5' : 'gpt-oss:120b' })
             }}>
               <option value="cc">CC (Claude Code)</option>
-              <option value="bastion">Bastion (6v6 LLM)</option>
+              <option value="bastion">Bastion (el34 LLM)</option>
             </select>
           </label>
           <label style={{ flex: 1 }}>모델

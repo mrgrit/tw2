@@ -87,10 +87,10 @@ export default function MyInfra() {
 
   return (
     <>
-      <h1 style={{ color: 'var(--primary)' }}>내 6v6 인프라</h1>
+      <h1 style={{ color: 'var(--primary)' }}>내 인프라</h1>
       <p style={{ color: 'var(--fg-dim)' }}>
-        학생 PC 의 VM 에 <a href="https://github.com/mrgrit/6v6" target="_blank">6v6</a> 인프라를 띄우고,
-        그 VM 의 <b>외부 IP</b> 와 자격 증명을 한 번 등록합니다. 이후 공방전이 이 인프라를 대상으로 진행됩니다.
+        <b>el34</b> 타깃 VM(192.168.0.151) 과 <b>외부 공격자</b> VM(192.168.0.202) 의 외부 IP·자격 증명을
+        등록합니다. 공방전은 이 인프라를 대상으로 진행됩니다. (타깃엔 Assessor key, 외부 진입은 192.168.0.161)
       </p>
 
       {!loading && infras.length === 0 && (
@@ -100,7 +100,7 @@ export default function MyInfra() {
             <label style={{ flex: 1 }}>
               alias
               <input value={form.name} onChange={e => setForm({...form, name: e.target.value})}
-                placeholder="alice-6v6" required />
+                placeholder="el34-target / attacker" required />
             </label>
             <label style={{ flex: 1 }}>
               VM 외부 IP
@@ -128,7 +128,7 @@ export default function MyInfra() {
           <label style={{ fontSize: 13, cursor: 'pointer' }}>
             <input type="checkbox" checked={showPorts}
               onChange={e => setShowPorts(e.target.checked)} style={{ width: 'auto', marginRight: 6 }} />
-            6v6 의 <code>.env</code> 로 포트를 override 했음
+            el34 의 <code>.env</code> 로 포트를 override 했음
           </label>
 
           {showPorts && (
