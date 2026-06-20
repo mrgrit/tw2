@@ -1,0 +1,440 @@
+lab_id: standalone-secuops-week02
+title: "W02 — 방화벽 운영(nftables) nft CLI + 침해대응 7"
+version: standalone-secuops
+course: secuops
+week: 2
+description: |
+  el34 의 fw 컨테이너에서 `nft` CLI 로 방화벽을 운영하는 실습. 룰 작성·객체(set)·NAT·conntrack·카운터를
+  직접 다루고, 침해대응 7 시나리오(R/B/P)를 풀어 카운터로 효과를 증명한다. el34 fw 는 공유 인프라이므로
+  각 시나리오는 **룰 추가 → 효과 증명 → 자기 룰 삭제(self-clean)** 로 마무리해 베이스 정책을 보존한다.
+  모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-fw` / `docker exec el34-attacker` 로 실행.
+difficulty: intermediate
+duration_minutes: 150
+audience: 보안솔루션 운영 실무 학습자 (정규 secuops 2주차)
+prerequisites:
+  - "W02 강의안 정독 — 체인/순서/객체/NAT/conntrack/카운터"
+  - "el34 호스트 SSH 접속 + ccc 의 docker 권한 (컨테이너 내부 root)"
+objectives:
+  - "fw 컨테이너에서 `nft` 로 테이블/체인/룰/객체(set)/NAT/conntrack 을 자유롭게 읽는다"
+  - "룰 작성 → 적용 → 카운터 증거 보존 → self-clean 의 운영 cycle 을 익힌다"
+  - "rate limit / 화이트리스트 / 객체(set) / DNAT 4 패턴을 실제 사용한다"
+  - "침해대응 7 시나리오(R/B/P) 를 카운터로 증명한다"
+  - "el34 의 Wazuh agent 구성(ips/web)을 확인하고 fw agent 확장(W09)의 필요를 안다"
+  - "실습 룰을 모두 정리(cleanup)하여 베이스 정책만 남긴다"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 방화벽 구성/가시성 한계 확인
+
+      fw 컨테이너의 테이블(`inet six_filter`/`ip six_nat`)과 인터페이스(`eth0` ext / `eth1` pipe)를 읽는다.
+      **우리가 만지는 것은 six_filter/six_nat 두 테이블뿐**, Docker `ip nat` 은 건드리지 않는다.
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-fw nft list tables
+      docker exec el34-fw ip -br a
+      ```
+      ## ✅ 합격 기준
+      tables 에 `six_filter` 가 보인다 (편집 대상).
+    hint: 'docker exec el34-fw nft list tables — six_filter 가 보여야 함'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 테이블 ==="
+      docker exec el34-fw nft list tables
+      echo "=== 인터페이스 ==="
+      docker exec el34-fw ip -br a | grep -E 'eth0|eth1'
+    answer_detail: "운영자가 만지는 두 테이블(six_filter/six_nat) 확인. Docker ip nat 은 보호 영역. fw 는 eth0(ext)/eth1(pipe) 양다리."
+    verify:
+      type: output_contains
+      expect: 'six_filter'
+      field: stdout
+      semantic:
+        intent: "운영자가 인프라 구성과 자신이 만지는 범위(six_filter/six_nat)를 인지"
+        success_criteria:
+          - "six_filter / six_nat 보임"
+          - "Docker ip nat 은 건드리지 않는 영역임을 이해"
+          - "인터페이스 eth0(ext)/eth1(pipe) 의 양다리 구조 인지"
+        acceptable_methods:
+          - "**[CLI] nft list tables — six_filter/six_nat 확인 (권장)**"
+          - "**[CLI] ip -br a — eth0/eth1 양다리**"
+          - "**[설명] 가시성 한계 — fw 가 dmz/int 내부 통신을 못 본다는 점을 1문장 서술**"
+    target_vm: fw
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 룰 한 줄을 읽고 쓴다
+
+      체인 `forward`, 출발지 `10.20.30.202`, 동작 `drop`, 위치 `top` 의 룰은 다음 nft 명령이다.
+      위치 top = `insert`(맨 위, 먼저 평가), bottom = `add`(맨 아래). 적용 전에 명령을 정확히 읽는 것이
+      운영자의 안전 습관이다.
+
+      ## 💻 확인 명령 (실행 없이 명령만 확인)
+      ```bash
+      echo 'nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop'
+      ```
+      ## ✅ 합격 기준
+      명령에 `nft insert rule inet six_filter forward` 가 보인다.
+    hint: 'insert=top, add=bottom. counter 는 매칭 packets/bytes 를 센다'
+    category: configure
+    points: 10
+    answer: |
+      echo 'nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop'
+    answer_detail: "insert(top)/add(bottom) 차이. counter 가 운영자의 증거. 적용 전 명령을 읽는 습관."
+    verify:
+      type: output_contains
+      expect: 'nft insert rule inet six_filter forward'
+      field: stdout
+      semantic:
+        intent: "nft 룰 한 줄의 구조(테이블/체인/매처/counter/action)를 읽고 쓸 줄 알게 한다"
+        success_criteria:
+          - "insert(top)/add(bottom) 차이를 운영자 언어로 설명 가능"
+          - "ip saddr 매처 + counter + drop 의 의미 이해"
+          - "적용 전 명령 확인을 안전 습관으로 인지"
+        acceptable_methods:
+          - "**[CLI] 룰 명령을 직접 작성·낭독 (권장)**"
+          - "**[설명] insert vs add 1문장 + top 위치의 의미 서술**"
+    target_vm: fw
+
+  - order: 3
+    instruction: |
+      ## 🎯 시나리오 fw-s01 — 악성 IP 즉시 차단 (R/B/P)
+
+      Red — 공격자(10.20.30.202)가 fw 의 80 으로 다회 요청.
+      Blue — forward top 에 `ip saddr 10.20.30.202 counter drop` 적용.
+      Purple — 다시 시도 → **카운터 packets** 가 올라가면 차단 작동 증명. 검증 후 **자기 룰 삭제**.
+
+      ## 💻 단계 명령
+      ```bash
+      # Blue — 차단 룰 적용
+      docker exec el34-fw nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop
+      # Red — 공격 재현
+      docker exec el34-attacker sh -c 'for i in $(seq 1 20); do curl -s -m1 -H "Host: juice.6v6.lab" http://10.20.30.1/ >/dev/null; done'
+      # Purple — 카운터 확인
+      docker exec el34-fw nft -a list chain inet six_filter forward | grep '10.20.30.202'
+      # self-clean — 이 룰만 삭제 (베이스 보존)
+      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter forward" | grep '10.20.30.202' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule inet six_filter forward handle $h; done
+      ```
+      ## ✅ 합격 기준
+      카운터 라인에 `packets` 가 보인다.
+    hint: 'insert drop → 공격 재현 → nft -a list chain 의 packets → 삭제'
+    category: response
+    points: 15
+    answer: |
+      docker exec el34-fw nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop
+      docker exec el34-attacker sh -c 'for i in $(seq 1 20); do curl -s -m1 -H "Host: juice.6v6.lab" http://10.20.30.1/ >/dev/null; done'
+      echo "=== 카운터 (packets 누적) ==="
+      docker exec el34-fw nft -a list chain inet six_filter forward | grep '10.20.30.202'
+      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter forward" | grep '10.20.30.202' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+')
+      for h in $H; do docker exec el34-fw nft delete rule inet six_filter forward handle $h; done
+      echo "self-clean done"
+    answer_detail: "차단 효과는 packets 누적으로 증명. 검증 후 자기 룰을 삭제해 공유 fw 의 베이스 정책을 보존한다."
+    verify:
+      type: output_contains
+      expect: 'packets'
+      field: stdout
+      semantic:
+        intent: "악성 IP 단일 차단(가장 빠른 1차 대응) + 카운터로 효과 증명 + self-clean 규율"
+        success_criteria:
+          - "Blue forward drop → Red 재현 → packets 누적의 R/B/P 순서"
+          - "packets 누적으로 차단 작동 증명"
+          - "단일 IP 차단의 한계(분산 출발지) → fw-s11 객체로 진화 필요성 인지"
+        acceptable_methods:
+          - "**[CLI] nft insert drop → nft -a list chain 의 packets (권장)**"
+          - "**[설명] 단일 IP 차단의 한계 1문장**"
+    target_vm: fw
+
+  - order: 4
+    instruction: |
+      ## 🎯 시나리오 fw-s03 — SSH brute force 의 가용성 보존형 완화
+
+      22 번을 통째로 막으면 정상 사용자가 못 들어온다. **분당 10회 초과** 의 신규 연결만 drop —
+      `tcp dport 22 ct state new limit rate over 10/minute drop`. 폭주만 잡고 정상은 통과. (검증 후 self-clean)
+
+      ## 💻 단계 명령
+      ```bash
+      docker exec el34-fw nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop
+      docker exec el34-fw nft list chain inet six_filter input | grep -E '10/minute'
+      # self-clean
+      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter input" | grep '10/minute' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule inet six_filter input handle $h; done
+      ```
+      ## ✅ 합격 기준
+      룰에 `10/minute` 가 보인다.
+    hint: 'rate limit 룰 → nft list chain input 에 10/minute → 삭제'
+    category: response
+    points: 15
+    answer: |
+      docker exec el34-fw nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop
+      echo "=== rate limit 룰 ==="
+      docker exec el34-fw nft list chain inet six_filter input | grep -E '10/minute'
+      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter input" | grep '10/minute' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+')
+      for h in $H; do docker exec el34-fw nft delete rule inet six_filter input handle $h; done
+      echo "self-clean done"
+    answer_detail: "정상 SSH(분당 10회 이하)는 통과, 폭주만 drop. 가용성을 해치지 않는 방어의 기본 패턴."
+    verify:
+      type: output_contains
+      expect: '10/minute'
+      field: stdout
+      semantic:
+        intent: "가용성을 죽이지 않는 brute force 방어 — '닫는다'가 아닌 '제한한다' 사고로의 전환"
+        success_criteria:
+          - "tcp dport 22 + ct state new + limit rate 의 3 요소 조합"
+          - "정상 SSH 가 막히지 않는다는 점 이해"
+          - "동일 패턴이 9100 등 다른 관리 포트에도 적용 가능"
+        acceptable_methods:
+          - "**[CLI] nft insert ... limit rate over 10/minute (권장)**"
+          - "**[설명] rate limit vs 포트 전체 차단 의 차이 서술**"
+    target_vm: fw
+
+  - order: 5
+    instruction: |
+      ## 🎯 시나리오 fw-s07 — 화이트리스트 (관리 포트는 관리망에서만)
+
+      9100 (관리 포트)은 **관리망(pipe 10.20.31.0/24)** 에서만 허용, 그 외 출발지는 drop.
+      **순서가 핵심** — accept(좁은 범위)가 위(insert), drop(전부)이 아래(add). (검증 후 self-clean)
+
+      ## 💻 단계 명령
+      ```bash
+      docker exec el34-fw nft insert rule inet six_filter input ip saddr 10.20.31.0/24 tcp dport 9100 counter accept
+      docker exec el34-fw nft add rule inet six_filter input tcp dport 9100 counter drop
+      docker exec el34-fw nft list chain inet six_filter input | grep -c 'dport 9100'
+      # self-clean (9100 매처 룰 모두 삭제)
+      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter input" | grep 'dport 9100' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule inet six_filter input handle $h; done
+      ```
+      ## ✅ 합격 기준
+      `dport 9100` 매처가 2회 이상 등장한다(accept + drop).
+    hint: '좁은 accept(insert/top) → 넓은 drop(add/bottom). 9100 매치 ≥ 2'
+    category: response
+    points: 15
+    answer: |
+      docker exec el34-fw nft insert rule inet six_filter input ip saddr 10.20.31.0/24 tcp dport 9100 counter accept
+      docker exec el34-fw nft add rule inet six_filter input tcp dport 9100 counter drop
+      C=$(docker exec el34-fw sh -c "nft list chain inet six_filter input" | grep -c 'dport 9100')
+      [ "$C" -ge 2 ] && echo "rules_with_9100=$C OK" || echo "rules_with_9100=$C FAIL"
+      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter input" | grep 'dport 9100' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+')
+      for h in $H; do docker exec el34-fw nft delete rule inet six_filter input handle $h; done
+      echo "self-clean done"
+    answer_detail: "허용 먼저(top) → 거부 나중(bottom). 순서가 바뀌면 관리망도 막힌다 — 화이트리스트 설계의 정석."
+    verify:
+      type: output_contains
+      expect: 'OK'
+      field: stdout
+      semantic:
+        intent: "허용/거부의 순서 의존성 체화 — 화이트리스트 운영의 가장 흔한 실수 방지"
+        success_criteria:
+          - "좁은 accept top + 넓은 drop bottom 의 2단 구성"
+          - "순서가 바뀔 때 어떻게 망가지는지 설명 가능"
+          - "관리망(pipe)만 허용 = 외부 차단 의 의미 이해"
+        acceptable_methods:
+          - "**[CLI] insert accept(좁음) → add drop(넓음) 2단 (권장)**"
+          - "**[설명] 순서가 바뀌면 망가지는 이유 서술**"
+    target_vm: fw
+
+  - order: 6
+    instruction: |
+      ## 🎯 시나리오 fw-s08 — DNAT 으로 안전한 공개
+
+      공개하지 않은 8088 포트로 들어온 트래픽을 내부 웹서버(10.20.32.80:80)로 보낸다(DNAT prerouting).
+      외부에서 8088 접속이 도달하면 성공. (검증 후 self-clean)
+
+      ## 💻 단계 명령
+      ```bash
+      docker exec el34-fw nft add rule ip six_nat prerouting iifname "eth0" tcp dport 8088 counter dnat to 10.20.32.80:80
+      sleep 1
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "code=%{http_code}\n" -m 3 http://10.20.30.1:8088/'
+      # self-clean (8088 DNAT 삭제)
+      H=$(docker exec el34-fw sh -c "nft -a list chain ip six_nat prerouting" | grep '8088' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule ip six_nat prerouting handle $h; done
+      ```
+      ## ✅ 합격 기준
+      8088 응답 코드가 000 이 아니다(도달함). 적용 전엔 connection refused/000.
+    hint: 'DNAT 8088→web:80 → attacker 8088 접속 code 가 200/400/403 등'
+    category: response
+    points: 15
+    answer: |
+      docker exec el34-fw nft add rule ip six_nat prerouting iifname "eth0" tcp dport 8088 counter dnat to 10.20.32.80:80
+      sleep 1
+      CODE=$(docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "%{http_code}" -m 3 http://10.20.30.1:8088/')
+      echo "code=$CODE reached=$([ "$CODE" != "000" ] && echo yes || echo no)"
+      H=$(docker exec el34-fw sh -c "nft -a list chain ip six_nat prerouting" | grep '8088' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+')
+      for h in $H; do docker exec el34-fw nft delete rule ip six_nat prerouting handle $h; done
+      echo "self-clean done"
+    answer_detail: "DNAT prerouting — 외부 8088 → 내부 web:80. 내부 IP 노출 없이 공개. NAT 만으로는 보안 아님, 차단정책과 함께."
+    verify:
+      type: output_contains
+      expect: 'reached=yes'
+      field: stdout
+      semantic:
+        intent: "DNAT 의 안전한 공개 패턴 + NAT 만으로는 보안이 아니라는 핵심 인지"
+        success_criteria:
+          - "prerouting DNAT 가 트래픽 도달을 가능케 함"
+          - "내부 IP 가 외부에 노출되지 않음을 이해"
+          - "공개 포트도 forward 차단 룰의 적용 대상이어야 안전"
+        acceptable_methods:
+          - "**[CLI] nft add ... dnat to 10.20.32.80:80 → attacker 8088 접속 (권장)**"
+          - "**[설명] NAT 은 보안이 아니다 1문장**"
+    target_vm: fw
+
+  - order: 7
+    instruction: |
+      ## 🎯 시나리오 fw-s11 — 객체(set)로 다중 차단 + CTI 운영
+
+      악성 IP 5개 — 룰 5개 만들지 말고 **set 1개**에 5개 IP 를 모은다. 룰은 `@blocklist counter drop` 1줄.
+      새 악성 IP 가 오면 **룰은 그대로 두고** set 에만 추가. (검증 후 self-clean: 룰 + set 삭제)
+
+      ## 💻 단계 명령
+      ```bash
+      docker exec el34-fw nft add set inet six_filter blocklist '{ type ipv4_addr ; }'
+      docker exec el34-fw nft add element inet six_filter blocklist '{ 10.20.30.200, 10.20.30.201, 10.20.30.203, 10.20.30.204, 10.20.30.250 }'
+      docker exec el34-fw nft insert rule inet six_filter forward ip saddr @blocklist counter drop
+      docker exec el34-fw nft list chain inet six_filter forward | grep -c 'blocklist'
+      # self-clean (룰 먼저, set 나중)
+      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter forward" | grep '@blocklist' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule inet six_filter forward handle $h; done
+      docker exec el34-fw nft delete set inet six_filter blocklist
+      ```
+      ## ✅ 합격 기준
+      forward 체인에 `blocklist` 참조가 보인다.
+    hint: 'set 생성 → element 5개 → 룰 1줄 @blocklist drop → grep blocklist ≥ 1 → 삭제'
+    category: response
+    points: 15
+    answer: |
+      docker exec el34-fw nft add set inet six_filter blocklist '{ type ipv4_addr ; }'
+      docker exec el34-fw nft add element inet six_filter blocklist '{ 10.20.30.200, 10.20.30.201, 10.20.30.203, 10.20.30.204, 10.20.30.250 }'
+      docker exec el34-fw nft insert rule inet six_filter forward ip saddr @blocklist counter drop
+      C=$(docker exec el34-fw sh -c "nft list chain inet six_filter forward" | grep -c 'blocklist')
+      [ "$C" -ge 1 ] && echo "blocklist_refs=$C OK" || echo "blocklist_refs=$C FAIL"
+      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter forward" | grep '@blocklist' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+')
+      for h in $H; do docker exec el34-fw nft delete rule inet six_filter forward handle $h; done
+      docker exec el34-fw nft delete set inet six_filter blocklist 2>/dev/null
+      echo "self-clean done"
+    answer_detail: "객체(named set) = 룰의 수를 늘리지 말고 데이터를 늘리는 운영 패턴. CTI 반영 속도가 핵심. (.202 는 attacker 라 set 예시에서 제외)"
+    verify:
+      type: output_contains
+      expect: 'OK'
+      field: stdout
+      semantic:
+        intent: "named set 으로 운영 일관성·반응속도 확보 — 룰 폭증을 막는 정석 패턴"
+        success_criteria:
+          - "set 1개에 IP 5개 등록"
+          - "룰은 1줄 @blocklist drop"
+          - "새 IP 추가 시 룰 무수정 즉시 반영의 이점 인지"
+        acceptable_methods:
+          - "**[CLI] nft add set + add element + @blocklist 참조 룰 (권장)**"
+          - "**[설명] 룰 폭증 대신 set 데이터 증가 의 이점 서술**"
+    target_vm: fw
+
+  - order: 8
+    instruction: |
+      ## 🎯 미션 — Stateful (conntrack) 표 읽기
+
+      트래픽을 한 번 발생시키고 conntrack 표에 그 연결이 보이는지 확인한다. 운영자는 평소에 표의
+      `[UNREPLIED]` 비중을 살펴 NAT 비대칭/SYN flood 의 조기 신호로 쓴다.
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-attacker sh -c 'curl -s -m 3 -H "Host: juice.6v6.lab" http://10.20.30.1/ >/dev/null'
+      docker exec el34-fw sh -c 'conntrack -L 2>/dev/null | grep -c "dport=80"'
+      docker exec el34-fw sh -c 'conntrack -L 2>/dev/null | grep "10.20.30.202" | head -2'
+      ```
+      ## ✅ 합격 기준
+      conntrack 표에 80 으로의 연결(`dport=80`)이 1개 이상 보인다.
+    hint: 'curl 발생 → conntrack -L 에서 dport=80 연결'
+    category: detect
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c 'curl -s -m 3 -H "Host: juice.6v6.lab" http://10.20.30.1/ >/dev/null'
+      sleep 1
+      echo "=== conntrack dport=80 연결 수 ==="
+      docker exec el34-fw sh -c 'conntrack -L 2>/dev/null | grep -c "dport=80"'
+      echo "=== 샘플 항목 (출처 보존: 10.20.30.202) ==="
+      docker exec el34-fw sh -c 'conntrack -L 2>/dev/null | grep "10.20.30.202" | head -2'
+    answer_detail: "conntrack 항목 = 살아있는 연결. src=10.20.30.202 가 보존(fw SNAT 안 함). [UNREPLIED]/[ASSURED] 로 NAT 끊김 진단."
+    verify:
+      type: output_contains
+      expect: 'dport=80'
+      field: stdout
+      semantic:
+        intent: "stateful 이 무엇인지 표로 체화 — 살아있는 연결과 그 상태의 시각화"
+        success_criteria:
+          - "conntrack 에 dport=80 연결 존재"
+          - "[UNREPLIED]/[ASSURED] 의 의미 이해"
+          - "NAT 끊김 4 패턴(asymmetric/timeout/drop/full) 중 1개 이상 설명"
+        acceptable_methods:
+          - "**[CLI] conntrack -L | grep dport=80 (권장)**"
+          - "**[설명] [UNREPLIED] 다수 → NAT 비대칭 의심 의 진단 흐름 서술**"
+    target_vm: fw
+
+  - order: 9
+    instruction: |
+      ## 🎯 미션 — SIEM(Wazuh) agent 구성 확인 (el34 현황)
+
+      el34 의 Wazuh 매니저(el34-siem)에 어떤 agent 가 Active 인지 확인한다. **현재 ips / web** 가 Active 다.
+      fw 의 nft 변경/카운터까지 SIEM 으로 보내려면 **fw 에 agent 를 추가**해야 하며, 이는 **W09(Wazuh)**
+      에서 다룬다.
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/agent_control -l
+      ```
+      ## ✅ 합격 기준
+      agent 목록에 `web` (또는 ips)가 Active 로 보인다.
+    hint: 'agent_control -l — el34 는 ips/web 가 Active (fw agent 는 W09)'
+    category: detect
+    points: 10
+    answer: |
+      echo "=== el34 Wazuh agent 목록 ==="
+      docker exec el34-siem /var/ossec/bin/agent_control -l
+    answer_detail: "el34 의 활성 agent 는 ips/web. fw 의 nft 이벤트까지 SIEM 으로 보내려면 fw agent 추가가 필요(W09). 통합 가시성의 출발점."
+    verify:
+      type: output_contains
+      expect: 'web'
+      field: stdout
+      semantic:
+        intent: "SIEM 통합으로 단일 화면 관제 — el34 의 현 agent 구성과 fw 확장 필요(W09) 인지"
+        success_criteria:
+          - "ips / web agent 가 Active"
+          - "fw agent 는 현재 없음 → W09 에서 추가 필요함을 이해"
+          - "통합 후 운영자 일상이 개별도구→SIEM 으로 이동함을 이해"
+        acceptable_methods:
+          - "**[CLI] siem 에서 agent_control -l 로 Active agent 확인 (권장)**"
+          - "**[설명] fw 이벤트를 SIEM 에 보내려면 agent 가 필요한 이유 서술**"
+    target_vm: siem
+
+  - order: 10
+    instruction: |
+      ## 🎯 미션 — 정리(cleanup) 확인 — 베이스 정책만 남았는가
+
+      각 시나리오에서 self-clean 했으므로, six_filter 의 forward/input 에 실습 룰(10.20.30.202 / dport 22 limit /
+      dport 9100 / @blocklist)과 six_nat 의 8088 DNAT, blocklist set 이 **남아 있지 않아야** 한다.
+      운영에서도 임시 룰은 반드시 정리한다 (룰 누적이 가장 흔한 장애 원인).
+
+      ## 💻 확인 명령
+      ```bash
+      # 실습 룰 잔재 검색 (0 이어야 정상) — 베이스(six_nat 9100 dnat 등)와 안 겹치게 lab 시그니처만
+      docker exec el34-fw sh -c 'nft list ruleset | grep -cE "10.20.30.202|10/minute|dport 9100 counter|dport 8088|blocklist"'
+      ```
+      ## ✅ 합격 기준
+      잔재 카운트가 0 이고 `clean` 이 출력된다. (남아 있으면 해당 핸들을 찾아 삭제)
+    hint: '잔재 grep -c 이 0 이어야 clean'
+    category: cleanup
+    points: 5
+    answer: |
+      N=$(docker exec el34-fw sh -c 'nft list ruleset | grep -cE "10.20.30.202|10/minute|dport 9100 counter|dport 8088|blocklist"')
+      echo "leftover_lab_rules=$N"
+      [ "$N" -eq 0 ] && echo "status=clean" || echo "status=dirty (핸들로 추가 삭제 필요)"
+    answer_detail: "임시 룰을 끝까지 남기지 않는다. 공유 fw 에선 self-clean 이 필수 SOP — 룰 누적은 성능/오차단 장애의 원인."
+    verify:
+      type: output_contains
+      expect: 'status=clean'
+      field: stdout
+      semantic:
+        intent: "운영 임시 룰의 의무 정리 — 룰 누적이 장애로 이어지는 가장 흔한 패턴 차단"
+        success_criteria:
+          - "실습 룰 잔재 0 확인"
+          - "베이스 정책(공인 DNAT 등)은 보존됨"
+          - "운영 SOP 로서 cleanup 의 위치 인지"
+        acceptable_methods:
+          - "**[CLI] nft list ruleset | grep -c <실습 시그니처> 가 0 (권장)**"
+          - "**[설명] 룰 누적이 일으키는 장애 1예 서술 (성능/오차단)**"
+    target_vm: fw
