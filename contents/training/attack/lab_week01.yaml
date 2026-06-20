@@ -1,0 +1,250 @@
+lab_id: standalone-attack-week01
+title: "침투 환경·정찰 개시 vs 방어 가시성 확인"
+version: standalone-attack
+course: attack
+week: 1
+description: |
+  침투 테스트의 시작 — RoE 안에서 정찰(도달성/포트/서비스/웹 핑거프린팅)을 개시하고, 그 정찰이 방어
+  스택(Suricata)에 어떻게 보이는지 확인한다(공방 통합). 공격은 `docker exec el34-attacker`(내부 공격자
+  10.20.30.202), 대상은 fw 게이트웨이(10.20.30.1)+web vhost. 인가된 실습 환경만. 명령은 el34 호스트에서.
+difficulty: medium
+duration_minutes: 150
+prerequisites:
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec"
+  - "lecture §1(PTES/RoE) §3-§5(정찰/가시성) 숙지"
+objectives:
+  - "대상 도달성 + 포트/서비스 발견(nmap)"
+  - "웹 자산 핑거프린팅(curl)"
+  - "정찰의 방어 가시성(Suricata) 확인"
+  - "공격 표면 매핑 + PTES 방법론"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 공격자 도구 + 대상 도달성
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'which nmap curl'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "도달=%{http_code}\n" -H "Host: dvwa.el34.lab" http://10.20.30.1/'
+      ```
+      ## ✅ 합격 기준
+      nmap/curl 사용 가능 + 대상 도달.
+    hint: 'which nmap curl + 도달성'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 공격자 도구 ==="
+      docker exec el34-attacker sh -c 'which nmap curl'
+      echo "=== 대상 도달성 ==="
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "도달=%{http_code}\n" -H "Host: dvwa.el34.lab" http://10.20.30.1/'
+    answer_detail: "정찰 도구(nmap/curl) + 대상(fw 10.20.30.1) 도달성 확인 = 침투의 출발점. el34-attacker(10.20.30.202)가 공격 위치."
+    verify:
+      type: output_contains
+      expect: 'nmap'
+      field: stdout
+      semantic:
+        intent: "공격자 도구 + 대상 도달성 점검"
+        success_criteria: ["nmap/curl 가용", "대상 도달"]
+        acceptable_methods: ["**[OSS] which + curl 도달성 (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 포트 스캔 — 열린 포트 발견
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker nmap -p 80,443,8001-8007,9100 10.20.30.1 -T4 --max-retries 1
+      ```
+      ## ✅ 합격 기준
+      열린 포트(80/443 등)를 발견한다.
+    hint: 'nmap -p 포트 스캔'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== 포트 스캔 (fw DNAT 공개 포트) ==="
+      docker exec el34-attacker nmap -p 80,443,8001-8007,9100 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -E "open|PORT"
+    answer_detail: "fw가 DNAT한 공개 포트(80/443/8001-8007)가 open으로 보인다 = el34의 공격 표면. 닫힌 포트는 filtered/closed."
+    verify:
+      type: output_contains
+      expect: 'open'
+      field: stdout
+      semantic:
+        intent: "열린 포트 발견"
+        success_criteria: ["open 포트", "공격 표면"]
+        acceptable_methods: ["**[OSS] nmap -p (권장)**"]
+    target_vm: ips
+
+  - order: 3
+    instruction: |
+      ## 🎯 서비스 버전 식별 — nmap -sV
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker nmap -sV -p 80,443 10.20.30.1 -T4 --max-retries 1
+      ```
+      ## ✅ 합격 기준
+      서비스/버전(http 등)을 식별한다.
+    hint: 'nmap -sV 서비스 버전'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== 서비스 버전 식별 ==="
+      docker exec el34-attacker nmap -sV -p 80,443 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -E "open|PORT|http"
+    answer_detail: "-sV로 서비스/버전 식별 — 알려진 취약점(CVE) 매핑의 출발점. 버전이 오래됐으면 익스플로잇 후보."
+    verify:
+      type: output_contains
+      expect: 'http'
+      field: stdout
+      semantic:
+        intent: "서비스 버전 식별"
+        success_criteria: ["http 서비스", "버전 단서"]
+        acceptable_methods: ["**[OSS] nmap -sV (권장)**"]
+    target_vm: ips
+
+  - order: 4
+    instruction: |
+      ## 🎯 웹 핑거프린팅 — 기술 스택
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      웹 기술 스택(Server 헤더 등)을 식별한다.
+    hint: 'curl -sI Server 헤더'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== 웹 핑거프린팅 (dvwa) ==="
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | head -8"
+      echo "=== 다른 vhost (juice) ==="
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: juice.el34.lab' http://10.20.30.1/ | head -3"
+    answer_detail: "curl -I로 Server 헤더/응답 코드 식별 — Apache 버전, vhost별 다른 앱(dvwa/juice). 각 앱이 다른 익스플로잇 표면."
+    verify:
+      type: output_contains
+      expect: 'HTTP'
+      field: stdout
+      semantic:
+        intent: "웹 기술 스택 핑거프린팅"
+        success_criteria: ["Server 헤더/응답", "vhost별 앱"]
+        acceptable_methods: ["**[OSS] curl -I (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 방어 가시성 — 내 정찰이 보이나
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c 'tail -2000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.src_ip" | sort | uniq -c'
+      ```
+      ## ✅ 합격 기준
+      정찰이 Suricata에 탐지됨(출발지 10.20.30.202)을 확인한다.
+    hint: 'eve.json 의 src 10.20.30.202 탐지'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 방어 가시성 (내 정찰의 Suricata 탐지) ==="
+      docker exec el34-ips sh -c 'tail -2000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.src_ip" | sort | uniq -c'
+      docker exec el34-ips sh -c 'tail -2000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.alert.signature" | sort | uniq -c | tail -3'
+      echo "→ 내 스캔이 출발지 10.20.30.202로 탐지됨. 느린 스캔(-T2)/분산으로 회피 가능(고급)"
+    answer_detail: "공격자도 자기 행동의 탐지를 안다. 스캔이 Suricata에 출발지(10.20.30.202)로 잡히면 '시끄러운' 정찰. 회피는 느린/분산 스캔(탐지 회피의 출발점)."
+    verify:
+      type: output_contains
+      expect: '10.20.30.202'
+      field: stdout
+      semantic:
+        intent: "정찰의 방어 가시성 확인(공격자 관점)"
+        success_criteria: ["Suricata 탐지", "출발지 10.20.30.202"]
+        acceptable_methods: ["**[OSS] eve.json 자기 탐지 확인 (권장)**"]
+    target_vm: ips
+
+  - order: 6
+    instruction: |
+      ## 🎯 공격 표면 매핑
+      ## 💻 실행 명령
+      ```bash
+      echo "공개 포트: 80/443(웹), 8001-8007(앱), 9100(API). vhost: dvwa/juice/neobank... = 익스플로잇 후보"
+      ```
+      ## ✅ 합격 기준
+      발견한 자산/포트를 공격 표면으로 정리한다.
+    hint: '포트+vhost 공격 표면 정리'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 공격 표면 매핑 ==="
+      echo "공개 포트: 80/443(HTTP/S), 8001-8007(앱 포트), 9100(API)"
+      echo "웹 vhost: dvwa.el34.lab(SQLi/XSS), juice.el34.lab(modern), neobank/mediforum/govportal..."
+      echo "→ 각 vhost/포트가 다른 익스플로잇 표면. 다음 주 정찰 심화로 숨은 자산까지"
+    answer_detail: "공격 표면 = 발견한 모든 진입점(포트+vhost+엔드포인트). 익스플로잇은 이 표면에서 시작. 넓게 매핑할수록 기회가 많다."
+    verify:
+      type: output_contains
+      expect: 'vhost'
+      field: stdout
+      semantic:
+        intent: "공격 표면 매핑"
+        success_criteria: ["포트/vhost 정리", "익스플로잇 후보"]
+        acceptable_methods: ["**[관리적] 표면 매핑 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 정찰 방법론 — PTES + RoE
+      ## 💻 실행 명령
+      ```bash
+      echo "PTES: 정찰→위협모델링→취약점분석→익스플로잇→포스트→보고. RoE: 범위/시간/방법 준수"
+      ```
+      ## ✅ 합격 기준
+      PTES 방법론과 RoE를 정리한다.
+    hint: 'PTES 단계 + RoE'
+    category: report
+    points: 10
+    answer: |
+      echo "=== PTES 방법론 ==="
+      echo "① 정찰(Intelligence Gathering) ← 이번 주 ② 위협모델링 ③ 취약점분석 ④ 익스플로잇 ⑤ 포스트익스플로잇 ⑥ 보고"
+      echo "=== RoE (교전 규칙) ==="
+      echo "범위(어디까지)·시간(언제)·방법(무엇 금지)·증거(기록). 인가된 환경(el34)만, 무단 공격 불법"
+    answer_detail: "PTES = 체계적 침투 테스트 방법론. RoE = 합법·안전의 경계. 정찰은 1단계 — 충분히 알고 공격한다."
+    verify:
+      type: output_contains
+      expect: 'PTES'
+      field: stdout
+      semantic:
+        intent: "PTES 방법론 + RoE 이해"
+        success_criteria: ["PTES 6단계", "RoE 준수"]
+        acceptable_methods: ["**[설명] PTES/RoE (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 정찰 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W01 정찰 보고서 (학번, 이름)
+      ## 1. 도달성/포트 (nmap)
+      ## 2. 서비스/기술 스택 (curl/nmap -sV)
+      ## 3. 공격 표면 (vhost/엔드포인트)
+      ## 4. 방어 가시성 (내 정찰의 탐지)
+      ```
+      ## ✅ 합격 기준
+      보고서에 정찰 결과 + 방어 가시성이 포함된다.
+    hint: '포트+스택+표면+가시성'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 공격 W01 정찰 보고서
+      ## 1. 도달성/포트: 80/443/8001-8007 open (fw DNAT 공개 포트)
+      ## 2. 서비스/스택: Apache(HTTP), vhost별 앱(dvwa/juice...)
+      ## 3. 공격 표면: 웹 vhost 다수 = SQLi/XSS/API 익스플로잇 후보
+      ## 4. 방어 가시성: 내 스캔이 Suricata에 출발지 10.20.30.202로 탐지 → 회피 고려(느린/분산 스캔)
+      ## 결론: 정찰로 공격 표면을 매핑. 다음 단계는 표면별 취약점 분석·익스플로잇
+      EOF
+    answer_detail: "정찰 보고서 = 도달성/포트/스택/표면 + 방어 가시성. 충분한 정찰이 성공적 익스플로잇의 토대."
+    verify:
+      type: output_contains
+      expect: '정찰'
+      field: stdout
+      semantic:
+        intent: "정찰 종합 보고"
+        success_criteria: ["포트/스택/표면", "방어 가시성"]
+        acceptable_methods: ["**[관리적] 정찰 보고서 (권장)**"]
+    target_vm: web
