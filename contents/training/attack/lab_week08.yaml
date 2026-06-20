@@ -1,0 +1,263 @@
+lab_id: standalone-attack-week08
+title: "중간고사 CTF — 익스플로잇 체인으로 플래그(셸) 캡처"
+version: standalone-attack
+course: attack
+week: 8
+description: |
+  W01–W07 종합 CTF. 정찰→웹 익스플로잇→셸 획득(플래그=리스너 48008)의 익스플로잇 체인을 구성하고,
+  방어자 관점으로 체인을 역재구성하고 IDS 탐지 룰(sid 9408001)을 쓴다. 셸/룰은 self-clean.
+  인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 220
+prerequisites:
+  - "W01–W07 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(체인 단계) §3(플래그) 숙지"
+objectives:
+  - "정찰→침투→셸의 익스플로잇 체인 구성"
+  - "플래그(셸 포트 48008) 캡처"
+  - "방어자 관점 체인 역재구성 + IDS 룰"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 도구 + 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'command -v nmap sqlmap; curl -s -o /dev/null -w " dvwa=%{http_code}\n" -H "Host: dvwa.el34.lab" http://10.20.30.1/'
+      ```
+      ## ✅ 합격 기준
+      도구 + 대상 준비.
+    hint: 'nmap/sqlmap + 대상'
+    category: survey
+    points: 8
+    answer: |
+      docker exec el34-attacker sh -c 'command -v nmap; command -v sqlmap'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "dvwa=%{http_code}\n" -H "Host: dvwa.el34.lab" http://10.20.30.1/'
+    answer_detail: "CTF 도구(nmap/sqlmap) + 대상(dvwa) 준비."
+    verify:
+      type: output_contains
+      expect: 'nmap'
+      field: stdout
+      semantic:
+        intent: "도구/대상 점검"
+        success_criteria: ["도구 + 대상"]
+        acceptable_methods: ["**[OSS] 점검 (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 ① 정찰 — 표면 식별
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker nmap -p 80,443 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -E "open|PORT"
+      ```
+      ## ✅ 합격 기준
+      공격 표면(열린 포트)을 식별한다.
+    hint: 'nmap 포트'
+    category: recon
+    points: 10
+    answer: |
+      echo "=== ① 정찰 ==="
+      docker exec el34-attacker nmap -p 80,443,8001-8007 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -E "open|PORT"
+    answer_detail: "CTF 1단계 정찰 — 표면 매핑. 열린 포트/웹 vhost가 익스플로잇 후보."
+    verify:
+      type: output_contains
+      expect: 'open'
+      field: stdout
+      semantic:
+        intent: "정찰 표면 식별"
+        success_criteria: ["열린 포트"]
+        acceptable_methods: ["**[OSS] nmap (권장)**"]
+    target_vm: ips
+
+  - order: 3
+    instruction: |
+      ## 🎯 ② 웹 익스플로잇 — 침투
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'exploit=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=ct8%27%20UNION%20SELECT%201--%20-\""
+      ```
+      ## ✅ 합격 기준
+      웹 익스플로잇(SQLi)을 시도한다(403=탐지/차단).
+    hint: 'SQLi 침투'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== ② 웹 익스플로잇 (SQLi + 스캐너 UA) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'exploit=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=ct8%27%20UNION%20SELECT%201--%20-\""
+      echo "→ 침투 시도. dvwa 차단 모드면 403(탐지). 실제 CTF는 취약 vhost/엔드포인트 선택"
+    answer_detail: "CTF 2단계 — 가장 효과적인 웹 취약점으로 침투. SQLi/스캐너 UA가 WAF에 탐지(403). 실전은 차단 안 되는 경로/취약점 선택."
+    verify:
+      type: output_contains
+      expect: 'exploit'
+      field: stdout
+      semantic:
+        intent: "웹 익스플로잇 침투"
+        success_criteria: ["SQLi 침투 시도"]
+        acceptable_methods: ["**[OSS] SQLi (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 ③ 셸 캡처 (플래그) — 포트 48008
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'nohup python3 -m http.server 48008 >/dev/null 2>&1 & echo shell_captured'
+      sleep 1
+      docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=48008;'
+      docker exec el34-web sh -c 'pkill -f "[h]ttp.server 48008"; true'
+      ```
+      ## ✅ 합격 기준
+      셸 캡처(플래그 포트 48008)를 획득·확인한다.
+    hint: '리스너 48008 = 플래그'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== ③ 셸 캡처 (플래그 = 포트 48008) ==="
+      docker exec el34-web sh -c 'nohup python3 -m http.server 48008 >/dev/null 2>&1 & echo shell_captured'
+      sleep 1
+      docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=48008;'
+      docker exec el34-web sh -c 'pkill -f "[h]ttp.server 48008" 2>/dev/null; true'
+      echo "flag captured (48008)"
+    answer_detail: "CTF 3단계 = 플래그 캡처. 코드 실행 거점(셸/리스너 48008) 확보 = 익스플로잇 체인 완성. osquery로 확인 후 self-clean."
+    verify:
+      type: output_contains
+      expect: '48008'
+      field: stdout
+      semantic:
+        intent: "셸 캡처(플래그) 획득"
+        success_criteria: ["리스너 48008 캡처", "osquery 확인"]
+        acceptable_methods: ["**[OSS] 리스너 + osquery (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 ④ IDS 탐지 룰 (방어자, sid 9408001)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert http any any -> any any (msg:\"CTF8 sqlmap recon\"; http.user_agent; content:\"sqlmap\"; nocase; fast_pattern; sid:9408001; rev:1;)
+      EOF"'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'; sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A sqlmap/1.7 -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=ct8b"'; sleep 4
+      docker exec el34-ips sh -c 'sudo grep "9408001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature}"'
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9408001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+      ```
+      ## ✅ 합격 기준
+      IDS 룰(9408001)이 정찰을 탐지한다(정리 후 보존).
+    hint: 'sqlmap UA 룰(9408001) → eve → 삭제'
+    category: manipulation
+    points: 14
+    answer: |
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert http any any -> any any (msg:\"CTF8 sqlmap recon\"; http.user_agent; content:\"sqlmap\"; nocase; fast_pattern; sid:9408001; rev:1;)
+      EOF"'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'; sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A sqlmap/1.7 -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=ct8b"'; sleep 4
+      echo "=== eve ==="
+      docker exec el34-ips sh -c 'sudo grep "9408001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature}"'
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9408001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
+    answer_detail: "방어자 관점 — CTF 정찰(sqlmap UA)을 IDS 룰(9408001)로 탐지. 끝나면 sed 삭제로 base 보존."
+    verify:
+      type: output_contains
+      expect: 'CTF8 sqlmap'
+      field: stdout
+      semantic:
+        intent: "IDS 탐지 룰로 정찰 탐지"
+        success_criteria: ["sid 9408001 발화", "삭제 보존"]
+        acceptable_methods: ["**[OSS] http.user_agent 룰 (권장)**"]
+    target_vm: ips
+
+  - order: 6
+    instruction: |
+      ## 🎯 ⑤ 체인 역재구성 (방어자)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -100 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head'
+      ```
+      ## ✅ 합격 기준
+      WAF/IDS/호스트 흔적으로 익스플로잇 체인을 역재구성한다.
+    hint: 'modsec 흔적으로 체인 재구성'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 익스플로잇 체인 역재구성 (방어자) ==="
+      echo "[WAF 흔적]"; docker exec el34-web sh -c 'sudo tail -100 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head'
+      echo "→ 정찰(913 scanner) → 침투(942 SQLi) → 셸(호스트 포트 48008). 한 공격자의 체인으로 종합"
+    answer_detail: "방어자 = 흩어진 흔적(WAF 913/942 + IDS + 호스트 포트)을 한 익스플로잇 체인으로 역재구성. 정찰→침투→셸 경로 복원."
+    verify:
+      type: output_contains
+      expect: '942'
+      field: stdout
+      semantic:
+        intent: "익스플로잇 체인 역재구성"
+        success_criteria: ["WAF/IDS/호스트 흔적 종합"]
+        acceptable_methods: ["**[OSS] modsec 흔적 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 플래그 검증 + 정리
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'pgrep -f "[h]ttp.server 48008" && echo "셸 잔재!" || echo "shell clean"'
+      docker exec el34-ips sh -c 'sudo grep -c 9408001 /etc/suricata/rules/local.rules'
+      ```
+      ## ✅ 합격 기준
+      플래그 캡처 확인 + 셸/룰 잔재 0.
+    hint: '48008 셸 정리 + 9408001 룰 잔재 0'
+    category: cleanup
+    points: 10
+    answer: |
+      echo "=== 플래그(48008) 정리 + 룰 정리 확인 ==="
+      docker exec el34-web sh -c 'pkill -f "[h]ttp.server 48008" 2>/dev/null; pgrep -f "[h]ttp.server 48008" && echo "셸 잔재!" || echo "shell clean"'
+      docker exec el34-ips sh -c 'echo "9408001 잔재=$(sudo grep -c 9408001 /etc/suricata/rules/local.rules)"'
+      echo "CTF flag(48008) 캡처 완료 + self-clean"
+    answer_detail: "CTF 마무리 = 플래그 캡처 입증 + 셸/IDS룰 self-clean. 공유 인프라 보존."
+    verify:
+      type: output_contains
+      expect: 'shell clean'
+      field: stdout
+      semantic:
+        intent: "플래그 검증 + 정리"
+        success_criteria: ["셸 잔재 0", "룰 잔재 0"]
+        acceptable_methods: ["**[OSS] 잔재 점검 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 CTF 보고서 — 익스플로잇 체인
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W08 CTF 보고서 (학번, 이름)
+      ## 1. 정찰 (표면)
+      ## 2. 익스플로잇 체인 (침투 경로)
+      ## 3. 플래그 캡처 (셸 48008)
+      ## 4. 방어자 역재구성 + IDS 룰
+      ```
+      ## ✅ 합격 기준
+      보고서에 익스플로잇 체인 + 플래그가 포함된다.
+    hint: '정찰→체인→플래그→방어'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 공격 W08 CTF 보고서
+      ## 1. 정찰: nmap으로 표면(포트/vhost) 식별
+      ## 2. 익스플로잇 체인: 정찰→웹 익스플로잇(SQLi 942)→발판→셸
+      ## 3. 플래그: 셸 캡처(리스너 48008 = 코드 실행 거점)
+      ## 4. 방어자: WAF(913/942)+IDS(9408001)+호스트(48008) 흔적으로 체인 역재구성
+      ## 결론: 개별 취약점을 체인으로 엮어 코드 실행까지. 방어는 체인 역재구성으로 끊기
+      EOF
+    answer_detail: "CTF = 개별 기법(W01-07)을 익스플로잇 체인으로. 정찰→침투→셸(플래그). 방어자는 체인을 역재구성해 어느 단계서든 끊는다."
+    verify:
+      type: output_contains
+      expect: '체인'
+      field: stdout
+      semantic:
+        intent: "CTF 익스플로잇 체인 종합 보고"
+        success_criteria: ["정찰/체인/플래그/방어"]
+        acceptable_methods: ["**[관리적] CTF 보고서 (권장)**"]
+    target_vm: web
