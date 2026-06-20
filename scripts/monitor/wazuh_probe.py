@@ -98,7 +98,12 @@ def collect(timeout=20):
             "sample": len(lines), "span": f"{min(times)} ~ {max(times)}" if times else "n/a",
             "by_agent": dict(by_agent), "by_level": {str(k): v for k, v in by_level.items()},
             "by_rule_top": by_rule.most_common(12),
-            "attack_sigs": sorted({d for d in by_rule if "Suricata" in d or "Alert" in d})}
+            # 의미있는 탐지 시그니처: Suricata(네트워크) + Sigma/호스트 탐지. FIM/PAM/sudo 등
+            # 고볼륨 baseline 은 제외(공격유형 전환 신호가 아님). SOC 실습은 Sigma 탐지가 핵심.
+            "attack_sigs": sorted({d for d in by_rule if (
+                "Suricata" in d or "Alert" in d or "Sigma" in d or "sigma" in d
+                or any(k in d for k in ("webshell", "exploit", "C2", "스캔", "정찰", "침투")))
+                and "Integrity checksum" not in d})}
 
 
 def main():
