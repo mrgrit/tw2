@@ -1,0 +1,280 @@
+lab_id: standalone-soc-week09
+title: "사고 발생 첫 60분 — 식별·격리·제거·복구·교훈의 IR 절차"
+version: standalone-soc
+course: soc
+week: 9
+description: |
+  사고가 터진 첫 60분의 IR 절차를 한 바퀴 돈다 — Identify(식별)→Contain(격리)→Eradicate(제거)→
+  Recover(복구)→Lessons(교훈). 침투+발판(백도어 계정/웹쉘)을 재현하고, IDS 격리 룰(alert, sid 9509001)로
+  출발지를 플래그하고, osquery로 persistence를 제거하고, 서비스를 복구하고, 교훈을 정리한다.
+  격리 룰/발판은 self-clean(공유 인프라 보존). 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "W01–W08 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2-§6(IR 5단계) 숙지"
+objectives:
+  - "사고 범위/심각도 식별(Identify)"
+  - "IDS 격리 룰로 출발지 차단/플래그(Contain)"
+  - "osquery로 persistence 제거(Eradicate)"
+  - "서비스 정상성 검증(Recover) + 교훈 정리(Lessons)"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — IR 준비
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      docker exec el34-web osqueryi --version
+      ```
+      ## ✅ 합격 기준
+      SIEM + osquery(IR 도구)가 준비됐다.
+    hint: 'analysisd + osquery'
+    category: survey
+    points: 8
+    answer: |
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      docker exec el34-web osqueryi --version
+      echo "IR 도구: SIEM(식별) + osquery(제거) + IDS(격리)"
+    answer_detail: "IR 준비 = 식별(SIEM 로그) + 격리(IDS/fw) + 제거(osquery) 도구."
+    verify:
+      type: output_contains
+      expect: 'analysisd'
+      field: stdout
+      semantic:
+        intent: "IR 도구 준비 점검"
+        success_criteria: ["SIEM + osquery"]
+        acceptable_methods: ["**[OSS] 도구 점검 (권장)**"]
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 사고 재현 — 침투 + 발판
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw9%27%20UNION%20SELECT%201--%20-\""
+      docker exec el34-web sh -c 'userdel -r socw9bd 2>/dev/null; useradd -m -s /bin/bash socw9bd; echo "<?php system(\$_GET[c]); ?>" > /tmp/socw9_shell.php; echo planted'
+      echo "incident done"
+      ```
+      ## ✅ 합격 기준
+      침투 + 발판(백도어 계정/웹쉘)이 재현된다.
+    hint: 'SQLi + 백도어 계정 + 웹쉘 파일'
+    category: recon
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw9%27%20UNION%20SELECT%201--%20-\""
+      docker exec el34-web sh -c 'userdel -r socw9bd 2>/dev/null; useradd -m -s /bin/bash socw9bd; echo "<?php system(\$_GET[c]); ?>" > /tmp/socw9_shell.php; echo planted'
+      sleep 5
+      echo "incident done"
+    answer_detail: "사고 = 침투(SQLi) + 발판(백도어 계정 socw9bd + 웹쉘 socw9_shell.php). IR의 대상."
+    verify:
+      type: output_contains
+      expect: 'done'
+      field: stdout
+      semantic:
+        intent: "사고(침투+발판) 재현"
+        success_criteria: ["침투 + 발판"]
+        acceptable_methods: ["**[OSS] SQLi + 발판 (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 ① Identify — 범위/심각도 식별
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -1000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -5'
+      docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="socw9bd";'
+      ```
+      ## ✅ 합격 기준
+      사고 범위(출발지/발판)와 심각도를 식별한다.
+    hint: 'alerts.json 출발지 + osquery 발판'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== Identify: 공격 출발지/타임라인 ==="
+      docker exec el34-siem sh -c 'tail -1000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -5'
+      echo "=== Identify: 발판(백도어 계정) ==="
+      docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="socw9bd";'
+      echo "→ 범위: 출발지 10.20.30.202, web 호스트 침투, 백도어 계정 발판. 심각도: 침투 성공(P1)"
+    answer_detail: "Identify = 무슨 일이 어디까지. 출발지/타임라인(SIEM) + 발판(osquery). 백도어 계정 발견 = 침투 성공 → P1."
+    verify:
+      type: output_contains
+      expect: 'socw9bd'
+      field: stdout
+      semantic:
+        intent: "사고 범위/심각도 식별"
+        success_criteria: ["출발지/타임라인", "발판 식별", "심각도 판정"]
+        acceptable_methods: ["**[OSS] SIEM + osquery 식별 (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 ② Contain — 출발지 격리 (sid 9509001)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert ip 10.20.30.202 any -> any any (msg:\"SOC W09 IR contain - flag attacker source\"; sid:9509001; rev:1;)
+      EOF"'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/'
+      sleep 4
+      docker exec el34-ips sh -c 'sudo grep -c 9509001 /var/log/suricata/eve.json'
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9509001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+      ```
+      ## ✅ 합격 기준
+      격리 룰(9509001)이 공격 출발지 트래픽을 플래그한다(정리 후 보존).
+    hint: '출발지 alert 룰(9509001) → reload → 트리거 → eve → 삭제'
+    category: manipulation
+    points: 14
+    answer: |
+      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      alert ip 10.20.30.202 any -> any any (msg:\"SOC W09 IR contain flag attacker source\"; sid:9509001; rev:1;)
+      EOF"'
+      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      sleep 2
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/'
+      sleep 4
+      echo "=== 격리 룰 트리거 수 ==="
+      docker exec el34-ips sh -c 'sudo grep -c 9509001 /var/log/suricata/eve.json'
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9509001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
+    answer_detail: "Contain = 확산 차단. 공격 출발지(10.20.30.202)의 모든 트래픽을 플래그하는 IDS 룰(9509001). 운영은 drop+firewall, 공유 환경은 alert로 시연 + 정리. 격리는 빠르되 정밀(넓으면 정상 서비스 차단)."
+    verify:
+      type: output_contains
+      expect: 'rule_removed'
+      field: stdout
+      semantic:
+        intent: "출발지 격리 룰 + 검증 + 정리"
+        success_criteria: ["sid 9509001 격리 룰", "출발지 트래픽 플래그", "sed 삭제 보존"]
+        acceptable_methods: ["**[OSS] 출발지 alert 룰 + reload (권장)**"]
+    target_vm: ips
+
+  - order: 5
+    instruction: |
+      ## 🎯 ③ Eradicate — persistence 제거
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="socw9bd";'
+      docker exec el34-web sh -c 'ls -la /tmp/socw9_shell.php'
+      docker exec el34-web sh -c 'userdel -r socw9bd 2>/dev/null; rm -f /tmp/socw9_shell.php; echo eradicated'
+      ```
+      ## ✅ 합격 기준
+      백도어 계정/웹쉘을 빠짐없이 제거한다.
+    hint: 'osquery 발판 확인 → userdel + rm'
+    category: response
+    points: 14
+    answer: |
+      echo "=== 제거 전 발판 확인 ==="
+      docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="socw9bd";'
+      docker exec el34-web sh -c 'ls -la /tmp/socw9_shell.php 2>/dev/null'
+      echo "=== Eradicate ==="
+      docker exec el34-web sh -c 'userdel -r socw9bd 2>/dev/null; rm -f /tmp/socw9_shell.php; echo eradicated'
+    answer_detail: "Eradicate = 위협 뿌리 제거. 백도어 계정(userdel) + 웹쉘(rm). osquery로 빠짐없이 헌팅 후 제거 — 하나라도 남으면 재침투."
+    verify:
+      type: output_contains
+      expect: 'eradicated'
+      field: stdout
+      semantic:
+        intent: "persistence 완전 제거"
+        success_criteria: ["계정/웹쉘 확인", "userdel+rm 제거"]
+        acceptable_methods: ["**[OSS] osquery + userdel/rm (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 ④ Recover — 서비스 정상성 검증
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'curl -s -o /dev/null -w "web=%{http_code}\n" -H "Host: dvwa.el34.lab" http://localhost/'
+      docker exec el34-web sh -c 'id socw9bd 2>/dev/null && echo "잔재!" || echo "clean"'
+      ```
+      ## ✅ 합격 기준
+      서비스가 정상이고 발판 잔재가 없다.
+    hint: '웹 헬스체크 + 발판 잔재 0'
+    category: response
+    points: 12
+    answer: |
+      echo "=== Recover: 웹 서비스 정상성 ==="
+      docker exec el34-web sh -c 'curl -s -o /dev/null -w "web=%{http_code}\n" -H "Host: dvwa.el34.lab" http://localhost/'
+      echo "=== 발판 잔재 확인 ==="
+      docker exec el34-web sh -c 'id socw9bd 2>/dev/null && echo "계정 잔재!" || echo "clean"'
+      echo "→ 서비스 정상 + 발판 0 = 복구 완료"
+    answer_detail: "Recover = 정상화 검증. 웹 서비스 응답 정상 + 발판 잔재 0. 모니터링 강화로 재발 감시."
+    verify:
+      type: output_contains
+      expect: 'clean'
+      field: stdout
+      semantic:
+        intent: "서비스 정상성 + 잔재 0 검증"
+        success_criteria: ["웹 정상 응답", "발판 잔재 0"]
+        acceptable_methods: ["**[OSS] 헬스체크 + 잔재 점검 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 ⑤ Lessons — 교훈 + 근본 원인
+      ## 💻 실행 명령
+      ```bash
+      echo "근본원인: 웹앱 SQLi 취약점 → 침투 → 백도어. 재발방지: WAF 강화, 패치, 탐지룰(W04) 추가"
+      ```
+      ## ✅ 합격 기준
+      타임라인 + 근본 원인 + 재발 방지를 정리한다.
+    hint: '타임라인+근본원인+재발방지'
+    category: report
+    points: 10
+    answer: |
+      echo "=== Lessons Learned ==="
+      echo "타임라인: 스캔→SQLi 침투→백도어 계정/웹쉘 발판→(IR로 격리·제거·복구)"
+      echo "근본원인: 웹앱 SQLi 취약점 악용"
+      echo "재발방지: ① WAF 룰 강화 ② 앱 패치/입력검증 ③ 탐지룰(W04) 추가 ④ 계정 모니터링(W12)"
+    answer_detail: "Lessons = 타임라인 + 근본원인(어떻게 들어왔나) + 재발방지(탐지/패치/절차). IR 보고서로 조직 학습."
+    verify:
+      type: output_contains
+      expect: '근본'
+      field: stdout
+      semantic:
+        intent: "교훈/근본원인/재발방지 정리"
+        success_criteria: ["타임라인", "근본원인", "재발방지"]
+        acceptable_methods: ["**[설명] 교훈 정리 (권장)**"]
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 IR 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC W09 IR 보고서 (학번, 이름)
+      ## 1. Identify (범위/심각도)
+      ## 2. Contain (격리 조치)
+      ## 3. Eradicate (제거)
+      ## 4. Recover (복구 검증)
+      ## 5. Lessons (근본원인/재발방지)
+      ```
+      ## ✅ 합격 기준
+      IR 5단계가 보고서에 포함된다.
+    hint: 'IR 5단계'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # SOC W09 IR 보고서
+      ## 1. Identify: 출발지 10.20.30.202, web SQLi 침투, 백도어 계정 socw9bd+웹쉘 (P1 침해)
+      ## 2. Contain: IDS 격리 룰(9509001) 출발지 플래그 (운영=firewall drop)
+      ## 3. Eradicate: userdel socw9bd + rm 웹쉘 (osquery 헌팅)
+      ## 4. Recover: 웹 정상 응답 + 발판 잔재 0
+      ## 5. Lessons: 근본원인 SQLi 취약점, 재발방지 WAF/패치/탐지룰
+      ## 결론: IR은 절차 — 식별→격리→제거→복구→교훈. 첫 60분의 행동이 피해를 가른다
+      EOF
+    answer_detail: "IR 보고서 = 5단계 종합. 분석(W01-08)을 대응(IR)으로 — 절차대로 빠르고 정밀하게."
+    verify:
+      type: output_contains
+      expect: 'Eradicate'
+      field: stdout
+      semantic:
+        intent: "IR 5단계 종합 보고"
+        success_criteria: ["Identify~Lessons 5단계"]
+        acceptable_methods: ["**[관리적] IR 보고서 (권장)**"]
+    target_vm: siem
