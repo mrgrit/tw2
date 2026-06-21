@@ -1,0 +1,295 @@
+lab_id: standalone-compliance-week08
+title: "중간고사: 종합 보안 기준선(Baseline) 감사 (W01~W07)"
+version: standalone-compliance
+course: compliance
+week: 8
+description: |
+  중간 평가 — el34-web 종합 기준선 감사: 정보노출/접근통제/자산/암호정책/권한/암호화/로깅/취약점을
+  한 바퀴 점검해 준수·갭 판정 + 우선순위. CIS Benchmark 방식. 명령은 el34 호스트에서. 신규 설치 없음.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "W01–W07 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "전 주차 점검 명령 숙지"
+objectives:
+  - "종합 기준선 감사 수행"
+  - "항목별 준수/갭 판정"
+  - "우선순위 기반 종합 보고"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "hostname; echo target_ok"
+      ```
+      ## ✅ 합격 기준
+      대상 접근.
+    hint: '대상'
+    category: survey
+    points: 8
+    answer: |
+      docker exec el34-web sh -c "hostname; echo target_ok"
+    answer_detail: "기준선 감사 대상 = el34-web."
+    verify:
+      type: output_contains
+      expect: 'target_ok'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["접근"]
+        acceptable_methods: ["**[OSS] docker exec (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 정보 노출 — ServerTokens
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ 2>/dev/null | head -1); echo "current:$V"; echo "$V" | grep -qi "Prod" && echo "compliant" || echo "gap=not_Prod"'
+      ```
+      ## ✅ 합격 기준
+      ServerTokens 기준(Prod) 대비 갭을 판정한다.
+    hint: 'ServerTokens'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== 정보 노출 (ServerTokens) ==="
+      docker exec el34-web sh -c 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ 2>/dev/null | head -1); echo "current:$V"; echo "$V" | grep -qi "Prod" && echo "compliant" || echo "gap=not_Prod"'
+      echo "→ ServerTokens OS → CIS Prod 미달(갭)"
+    answer_detail: "ServerTokens OS = CIS Prod 미달 갭(W01)."
+    verify:
+      type: output_contains
+      expect: 'gap='
+      field: stdout
+      semantic:
+        intent: "정보 노출 점검"
+        success_criteria: ["ServerTokens 갭"]
+        acceptable_methods: ["**[OSS] 설정 점검 (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 원격 접근 — PermitRootLogin
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'V=$(grep -iE "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null); echo "$V"; echo "$V" | grep -qi "no" && echo "compliant=rootlogin_off" || echo "gap"'
+      ```
+      ## ✅ 합격 기준
+      원격 root 로그인 차단(준수)을 확인한다.
+    hint: 'PermitRootLogin no'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== 원격 접근 (PermitRootLogin) ==="
+      docker exec el34-web sh -c 'V=$(grep -iE "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null); echo "$V"; echo "$V" | grep -qi "no" && echo "compliant=rootlogin_off" || echo "gap"'
+      echo "→ PermitRootLogin no = 준수(W02)"
+    answer_detail: "PermitRootLogin no = 원격 root 차단(준수, W02)."
+    verify:
+      type: output_contains
+      expect: 'compliant='
+      field: stdout
+      semantic:
+        intent: "원격 접근 점검"
+        success_criteria: ["root 로그인 차단"]
+        acceptable_methods: ["**[OSS] sshd_config (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 자산 — vhost inventory
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'echo "assets=$(ls /etc/apache2/sites-enabled/ 2>/dev/null | wc -l)"'
+      ```
+      ## ✅ 합격 기준
+      웹 자산을 집계한다.
+    hint: 'vhost 수'
+    category: recon
+    points: 10
+    answer: |
+      echo "=== 자산 inventory ==="
+      docker exec el34-web sh -c 'echo "assets=$(ls /etc/apache2/sites-enabled/ 2>/dev/null | wc -l)"'
+      echo "→ vhost 자산 집계(W03). 각 자산에 중요도·통제 매핑"
+    answer_detail: "자산 = vhost inventory(W03). 감사 범위 확정."
+    verify:
+      type: output_contains
+      expect: 'assets='
+      field: stdout
+      semantic:
+        intent: "자산 집계"
+        success_criteria: ["inventory"]
+        acceptable_methods: ["**[OSS] inventory (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 암호 정책 — PASS_MAX_DAYS
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] 2>/dev/null && echo "gap=no_expiry" || echo "compliant"'
+      ```
+      ## ✅ 합격 기준
+      암호 만료 기준(≤90) 대비 갭을 판정한다.
+    hint: 'PASS_MAX_DAYS'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== 암호 정책 (PASS_MAX_DAYS) ==="
+      docker exec el34-web sh -c 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] 2>/dev/null && echo "gap=no_expiry" || echo "compliant"'
+      echo "→ 99999(무기한) → PCI 8.3.9(≤90) 미달(갭, W04)"
+    answer_detail: "PASS_MAX_DAYS 99999 = 만료 없음 갭(W04)."
+    verify:
+      type: output_contains
+      expect: 'gap='
+      field: stdout
+      semantic:
+        intent: "암호 정책 점검"
+        success_criteria: ["만료 갭"]
+        acceptable_methods: ["**[OSS] login.defs (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 파일 권한 — shadow/sudoers
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'S=$(stat -c "%a" /etc/shadow); echo "shadow=$S"; case "$S" in 600|640) echo "compliant=shadow_$S";; *) echo "gap=shadow_$S";; esac'
+      ```
+      ## ✅ 합격 기준
+      민감 파일 권한(준수)을 확인한다.
+    hint: 'shadow 640'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== 파일 권한 ==="
+      docker exec el34-web sh -c 'stat -c "%n %a" /etc/shadow /etc/sudoers; S=$(stat -c "%a" /etc/shadow); case "$S" in 600|640) echo "compliant=shadow_$S";; *) echo "gap=shadow_$S";; esac'
+      echo "→ shadow 640/sudoers 440 = CIS 준수(W04)"
+    answer_detail: "shadow 640/sudoers 440 = 준수(W04)."
+    verify:
+      type: output_contains
+      expect: 'compliant=shadow'
+      field: stdout
+      semantic:
+        intent: "파일 권한 점검"
+        success_criteria: ["민감 파일 보호"]
+        acceptable_methods: ["**[OSS] stat (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 암호화 — TLS
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername neobank.el34.lab 2>/dev/null | grep -iE 'Protocol' | head -1"
+      ```
+      ## ✅ 합격 기준
+      전송 암호화(TLS1.2+) 준수를 확인한다.
+    hint: 'TLSv1.2+'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 암호화 (TLS) ==="
+      docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername neobank.el34.lab 2>/dev/null | grep -iE 'Protocol|Cipher' | head -2"
+      echo "→ TLSv1.3 = PCI 4 준수(단 자체서명 인증서 갭, W05/W10)"
+    answer_detail: "TLSv1.3 = PCI 4 준수, 자체서명 인증서는 갭(W05)."
+    verify:
+      type: output_contains
+      expect: 'TLSv1'
+      field: stdout
+      semantic:
+        intent: "암호화 점검"
+        success_criteria: ["TLS1.2+"]
+        acceptable_methods: ["**[OSS] openssl (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 로깅 — Wazuh 중앙수집
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json 2>/dev/null | head -c 60; echo; echo siem_ingest_ok'
+      ```
+      ## ✅ 합격 기준
+      로그 중앙 수집(준수)을 확인한다.
+    hint: 'Wazuh 적재'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 로깅 (Wazuh) ==="
+      docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json 2>/dev/null | head -c 60; echo; echo siem_ingest_ok'
+      echo "→ Wazuh 중앙수집 = PCI 10 준수(W06)"
+    answer_detail: "Wazuh 중앙수집 = PCI 10 준수(W06)."
+    verify:
+      type: output_contains
+      expect: 'siem_ingest_ok'
+      field: stdout
+      semantic:
+        intent: "로깅 점검"
+        success_criteria: ["중앙 수집"]
+        acceptable_methods: ["**[OSS] Wazuh (권장)**"]
+    target_vm: web
+
+  - order: 9
+    instruction: |
+      ## 🎯 취약점 스캔 — nuclei
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/cp8.txt | head -4; echo findings=\$(wc -l < /tmp/cp8.txt); rm -f /tmp/cp8.txt"
+      ```
+      ## ✅ 합격 기준
+      취약점 스캔을 수행한다.
+    hint: 'nuclei 스캔'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== 취약점 스캔 ==="
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/cp8.txt | head -4; echo findings=\$(wc -l < /tmp/cp8.txt); rm -f /tmp/cp8.txt"
+      echo "→ 보안 헤더 누락 등 발견(W07). 정기 스캔으로 추세 관리"
+    answer_detail: "nuclei 스캔 = 취약점 식별(W07). 보안 헤더 누락 등."
+    verify:
+      type: output_contains
+      expect: 'findings='
+      field: stdout
+      semantic:
+        intent: "취약점 스캔"
+        success_criteria: ["스캔 수행"]
+        acceptable_methods: ["**[OSS] nuclei (권장)**"]
+    target_vm: web
+
+  - order: 10
+    instruction: |
+      ## 🎯 기준선 종합 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 컴플라이언스 W08 기준선 감사 보고서 (학번, 이름)
+      ## 1. 준수 항목
+      ## 2. 갭 항목
+      ## 3. 우선순위
+      ```
+      ## ✅ 합격 기준
+      준수/갭 종합 + 우선순위가 포함된다.
+    hint: '준수/갭/우선순위'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 컴플라이언스 W08 기준선 감사 보고서
+      ## 1. 준수: PermitRootLogin no, shadow 640/sudoers 440, TLSv1.3, Wazuh 중앙수집
+      ## 2. 갭: ServerTokens OS(Prod 아님), PASS_MAX_DAYS 99999(만료없음), 자체서명 인증서, 보안헤더 누락
+      ## 3. 우선순위: ①암호 만료 정책(계정 보호) ②인증서 교체 ③ServerTokens Prod ④보안 헤더
+      ## 결론: 접근/암호화/로깅 기본은 준수. 암호 만료·인증서·정보노출이 우선 조치 갭
+      EOF
+    answer_detail: "기준선 종합 = 준수(접근/암호화/로깅)+갭(ServerTokens/암호만료/인증서/헤더)+우선순위."
+    verify:
+      type: output_contains
+      expect: '우선순위'
+      field: stdout
+      semantic:
+        intent: "기준선 종합 보고"
+        success_criteria: ["준수/갭/우선순위"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
