@@ -1,0 +1,246 @@
+lab_id: standalone-web-vuln-week03
+title: "정보수집(Recon) — WSTG-INFO 정찰 vs 정보 노출 축소"
+version: standalone-web-vuln
+course: web-vuln
+week: 3
+description: |
+  WSTG-INFO 정보수집 — robots.txt, HTML 주석, 백업 파일, VCS 노출, 에러 메시지 등 의도치 않은 정보 노출과
+  그 축소. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: medium
+duration_minutes: 150
+prerequisites:
+  - "W01–W02 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(노출 수집) §4(축소) 숙지"
+objectives:
+  - "robots.txt/주석/백업/VCS 정보 수집"
+  - "수집 정보를 익스플로잇 실마리로 종합"
+  - "정보 노출 축소 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      대상 도달.
+    hint: '도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+    answer_detail: "정보수집 대상 = web vhost들."
+    verify:
+      type: output_contains
+      expect: 'juice'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 robots.txt
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -w '\n[robots=%{http_code}]\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/robots.txt | head"
+      ```
+      ## ✅ 합격 기준
+      robots.txt(또는 응답)를 수집한다.
+    hint: 'curl robots.txt'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== robots.txt ==="
+      docker exec el34-attacker sh -c "curl -s -w '\n[robots=%{http_code}]\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/robots.txt | head"
+      docker exec el34-attacker sh -c "curl -s -w '\n[juice robots=%{http_code}]\n' -H 'Host: juice.el34.lab' http://10.20.30.1/robots.txt | head -5"
+      echo "→ robots.txt의 Disallow가 숨기려던 경로를 역설적으로 노출"
+    answer_detail: "robots.txt = 크롤러 차단 목록이지만, Disallow 경로가 '숨긴 곳'을 알려준다. 공격자의 첫 정찰."
+    verify:
+      type: output_contains
+      expect: 'robots='
+      field: stdout
+      semantic:
+        intent: "robots.txt 수집"
+        success_criteria: ["robots 응답"]
+        acceptable_methods: ["**[OSS] curl robots.txt (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 HTML 주석
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -ioE '<!--[^>]{0,60}' | head -3 || echo '주석 없음'"
+      ```
+      ## ✅ 합격 기준
+      HTML 주석(또는 없음)을 점검한다.
+    hint: 'curl | grep <!--'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== HTML 주석 점검 ==="
+      docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -ioE '<!--.{0,50}' | head -3 || echo '주석 없음'"
+      echo "→ 개발자 주석에 TODO/자격증명/내부경로/디버그 정보가 남기도"
+    answer_detail: "HTML 주석 = 개발자 메모(TODO/내부 경로/때로 자격증명). 페이지 소스에서 grep."
+    verify:
+      type: output_contains
+      expect: '주석'
+      field: stdout
+      semantic:
+        intent: "HTML 주석 점검"
+        success_criteria: ["주석 grep"]
+        acceptable_methods: ["**[OSS] grep <!-- (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 백업 파일 탐색
+      ## 💻 실행 명령
+      ```bash
+      for f in index.php.bak index.php~ config.php.old backup.zip .env; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"; done; echo
+      ```
+      ## ✅ 합격 기준
+      백업/임시 파일 노출을 점검한다.
+    hint: '.bak/~/.old/.env 탐색'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== 백업/임시 파일 탐색 ==="
+      for f in index.php.bak index.php~ config.php.old backup.zip .env; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"; done; echo
+      echo "→ 200이면 백업 파일 노출(소스/설정/자격증명 유출). 404=없음"
+    answer_detail: "백업 파일 = .bak/~/.old/.zip/.env에 소스·설정·자격증명. 200이면 심각한 노출."
+    verify:
+      type: output_contains
+      expect: '.env='
+      field: stdout
+      semantic:
+        intent: "백업 파일 탐색"
+        success_criteria: ["백업 파일 응답코드"]
+        acceptable_methods: ["**[OSS] 백업 파일 probe (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 VCS/민감 파일
+      ## 💻 실행 명령
+      ```bash
+      for f in .git/config .git/HEAD .svn/entries .DS_Store; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"; done; echo
+      ```
+      ## ✅ 합격 기준
+      VCS/민감 파일 노출을 점검한다.
+    hint: '.git/.svn 탐색'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== VCS/민감 파일 ==="
+      for f in .git/config .git/HEAD .svn/entries .DS_Store; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"; done; echo
+      echo "→ .git/config 200 = 전체 소스 복원 가능(매우 위험). .svn/.DS_Store도 정보 노출"
+    answer_detail: "VCS 노출 = .git/.svn 웹 노출 시 전체 소스 복원(git-dumper). .DS_Store는 디렉토리 구조 노출."
+    verify:
+      type: output_contains
+      expect: '.git/config='
+      field: stdout
+      semantic:
+        intent: "VCS 노출 점검"
+        success_criteria: [".git/.svn 응답"]
+        acceptable_methods: ["**[OSS] .git probe (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 수집 정보 종합
+      ## 💻 실행 명령
+      ```bash
+      echo "robots(숨긴경로) + 주석(메모) + 백업(소스/설정) + VCS(소스) = 익스플로잇 실마리 종합"
+      ```
+      ## ✅ 합격 기준
+      수집 정보를 실마리로 종합한다.
+    hint: '정보 종합'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 수집 정보 종합 ==="
+      echo "robots.txt → 숨긴 경로(/admin 등) / 주석 → 내부 정보 / 백업 → 소스·설정·자격증명 / VCS → 전체 소스"
+      echo "→ 작은 노출이 모이면 큰 그림. 다음 단계(인증/SQLi) 익스플로잇의 실마리"
+    answer_detail: "정보수집 종합 = 흩어진 노출을 실마리로. 숨긴 경로+소스+설정이 후속 익스플로잇을 연다."
+    verify:
+      type: output_contains
+      expect: '실마리'
+      field: stdout
+      semantic:
+        intent: "수집 정보 종합"
+        success_criteria: ["실마리 종합"]
+        acceptable_methods: ["**[관리적] 정보 종합 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 노출 축소
+      ## 💻 실행 명령
+      ```bash
+      echo "방어: robots에 민감경로 X(접근제어로), 백업/임시파일 웹루트밖, .git 웹차단, 에러 일반화, 주석 제거"
+      ```
+      ## ✅ 합격 기준
+      정보 노출 축소 방어를 정리한다.
+    hint: '노출 축소'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 정보 노출 축소 ==="
+      echo "① robots.txt에 민감 경로 적지 말 것(접근 제어로 보호)"
+      echo "② 백업/임시 파일 웹루트 밖, 배포 시 제거"
+      echo "③ .git/.svn 웹 노출 차단(deny), .DS_Store 제거"
+      echo "④ 에러 메시지 일반화, HTML 주석/메타 제거(빌드)"
+      echo "→ 노출 최소화 = 공격자의 실마리 차단"
+    answer_detail: "노출 축소 = robots/백업/VCS/에러/주석을 모두 정리. 작은 정보도 안 주는 게 방어."
+    verify:
+      type: output_contains
+      expect: '노출'
+      field: stdout
+      semantic:
+        intent: "정보 노출 축소 방어"
+        success_criteria: ["robots/백업/VCS/에러 축소"]
+        acceptable_methods: ["**[설명] 노출 축소 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 정보수집 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹취약점 W03 정보수집 보고서 (학번, 이름)
+      ## 1. 수집 정보(robots/주석/백업/VCS)
+      ## 2. 익스플로잇 실마리
+      ## 3. 노출 축소 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 수집 정보 + 방어가 포함된다.
+    hint: '수집+실마리+방어'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 웹취약점 W03 정보수집 보고서
+      ## 1. 수집: robots.txt(숨긴 경로), HTML 주석, 백업파일(.bak/.env), VCS(.git)
+      ## 2. 실마리: 노출된 경로/소스/설정이 후속 익스플로잇 연결
+      ## 3. 방어: robots 민감경로 제거, 백업 정리, .git 차단, 에러/주석 일반화
+      ## 결론: 작은 정보 노출이 공격을 연다. WSTG-INFO로 빠짐없이 점검, 노출 최소화로 방어
+      EOF
+    answer_detail: "정보수집 = WSTG-INFO 정찰. 노출을 모아 실마리로. 방어는 노출 최소화."
+    verify:
+      type: output_contains
+      expect: '정보수집'
+      field: stdout
+      semantic:
+        intent: "정보수집 종합 보고"
+        success_criteria: ["수집/실마리/방어"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
