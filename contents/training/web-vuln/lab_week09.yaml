@@ -1,0 +1,245 @@
+lab_id: standalone-web-vuln-week09
+title: "접근제어 — IDOR/권한상승/인가우회 vs 서버측 인가"
+version: standalone-web-vuln
+course: web-vuln
+week: 9
+description: |
+  OWASP A01 Broken Access Control — 무인증 관리 엔드포인트, 강제 브라우징, 인가 일관성, IDOR.
+  juiceshop 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 160
+prerequisites:
+  - "W01–W08 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(점검) §3(IDOR) §4(방어) 숙지"
+objectives:
+  - "무인증 관리/강제 브라우징 발견"
+  - "인가 일관성 점검"
+  - "서버측 인가 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      대상 도달.
+    hint: '도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+    answer_detail: "접근제어 점검 대상 = juiceshop."
+    verify:
+      type: output_contains
+      expect: 'juice'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 무인증 관리 엔드포인트 (A01)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
+      ```
+      ## ✅ 합격 기준
+      인증 없이 관리 설정에 접근(200)된다 = A01 취약.
+    hint: 'application-configuration'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 무인증 관리 엔드포인트 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
+      echo "→ 200 = 인증 없이 앱 설정 노출. 인가 통제 부재(A01)"
+    answer_detail: "무인증 관리 엔드포인트 = 인가 검사 누락. 200이면 A01 취약."
+    verify:
+      type: output_contains
+      expect: 'admincfg=200'
+      field: stdout
+      semantic:
+        intent: "무인증 관리"
+        success_criteria: ["200 노출"]
+        acceptable_methods: ["**[OSS] 강제 접근 (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 강제 브라우징
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      ```
+      ## ✅ 합격 기준
+      링크되지 않은 /ftp 디렉토리에 강제 접근된다.
+    hint: '/ftp'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 강제 브라우징 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      echo "→ UI에 링크 없어도 직접 URL로 접근. 인가는 UI 숨김이 아니다"
+    answer_detail: "강제 브라우징 = 링크 없는 자원에 직접 URL 접근. UI 숨김은 방어가 아님."
+    verify:
+      type: output_contains
+      expect: 'ftp='
+      field: stdout
+      semantic:
+        intent: "강제 브라우징"
+        success_criteria: ["직접 접근"]
+        acceptable_methods: ["**[OSS] forced browsing (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 인가 일관성 — 보호 vs 노출
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users"
+      ```
+      ## ✅ 합격 기준
+      보호 엔드포인트(401)와 노출 엔드포인트(200)의 불일치를 확인한다.
+    hint: '401 vs 200'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 인가 일관성 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
+      echo "→ /api/Users(401 보호) vs admin-config(200 노출). 일관성 부재가 취약의 신호"
+    answer_detail: "인가 일관성 = 일부는 보호(401)·일부는 노출(200). 불일치가 통제 누락 신호."
+    verify:
+      type: output_contains
+      expect: 'users='
+      field: stdout
+      semantic:
+        intent: "인가 일관성"
+        success_criteria: ["보호 vs 노출 대조"]
+        acceptable_methods: ["**[OSS] 대조 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 IDOR 시도
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "for id in 1 2 3; do curl -s -o /dev/null -w \"user\$id=%{http_code} \" -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users/\$id; done; echo"
+      ```
+      ## ✅ 합격 기준
+      순차 ID로 자원 접근을 시도한다(소유권 검사 점검).
+    hint: '순차 ID'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== IDOR 시도 ==="
+      docker exec el34-attacker sh -c "for id in 1 2 3; do curl -s -o /dev/null -w \"user\$id=%{http_code} \" -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users/\$id; done; echo"
+      echo "→ idor= 순차 자원ID로 남의 자원 접근 시도. 보호되면 401, 소유권검사 없으면 노출"
+    answer_detail: "IDOR = 순차 자원 ID 교체로 소유권 검사 없는 자원 접근. 보호 자원이 노출되면 치명적."
+    verify:
+      type: output_contains
+      expect: 'idor='
+      field: stdout
+      semantic:
+        intent: "IDOR 시도"
+        success_criteria: ["순차 ID 접근"]
+        acceptable_methods: ["**[OSS] IDOR (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 탐지 — 접근 로그
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "sudo tail -40 /var/log/apache2/access.log 2>/dev/null | grep -c admin || echo logcheck"
+      ```
+      ## ✅ 합격 기준
+      관리 엔드포인트 접근 시도가 로그에 남는다.
+    hint: 'access.log'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 탐지 (접근 로그) ==="
+      docker exec el34-web sh -c "sudo tail -60 /var/log/apache2/access.log 2>/dev/null | grep -E 'admin|ftp|Users' | tail -5; echo detected"
+      echo "→ 무인증 관리/강제브라우징 시도는 access.log에 흔적. 인가실패는 앱 로그 모니터링 필요"
+    answer_detail: "탐지 = access.log의 관리/ftp/Users 접근 흔적. 인가 실패는 앱 레벨 로깅·모니터링 핵심."
+    verify:
+      type: output_contains
+      expect: 'detected'
+      field: stdout
+      semantic:
+        intent: "접근 탐지"
+        success_criteria: ["로그 흔적"]
+        acceptable_methods: ["**[OSS] access.log (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 서버측 인가
+      ## 💻 실행 명령
+      ```bash
+      echo "모든 자원 접근에 서버측 인가(소유권/역할) 검사, 기본 deny, UI 숨김 의존 금지"
+      ```
+      ## ✅ 합격 기준
+      서버측 인가 방어를 정리한다.
+    hint: '서버측 인가/기본 deny'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 서버측 인가 방어 ==="
+      echo "1) 모든 자원 접근에 서버측 인가 검사(소유권+역할)"
+      echo "2) 기본 deny — 명시 허용만 통과"
+      echo "3) UI 숨김/순차ID 회피는 방어 아님(보안=서버측 강제)"
+      echo "4) 인가 실패 로깅·모니터링"
+      echo "→ 핵심: 서버측에서 모든 요청을 인가 검사"
+    answer_detail: "방어 = 서버측 인가(소유권/역할) 전수 검사 + 기본 deny. 클라이언트 통제는 무력."
+    verify:
+      type: output_contains
+      expect: '서버측'
+      field: stdout
+      semantic:
+        intent: "서버측 인가 방어"
+        success_criteria: ["인가검사/기본deny"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 접근제어 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹취약점 W09 접근제어 보고서 (학번, 이름)
+      ## 1. 무인증 관리/강제 브라우징/IDOR
+      ## 2. 인가 일관성 분석
+      ## 3. 서버측 인가 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 A01 발견 + 서버측 인가 방어가 포함된다.
+    hint: 'A01+서버측 인가'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 웹취약점 W09 접근제어 보고서
+      ## 1. 발견: 무인증 관리(admin-config 200), 강제 브라우징(/ftp), IDOR 시도
+      ## 2. 인가 일관성: 일부 보호(401)·일부 노출(200) → 통제 불일치(A01)
+      ## 3. 방어: 서버측 인가(소유권/역할) 전수 검사 + 기본 deny + 인가실패 로깅
+      ## 결론: 접근제어는 OWASP A01 1위. 서버측 인가 강제가 유일한 근본 방어
+      EOF
+    answer_detail: "접근제어 = A01. 무인증/강제브라우징/IDOR 발견, 서버측 인가가 근본 방어."
+    verify:
+      type: output_contains
+      expect: '서버측'
+      field: stdout
+      semantic:
+        intent: "접근제어 종합 보고"
+        success_criteria: ["A01 발견/서버측 인가"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
