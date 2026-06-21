@@ -1,0 +1,248 @@
+lab_id: standalone-web-vuln-week11
+title: "에러/정보 노출 — 배너·상세에러·DB에러 점검 vs 정보 최소화"
+version: standalone-web-vuln
+course: web-vuln
+week: 11
+description: |
+  A05 Security Misconfiguration — 버전 배너, 상세 에러 페이지, DB 에러 노출, 헤더 누출 점검과
+  정보 최소화 방어. juiceshop/dvwa 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+  신규 설치 없음(curl 기본).
+difficulty: medium
+duration_minutes: 140
+prerequisites:
+  - "W01–W10 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(배너) §3(에러) §4(DB에러) 숙지"
+objectives:
+  - "배너/에러/DB에러/헤더 노출 식별"
+  - "정찰 가속 영향 이해"
+  - "정보 최소화(배너억제/커스텀에러) 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      대상 도달.
+    hint: '도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+    answer_detail: "정보 노출 점검 대상 = juiceshop."
+    verify:
+      type: output_contains
+      expect: 'juice'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 배너 노출 — Server 버전
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -D - -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -i 'server:'"
+      ```
+      ## ✅ 합격 기준
+      Server 헤더에서 웹서버 버전이 노출된다.
+    hint: 'Server: Apache'
+    category: recon
+    points: 14
+    answer: |
+      echo "=== 배너 노출 ==="
+      docker exec el34-attacker sh -c "curl -sk -D - -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -i 'server:'"
+      echo "→ Apache/2.4.x 버전 노출 → 해당 버전 CVE 매핑에 악용"
+    answer_detail: "배너 = Server 헤더의 웹서버/버전. 버전→CVE 매핑으로 정찰 가속. ServerTokens Prod로 억제."
+    verify:
+      type: output_contains
+      expect: 'Apache'
+      field: stdout
+      semantic:
+        intent: "배너 노출"
+        success_criteria: ["Server 버전"]
+        acceptable_methods: ["**[OSS] curl -D (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 상세 에러 — 내부 경로 노출
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Nonexistent123 | grep -oE 'Unexpected path[^<]*' | head -1"
+      ```
+      ## ✅ 합격 기준
+      존재하지 않는 경로 요청 시 상세 에러(내부 경로)가 노출된다.
+    hint: 'Unexpected path'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 상세 에러 페이지 ==="
+      docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Nonexistent123 | grep -oE 'Unexpected path[^<]*' | head -1"
+      echo "→ 'Unexpected path: /api/...' = 라우팅 구조/내부 경로 노출. 커스텀 에러로 숨겨야"
+    answer_detail: "상세 에러 = 내부 경로/구조 노출. 커스텀 에러 페이지로 일반 메시지만 표시해야."
+    verify:
+      type: output_contains
+      expect: 'Unexpected path'
+      field: stdout
+      semantic:
+        intent: "상세 에러 노출"
+        success_criteria: ["내부 경로 노출"]
+        acceptable_methods: ["**[OSS] 잘못된 경로 (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 DB 에러 노출 (가장 위험)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' \"http://10.20.30.1/rest/products/search?q=test'\" | grep -oE 'SQLITE_ERROR[^<]*' | head -1"
+      ```
+      ## ✅ 합격 기준
+      잘못된 입력에 DB 엔진 에러(SQLITE_ERROR)가 노출된다.
+    hint: 'SQLITE_ERROR'
+    category: manipulation
+    points: 16
+    answer: |
+      echo "=== DB 에러 노출 ==="
+      docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' \"http://10.20.30.1/rest/products/search?q=test'\" | grep -oE 'SQLITE_ERROR[^<]*' | head -1"
+      echo "→ SQLITE_ERROR = DB 엔진(SQLite) 확정 + SQLi 표면 입증. 공격자에게 주입 문법을 알려줌"
+    answer_detail: "DB 에러 = 엔진 확정 + SQLi 표면 입증(가장 위험). generic 메시지+로그로만 처리해야."
+    verify:
+      type: output_contains
+      expect: 'SQLITE_ERROR'
+      field: stdout
+      semantic:
+        intent: "DB 에러 노출"
+        success_criteria: ["DB 엔진 노출"]
+        acceptable_methods: ["**[OSS] 잘못된 입력 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 헤더 누출 — 숨은 경로/스택
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -D - -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -iE 'x-recruiting|x-powered|feature-policy'"
+      ```
+      ## ✅ 합격 기준
+      비표준 헤더(X-Recruiting 등)에서 숨은 경로/스택 힌트가 노출된다.
+    hint: 'X-Recruiting'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== 헤더 누출 ==="
+      docker exec el34-attacker sh -c "curl -sk -D - -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -iE 'x-recruiting|x-powered|feature-policy'"
+      echo "→ X-Recruiting: /#/jobs = 숨은 경로 힌트. 불필요 헤더는 제거"
+    answer_detail: "헤더 누출 = X-Powered-By(스택)/X-Recruiting(숨은 경로). 불필요 헤더 제거 필요."
+    verify:
+      type: output_contains
+      expect: 'Recruiting'
+      field: stdout
+      semantic:
+        intent: "헤더 누출"
+        success_criteria: ["비표준 헤더 노출"]
+        acceptable_methods: ["**[OSS] curl -D (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 영향 — 정찰 가속
+      ## 💻 실행 명령
+      ```bash
+      echo "배너→CVE매핑, 에러→내부경로, DB에러→SQLi표면+엔진, 헤더→스택/숨은경로"
+      ```
+      ## ✅ 합격 기준
+      정보 노출이 정찰을 어떻게 가속하는지 정리한다.
+    hint: '정찰 가속'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 영향 (정찰 가속) ==="
+      echo "배너: Apache 버전 → 알려진 CVE 매핑/공격 선택"
+      echo "상세 에러: 내부 경로/라우팅 → 공격 표면 지도"
+      echo "DB 에러: 엔진(SQLite) 확정 + SQLi 주입 문법 노출"
+      echo "헤더: 기술 스택/숨은 경로(/#/jobs)"
+      echo "→ 단독 침해는 아니나 모든 후속 공격을 가속(정찰 단계 단축)"
+    answer_detail: "영향 = 정찰 가속(CVE 매핑/표면 지도/주입 문법). 직접 침해 아니나 공격 비용을 낮춤."
+    verify:
+      type: output_contains
+      expect: '정찰'
+      field: stdout
+      semantic:
+        intent: "정찰 가속 영향"
+        success_criteria: ["CVE/표면/주입 힌트"]
+        acceptable_methods: ["**[관리적] 영향 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 정보 최소화
+      ## 💻 실행 명령
+      ```bash
+      echo "ServerTokens Prod, 커스텀 에러페이지, DB에러 generic+로그, 불필요 헤더 제거"
+      ```
+      ## ✅ 합격 기준
+      정보 최소화 방어를 정리한다.
+    hint: 'ServerTokens/커스텀에러'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 정보 최소화 방어 ==="
+      echo "1) 배너 억제: Apache ServerTokens Prod + ServerSignature Off, X-Powered-By 제거"
+      echo "2) 커스텀 에러 페이지: 상세/스택 숨기고 일반 메시지, 상세는 서버측 로깅"
+      echo "3) DB 에러: 사용자에게 generic 메시지만, 원본은 로그로만"
+      echo "4) 불필요 헤더(X-Recruiting 등) 제거"
+      echo "→ 핵심: 사용자에겐 최소 정보, 운영자에겐 로그로 충분히"
+    answer_detail: "방어 = 배너억제(ServerTokens Prod)+커스텀에러+DB에러 generic+헤더정리. 정보 최소화."
+    verify:
+      type: output_contains
+      expect: 'ServerTokens'
+      field: stdout
+      semantic:
+        intent: "정보 최소화 방어"
+        success_criteria: ["배너억제/커스텀에러"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 정보 노출 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹취약점 W11 정보 노출 보고서 (학번, 이름)
+      ## 1. 배너/상세에러/DB에러/헤더 노출
+      ## 2. 정찰 가속 영향
+      ## 3. 정보 최소화 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 노출 항목 + 정보 최소화 방어가 포함된다.
+    hint: '노출항목+ServerTokens'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 웹취약점 W11 정보 노출 보고서
+      ## 1. 노출: Server 배너(Apache/2.4.x), 상세 에러(Unexpected path), DB 에러(SQLITE_ERROR), 헤더(X-Recruiting)
+      ## 2. 영향: 정찰 가속 — CVE 매핑/내부 경로/SQLi 표면+엔진/숨은 경로
+      ## 3. 방어: ServerTokens Prod + 커스텀 에러 + DB에러 generic + 불필요 헤더 제거
+      ## 결론: 정보 노출은 직접 침해는 아니나 모든 공격의 정찰을 가속(A05). 정보 최소화가 근본
+      EOF
+    answer_detail: "정보 노출 = A05. 배너/에러/DB에러/헤더 노출, 정보 최소화가 방어."
+    verify:
+      type: output_contains
+      expect: 'ServerTokens'
+      field: stdout
+      semantic:
+        intent: "정보 노출 종합 보고"
+        success_criteria: ["노출 항목/정보 최소화"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
