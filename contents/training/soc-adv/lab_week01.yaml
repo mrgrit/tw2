@@ -1,0 +1,266 @@
+lab_id: standalone-soc-adv-week01
+title: "SOC 성숙도 평가 — 가시성 공백 점검과 탐지역량 정량화"
+version: standalone-soc-adv
+course: soc-adv
+week: 1
+description: |
+  SOC 고급 W01 — 성숙도(SOC-CMM)는 문서가 아니라 "실제로 무엇을 탐지하는가"로 증명된다. 공격을 흘려
+  웹(ModSec)·네트워크(Suricata)·호스트(osquery)·SIEM(Wazuh) 4계층 가시성을 점검하고, 갭을 정량화한다.
+  공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서. 신규 설치 없음.
+difficulty: hard
+duration_minutes: 170
+prerequisites:
+  - "soc 트랙 W01~W15 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(가시성 4계층) §3(SOC-CMM) §4(갭 분석) 숙지"
+objectives:
+  - "4계층(웹·네트워크·호스트·SIEM) 가시성 점검"
+  - "탐지 공백 식별·정량화"
+  - "SOC-CMM 성숙도 평가·로드맵"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 대상 도달
+      ## 📖 개념 한 줄
+      성숙도 평가의 전제는 점검 대상에 도달하는 것. 도달 안 되면 음성 결과가 무의미하다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      대상 도달(dvwa=).
+    hint: '도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+    answer_detail: "SOC 성숙도 평가 대상 = el34 인프라(웹/네트워크/호스트/SIEM 4계층)."
+    verify:
+      type: output_contains
+      expect: 'dvwa'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 ① 웹공격 가시성 — SQLi 흘려 ModSec 탐지 확인
+      ## 📖 개념 한 줄
+      "우리 SOC가 웹공격을 보는가?" — SQLi를 한 발 보내고 WAF(ModSecurity) audit에 탐지로 남는지 본다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password--\""
+      docker exec el34-web sh -c "sudo tail -300 /var/log/apache2/modsec_audit.log 2>/dev/null | grep -oE '9[0-9]{5}' | grep -E '^94' | sort -u | head -3"
+      ```
+      ## ✅ 합격 기준
+      ModSec 942(SQLi) 룰 탐지가 audit에 남으면 웹 가시성 있음.
+      ## 🔧 도구 풀이
+      - 942 = CRS SQLi 룰군. dvwa는 차단형(403)이라 시도가 audit에 기록된다.
+    hint: 'ModSec 942'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 웹공격 가시성 (SQLi→ModSec) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password--\""
+      docker exec el34-web sh -c "sudo tail -300 /var/log/apache2/modsec_audit.log 2>/dev/null | grep -oE '9[0-9]{5}' | grep -E '^94' | sort -u | head -3"
+      echo "→ 942(SQLi) 탐지 = 웹 가시성 확보. 미탐이면 가시성 공백"
+    answer_detail: "웹 가시성 = SQLi 시도가 ModSec 942 audit에 탐지로 남는가. 942 보이면 웹공격 가시성 있음."
+    verify:
+      type: output_contains
+      expect: '942'
+      field: stdout
+      semantic:
+        intent: "웹 가시성"
+        success_criteria: ["942 탐지"]
+        acceptable_methods: ["**[OSS] modsec audit (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 ② 네트워크 가시성 — Suricata 흔적
+      ## 📖 개념 한 줄
+      네트워크 계층(IPS)이 공격 트래픽을 보는가 — Suricata eve.json에서 출처 IP 흔적을 확인한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nmap -sS -T4 --top-ports 50 10.20.30.1 2>/dev/null | grep -c open"
+      docker exec el34-ips sh -c "tail -2000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202' "; echo netvis_done
+      ```
+      ## ✅ 합격 기준
+      Suricata가 출처 트래픽을 기록하면(netvis_done) 네트워크 가시성 있음.
+      ## 🔧 도구 풀이
+      - 출처 IP(10.20.30.202)가 eve.json에 보존(SNAT 없음) → 네트워크 가시성의 근거.
+    hint: 'Suricata eve'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 네트워크 가시성 (Suricata) ==="
+      docker exec el34-attacker sh -c "nmap -sS -T4 --top-ports 50 10.20.30.1 2>/dev/null | grep -c open"
+      docker exec el34-ips sh -c "tail -2000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'"; echo netvis_done
+      echo "→ eve.json에 출처 IP 흔적 = 네트워크 가시성. 0이면 IPS 가시성 공백"
+    answer_detail: "네트워크 가시성 = Suricata eve.json의 출처 IP 흔적. 출처 보존(SNAT 없음)으로 귀속 가능."
+    verify:
+      type: output_contains
+      expect: 'netvis_done'
+      field: stdout
+      semantic:
+        intent: "네트워크 가시성"
+        success_criteria: ["Suricata 흔적"]
+        acceptable_methods: ["**[OSS] Suricata (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 ③ SIEM 가시성 — Wazuh 적재·상관
+      ## 📖 개념 한 줄
+      SIEM이 다소스 로그를 모아 고위험을 상관하는가 — Wazuh alerts.json 적재와 고위험(level≥10) 집계.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'N=$(tail -3000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -oE "\"level\":1[0-9]" | wc -l); echo "siem_high=$N"'
+      ```
+      ## ✅ 합격 기준
+      Wazuh 고위험 집계(siem_high=)가 나오면 SIEM 가시성 있음.
+    hint: 'Wazuh level>=10'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== SIEM 가시성 (Wazuh) ==="
+      docker exec el34-siem sh -c 'N=$(tail -3000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -oE "\"level\":1[0-9]" | wc -l); echo "siem_high=$N"'
+      echo "→ 고위험 알림 집계 = SIEM 상관 가시성. 다소스(web/ips) 수렴이 성숙의 핵심"
+    answer_detail: "SIEM 가시성 = Wazuh alerts.json 고위험 집계. 다소스 상관·격상이 SOC 성숙의 지표."
+    verify:
+      type: output_contains
+      expect: 'siem_high='
+      field: stdout
+      semantic:
+        intent: "SIEM 가시성"
+        success_criteria: ["고위험 집계"]
+        acceptable_methods: ["**[OSS] Wazuh (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 ④ 호스트 가시성 — osquery 헌팅
+      ## 📖 개념 한 줄
+      호스트 계층(백도어 계정·리스너·은닉 프로세스)을 보는가 — osquery로 헌팅 가능한지 점검.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "osqueryi --json 'SELECT pid,name FROM processes LIMIT 1' 2>/dev/null | head -c 40; echo; echo hostvis_done"
+      ```
+      ## ✅ 합격 기준
+      osquery로 호스트 상태를 질의할 수 있으면(hostvis_done) 호스트 가시성 있음.
+      ## 🔧 도구 풀이
+      - osquery = OS를 SQL 테이블로 추상화. processes/listening_ports/users로 백도어 헌팅.
+    hint: 'osquery'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 호스트 가시성 (osquery) ==="
+      docker exec el34-web sh -c "osqueryi --json 'SELECT pid,name FROM processes LIMIT 1' 2>/dev/null | head -c 40; echo; echo hostvis_done"
+      echo "→ osquery 질의 가능 = 호스트 가시성. listening_ports/users로 백도어 헌팅 가능"
+    answer_detail: "호스트 가시성 = osquery로 프로세스/포트/계정 헌팅 가능. 호스트 계층 탐지의 토대."
+    verify:
+      type: output_contains
+      expect: 'hostvis_done'
+      field: stdout
+      semantic:
+        intent: "호스트 가시성"
+        success_criteria: ["osquery 질의"]
+        acceptable_methods: ["**[OSS] osquery (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 SOC-CMM 5도메인 성숙도 평가
+      ## 💻 실행 명령
+      ```bash
+      echo "Business/People/Process/Technology/Services 5도메인 + 가시성(웹·네트워크·호스트·SIEM) 정량화"
+      ```
+      ## ✅ 합격 기준
+      SOC-CMM 도메인·가시성 평가를 정리.
+    hint: 'SOC-CMM'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== SOC-CMM 성숙도 평가 ==="
+      echo "도메인(SOC-CMM): Business · People · Process · Technology · Services"
+      echo "가시성 정량화(이번 점검): 웹 ModSec(있음) · 네트워크 Suricata(있음) · SIEM Wazuh(있음) · 호스트 osquery(있음)"
+      echo "성숙도 = 문서가 아니라 '실제 탐지하는가'로 측정. 4계층 모두 탐지 가능 = 가시성 성숙"
+      echo "soc_cmm_assessed"
+    answer_detail: "SOC-CMM = 5도메인 성숙도. 핵심은 가시성을 '실제 탐지'로 정량화. 4계층 탐지 가능 여부로 측정."
+    verify:
+      type: output_contains
+      expect: 'soc_cmm_assessed'
+      field: stdout
+      semantic:
+        intent: "성숙도 평가"
+        success_criteria: ["SOC-CMM"]
+        acceptable_methods: ["**[표준] SOC-CMM (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 갭 분석·개선 로드맵
+      ## 💻 실행 명령
+      ```bash
+      echo "갭=탐지 못하는 계층/TTP. 로드맵=룰 보강→격상→자동화(SOAR)→헌팅 정례화 우선순위"
+      ```
+      ## ✅ 합격 기준
+      갭 분석·로드맵을 정리.
+    hint: '갭/로드맵'
+    category: report
+    points: 14
+    answer: |
+      echo "=== 갭 분석·개선 로드맵 ==="
+      echo "갭: 탐지 못하는 계층/TTP 식별(예: 암호화 트래픽 내부·인증 뒤 표면)"
+      echo "로드맵: ①탐지룰 보강(SIGMA/Suricata) ②고위험 격상(Wazuh) ③SOAR 자동화 ④위협 헌팅 정례화"
+      echo "우선순위: 가시성 공백이 큰 계층부터, 위험 기반"
+      echo "→ 성숙도는 '한 번 평가'가 아니라 갭→개선→재평가 순환"
+    answer_detail: "갭 분석 = 미탐 계층/TTP. 로드맵 = 룰 보강→격상→SOAR→헌팅 정례화. 순환적 성숙."
+    verify:
+      type: output_contains
+      expect: '로드맵'
+      field: stdout
+      semantic:
+        intent: "갭 분석"
+        success_criteria: ["갭/로드맵"]
+        acceptable_methods: ["**[관리적] 로드맵 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 SOC 성숙도 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC고급 W01 성숙도 보고서 (학번, 이름)
+      ## 1. 4계층 가시성 점검(웹/네트워크/SIEM/호스트)
+      ## 2. SOC-CMM 평가
+      ## 3. 갭 분석·로드맵
+      ```
+      ## ✅ 합격 기준
+      4계층 + 성숙도 + 로드맵 포함.
+    hint: '가시성+성숙도+로드맵'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # SOC고급 W01 성숙도 보고서
+      ## 1. 가시성: 웹(ModSec 942)·네트워크(Suricata eve 출처보존)·SIEM(Wazuh 고위험)·호스트(osquery) 4계층 탐지 가능
+      ## 2. SOC-CMM: 5도메인(Business/People/Process/Technology/Services), 가시성을 실제 탐지로 정량화
+      ## 3. 갭/로드맵: 미탐 계층 식별 → 룰 보강→격상→SOAR→헌팅 정례화 순환
+      ## 결론: 성숙도는 문서가 아니라 탐지 역량. 4계층 가시성을 정량화하고 갭을 위험 기반으로 메운다
+      EOF
+    answer_detail: "성숙도 보고 = 4계층 가시성 정량화 + SOC-CMM + 갭/로드맵. 탐지 역량이 성숙의 증거."
+    verify:
+      type: output_contains
+      expect: 'SOC-CMM'
+      field: stdout
+      semantic:
+        intent: "성숙도 보고"
+        success_criteria: ["가시성/성숙도/로드맵"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
