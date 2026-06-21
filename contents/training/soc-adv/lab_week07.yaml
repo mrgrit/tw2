@@ -1,0 +1,235 @@
+lab_id: standalone-soc-adv-week07
+title: "네트워크 포렌식 — 흐름·패킷에서 공격 흔적 복원"
+version: standalone-soc-adv
+course: soc-adv
+week: 7
+description: |
+  SOC 고급 W07 — 네트워크 포렌식. Suricata eve.json(alert/http/flow/dns 이벤트)에서 공격의 흐름을 복원한다.
+  공격을 흘려 eve.json에 흔적을 만들고, event_type별 분석·출처 상관·타임라인을 구성한다. el34-ips Suricata
+  eve.json·jq 사용. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서. 신규 설치 없음.
+difficulty: hard
+duration_minutes: 170
+prerequisites:
+  - "soc W02(스캔)·secuops W03~W04(Suricata) + soc-adv W01~W06 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(eve.json event_type) §3(흐름 분석) §4(타임라인) 숙지"
+objectives:
+  - "Suricata eve.json event_type별 분석"
+  - "출처 상관·흐름(flow) 분석"
+  - "공격 타임라인 복원"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — eve.json 접근
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c "ls -la /var/log/suricata/eve.json 2>/dev/null | awk '{print \$5}'"; echo eve_ready
+      ```
+      ## ✅ 합격 기준
+      eve.json 접근 가능(eve_ready).
+    hint: 'eve.json'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-ips sh -c "ls -la /var/log/suricata/eve.json 2>/dev/null | awk '{print \$5}'"; echo eve_ready
+    answer_detail: "네트워크 포렌식 소스 = el34-ips Suricata eve.json(JSON 라인 이벤트 로그)."
+    verify:
+      type: output_contains
+      expect: 'eve_ready'
+      field: stdout
+      semantic: {intent: "eve 접근", success_criteria: ["eve.json"], acceptable_methods: ["**[OSS] eve.json (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 공격 흐름 생성
+      ## 📖 개념 한 줄
+      네트워크 포렌식의 분석 대상을 만들기 위해, 스캔+웹공격을 흘려 eve.json에 다양한 이벤트를 남긴다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nmap -sS -T4 --top-ports 30 10.20.30.1 2>/dev/null | grep -c open; curl -s -o /dev/null -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20OR%201=1--'"; echo traffic_generated
+      ```
+      ## ✅ 합격 기준
+      공격 트래픽이 생성되면(traffic_generated) 분석 대상 확보.
+    hint: '흐름 생성'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 공격 흐름 생성 ==="
+      docker exec el34-attacker sh -c "nmap -sS -T4 --top-ports 30 10.20.30.1 2>/dev/null | grep -c open; curl -s -o /dev/null -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20OR%201=1--'"; echo traffic_generated
+      echo "→ 스캔(flow/alert)+웹공격(http) → eve.json에 다양한 event_type 흔적"
+    answer_detail: "흐름 생성 = 스캔+웹공격으로 eve.json에 flow/alert/http 이벤트 남김. 포렌식 분석 대상."
+    verify:
+      type: output_contains
+      expect: 'traffic_generated'
+      field: stdout
+      semantic: {intent: "흐름 생성", success_criteria: ["트래픽"], acceptable_methods: ["**[OSS] nmap/curl (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 event_type별 분석
+      ## 📖 개념 한 줄
+      eve.json은 event_type(alert/http/flow/dns/tls)로 구분된다 — 각 타입이 다른 포렌식 단서를 준다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -oE '\"event_type\":\"[a-z]+\"' | sort | uniq -c | head"; echo types_analyzed
+      ```
+      ## ✅ 합격 기준
+      event_type 분포가 나오면(types_analyzed) 통과.
+      ## 🔧 도구 풀이
+      - event_type: alert(탐지)·http(요청)·flow(연결 요약)·dns·tls. 각각 다른 포렌식 단서.
+    hint: 'event_type'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== event_type별 분석 ==="
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -oE '\"event_type\":\"[a-z]+\"' | sort | uniq -c | head"; echo types_analyzed
+      echo "→ alert(탐지)·flow(연결)·http(요청)·dns·tls. 흐름 폭주로 http는 드묾(tail 크게)"
+    answer_detail: "event_type 분석 = eve.json의 alert/flow/http/dns/tls 분포. 각 타입이 다른 포렌식 단서."
+    verify:
+      type: output_contains
+      expect: 'types_analyzed'
+      field: stdout
+      semantic: {intent: "event_type", success_criteria: ["타입 분포"], acceptable_methods: ["**[OSS] grep (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 출처 상관 (공격자 IP)
+      ## 📖 개념 한 줄
+      포렌식의 핵심은 "누가" — 출처 IP로 모든 이벤트를 묶어 한 공격자의 활동을 복원한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'"; echo src_correlated
+      ```
+      ## ✅ 합격 기준
+      출처 IP 상관(src_correlated)이 수행되면 통과.
+      ## 🔧 도구 풀이
+      - 출처 IP 보존(SNAT 없음) → 한 공격자의 스캔·웹공격·흐름을 모두 같은 IP로 묶음.
+    hint: '출처 상관'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 출처 상관 ==="
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'"; echo src_correlated
+      echo "→ 출처 IP(10.20.30.202) 보존 → 그 IP의 모든 이벤트를 묶어 공격자 활동 복원"
+    answer_detail: "출처 상관 = 출처 IP로 eve.json 이벤트 묶기. SNAT 없는 출처 보존이 포렌식 귀속의 기반."
+    verify:
+      type: output_contains
+      expect: 'src_correlated'
+      field: stdout
+      semantic: {intent: "출처 상관", success_criteria: ["IP 묶기"], acceptable_methods: ["**[OSS] grep (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 흐름(flow) 분석
+      ## 📖 개념 한 줄
+      flow 이벤트는 연결 단위 요약(바이트·패킷·기간)을 준다 — 대량 전송(데이터 유출)·비콘(주기적 소량) 식별.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep '\"event_type\":\"flow\"' | head -1 | head -c 80; echo; echo flow_analyzed"
+      ```
+      ## ✅ 합격 기준
+      flow 이벤트 분석(flow_analyzed)이 수행되면 통과.
+    hint: 'flow 분석'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 흐름(flow) 분석 ==="
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep '\"event_type\":\"flow\"' | head -1 | head -c 80; echo; echo flow_analyzed"
+      echo "→ flow=연결 요약(바이트/패킷/기간). 대량 전송=유출 의심, 주기적 소량=C2 비콘 의심"
+    answer_detail: "flow 분석 = 연결 단위 요약(bytes/pkts/duration). 대량=유출, 주기적 소량=비콘 식별."
+    verify:
+      type: output_contains
+      expect: 'flow_analyzed'
+      field: stdout
+      semantic: {intent: "flow 분석", success_criteria: ["연결 요약"], acceptable_methods: ["**[OSS] eve flow (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 타임라인 복원
+      ## 💻 실행 명령
+      ```bash
+      echo "이벤트를 timestamp로 정렬→정찰(스캔)→침투(웹공격)→발판→유출 순서의 공격 타임라인 재구성"
+      ```
+      ## ✅ 합격 기준
+      타임라인 복원 방법이 정리되면 통과.
+    hint: '타임라인'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 타임라인 복원 ==="
+      echo "1) eve.json 이벤트를 timestamp로 정렬"
+      echo "2) 같은 출처의 이벤트를 시간순으로: 스캔(flow) → 웹공격(http/alert) → (발판 시) 아웃바운드(flow)"
+      echo "3) 킬체인 단계로 매핑: 정찰→침투→C2→유출"
+      echo "→ 포렌식의 결과물 = '언제 무엇이 일어났나'의 타임라인. 사건 재구성·법적 증거"
+      echo "timeline_built"
+    answer_detail: "타임라인 복원 = timestamp 정렬로 출처별 이벤트를 킬체인 순서로 재구성. 포렌식의 핵심 산출물."
+    verify:
+      type: output_contains
+      expect: 'timeline_built'
+      field: stdout
+      semantic: {intent: "타임라인", success_criteria: ["시간순 재구성"], acceptable_methods: ["**[관리적] 타임라인 (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 PCAP·증거 보전
+      ## 💻 실행 명령
+      ```bash
+      echo "eve.json(메타)+pcap(원본 패킷). 포렌식 증거는 해시+무결성으로 보전(chain of custody)"
+      ```
+      ## ✅ 합격 기준
+      PCAP·증거 보전 개념이 정리되면 통과.
+    hint: 'PCAP/증거'
+    category: report
+    points: 12
+    answer: |
+      echo "=== PCAP·증거 보전 ==="
+      echo "eve.json = 이벤트 메타데이터. pcap = 원본 패킷(페이로드까지) — Suricata가 alert 시 pcap 저장 가능"
+      echo "증거 보전: 로그/pcap을 SHA-256 해시+수집시각으로 무결성 확보(chain of custody)"
+      echo "분석 도구: Wireshark/tshark(pcap), zeek(흐름 로그), jq(eve.json)"
+      echo "→ 네트워크 포렌식 = 메타(eve)+원본(pcap)을 무결하게 보전·분석"
+    answer_detail: "PCAP/증거 = eve.json(메타)+pcap(원본 패킷). 해시+무결성으로 chain of custody 보전."
+    verify:
+      type: output_contains
+      expect: 'PCAP'
+      field: stdout
+      semantic: {intent: "PCAP/증거", success_criteria: ["보전"], acceptable_methods: ["**[설명] 증거 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 네트워크 포렌식 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC고급 W07 네트워크 포렌식 보고서 (학번, 이름)
+      ## 1. event_type 분석·출처 상관
+      ## 2. flow 분석·타임라인
+      ## 3. PCAP·증거 보전
+      ```
+      ## ✅ 합격 기준
+      분석 + 타임라인 + 증거 포함.
+    hint: '분석+타임라인+증거'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # SOC고급 W07 네트워크 포렌식 보고서
+      ## 1. eve.json event_type(alert/flow/http) 분석. 출처 IP(10.20.30.202)로 모든 이벤트 상관(SNAT 없음)
+      ## 2. flow 분석(대량=유출/주기적=비콘). timestamp 정렬로 정찰→침투→유출 타임라인 복원
+      ## 3. 증거: eve.json(메타)+pcap(원본). SHA-256 해시+수집시각으로 chain of custody
+      ## 결론: 네트워크 포렌식 = 흐름·패킷에서 공격을 시간순으로 복원. 출처 보존이 귀속의 기반
+      EOF
+    answer_detail: "네트워크 포렌식 보고 = event_type/출처상관+flow/타임라인+PCAP/증거. 흐름에서 공격 복원."
+    verify:
+      type: output_contains
+      expect: '포렌식'
+      field: stdout
+      semantic: {intent: "포렌식 보고", success_criteria: ["분석/타임라인/증거"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
