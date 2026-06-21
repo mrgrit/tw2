@@ -1,0 +1,248 @@
+lab_id: standalone-compliance-week05
+title: "암호화 컴플라이언스 — 전송(TLS)·저장·키 관리 (PCI-DSS 4·3)"
+version: standalone-compliance
+course: compliance
+week: 5
+description: |
+  암호화 컴플라이언스 — 전송 암호화(TLS1.2+, PCI 4), cipher 강도(nmap), 폐기 프로토콜 차단,
+  저장 암호화·키 관리(PCI 3). el34 web 443. 공격은 el34-attacker. 인가된 실습만. 신규 설치 없음.
+difficulty: medium
+duration_minutes: 130
+prerequisites:
+  - "W01–W04 통과 (W10 TLS 점검 경험)"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(전송) §3(cipher) §5(저장/키) 숙지"
+objectives:
+  - "전송 암호화 PCI 준수 점검"
+  - "cipher 강도/폐기 프로토콜 확인"
+  - "저장 암호화·키 관리 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — HTTPS 도달
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'https=%{http_code}\n' -H 'Host: neobank.el34.lab' https://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      HTTPS(443) 도달.
+    hint: 'https 도달'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'https=%{http_code}\n' -H 'Host: neobank.el34.lab' https://10.20.30.1/"
+    answer_detail: "암호화 점검 대상 = el34 web 443(금융 vhost neobank)."
+    verify:
+      type: output_contains
+      expect: 'https='
+      field: stdout
+      semantic:
+        intent: "HTTPS 점검"
+        success_criteria: ["443 도달"]
+        acceptable_methods: ["**[OSS] curl -k (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 전송 암호화 — TLS 버전 (PCI-DSS 4)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername neobank.el34.lab 2>/dev/null | grep -iE 'Protocol|Cipher' | head -3"
+      ```
+      ## ✅ 합격 기준
+      협상 프로토콜이 TLS1.2+ (PCI 준수)인지 확인한다.
+    hint: 'TLSv1.2+'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 전송 암호화 (TLS) ==="
+      docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername neobank.el34.lab 2>/dev/null | grep -iE 'Protocol|Cipher' | head -3"
+      echo "→ TLSv1.3 + AEAD(GCM) = PCI-DSS 4.2.1 강한 암호 준수. 단 인증서는 자체서명(W10 갭)"
+    answer_detail: "전송 암호화 = TLS 버전/cipher. TLSv1.3/AES_256_GCM = PCI 4 준수."
+    verify:
+      type: output_contains
+      expect: 'TLSv1'
+      field: stdout
+      semantic:
+        intent: "전송 암호화 점검"
+        success_criteria: ["TLS1.2+"]
+        acceptable_methods: ["**[OSS] openssl s_client (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 cipher 강도 — nmap
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "timeout 55 nmap --script ssl-enum-ciphers -p 443 10.20.30.1 2>/dev/null | grep -iE 'TLSv|least strength'"
+      ```
+      ## ✅ 합격 기준
+      least strength(전체 cipher 등급)를 확인한다(A=PCI 준수).
+    hint: 'least strength'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== cipher 강도 ==="
+      docker exec el34-attacker sh -c "timeout 55 nmap --script ssl-enum-ciphers -p 443 10.20.30.1 2>/dev/null | grep -iE 'TLSv|least strength'"
+      echo "→ least strength A = 약한 cipher 없음(PCI 준수). C~F면 RC4/3DES 잔존 = PCI 미달"
+    answer_detail: "cipher 강도 = nmap least strength. A=준수. 약한 cipher 잔존 시 PCI 미달."
+    verify:
+      type: output_contains
+      expect: 'least strength'
+      field: stdout
+      semantic:
+        intent: "cipher 강도"
+        success_criteria: ["등급 확인"]
+        acceptable_methods: ["**[OSS] nmap ssl-enum (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 폐기 프로토콜 — TLS1.1 차단
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'if echo | openssl s_client -connect 10.20.30.1:443 -tls1_1 2>&1 | grep -qiE "no protocols|alert|handshake fail|no peer cert"; then echo "tls11=blocked"; else echo "tls11=allowed"; fi'
+      ```
+      ## ✅ 합격 기준
+      폐기 프로토콜(TLS1.1)이 차단(PCI 준수)됨을 확인한다.
+    hint: 'TLS1.1 차단'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 폐기 프로토콜 차단 ==="
+      docker exec el34-attacker sh -c 'if echo | openssl s_client -connect 10.20.30.1:443 -tls1_1 2>&1 | grep -qiE "no protocols|alert|handshake fail|no peer cert"; then echo "tls11=blocked"; else echo "tls11=allowed"; fi'
+      echo "→ PCI-DSS는 TLS1.0/1.1 사용 금지. 차단(blocked)이 준수. allowed면 즉시 비활성"
+    answer_detail: "폐기 프로토콜 = TLS1.0/1.1. PCI 금지 → 차단(blocked)이 준수."
+    verify:
+      type: output_contains
+      expect: 'tls11=blocked'
+      field: stdout
+      semantic:
+        intent: "폐기 프로토콜 차단"
+        success_criteria: ["TLS1.1 거부"]
+        acceptable_methods: ["**[OSS] openssl -tls1_1 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 저장 암호화 — at rest (PCI-DSS 3)
+      ## 💻 실행 명령
+      ```bash
+      echo "카드/개인정보 = AES-256 저장 암호화. DB/디스크/백업 모두. 평문 저장 금지"
+      ```
+      ## ✅ 합격 기준
+      저장 암호화 요건을 정리한다.
+    hint: 'at rest AES-256'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 저장 암호화 (at rest) ==="
+      echo "대상: 카드정보(PCI 3)·개인정보·인증정보·백업"
+      echo "방식: AES-256 등 강한 알고리즘, DB/디스크/파일 레벨"
+      echo "원칙: 평문 저장 금지, 카드번호는 토큰화/마스킹"
+      echo "→ 전송만 암호화하고 저장은 평문이면 DB 유출 시 그대로 노출"
+    answer_detail: "저장 암호화 = AES-256(카드/개인정보/백업). 평문 저장 금지, 토큰화/마스킹."
+    verify:
+      type: output_contains
+      expect: 'AES-256'
+      field: stdout
+      semantic:
+        intent: "저장 암호화"
+        success_criteria: ["at rest 요건"]
+        acceptable_methods: ["**[표준] PCI 3 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 키 관리
+      ## 💻 실행 명령
+      ```bash
+      echo "키 생명주기: 생성→배포→보관(KMS/HSM)→교체→폐기. 데이터키≠마스터키 분리"
+      ```
+      ## ✅ 합격 기준
+      키 관리 생명주기를 정리한다.
+    hint: '키 생성~폐기'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 키 관리 ==="
+      echo "생명주기: 생성→배포→보관(KMS/HSM)→교체(주기적)→폐기"
+      echo "분리: 데이터 암호화 키(DEK) ≠ 마스터 키(KEK)"
+      echo "접근통제: 키 접근 최소화 + 감사"
+      echo "→ 키가 데이터 옆 평문이면 암호화 무의미. 키 분리·보호가 핵심"
+    answer_detail: "키 관리 = 생성~폐기 생명주기 + DEK/KEK 분리 + 접근통제. 키 보호가 암호화의 전제."
+    verify:
+      type: output_contains
+      expect: '키 관리'
+      field: stdout
+      semantic:
+        intent: "키 관리"
+        success_criteria: ["생명주기/분리"]
+        acceptable_methods: ["**[표준] 키 관리 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 암호화 컴플라이언스
+      ## 💻 실행 명령
+      ```bash
+      echo "TLS1.2+/AEAD + 유효 CA 인증서 + 저장 AES-256 + 키 관리(KMS) + 폐기 프로토콜 차단"
+      ```
+      ## ✅ 합격 기준
+      암호화 컴플라이언스 방어를 정리한다.
+    hint: 'TLS+저장+키관리'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 암호화 컴플라이언스 방어 ==="
+      echo "1) 전송: TLS1.2/1.3 + AEAD cipher + 유효 CA 인증서(자체서명 교체)"
+      echo "2) 저장: AES-256 + 토큰화/마스킹"
+      echo "3) 키 관리: KMS/HSM + DEK/KEK 분리 + 주기적 교체"
+      echo "4) 폐기 프로토콜(TLS1.0/1.1) 차단"
+      echo "→ 핵심: 전송+저장 양쪽 + 키 보호(PCI 4·3)"
+    answer_detail: "방어 = 전송(TLS1.2+/CA)+저장(AES-256)+키관리(KMS). PCI 4·3 양쪽 충족."
+    verify:
+      type: output_contains
+      expect: '키 관리'
+      field: stdout
+      semantic:
+        intent: "암호화 방어"
+        success_criteria: ["전송/저장/키"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 암호화 컴플라이언스 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 컴플라이언스 W05 암호화 보고서 (학번, 이름)
+      ## 1. 전송(TLS1.3/strength A/TLS1.1 차단)
+      ## 2. 저장/키 관리
+      ## 3. 갭(자체서명 인증서) + 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 전송 점검 + 저장/키 + 갭이 포함된다.
+    hint: 'TLS+저장+갭'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 컴플라이언스 W05 암호화 보고서
+      ## 1. 전송: TLSv1.3/least strength A/TLS1.1 차단 → PCI-DSS 4 준수
+      ## 2. 저장: AES-256 + 토큰화, 키 관리(KMS/HSM, DEK≠KEK) → PCI-DSS 3
+      ## 3. 갭: 자체서명 인증서(신뢰 체인 결함) → 유효 CA 인증서 교체 필요
+      ## 결론: 알고리즘/프로토콜은 강하나 인증서 신뢰가 갭. 전송+저장+키 관리 3축 충족이 목표
+      EOF
+    answer_detail: "암호화 보고 = 전송(준수)+저장/키+갭(자체서명). PCI 4·3 양쪽 점검."
+    verify:
+      type: output_contains
+      expect: 'PCI-DSS'
+      field: stdout
+      semantic:
+        intent: "암호화 컴플라이언스 보고"
+        success_criteria: ["전송/저장/갭"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
