@@ -1,0 +1,250 @@
+lab_id: standalone-attack-adv-week10
+title: "데이터 유출 — 스테이징·암호화·은밀한 반출"
+version: standalone-attack-adv
+course: attack-adv
+week: 10
+description: |
+  공격 고급 W10 — 데이터 유출(Exfiltration). 침해의 최종 목적. 데이터 스테이징(수집·압축)·암호화·유출 채널
+  (HTTP/DNS/ICMP)·저속 분할(low-and-slow)·DLP 우회를 다룬다. el34-attacker에서 스테이징→압축→암호화→로컬
+  리스너 유출을 자체완결 데모(self-clean). 방어자의 DLP·아웃바운드 통제도 학습. ⚠️ 인가된 실습만.
+difficulty: hard
+duration_minutes: 175
+prerequisites:
+  - "attack-adv W07(C2)·W08(측면 이동) + soc-adv W07(flow) 통과"
+  - "el34 호스트 SSH + docker exec, el34-attacker"
+  - "lecture §2(스테이징/암호화) §3(채널/저속) §4(DLP) 숙지"
+objectives:
+  - "데이터 스테이징(수집·압축)·암호화 수행"
+  - "유출 채널(HTTP/DNS/ICMP)과 저속 분할 이해"
+  - "DLP 우회와 방어자의 유출 탐지(아웃바운드 통제) 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 유출 시나리오·작업 공간
+      ## 📖 개념 한 줄
+      유출은 침투의 목적. 격리 작업 공간을 만들어 스테이징~반출을 시연한다(self-clean).
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "mkdir -p /tmp/exfil10 && command -v openssl tar nc python3 >/dev/null && echo exfil_tools_ok"; echo exfil_ready
+      ```
+      ## ✅ 합격 기준
+      유출 도구·작업 공간이 준비되면(exfil_ready) 통과.
+    hint: '유출 시나리오'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 유출 시나리오·작업 공간 ==="
+      docker exec el34-attacker sh -c "mkdir -p /tmp/exfil10 && command -v openssl tar nc python3 >/dev/null && echo exfil_tools_ok"; echo exfil_ready
+      echo "→ 유출 = 침투의 최종 목적(데이터 절도). 스테이징→압축→암호화→반출의 사슬"
+    answer_detail: "유출 시나리오 = 데이터 반출이 침투 목적. 도구(tar/openssl/nc) + 격리 작업공간. 8단계 끝 self-clean."
+    verify:
+      type: output_contains
+      expect: 'exfil_ready'
+      field: stdout
+      semantic: {intent: "유출 시나리오", success_criteria: ["도구/공간"], acceptable_methods: ["**[OSS] 작업공간 (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 데이터 스테이징 (수집·압축)
+      ## 📖 개념 한 줄
+      반출 전 데이터를 한곳에 모으고 압축한다 — 전송량을 줄이고 한 번에 빼낼 준비.
+      ## 💻 실행 명령 (모의 데이터 스테이징)
+      ```bash
+      docker exec el34-attacker sh -c "cp /etc/hostname /etc/os-release /tmp/exfil10/ 2>/dev/null; tar czf /tmp/exfil10/loot.tar.gz -C /tmp/exfil10 hostname os-release 2>/dev/null; ls -la /tmp/exfil10/loot.tar.gz | awk '{print \$5}'"; echo staged_done
+      ```
+      ## ✅ 합격 기준
+      데이터가 스테이징·압축되면(staged_done) 통과.
+      ## 🔧 도구 풀이
+      - 스테이징: 흩어진 데이터를 한곳에 모음(staging dir). 압축으로 전송량↓·단일 반출. (모의 파일 사용)
+    hint: '스테이징'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 데이터 스테이징(수집·압축) ==="
+      docker exec el34-attacker sh -c "cp /etc/hostname /etc/os-release /tmp/exfil10/ 2>/dev/null; tar czf /tmp/exfil10/loot.tar.gz -C /tmp/exfil10 hostname os-release 2>/dev/null; ls -la /tmp/exfil10/loot.tar.gz | awk '{print \$5}'"; echo staged_done
+      echo "→ 모의 데이터를 모아 압축(loot.tar.gz). 실무: DB덤프·문서·소스. 압축=전송량↓·단일 반출"
+    answer_detail: "스테이징 = 흩어진 데이터를 staging dir에 모아 압축. 전송량 감소·단일 반출 준비. (모의 파일)"
+    verify:
+      type: output_contains
+      expect: 'staged_done'
+      field: stdout
+      semantic: {intent: "스테이징", success_criteria: ["수집/압축"], acceptable_methods: ["**[OSS] tar (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 암호화 (반출 전 은닉)
+      ## 📖 개념 한 줄
+      반출 데이터를 암호화하면 DLP의 내용 검사(키워드·패턴)를 회피한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "openssl enc -aes-256-cbc -pbkdf2 -in /tmp/exfil10/loot.tar.gz -out /tmp/exfil10/loot.enc -k 'aa10key' 2>/dev/null && file /tmp/exfil10/loot.enc | grep -o 'data'"; echo encrypted_done
+      ```
+      ## ✅ 합격 기준
+      반출 데이터가 암호화되면(encrypted_done) 통과.
+      ## 🔧 도구 풀이
+      - 암호화: AES로 내용 은닉 → DLP 키워드/정규식 검사 무력. 단 암호화 자체가 이상 신호일 수도.
+    hint: '암호화'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 암호화(반출 전 은닉) ==="
+      docker exec el34-attacker sh -c "openssl enc -aes-256-cbc -pbkdf2 -in /tmp/exfil10/loot.tar.gz -out /tmp/exfil10/loot.enc -k 'aa10key' 2>/dev/null && file /tmp/exfil10/loot.enc | grep -o 'data'"; echo encrypted_done
+      echo "→ AES 암호화로 내용 은닉 → DLP 키워드/정규식 검사 무력화. (단 '암호화된 대량 반출'은 이상 신호)"
+    answer_detail: "암호화 = AES로 반출 데이터 은닉→DLP 내용검사 회피. 단 암호화+대량은 그 자체가 이상 신호."
+    verify:
+      type: output_contains
+      expect: 'encrypted_done'
+      field: stdout
+      semantic: {intent: "암호화", success_criteria: ["내용 은닉"], acceptable_methods: ["**[OSS] openssl (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 유출 채널 (HTTP 반출 데모)
+      ## 📖 개념 한 줄
+      암호화 데이터를 채널로 반출 — HTTP POST·DNS 쿼리·ICMP 등 허용 채널을 악용.
+      ## 💻 실행 명령 (로컬 리스너로 자체완결 반출)
+      ```bash
+      docker exec el34-attacker sh -c "(timeout 3 nc -lnp 55010 >/tmp/exfil10/recv.bin 2>/dev/null &) ; sleep 0.4; timeout 2 nc 127.0.0.1 55010 < /tmp/exfil10/loot.enc; sleep 0.3; ls -la /tmp/exfil10/recv.bin | awk '{print \"received=\"\$5}'"; echo channel_done
+      ```
+      ## ✅ 합격 기준
+      유출 채널로 데이터가 반출되면(channel_done) 통과.
+      ## 🔧 도구 풀이
+      - 채널: HTTP POST(정상 웹과 섞임)·DNS(53 인코딩)·ICMP·클라우드 업로드. 여기선 TCP로 메커니즘 시연.
+    hint: '유출 채널'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 유출 채널(HTTP 반출 데모) ==="
+      docker exec el34-attacker sh -c "(timeout 3 nc -lnp 55010 >/tmp/exfil10/recv.bin 2>/dev/null &) ; sleep 0.4; timeout 2 nc 127.0.0.1 55010 < /tmp/exfil10/loot.enc; sleep 0.3; ls -la /tmp/exfil10/recv.bin | awk '{print \"received=\"\$5}'"; echo channel_done
+      echo "→ 암호화 데이터를 채널로 반출(데모: 로컬 TCP). 실무: HTTP POST·DNS 쿼리 인코딩·클라우드 업로드"
+    answer_detail: "유출 채널 = HTTP POST/DNS/ICMP/클라우드로 반출. 허용 채널 악용(정상과 섞임). 데모는 로컬 TCP."
+    verify:
+      type: output_contains
+      expect: 'channel_done'
+      field: stdout
+      semantic: {intent: "유출 채널", success_criteria: ["반출"], acceptable_methods: ["**[OSS] nc (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 저속·분할 (low-and-slow)
+      ## 💻 실행 명령
+      ```bash
+      echo "대량 한번에=탐지. 작게 쪼개 오랜 시간 분산 반출 → 임계·볼륨 탐지 회피. DNS는 쿼리당 소량씩"
+      ```
+      ## ✅ 합격 기준
+      저속·분할 전략이 정리되면 통과.
+      ## 🔧 도구 풀이
+      - low-and-slow: 볼륨 임계 탐지 회피. 단점=느림·장기 노출. 정상 업무시간에 섞기도.
+    hint: '저속 분할'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 저속·분할(low-and-slow) ==="
+      echo "문제: 1GB를 한 번에 반출 → 볼륨 임계 탐지에 즉시 걸림"
+      echo "해법: 작게 분할(chunk)해 오랜 시간 분산 → 일별 소량은 정상 트래픽에 묻힘"
+      echo "  - DNS 유출: 쿼리당 수십 바이트씩(서브도메인 인코딩)"
+      echo "  - 시간 분산: 업무시간에만·랜덤 간격"
+      echo "→ 트레이드오프: 은밀하나 느리고 장기 노출(그동안 탐지 기회↑). flow 베이스라인엔 결국 잡힐 수도"
+      echo "slow_done"
+    answer_detail: "저속·분할 = 작게 쪼개 시간 분산 반출로 볼륨 탐지 회피. 느리지만 은밀. flow 베이스라인엔 약함."
+    verify:
+      type: output_contains
+      expect: 'slow_done'
+      field: stdout
+      semantic: {intent: "저속 분할", success_criteria: ["분할/분산"], acceptable_methods: ["**[설명] low-and-slow (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 DLP 우회 + 정리
+      ## 💻 실행 명령 (정리 포함)
+      ```bash
+      echo "DLP 우회: 암호화·인코딩·스테가노그래피·허용 클라우드 악용. 단 메타(볼륨/목적지)는 남음"
+      docker exec el34-attacker sh -c "rm -rf /tmp/exfil10 && echo cleaned"; echo dlp_done
+      ```
+      ## ✅ 합격 기준
+      DLP 우회 정리 + 작업 공간 정리(dlp_done)되면 통과.
+    hint: 'DLP 우회'
+    category: report
+    points: 12
+    answer: |
+      echo "=== DLP 우회 + 정리 ==="
+      echo "DLP(데이터 유출 방지) 우회:"
+      echo "  - 암호화: 내용 검사(키워드/정규식) 무력"
+      echo "  - 인코딩/스테가노그래피: 이미지·정상 파일에 숨김"
+      echo "  - 허용 채널: 승인된 클라우드(드라이브)·이메일 악용"
+      echo "→ 그러나 메타데이터(볼륨·목적지·시점)는 못 숨김 → 아웃바운드 통제가 천적"
+      docker exec el34-attacker sh -c "rm -rf /tmp/exfil10 && echo cleaned"; echo dlp_done
+      echo "→ 실습 작업 공간 self-clean 완료"
+    answer_detail: "DLP 우회 = 암호화/스테가노/허용채널. 메타데이터는 못 숨김. 실습 self-clean. 아웃바운드 통제가 천적."
+    verify:
+      type: output_contains
+      expect: 'dlp_done'
+      field: stdout
+      semantic: {intent: "DLP 우회", success_criteria: ["우회/정리"], acceptable_methods: ["**[설명] DLP (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 탐지·방어 — 유출 차단
+      ## 💻 실행 명령
+      ```bash
+      echo "탐지: 비정상 아웃바운드 볼륨·목적지·DNS량(soc-adv W07). 방어: DLP·아웃바운드 통제·암호화 데이터 탐지"
+      ```
+      ## ✅ 합격 기준
+      유출 탐지·방어가 정리되면 통과.
+    hint: '탐지/방어'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 탐지·방어: 유출 차단 ==="
+      echo "탐지: ① 아웃바운드 볼륨 급증(flow, soc-adv W07) ② 비정상 목적지(신규·해외) ③ 대량/긴 DNS 쿼리"
+      echo "      ④ 암호화된 대량 반출(그 자체가 이상) ⑤ 업무 외 시간 전송"
+      echo "방어: ① DLP(내용·라벨 기반 차단) ② 아웃바운드 통제(목적지 화이트리스트 — 유출의 천적)"
+      echo "      ③ 데이터 최소화·암호화·접근통제 ④ 비정상 접근 알림(대량 다운로드)"
+      echo "→ 유출은 침투의 마지막 단계 = 방어의 마지막 기회. 못 막으면 사고, 막으면 피해 0"
+      echo "defense_done"
+    answer_detail: "유출 탐지/방어 = 아웃바운드 볼륨/목적지/DNS 이상 탐지+DLP/아웃바운드 통제. 유출=방어의 마지막 기회."
+    verify:
+      type: output_contains
+      expect: 'defense_done'
+      field: stdout
+      semantic: {intent: "탐지/방어", success_criteria: ["DLP/아웃바운드"], acceptable_methods: ["**[관리적] 방어 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 데이터 유출 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격고급 W10 데이터 유출 보고서 (학번, 이름)
+      ## 1. 스테이징·암호화
+      ## 2. 유출 채널·저속분할·DLP 우회
+      ## 3. 탐지·방어(DLP·아웃바운드 통제)
+      ```
+      ## ✅ 합격 기준
+      스테이징/암호화 + 채널 + 방어 포함.
+    hint: '스테이징+채널+방어'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 공격고급 W10 데이터 유출 보고서
+      ## 1. 스테이징(수집·압축 loot.tar.gz)·암호화(AES로 DLP 내용검사 회피)
+      ## 2. 유출 채널(HTTP POST/DNS/ICMP/클라우드)·저속분할(low-and-slow 볼륨 회피)·DLP 우회(암호화/스테가노)
+      ## 3. 탐지: 아웃바운드 볼륨·목적지·DNS 이상(soc-adv W07). 방어: DLP·아웃바운드 통제(목적지 화이트리스트)
+      ## 결론: 유출은 침투의 목적이자 방어의 마지막 기회. 내용은 숨겨도 메타(볼륨/목적지)는 못 숨김 — 아웃바운드 통제가 천적
+      EOF
+    answer_detail: "유출 보고 = 스테이징/암호화+채널/저속/DLP우회+탐지/방어. 메타는 못 숨겨 아웃바운드 통제가 천적."
+    verify:
+      type: output_contains
+      expect: '데이터 유출'
+      field: stdout
+      semantic: {intent: "유출 보고", success_criteria: ["스테이징/채널/방어"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
