@@ -1,0 +1,247 @@
+lab_id: standalone-web-vuln-week07
+title: "파일 업로드/경로순회/명령주입 — RCE 발판 vs 입력검증 방어"
+version: standalone-web-vuln
+course: web-vuln
+week: 7
+description: |
+  RCE로 이어지는 세 취약점 — 경로순회(930), 명령주입(932), PHP 주입(933)과 ModSec 탐지, 입력검증 방어.
+  dvwa 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 170
+prerequisites:
+  - "W01–W06 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(경로순회) §3(명령주입) §4(업로드) 숙지"
+objectives:
+  - "경로순회/명령주입/PHP주입 시도"
+  - "ModSec 930/932/933 탐지"
+  - "입력검증/allowlist 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      대상 도달.
+    hint: '도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+    answer_detail: "RCE 취약점 점검 대상 = dvwa."
+    verify:
+      type: output_contains
+      expect: 'dvwa'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 경로순회
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pt=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=../../etc/passwd'"
+      ```
+      ## ✅ 합격 기준
+      경로순회가 403(930)에 차단된다.
+    hint: '../../etc/passwd'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 경로순회 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pt=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=../../etc/passwd'"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'enc=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd'"
+      echo "→ ../ 경로 탈출 → 930(LFI) 403. 인코딩도 정규화로 차단"
+    answer_detail: "경로순회 = ../로 임의 파일 읽기. ModSec 930 → 403."
+    verify:
+      type: output_contains
+      expect: '403'
+      field: stdout
+      semantic:
+        intent: "경로순회"
+        success_criteria: ["403(930)"]
+        acceptable_methods: ["**[OSS] path traversal (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 명령주입
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'cmdi=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'"
+      ```
+      ## ✅ 합격 기준
+      명령주입 시도가 탐지된다.
+    hint: ';cat /etc/passwd'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 명령주입 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'cmdi=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pipe=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1|id'"
+      echo "→ ;/| 로 OS 명령 연결 → 932(RCE) 탐지. 성공 시 완전 장악"
+    answer_detail: "명령주입 = ;&|$()로 OS 명령 실행. ModSec 932 탐지. 가장 심각(RCE)."
+    verify:
+      type: output_contains
+      expect: 'cmdi='
+      field: stdout
+      semantic:
+        intent: "명령주입"
+        success_criteria: [";명령 시도"]
+        acceptable_methods: ["**[OSS] ;cmd 주입 (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 PHP 주입
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'php=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'"
+      ```
+      ## ✅ 합격 기준
+      PHP 주입이 403(933)에 차단된다.
+    hint: '<?php system'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== PHP 주입(업로드 콘텐츠) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'php=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'"
+      echo "→ <?php system('id')?> = webshell 콘텐츠 → 933(PHP) 403"
+    answer_detail: "PHP 주입 = webshell 코드. ModSec 933 → 403. 업로드 우회는 확장자/MIME 변조(고급)."
+    verify:
+      type: output_contains
+      expect: '403'
+      field: stdout
+      semantic:
+        intent: "PHP 주입"
+        success_criteria: ["403(933)"]
+        acceptable_methods: ["**[OSS] <?php 주입 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 탐지 — ModSec 930/932/933
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -200 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | grep -E "^93"'
+      ```
+      ## ✅ 합격 기준
+      LFI/RCE/PHP 룰(93x)이 탐지됨을 확인한다.
+    hint: 'modsec 93x'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 탐지 (930/932/933) ==="
+      docker exec el34-web sh -c 'sudo tail -250 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | grep -E "^93"'
+      echo "→ 930(LFI/경로순회), 932(RCE/명령주입), 933(PHP)"
+    answer_detail: "탐지 = ModSec 930(LFI)/932(RCE)/933(PHP) 룰군. 각 유형별 전용."
+    verify:
+      type: output_contains
+      expect: '930'
+      field: stdout
+      semantic:
+        intent: "93x 탐지"
+        success_criteria: ["930/932/933"]
+        acceptable_methods: ["**[OSS] modsec 93x (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 영향
+      ## 💻 실행 명령
+      ```bash
+      echo "경로순회→임의파일읽기(설정/키), 명령주입→RCE(완전장악), 업로드→webshell RCE"
+      ```
+      ## ✅ 합격 기준
+      세 취약점의 영향을 정리한다.
+    hint: '파일읽기/RCE 영향'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 영향 ==="
+      echo "경로순회: /etc/passwd, 설정/소스/키 읽기 → 정보 노출"
+      echo "명령주입: 임의 OS 명령 → RCE → 완전 장악"
+      echo "업로드: webshell → RCE → 완전 장악"
+      echo "→ 명령주입/업로드는 RCE(최고 심각도)"
+    answer_detail: "영향 = 파일읽기(경로순회) ~ RCE(명령주입/업로드). RCE는 최고 심각도."
+    verify:
+      type: output_contains
+      expect: 'RCE'
+      field: stdout
+      semantic:
+        intent: "영향 정리"
+        success_criteria: ["파일읽기/RCE"]
+        acceptable_methods: ["**[관리적] 영향 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 입력검증/allowlist
+      ## 💻 실행 명령
+      ```bash
+      echo "경로순회: 정규화+allowlist. 명령주입: OS호출회피+allowlist. 업로드: 확장자/MIME allowlist+실행권한제거"
+      ```
+      ## ✅ 합격 기준
+      입력검증 방어를 정리한다.
+    hint: '정규화/allowlist/실행권한제거'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 입력검증 방어 ==="
+      echo "경로순회: 경로 정규화 + allowlist, 사용자 입력으로 경로 구성 금지"
+      echo "명령주입: OS 명령 호출 회피(언어 API), 불가피 시 엄격 allowlist + 이스케이프"
+      echo "업로드: 확장자/MIME allowlist, 업로드 디렉토리 실행권한 제거+분리, 콘텐츠 검사"
+      echo "→ 공통: 입력 불신 + allowlist"
+    answer_detail: "방어 = 입력 불신 + allowlist. 경로(정규화), 명령(API/allowlist), 업로드(확장자/실행권한)."
+    verify:
+      type: output_contains
+      expect: 'allowlist'
+      field: stdout
+      semantic:
+        intent: "입력검증 방어"
+        success_criteria: ["정규화/allowlist"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 점검 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹취약점 W07 업로드/경로순회/명령주입 보고서 (학번, 이름)
+      ## 1. 세 취약점 시도
+      ## 2. 탐지(930/932/933)
+      ## 3. 영향(RCE) + 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 세 취약점 + 방어가 포함된다.
+    hint: '경로/명령/업로드+방어'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 웹취약점 W07 업로드/경로순회/명령주입 보고서
+      ## 1. 경로순회(../../etc/passwd)/명령주입(;id)/PHP주입(<?php)
+      ## 2. 탐지: ModSec 930(LFI)/932(RCE)/933(PHP) → 403
+      ## 3. 영향: 파일읽기~RCE(완전장악). 방어: 입력검증+allowlist+실행권한제거
+      ## 결론: 입력 신뢰의 대가가 가장 큰(RCE) 취약점들. allowlist 기반 입력검증이 근본
+      EOF
+    answer_detail: "RCE 취약점 = 경로순회/명령주입/업로드. ModSec 93x 탐지, allowlist 방어."
+    verify:
+      type: output_contains
+      expect: 'RCE'
+      field: stdout
+      semantic:
+        intent: "RCE 취약점 종합 보고"
+        success_criteria: ["세 취약점/탐지/방어"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
