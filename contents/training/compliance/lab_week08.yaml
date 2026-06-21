@@ -4,36 +4,45 @@ version: standalone-compliance
 course: compliance
 week: 8
 description: |
-  중간 평가 — el34-web 종합 기준선 감사: 정보노출/접근통제/자산/암호정책/권한/암호화/로깅/취약점을
-  한 바퀴 점검해 준수·갭 판정 + 우선순위. CIS Benchmark 방식. 명령은 el34 호스트에서. 신규 설치 없음.
+  중간 평가 — 단 하나의 표적 시스템(el34-web)을 CIS Benchmark 기준선으로 한 바퀴 종합 감사한다.
+  W01~W07 의 점검 역량(정보노출/접근통제/자산/암호정책/파일권한/암호화/로깅/취약점)을 따로따로가 아니라
+  하나의 기준선 감사 흐름으로 통합 적용한다. 각 항목에서 기준(요구치) ↔ 현재 상태를 대조해 준수
+  (compliant) / 갭(gap) 을 판정하고 증적을 확보한 뒤, 갭을 위험 기반 우선순위로 종합 보고한다.
+  모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec 로 실행하며 신규 도구 설치는 없다
+  (설정·권한은 el34-web 안에서, 로깅은 el34-siem 에서, 전송 암호화·취약점 스캔은 el34-attacker 에서).
 difficulty: hard
 duration_minutes: 180
 prerequisites:
-  - "W01–W07 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "전 주차 점검 명령 숙지"
+  - "W01–W07 통과(프레임워크·정책·자산·접근통제·암호화·로깅·취약점 점검)"
+  - "el34 호스트 SSH + docker exec 접근"
+  - "전 주차 점검 명령(grep/stat/openssl/nuclei) 숙지"
 objectives:
-  - "종합 기준선 감사 수행"
-  - "항목별 준수/갭 판정"
-  - "우선순위 기반 종합 보고"
+  - "한 표적(el34-web)에 대한 종합 기준선(baseline) 감사를 처음부터 끝까지 수행한다"
+  - "각 점검 항목에서 기준(CIS/PCI/ISMS-P) 대비 준수/갭을 증적과 함께 판정한다"
+  - "발견된 갭을 위험 기반 우선순위로 정렬해 종합 기준선 감사 보고서로 종합한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 대상
+      ## 🎯 점검 — 대상 도달성 (감사의 전제)
+      감사의 첫 단계는 표적에 접근이 되는지 확인하는 것이다. 접근이 안 되면 이후 모든 음성 결과가
+      무의미하다. 이번 중간고사의 기준선 감사 대상은 el34 4-tier 의 dmz 계층에 있는 web 컨테이너
+      (`el34-web`, Apache + ModSecurity)다. 이 한 시스템에 컴플라이언스의 거의 모든 영역(웹 설정·계정·
+      암호 정책·파일 권한·로깅 에이전트)이 응축되어 있어 종합 기준선 감사의 표적으로 적합하다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c "hostname; echo target_ok"
       ```
       ## ✅ 합격 기준
-      대상 접근.
+      출력에 `target_ok` 가 나오면 대상 접근 성공. (응답이 없으면 호스트 SSH·컨테이너 상태 `docker ps`
+      부터 점검한다.)
     hint: '대상'
     category: survey
     points: 8
     answer: |
       docker exec el34-web sh -c "hostname; echo target_ok"
-    answer_detail: "기준선 감사 대상 = el34-web."
+    answer_detail: "기준선 감사 대상 = el34-web(dmz Apache+ModSec). hostname 응답 + target_ok 출력으로 도달성 확인 — 감사 착수의 전제 단계."
     verify:
       type: output_contains
       expect: 'target_ok'
@@ -46,13 +55,19 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 정보 노출 — ServerTokens
+      ## 🎯 ① 정보 노출 — ServerTokens (W01: 프레임워크·갭 분석)
+      기준선의 첫 항목은 정보 최소화다. `ServerTokens` 는 Apache 가 응답 `Server:` 헤더와 에러
+      페이지에 자신의 정보를 얼마나 노출할지 정하는 설정으로, `OS` 면 `Apache/2.4.52 (Ubuntu)` 처럼
+      제품 버전과 OS 가 그대로 드러난다. 공격자는 이 버전으로 표적에 맞는 알려진 취약점(CVE)을 고른다.
+      **CIS Apache 2.4 Benchmark 는 제품명만 노출하는 `Prod`** 를 요구한다. 이 명령은 설정값을 읽어
+      기준(Prod) 대비 준수/갭을 셸 한 줄로 자동 판정한다(`grep -qi Prod && echo compliant || echo gap`).
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ 2>/dev/null | head -1); echo "current:$V"; echo "$V" | grep -qi "Prod" && echo "compliant" || echo "gap=not_Prod"'
       ```
       ## ✅ 합격 기준
-      ServerTokens 기준(Prod) 대비 갭을 판정한다.
+      출력에 `gap=not_Prod` 가 나오면 갭 판정 성공 — el34-web 의 현재 값 `OS` 가 CIS 기준 `Prod` 에
+      미달한 갭이다. (낮은 우선순위지만 후속 공격 정찰의 단서이므로 시정 대상으로 보고한다.)
     hint: 'ServerTokens'
     category: manipulation
     points: 10
@@ -60,7 +75,7 @@ steps:
       echo "=== 정보 노출 (ServerTokens) ==="
       docker exec el34-web sh -c 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ 2>/dev/null | head -1); echo "current:$V"; echo "$V" | grep -qi "Prod" && echo "compliant" || echo "gap=not_Prod"'
       echo "→ ServerTokens OS → CIS Prod 미달(갭)"
-    answer_detail: "ServerTokens OS = CIS Prod 미달 갭(W01)."
+    answer_detail: "ServerTokens OS = 제품+OS 노출 → CIS Apache 2.4(8.1) 의 Prod 요구 미달 = 갭(W01). 정보 최소화 위반으로 공격자 정찰 단서가 된다. 증적 = current: 뒤의 실제 설정값."
     verify:
       type: output_contains
       expect: 'gap='
@@ -73,13 +88,18 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 원격 접근 — PermitRootLogin
+      ## 🎯 ② 원격 접근 — PermitRootLogin (W02: 정책 강제)
+      원격 root 직접 로그인은 침입자가 곧장 최고 권한으로 들어오는 가장 위험한 경로다. 그래서 정책은
+      "원격 root 직접 로그인 금지"를 두고(W02), 대신 일반 계정 로그인 후 sudo 를 경유하게 한다. 이
+      미션은 그 **정책이 실제로 설정(`sshd_config` 의 `PermitRootLogin no`)으로 강제**되는지 확인한다 —
+      즉 "문서상 금지"가 기술적으로 시행되는지를 증적으로 보이는 것이다. 기준은 `no`(차단).
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'V=$(grep -iE "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null); echo "$V"; echo "$V" | grep -qi "no" && echo "compliant=rootlogin_off" || echo "gap"'
       ```
       ## ✅ 합격 기준
-      원격 root 로그인 차단(준수)을 확인한다.
+      출력에 `compliant=rootlogin_off` 가 나오면 준수 확인 — 원격 root 로그인이 차단되어 정책이 설정
+      으로 강제된 상태다. (`gap` 이 나오면 원격 root 가 열려 있는 즉시 시정 대상.)
     hint: 'PermitRootLogin no'
     category: manipulation
     points: 10
@@ -87,7 +107,7 @@ steps:
       echo "=== 원격 접근 (PermitRootLogin) ==="
       docker exec el34-web sh -c 'V=$(grep -iE "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null); echo "$V"; echo "$V" | grep -qi "no" && echo "compliant=rootlogin_off" || echo "gap"'
       echo "→ PermitRootLogin no = 준수(W02)"
-    answer_detail: "PermitRootLogin no = 원격 root 차단(준수, W02)."
+    answer_detail: "PermitRootLogin no = 원격 root 직접 로그인 차단 → CIS SSH 기준 충족 = 준수(W02). 정책-시행 일치의 대표 사례. 증적 = sshd_config 의 실제 설정 라인."
     verify:
       type: output_contains
       expect: 'compliant='
@@ -100,13 +120,19 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 자산 — vhost inventory
+      ## 🎯 ③ 자산 — vhost inventory (W03: 자산 식별·분류)
+      모르는 것은 지킬 수 없다. 감사는 먼저 보호 대상(자산)을 집계해 **범위(scope)를 확정**한다(W03).
+      el34-web 의 Apache 는 `Host:` 헤더로 여러 **vhost**(`juice.el34.lab`, `dvwa.el34.lab`,
+      `siem.el34.lab` 등)를 서비스하며, 각 vhost 는 하나의 웹 자산이다. "있는 줄 몰랐던 자산"(shadow
+      IT, 방치 서비스)이 가장 위험하므로 누락 없이 센다. 집계한 수가 곧 감사 범위의 웹 자산 개수이며,
+      각 자산에 중요도(CIA)·소유자·통제를 매핑하는 토대가 된다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'echo "assets=$(ls /etc/apache2/sites-enabled/ 2>/dev/null | wc -l)"'
       ```
       ## ✅ 합격 기준
-      웹 자산을 집계한다.
+      출력에 `assets=<수>` 가 나오면 인벤토리 집계 성공 — 이 수가 감사 범위의 활성 웹 자산 개수다.
+      (0 이거나 못 읽으면 경로 `sites-enabled` 를 재확인.)
     hint: 'vhost 수'
     category: recon
     points: 10
@@ -114,7 +140,7 @@ steps:
       echo "=== 자산 inventory ==="
       docker exec el34-web sh -c 'echo "assets=$(ls /etc/apache2/sites-enabled/ 2>/dev/null | wc -l)"'
       echo "→ vhost 자산 집계(W03). 각 자산에 중요도·통제 매핑"
-    answer_detail: "자산 = vhost inventory(W03). 감사 범위 확정."
+    answer_detail: "자산 식별 = 활성 vhost inventory 집계(W03, ISMS-P 2.1). assets=<수>가 감사 범위의 웹 자산 개수 — 자산별 중요도·소유자·통제 매핑의 출발점. 증적 = assets= 출력."
     verify:
       type: output_contains
       expect: 'assets='
@@ -127,13 +153,18 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 암호 정책 — PASS_MAX_DAYS
+      ## 🎯 ③ 암호 정책 — PASS_MAX_DAYS (W04: 접근통제)
+      만료 없는 암호는 한 번 유출되면 무기한 악용된다. `PASS_MAX_DAYS` 는 `/etc/login.defs` 에 정의된
+      암호 강제 만료 주기(일)로, **PCI-DSS 8.3.9 / CIS 는 ≤90일** 을 권고한다. 값이 `99999` 면 사실상
+      무기한(만료 없음)이다. 이 명령은 설정값에서 숫자만 추출(`tr -dc 0-9`)해 90 과 비교하고, 90 초과면
+      갭으로 판정한다(`[ "$V" -gt 90 ] && echo gap=no_expiry || echo compliant`).
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] 2>/dev/null && echo "gap=no_expiry" || echo "compliant"'
       ```
       ## ✅ 합격 기준
-      암호 만료 기준(≤90) 대비 갭을 판정한다.
+      출력에 `gap=no_expiry` 가 나오면 갭 판정 성공 — el34-web 의 `max_days=99999`(사실상 무기한)가
+      PCI-DSS 8.3.9(≤90일) 에 미달이다. 계정 보호에 직결되어 **우선순위가 높은** 시정 항목이다.
     hint: 'PASS_MAX_DAYS'
     category: manipulation
     points: 10
@@ -141,7 +172,7 @@ steps:
       echo "=== 암호 정책 (PASS_MAX_DAYS) ==="
       docker exec el34-web sh -c 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] 2>/dev/null && echo "gap=no_expiry" || echo "compliant"'
       echo "→ 99999(무기한) → PCI 8.3.9(≤90) 미달(갭, W04)"
-    answer_detail: "PASS_MAX_DAYS 99999 = 만료 없음 갭(W04)."
+    answer_detail: "PASS_MAX_DAYS 99999 = 암호 사실상 무기한 → PCI-DSS 8.3.9/CIS(≤90일) 미달 = 갭(W04). 유출 시 무기한 악용되어 계정 보호 직결, 우선순위 높음(보고서 ①). 증적 = max_days= 출력."
     verify:
       type: output_contains
       expect: 'gap='
@@ -154,13 +185,18 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 파일 권한 — shadow/sudoers
+      ## 🎯 ③ 파일 권한 — shadow / sudoers (W04: 민감 파일 보호)
+      `/etc/shadow`(암호 해시)가 과도하게 열려 있으면 누구나 해시를 읽어가 오프라인 크래킹에 쓸 수
+      있는 치명적 갭이다. `stat -c "%a" <파일>` 은 권한을 8진수 3자리(예: 640)로 출력하는 표준 점검
+      명령이다. **CIS 기준은 shadow 640(또는 600), sudoers 440**. 이 명령은 shadow 권한을 읽어
+      600/640 이면 준수, 그 외(예: world-readable 644)면 갭으로 판정한다(`case` 분기).
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'S=$(stat -c "%a" /etc/shadow); echo "shadow=$S"; case "$S" in 600|640) echo "compliant=shadow_$S";; *) echo "gap=shadow_$S";; esac'
       ```
       ## ✅ 합격 기준
-      민감 파일 권한(준수)을 확인한다.
+      출력에 `compliant=shadow_640`(또는 600)이 나오면 준수 확인 — 민감 파일이 CIS 기준대로 보호된
+      상태다. (`gap=shadow_644` 같은 값이면 world-readable 로 해시 유출 위험, 즉시 시정 대상.)
     hint: 'shadow 640'
     category: manipulation
     points: 10
@@ -168,7 +204,7 @@ steps:
       echo "=== 파일 권한 ==="
       docker exec el34-web sh -c 'stat -c "%n %a" /etc/shadow /etc/sudoers; S=$(stat -c "%a" /etc/shadow); case "$S" in 600|640) echo "compliant=shadow_$S";; *) echo "gap=shadow_$S";; esac'
       echo "→ shadow 640/sudoers 440 = CIS 준수(W04)"
-    answer_detail: "shadow 640/sudoers 440 = 준수(W04)."
+    answer_detail: "shadow 640(root:shadow)/sudoers 440 = CIS 민감 파일 권한 기준 충족 = 준수(W04). shadow 가 world-readable(644)면 해시 유출 치명 갭. 증적 = stat 출력(%n %a)."
     verify:
       type: output_contains
       expect: 'compliant=shadow'
@@ -181,13 +217,20 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 암호화 — TLS
+      ## 🎯 ④ 암호화 — TLS (W05: 전송 암호화, PCI-DSS 4)
+      전송 구간 암호화는 도청·변조 방어의 기본이며 **PCI-DSS 요구사항 4 는 TLS1.2 이상**을 의무화한다
+      (TLS1.0/1.1 은 폐기 대상). 이 점검은 표적의 **외부 진입점**을 보는 것이라 web 컨테이너 내부가
+      아니라 점검자 컨테이너(`el34-attacker`)에서 fw 게이트웨이(`10.20.30.1:443`)로 핸드셰이크를 맺어
+      협상된 프로토콜을 본다. `openssl s_client -connect <ip:443> -servername <vhost>` 가 명령줄에서
+      TLS 핸드셰이크를 직접 맺어 `Protocol:`(버전)을 보여주는 점검 도구다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername neobank.el34.lab 2>/dev/null | grep -iE 'Protocol' | head -1"
       ```
       ## ✅ 합격 기준
-      전송 암호화(TLS1.2+) 준수를 확인한다.
+      출력에 `TLSv1.2` 또는 `TLSv1.3` 이 나오면 준수 확인 — el34 는 TLSv1.3 협상으로 PCI-DSS 4 를
+      충족한다. (단 인증서가 자체서명이라 운영 환경이면 신뢰 체인 교체가 필요한 주의 사항. 협상이
+      안 되면 게이트웨이 `10.20.30.1:443`·servername 을 점검.)
     hint: 'TLSv1.2+'
     category: analysis
     points: 10
@@ -195,7 +238,7 @@ steps:
       echo "=== 암호화 (TLS) ==="
       docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername neobank.el34.lab 2>/dev/null | grep -iE 'Protocol|Cipher' | head -2"
       echo "→ TLSv1.3 = PCI 4 준수(단 자체서명 인증서 갭, W05/W10)"
-    answer_detail: "TLSv1.3 = PCI 4 준수, 자체서명 인증서는 갭(W05)."
+    answer_detail: "TLSv1.3 협상 = PCI-DSS 4(강한 전송 암호화) 준수(W05). 단 자체서명 인증서는 신뢰 체인 결함이라 운영 환경이면 갭(W05/W10 연계, 우선순위 ②). 증적 = Protocol/Cipher 출력."
     verify:
       type: output_contains
       expect: 'TLSv1'
@@ -208,13 +251,20 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 로깅 — Wazuh 중앙수집
+      ## 🎯 ④ 로깅 — Wazuh 중앙수집 (W06: 감사 추적, PCI-DSS 10)
+      로그 없는 보안은 침해 후 추적·법적 대응·재발 방지가 모두 무너진다. **PCI-DSS 요구사항 10 은 모든
+      접근에 감사 추적(audit trail)** 을, 그리고 그 로그의 **중앙 수집**을 요구한다. 중앙 수집은 로그
+      변조·삭제 방지와 통합 모니터링의 전제다. el34 의 SIEM 인 Wazuh(`el34-siem`)는 IPS·web 의 로그를
+      한 곳(`/var/ossec/logs/alerts/alerts.json`)에 모은다. 이 명령은 그 파일의 최근 한 줄을 읽어
+      이벤트가 실제로 적재되는지 확인한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json 2>/dev/null | head -c 60; echo; echo siem_ingest_ok'
       ```
       ## ✅ 합격 기준
-      로그 중앙 수집(준수)을 확인한다.
+      출력에 `siem_ingest_ok` 가 나오면 준수 확인 — 분산 로그가 Wazuh 에 중앙 수집되어 PCI-DSS 10 을
+      충족한다. (적재가 비면 SIEM 상태·에이전트 연결을 점검. 중앙 수집 외에 무결성·보존 1년+·NTP 동기화
+      까지 보장돼야 완전하다.)
     hint: 'Wazuh 적재'
     category: analysis
     points: 10
@@ -222,7 +272,7 @@ steps:
       echo "=== 로깅 (Wazuh) ==="
       docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json 2>/dev/null | head -c 60; echo; echo siem_ingest_ok'
       echo "→ Wazuh 중앙수집 = PCI 10 준수(W06)"
-    answer_detail: "Wazuh 중앙수집 = PCI 10 준수(W06)."
+    answer_detail: "Wazuh(el34-siem) alerts.json 적재 = 분산 로그 중앙 수집 → PCI-DSS 10(감사 추적·중앙 수집) 준수(W06). 변조 방지·통합 모니터링의 전제. 증적 = siem_ingest_ok + alerts.json 선두."
     verify:
       type: output_contains
       expect: 'siem_ingest_ok'
@@ -235,13 +285,20 @@ steps:
 
   - order: 9
     instruction: |
-      ## 🎯 취약점 스캔 — nuclei
+      ## 🎯 ⑤ 취약점 스캔 — nuclei (W07: 취약점 관리, PCI-DSS 11.3)
+      취약점은 매일 새로 생긴다. 한 번이 아니라 **정기 스캔**으로 식별·재검증하는 순환(식별→평가→조치
+      →재검증)이 컴플라이언스의 요구이며, **PCI-DSS 11.3 은 분기별·변경 후 스캔**을 의무화한다.
+      `nuclei` 는 템플릿(`.yaml`) 기반 취약점 스캐너로, 여기서는 보안 헤더 누락 템플릿을 표적에 던진다.
+      **보안 헤더**(`X-Frame-Options`·`Content-Security-Policy` 등)는 누락 시 클릭재킹·XSS 방어가
+      약해진다. 명령은 발견을 임시 파일에 모아(`tee`) 줄 수를 세어 `findings=<n>` 으로 보고한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/cp8.txt | head -4; echo findings=\$(wc -l < /tmp/cp8.txt); rm -f /tmp/cp8.txt"
       ```
       ## ✅ 합격 기준
-      취약점 스캔을 수행한다.
+      출력에 `findings=<수>` 가 나오면 스캔 수행 성공 — 보안 헤더 누락 등이 식별된 갭이다. 이 한 회차가
+      정기 스캔의 한 결과이며 패치 우선순위의 근거가 된다. (발견이 비거나 오류면 템플릿 경로·표적
+      도달성을 점검.)
     hint: 'nuclei 스캔'
     category: manipulation
     points: 10
@@ -249,7 +306,7 @@ steps:
       echo "=== 취약점 스캔 ==="
       docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/cp8.txt | head -4; echo findings=\$(wc -l < /tmp/cp8.txt); rm -f /tmp/cp8.txt"
       echo "→ 보안 헤더 누락 등 발견(W07). 정기 스캔으로 추세 관리"
-    answer_detail: "nuclei 스캔 = 취약점 식별(W07). 보안 헤더 누락 등."
+    answer_detail: "nuclei 스캔 = 정기 취약점 식별(W07, PCI-DSS 11.3). 보안 헤더 누락 등을 발견(갭, 우선순위 ④). 취약점 관리 순환의 '식별' 단계로 추세 관리·패치 우선순위 근거. 증적 = findings= 수."
     verify:
       type: output_contains
       expect: 'findings='
@@ -262,7 +319,12 @@ steps:
 
   - order: 10
     instruction: |
-      ## 🎯 기준선 종합 보고서
+      ## 🎯 ⑤ 기준선 종합 보고서 (W01~W07 종합)
+      감사의 산출물은 보고서다. 미션 1–9 의 판정을 한 문서로 종합해야 기준선 감사가 완성된다. 갭만
+      나열하지 말고 **준수도 함께** 제시해 의뢰인이 현재 보안 수준의 전체 그림을 보게 한다. 그리고 갭은
+      **위험 기반 우선순위**로 정렬한다 — 계정 보호 영향이 큰 것부터(예: ①암호 만료 → ②자체서명 인증서
+      → ③ServerTokens → ④보안 헤더). 각 항목은 "기준 → 현재 → 판정 → 증적 → 권고"로 적어 재현 가능
+      하게 한다.
       ## 💻 보고서 양식
       ```markdown
       # 컴플라이언스 W08 기준선 감사 보고서 (학번, 이름)
@@ -271,7 +333,8 @@ steps:
       ## 3. 우선순위
       ```
       ## ✅ 합격 기준
-      준수/갭 종합 + 우선순위가 포함된다.
+      보고서에 준수 항목 + 갭 항목 + 위험 기반 `우선순위`(와 결론)가 모두 포함되면 합격. 우선순위에는
+      근거(위험도)가 붙어야 한다.
     hint: '준수/갭/우선순위'
     category: report
     points: 12
@@ -283,7 +346,7 @@ steps:
       ## 3. 우선순위: ①암호 만료 정책(계정 보호) ②인증서 교체 ③ServerTokens Prod ④보안 헤더
       ## 결론: 접근/암호화/로깅 기본은 준수. 암호 만료·인증서·정보노출이 우선 조치 갭
       EOF
-    answer_detail: "기준선 종합 = 준수(접근/암호화/로깅)+갭(ServerTokens/암호만료/인증서/헤더)+우선순위."
+    answer_detail: "기준선 종합 보고 = 준수(PermitRootLogin no·파일권한·TLSv1.3·Wazuh 중앙수집) + 갭(ServerTokens OS·PASS_MAX_DAYS 99999·자체서명 인증서·보안 헤더 누락) + 위험 기반 우선순위(①암호만료 ②인증서 ③ServerTokens ④헤더) + 결론. 컴플라이언스 감사 최종 산출물."
     verify:
       type: output_contains
       expect: '우선순위'
