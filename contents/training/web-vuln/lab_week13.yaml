@@ -1,0 +1,248 @@
+lab_id: standalone-web-vuln-week13
+title: "자동화 스캐닝 — nuclei/dalfox 템플릿 점검 vs 자동화의 한계"
+version: standalone-web-vuln
+course: web-vuln
+week: 13
+description: |
+  템플릿 기반 자동 취약점 스캐닝 — nuclei(기술탐지/보안헤더/HSTS), dalfox(XSS), 그리고 자동화의 한계
+  (로직/인가 미탐). juice/dvwa 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+  도구: nuclei v3.3.5(템플릿 10,964개 설치됨)/dalfox/httpx 탑재. 템플릿 설치는 lecture §2.1 참고.
+difficulty: hard
+duration_minutes: 160
+prerequisites:
+  - "W01–W12 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(nuclei) §2.1(템플릿 설치) §4(한계) 숙지"
+objectives:
+  - "nuclei로 기술/오설정 대량 점검"
+  - "dalfox XSS 자동화 + WAF 차단 관찰"
+  - "자동화의 한계 이해 + 스캐너 결과 활용"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      대상 도달.
+    hint: '도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+    answer_detail: "자동화 스캐닝 대상 = juiceshop."
+    verify:
+      type: output_contains
+      expect: 'juice'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 기술 탐지 — nuclei tech-detect
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -silent -nc 2>/dev/null"
+      ```
+      ## ✅ 합격 기준
+      nuclei가 기술 스택을 자동 탐지한다.
+    hint: 'tech-detect'
+    category: recon
+    points: 14
+    answer: |
+      echo "=== nuclei 기술 탐지 ==="
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -silent -nc 2>/dev/null"
+      echo "→ tech-detect 템플릿이 기술(google-font-api 등) 자동 핑거프린팅"
+    answer_detail: "nuclei tech-detect = 기술 스택 자동 탐지. 템플릿 1개로 핑거프린팅 자동화."
+    verify:
+      type: output_contains
+      expect: 'tech-detect'
+      field: stdout
+      semantic:
+        intent: "기술 자동 탐지"
+        success_criteria: ["tech-detect 매치"]
+        acceptable_methods: ["**[OSS] nuclei (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 보안 헤더 누락 — nuclei
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | head -10"
+      ```
+      ## ✅ 합격 기준
+      누락된 보안 헤더가 다수 탐지된다.
+    hint: 'missing-security-headers'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== nuclei 보안 헤더 누락 ==="
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | head -10"
+      echo "→ CSP/Referrer-Policy/COOP 등 다수 누락. 템플릿 1개로 모든 헤더 점검"
+    answer_detail: "nuclei 오설정 템플릿 = 누락 보안 헤더 일괄 탐지(CSP/HSTS/Referrer 등)."
+    verify:
+      type: output_contains
+      expect: 'missing-security-headers'
+      field: stdout
+      semantic:
+        intent: "보안 헤더 누락 탐지"
+        success_criteria: ["헤더 누락 매치"]
+        acceptable_methods: ["**[OSS] nuclei (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 HSTS 누락 확정
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | grep strict-transport-security"
+      ```
+      ## ✅ 합격 기준
+      HSTS(strict-transport-security) 누락이 확정된다.
+    hint: 'strict-transport-security'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== HSTS 누락 확정 ==="
+      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | grep strict-transport-security"
+      echo "→ W10(TLS)에서 본 HSTS 부재를 스캐너가 자동 확정. 수동·자동 결과 교차검증"
+    answer_detail: "HSTS 누락 = W10 수동 점검을 nuclei가 자동 재확인. 교차검증으로 신뢰도 상승."
+    verify:
+      type: output_contains
+      expect: 'strict-transport-security'
+      field: stdout
+      semantic:
+        intent: "HSTS 누락 확정"
+        success_criteria: ["HSTS 매치"]
+        acceptable_methods: ["**[OSS] nuclei (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 XSS 자동화 — dalfox (WAF 차단 관찰)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "timeout 60 dalfox url 'http://10.20.30.1/?q=test' -H 'Host: dvwa.el34.lab' --silence --no-color 2>&1; echo dalfox=done"
+      ```
+      ## ✅ 합격 기준
+      dalfox XSS 스캔이 실행된다(WAF로 무탐 — 자동화 한계 관찰).
+    hint: 'dalfox XSS'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== dalfox XSS 자동화 ==="
+      docker exec el34-attacker sh -c "timeout 60 dalfox url 'http://10.20.30.1/?q=test' -H 'Host: dvwa.el34.lab' --silence --no-color 2>&1; echo dalfox=done"
+      echo "→ ModSec(941)이 XSS payload 차단 → dalfox 무탐. '무탐=안전' 아님(WAF가 가림). 자동화 한계"
+    answer_detail: "dalfox = XSS 특화 스캐너. el34는 WAF가 차단 → 무탐. 무탐이 안전을 보장하지 않음."
+    verify:
+      type: output_contains
+      expect: 'dalfox=done'
+      field: stdout
+      semantic:
+        intent: "XSS 자동 스캔"
+        success_criteria: ["dalfox 실행"]
+        acceptable_methods: ["**[OSS] dalfox (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 자동화의 한계
+      ## 💻 실행 명령
+      ```bash
+      echo "자동화 한계: 로직/인가(BOLA·비즈니스로직) 미탐, 오탐/미탐, WAF뒤·인증뒤 누락"
+      ```
+      ## ✅ 합격 기준
+      자동화 스캐너의 한계를 정리한다.
+    hint: '로직/인가 미탐'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 자동화의 한계 ==="
+      echo "1) 로직/인가 미탐: BOLA(W12)·권한상승·비즈니스 로직은 템플릿화 불가"
+      echo "2) 오탐/미탐: 컨텍스트 모름, WAF 뒤·인증 뒤 표면 누락"
+      echo "3) dalfox 무탐 사례: WAF가 가린 것일 수도"
+      echo "→ 자동화는 넓게(빠름), 수동은 깊게(정밀). 보완 관계 — 한계를 알고 병행"
+      echo "→ 자동화 단독 의존은 위험(미탐을 안전으로 오인)"
+    answer_detail: "한계 = 로직/인가 미탐 + 오탐/미탐. 자동화는 수동 점검을 보완할 뿐 대체 불가."
+    verify:
+      type: output_contains
+      expect: '한계'
+      field: stdout
+      semantic:
+        intent: "자동화 한계"
+        success_criteria: ["로직/인가 미탐"]
+        acceptable_methods: ["**[관리적] 한계 분석 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 스캐너 결과 활용
+      ## 💻 실행 명령
+      ```bash
+      echo "누락 헤더(CSP/HSTS) 추가, CVE 템플릿 정기 스캔→패치, CI/CD 통합(수동 병행)"
+      ```
+      ## ✅ 합격 기준
+      스캐너 결과 활용 방어를 정리한다.
+    hint: 'CSP/HSTS 추가/CVE 패치'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 스캐너 결과 활용 방어 ==="
+      echo "1) 누락 보안 헤더 추가: CSP, HSTS, Referrer-Policy, COOP/COEP"
+      echo "2) CVE 템플릿 정기 스캔 → 알려진 취약 버전 추적·패치"
+      echo "3) nuclei를 CI/CD에 통합(배포 전 회귀 점검)"
+      echo "4) 단, 자동화 + 수동 점검 병행(로직/인가는 수동)"
+      echo "→ 핵심: 스캐너 결과를 패치·헤더 보강으로 닫고, 수동 점검으로 한계 보완"
+    answer_detail: "방어 = 누락 헤더(CSP/HSTS) 보강 + CVE 패치 + CI/CD 통합 + 수동 병행."
+    verify:
+      type: output_contains
+      expect: 'CSP'
+      field: stdout
+      semantic:
+        intent: "스캐너 결과 활용"
+        success_criteria: ["헤더 보강/CVE 패치"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 자동화 스캐닝 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹취약점 W13 자동화 스캐닝 보고서 (학번, 이름)
+      ## 1. nuclei 발견(기술/보안헤더 누락/HSTS)
+      ## 2. dalfox(WAF 차단) + 자동화 한계
+      ## 3. 방어(헤더 보강/패치/수동 병행)
+      ```
+      ## ✅ 합격 기준
+      보고서에 자동 발견 + 자동화 한계 + 방어가 포함된다.
+    hint: 'nuclei 발견+한계+방어'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 웹취약점 W13 자동화 스캐닝 보고서
+      ## 1. nuclei: 기술 탐지(google-font-api), 보안 헤더 누락(CSP/HSTS/Referrer 등 다수)
+      ## 2. dalfox: WAF(941) 차단으로 무탐 → '무탐=안전' 아님. 자동화 한계(로직/인가 미탐)
+      ## 3. 방어: 누락 헤더 보강 + CVE 정기 스캔/패치 + CI/CD 통합 + 수동 점검 병행
+      ## 결론: nuclei로 빠르게 넓게 훑고, 수동으로 깊게 검증. 자동화는 보완이지 대체가 아님
+      EOF
+    answer_detail: "자동화 보고 = nuclei 발견 + dalfox/한계 + 헤더보강/패치 방어. 자동+수동 병행이 핵심."
+    verify:
+      type: output_contains
+      expect: 'nuclei'
+      field: stdout
+      semantic:
+        intent: "자동화 스캐닝 종합 보고"
+        success_criteria: ["발견/한계/방어"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
