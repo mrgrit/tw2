@@ -4,8 +4,13 @@ version: standalone-cloud-container
 course: cloud-container
 week: 2
 description: |
-  이미지 보안 — 레이어/히스토리, 베이스 이미지(Ubuntu full), 이미지 크기·공격표면, 노출 포트(EXPOSE 22),
-  이미지 최소화(멀티스테이지/distroless). el34 이미지 실 점검. 명령은 el34 호스트 docker CLI. 신규 설치 없음.
+  이미지 보안 — 컨테이너가 태어나는 이미지 자체를 점검자(CIS Docker / NIST SP 800-190 이미지 항목)의 눈으로
+  해부한다. 이미지에 든 모든 패키지·도구·열린 포트·비밀은 그대로 런타임의 공격 표면이 되기 때문이다.
+  레이어/빌드 히스토리(docker history, 비밀 잔존 위험), 베이스 이미지(el34-web = Ubuntu 22.04 풀베이스),
+  이미지 크기 = 공격 표면 척도(web 약 560MB·attacker 약 4GB), 노출 포트(EXPOSE 22 SSH = 불필요 표면),
+  이미지 최소화(멀티스테이지 빌드/distroless/.dockerignore/비밀 미포함)와 이미지 위생을 다룬다.
+  el34 이미지를 실제로 조회해 표면을 증적으로 보인다. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)의
+  docker CLI 로 수행하는 읽기 전용 조회이며, 신규 도구 설치는 없다(취약점 스캐너 Trivy 는 다음 주 W03).
 difficulty: medium
 duration_minutes: 130
 prerequisites:
@@ -13,27 +18,35 @@ prerequisites:
   - "el34 호스트 SSH + docker CLI"
   - "lecture §2(레이어) §3(베이스) §5(최소화) 숙지"
 objectives:
-  - "이미지 레이어/베이스 분석"
-  - "이미지 크기/노출 포트 = 공격표면"
-  - "이미지 최소화 방어"
+  - "이미지 레이어(누적 변경분)·빌드 히스토리를 분석하고 비밀 잔존 위험을 이해한다"
+  - "베이스 이미지(el34-web = Ubuntu 22.04 풀베이스)를 식별하고 풀 OS 베이스의 넓은 표면을 설명한다"
+  - "이미지 크기·노출 포트(EXPOSE 22 SSH)를 공격 표면 관점으로 점검·판정한다"
+  - "이미지 최소화(멀티스테이지/distroless/.dockerignore/비밀 미포함)와 위생 방어를 정리한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 대상
+      ## 🎯 목표
+      이미지 보안 점검의 대상(el34-web 이미지)에 접근이 되는지 먼저 확인한다.
+      ## 📖 개념
+      모든 점검의 전제는 "표적이 실제로 존재하고 조회 가능한가"이다. 대상이 없는데 던지는 음성 결과는
+      무의미하므로, 점검자는 본격 분석에 앞서 대상 도달성부터 확인한다(lecture §8 미션 1).
       ## 💻 실행 명령
       ```bash
       docker inspect el34-web --format 'image={{.Config.Image}}' 2>/dev/null; echo target_ok
       ```
+      - `docker inspect <컨테이너>` : 컨테이너·이미지의 상세 메타데이터(JSON)를 조회하는 읽기 전용 명령.
+      - `--format '...'` : 그 JSON 에서 원하는 필드만 골라 출력하는 Go 템플릿. 여기서는 이미지 식별만 본다.
       ## ✅ 합격 기준
-      대상 이미지 확인.
+      출력 끝에 `target_ok` 가 나오면 대상 이미지에 접근 성공. 응답이 없으면 호스트 SSH·컨테이너 상태
+      (`docker ps`)부터 점검한다.
     hint: '대상'
     category: survey
     points: 10
     answer: |
       docker inspect el34-web --format 'image={{.Config.Image}}' 2>/dev/null; echo target_ok
-    answer_detail: "이미지 보안 점검 대상 = el34-web 이미지."
+    answer_detail: "이미지 보안 점검의 대상은 el34-web 이미지다. docker inspect 로 이미지가 식별되고 끝에 target_ok 가 출력되면 대상이 살아 있고 조회 가능하다는 뜻 — 점검 착수의 전제 확인이다."
     verify:
       type: output_contains
       expect: 'target_ok'
@@ -46,13 +59,24 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 레이어/히스토리
+      ## 🎯 목표
+      el34-web 이미지의 레이어 수와 빌드 히스토리를 읽어, 이미지가 어떻게 만들어져 무엇을 품게 됐는지
+      분석한다.
+      ## 📖 개념
+      이미지는 Dockerfile 명령(RUN/COPY 등) 한 줄이 만든 **변경분 한 겹(레이어)** 의 누적이다(양파 구조,
+      lecture §2). 각 레이어는 불변·영구 보존되므로, **비밀을 넣었다 지워도 이전 레이어에 그대로 남는다**
+      — 이것이 비밀을 이미지에 굽지 말아야 하는 직접적 근거다. `docker history` 는 그 레이어별 명령·크기를
+      보여 주는 "시공 일지"다.
       ## 💻 실행 명령
       ```bash
       echo "layers=$(docker history -q el34-web 2>/dev/null | wc -l)"; docker history el34-web --format '{{.Size}} {{.CreatedBy}}' | head -5
       ```
+      - `docker history -q` : 레이어 ID 만 한 줄씩 출력 → `wc -l` 로 세면 레이어 개수가 된다.
+      - `--format '{{.Size}} {{.CreatedBy}}'` : 각 레이어가 추가한 크기와 그 레이어를 만든 명령을 본다.
+        용량 큰 `RUN apt-get install` 줄(표면 비대)과 의심스러운 COPY(비밀·불필요 파일)를 찾는다.
       ## ✅ 합격 기준
-      이미지 레이어/빌드 히스토리를 분석한다.
+      출력에 `layers=<수>` 와 레이어별 명령·크기가 보이면 히스토리 분석 성공. 빈 출력이면 이미지 이름·존재
+      여부를 재확인한다.
     hint: 'docker history'
     category: recon
     points: 14
@@ -61,7 +85,7 @@ steps:
       echo "layers=$(docker history -q el34-web 2>/dev/null | wc -l)"
       docker history el34-web --format '{{.Size}} {{.CreatedBy}}' | head -6
       echo "→ 레이어별 명령/크기. COPY로 굽힌 비밀/파일은 삭제해도 이전 레이어에 잔존"
-    answer_detail: "레이어 = RUN/COPY 누적. history로 빌드 단계 분석. 비밀 레이어 잔존 위험."
+    answer_detail: "레이어는 Dockerfile 의 RUN/COPY 명령이 만든 변경분의 누적이다. docker history 로 레이어별 명령·크기를 역추적해 빌드 단계를 분석한다. 핵심 위험은 비밀을 넣었다 rm 해도 이전 레이어에 영구 잔존한다는 점 — layers= 와 레이어 목록이 출력되면 분석 성공이다."
     verify:
       type: output_contains
       expect: 'layers='
@@ -74,13 +98,26 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 베이스 이미지
+      ## 🎯 목표
+      el34-web 의 베이스 이미지(출발점이 된 바닥 OS)를 식별하고, 풀 OS 베이스가 큰 공격 표면을 만든다는
+      점을 확인한다.
+      ## 📖 개념
+      베이스 이미지는 Dockerfile 의 `FROM` 으로 지정하는 바닥 이미지로, 내가 쌓은 레이어는 모두 그 위에
+      올라간다 — 그래서 **베이스가 표면의 8할을 결정**한다(lecture §3). 풀 OS 베이스(Ubuntu/Debian)는
+      셸·패키지매니저·각종 도구를 다 품어 편리하지만, 그만큼 패키지·CVE·침해 후 악용 도구가 많다. 보안
+      권고는 distroless/alpine/slim 같은 최소 베이스다(단 디버깅·호환성과 트레이드오프). el34 는 학생이
+      직접 점검·실습할 수 있도록 일부러 셸 있는 풀베이스를 쓴다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'cat /etc/os-release | head -1'
       ```
+      - `docker exec <컨테이너> sh -c '...'` : 컨테이너 안에서 명령을 실행한다(메타데이터가 아니라 내부
+        파일을 봐야 하므로 inspect 가 아닌 exec 를 쓴다).
+      - `/etc/os-release` : 리눅스 배포판의 이름·버전을 담은 표준 파일. 첫 줄(PRETTY_NAME)에 베이스 OS 가
+        드러난다.
       ## ✅ 합격 기준
-      베이스 이미지를 식별한다(full OS = 큰 표면).
+      출력에 `Ubuntu`(22.04 풀베이스)가 보이면 베이스 식별 성공 — 풀 OS 베이스 = 표면 넓음 판정. 못 읽으면
+      컨테이너 진입·경로를 점검한다.
     hint: 'os-release'
     category: manipulation
     points: 12
@@ -88,7 +125,7 @@ steps:
       echo "=== 베이스 이미지 ==="
       docker exec el34-web sh -c 'cat /etc/os-release | head -1'
       echo "→ Ubuntu 22.04(full OS) 베이스 = 공격 표면 큼. 권고는 distroless/alpine/slim(트레이드오프)"
-    answer_detail: "베이스 = Ubuntu full OS(표면 큼). 최소 베이스(distroless)가 보안 권고."
+    answer_detail: "베이스 이미지는 표면의 8할을 결정한다. el34-web 은 /etc/os-release 첫 줄에 Ubuntu 22.04 가 나오는 풀 OS 베이스 — 셸·패키지매니저·도구를 다 품어 표면이 넓다. 보안 권고는 distroless/alpine/slim 같은 최소 베이스다. 출력에 Ubuntu 가 보이면 베이스 식별 성공이다."
     verify:
       type: output_contains
       expect: 'Ubuntu'
@@ -101,13 +138,24 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 이미지 크기 — 공격 표면
+      ## 🎯 목표
+      el34 이미지들의 크기를 조회하고, 크기를 공격 표면의 척도로 해석한다.
+      ## 📖 개념
+      이미지 크기는 그 안에 담긴 파일·패키지의 총량이라, **공격 표면의 거친 척도**다(lecture §4.1).
+      클수록 더 많은 패키지(→ 더 많은 CVE)와 더 많은 침해 후 악용 도구를 뜻한다. el34-web 은 약 560MB
+      (풀 우분투 + 웹 스택), 공격용 attacker 는 약 4GB(nmap·sqlmap·nuclei·메타스플로잇 등 도구를 의도적으로
+      다 담음)다. 반면 distroless 기반 앱 이미지는 보통 수십 MB — 이 차이가 곧 표면의 차이다. 크기 자체는
+      취약점이 아니지만, 다수 이미지를 점검할 때 표면이 의심스러운 이미지를 먼저 추리는 1차 트리아지 신호다.
       ## 💻 실행 명령
       ```bash
       docker images --format '{{.Repository}} {{.Size}}' | grep -i el34 | head -5
       ```
+      - `docker images --format '{{.Repository}} {{.Size}}'` : 호스트에 있는 이미지의 이름과 크기를 한 줄씩
+        출력한다.
+      - `grep -i el34` : el34 관련 이미지만 골라 본다(`-i` = 대소문자 무시).
       ## ✅ 합격 기준
-      이미지 크기를 공격 표면 관점으로 본다.
+      출력에 el34 이미지의 크기(web 약 560MB·attacker 약 4GB 등)가 보이면 분석 성공. el34 이미지가
+      안 보이면 필터·이미지 목록을 재확인한다.
     hint: '이미지 크기'
     category: analysis
     points: 12
@@ -115,7 +163,7 @@ steps:
       echo "=== 이미지 크기 ==="
       docker images --format 'size_check {{.Repository}} {{.Size}}' | grep -i el34 | head -6
       echo "→ web 560MB·attacker 4GB 등. 크기=패키지 수=CVE 수=침해 후 악용 도구. 최소화 필요"
-    answer_detail: "이미지 크기 = 공격 표면. 클수록 패키지/CVE/악용도구 많음. 최소화가 방어."
+    answer_detail: "이미지 크기는 공격 표면의 거친 척도다 — 클수록 패키지·CVE·침해 후 악용 도구가 많다. el34-web 약 560MB(풀 우분투+웹 스택), attacker 약 4GB(공격 도구 다수), distroless 앱은 수십 MB. 다수 이미지 점검 시 1차 트리아지 지표이며, size_check 와 함께 el34 이미지 크기가 출력되면 성공이다."
     verify:
       type: output_contains
       expect: 'size_check'
@@ -128,13 +176,23 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 노출 포트 — EXPOSE
+      ## 🎯 목표
+      el34-web 이미지가 선언한 노출 포트(EXPOSE)를 점검해, 웹 이미지에 불필요한 관리 포트(SSH)가 굳어
+      있는지 판정한다.
+      ## 📖 개념
+      `EXPOSE` 는 Dockerfile 에 적는 메타데이터로 "이 이미지는 이 포트로 서비스한다"는 선언이다(lecture
+      §4.3). 그 자체로 포트를 외부에 여는 것은 아니지만(실제 개방은 런타임 `-p`), 이미지가 어떤 네트워크
+      표면을 전제하는지 읽는 단서가 된다. 웹 이미지인데 22/tcp(SSH)가 노출 포트에 있으면, 웹 서비스에
+      불필요한 SSH 서버가 이미지에 함께 담겼다는 신호 — 공격자에게 무차별 대입·자격 탈취의 표적이 되는
+      추가 표면이다.
       ## 💻 실행 명령
       ```bash
       docker inspect el34-web --format 'ports={{.Config.ExposedPorts}}'
       ```
+      - `--format '...{{.Config.ExposedPorts}}'` : 이미지 메타데이터에서 노출 포트 목록만 뽑아 본다.
       ## ✅ 합격 기준
-      이미지에 정의된 노출 포트(불필요 SSH 등)를 점검한다.
+      출력에 `22`(와 80/443)가 보이면 노출 포트 점검 성공 — 웹 이미지의 SSH = 불필요 표면 가능성(검토
+      대상) 판정. ExposedPorts 가 비면 이미지·명령을 재확인한다.
     hint: 'ExposedPorts 22'
     category: manipulation
     points: 14
@@ -142,7 +200,7 @@ steps:
       echo "=== 노출 포트 (EXPOSE) ==="
       docker inspect el34-web --format 'ports={{.Config.ExposedPorts}}'
       echo "→ 22/tcp(SSH)+80/443. 웹 이미지에 SSH 서버 포함 = 추가 공격 표면(필요성 검토 대상)"
-    answer_detail: "노출 포트 = EXPOSE. 웹 이미지의 SSH(22)는 불필요 표면일 수 있음(검토)."
+    answer_detail: "노출 포트는 Dockerfile 의 EXPOSE 메타데이터로, 이미지가 전제하는 네트워크 표면을 보여 준다. el34-web 은 80/443(웹) 외에 22/tcp(SSH)를 포함 — 웹 이미지에 SSH 서버가 함께 담겨 불필요한 추가 표면(필요성 검토 대상)이다. 단 EXPOSE(메타데이터)와 실제 개방(런타임 -p)은 별개다. 출력에 22 가 보이면 점검 성공이다."
     verify:
       type: output_contains
       expect: '22'
@@ -155,13 +213,22 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 이미지 최소화
+      ## 🎯 목표
+      이미지 공격 표면을 줄이는 네 가지 최소화 기법을 "무엇을 왜 줄이는가"로 정리한다.
+      ## 📖 개념
+      앞 미션에서 "왜 작게 만드는가"(표면 축소)를 확인했으니, 이번엔 "어떻게 작게 만드는가"를 기법으로
+      묶는다(lecture §5). ① 멀티스테이지 빌드 — 컴파일러·빌드 도구는 빌드 단계에만 두고 최종 이미지엔
+      산출물만 담아 침해 후 익스플로잇 빌드를 차단한다. ② 최소 베이스 — distroless/alpine/slim 으로 셸·
+      패키지매니저를 빼 표면을 크게 줄인다(멀티스테이지와 결합이 정석). ③ .dockerignore — .git/.env/키
+      파일을 빌드 컨텍스트에서 제외해 비밀·불필요 파일이 COPY 로 실수로 굽히는 사고를 막는다. ④ 비밀
+      미포함 — 비밀은 레이어에 굽지 않고 런타임(환경변수/secret/Vault)에 주입한다.
       ## 💻 실행 명령
       ```bash
       echo "멀티스테이지(빌드도구 분리), distroless/alpine, .dockerignore, 비밀 미포함"
       ```
+      - 이 미션은 명령 점검이 아니라 **설계 원칙 정리**다. 네 기법을 각각 무엇을 줄이는지와 함께 적는다.
       ## ✅ 합격 기준
-      이미지 최소화 기법을 정리한다.
+      출력에 `멀티스테이지` 등 최소화 기법이 정리되면 성공. 기법이 누락되면 lecture §5 를 다시 본다.
     hint: '멀티스테이지/distroless'
     category: analysis
     points: 12
@@ -172,7 +239,7 @@ steps:
       echo "3) .dockerignore: 비밀·불필요 파일 컨텍스트 제외"
       echo "4) 비밀 미포함: 빌드 시 주입(레이어에 굽지 않기)"
       echo "→ 작은 이미지 = 작은 표면 + 빠른 배포"
-    answer_detail: "최소화 = 멀티스테이지+distroless+.dockerignore+비밀 미포함. 표면 축소."
+    answer_detail: "이미지 최소화 = ① 멀티스테이지 빌드(빌드 도구는 빌드 단계만, 최종엔 산출물만) + ② 최소 베이스(distroless/alpine/slim) + ③ .dockerignore(비밀·불필요 파일 컨텍스트 제외) + ④ 비밀 미포함(런타임 주입, 레이어에 굽지 않기). 네 기법 모두 공격 표면을 줄인다. 출력에 멀티스테이지 등 기법이 정리되면 성공이다."
     verify:
       type: output_contains
       expect: '멀티스테이지'
@@ -185,13 +252,21 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 방어 — 이미지 위생
+      ## 🎯 목표
+      이미지를 운영 내내 깨끗하게 유지하는 "이미지 위생"의 한 바퀴를 정리한다.
+      ## 📖 개념
+      최소화(미션 6)는 한 번이지만 위생은 순환이다 — 손을 한 번 씻고 끝내는 게 아니라 계속 씻듯이(lecture
+      §6). ① 최소 베이스 유지(새 기능으로 다시 비대해지지 않게 정기 재점검) → ② 정기 재빌드(베이스에 새로
+      패치된 CVE 를 반영) → ③ 취약점 스캔(이미지 안 패키지의 CVE 를 자동 검사 — 다음 주 W03 Trivy, CI 통합)
+      → ④ 비밀 분리(빌드 파이프라인에서 비밀이 굽지 않도록 강제) → ⑤ 신뢰 레지스트리·서명(출처·무결성
+      검증 — 레지스트리 계층, W11). 이 순환을 반복해야 이미지가 시간이 지나도 깨끗하게 유지된다.
       ## 💻 실행 명령
       ```bash
       echo "최소 베이스 + 정기 재빌드(패치) + 취약점 스캔 + 비밀 분리 + 신뢰 레지스트리"
       ```
+      - 이 미션도 명령 점검이 아니라 **운영 절차(위생 순환) 정리**다.
       ## ✅ 합격 기준
-      이미지 위생 방어를 정리한다.
+      출력에 `스캔` 등 위생 통제가 정리되면 성공. 순환 단계가 빠지면 lecture §6 다이어그램으로 돌아간다.
     hint: '최소베이스/재빌드/스캔'
     category: report
     points: 12
@@ -203,7 +278,7 @@ steps:
       echo "4) 비밀은 이미지에 굽지 않기(런타임 주입)"
       echo "5) 신뢰할 수 있는 레지스트리/서명(W11)"
       echo "→ 핵심: 작게 만들고, 자주 패치하고, 스캔하고, 비밀 분리"
-    answer_detail: "이미지 위생 = 최소베이스+정기재빌드+스캔+비밀분리+신뢰 레지스트리."
+    answer_detail: "이미지 위생은 한 번이 아니라 순환이다 — ① 최소 베이스 유지 → ② 정기 재빌드(베이스 패치 반영) → ③ 취약점 스캔(Trivy, W03, CI 통합) → ④ 비밀 분리(런타임 주입) → ⑤ 신뢰 레지스트리·서명(W11)을 반복한다. 핵심은 작게 만들고, 자주 패치하고, 스캔하고, 비밀을 분리하는 것. 출력에 스캔 등 통제가 정리되면 성공이다."
     verify:
       type: output_contains
       expect: '스캔'
@@ -216,7 +291,13 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 이미지 보안 보고서
+      ## 🎯 목표
+      미션 1–7 의 점검 결과를 이미지 보안 보고서 한 장으로 종합해, "이미지가 곧 공격 표면"임을 증적과
+      함께 제시한다.
+      ## 📖 개념
+      점검의 산출물은 보고서다(lecture §8 미션 8). 보고서는 (1) 분석(레이어·베이스·크기) → (2) 표면
+      (노출 포트) → (3) 방어(최소화·위생) → (4) 결론의 표준 구조를 따른다. 증적 우선 원칙 — "표면이 넓다"가
+      아니라 무엇이(560MB·EXPOSE 22 등) 왜 표면인가 + 명령 출력의 삼박자로 적는다(lecture §9 점검 수칙).
       ## 💻 보고서 양식
       ```markdown
       # 클라우드·컨테이너 W02 이미지 보안 보고서 (학번, 이름)
@@ -225,7 +306,8 @@ steps:
       ## 3. 최소화/위생 방어
       ```
       ## ✅ 합격 기준
-      보고서에 이미지 분석 + 표면 + 최소화가 포함된다.
+      보고서에 이미지 분석 + `표면` + 최소화가 모두 포함되면 종합 성공. 표면 관점이 빠지면 크기·노출 포트의
+      의미(공격 표면)를 다시 연결한다.
     hint: '베이스+표면+최소화'
     category: report
     points: 14
@@ -237,7 +319,7 @@ steps:
       ## 3. 최소화: 멀티스테이지+distroless+.dockerignore. 위생: 정기 재빌드+스캔(Trivy)+비밀 분리
       ## 결론: 이미지가 곧 공격 표면. 최소 베이스 + 스캔 + 비밀 분리로 표면을 줄이는 것이 이미지 보안
       EOF
-    answer_detail: "이미지 보고 = 레이어/베이스/크기+노출포트+최소화/위생. 이미지=공격 표면."
+    answer_detail: "이미지 보안 보고서는 분석(레이어/베이스 Ubuntu full/크기 560MB) → 표면(노출 포트 EXPOSE 22 SSH) → 방어(최소화 멀티스테이지+distroless+.dockerignore+비밀미포함, 위생 정기재빌드+스캔+비밀분리) → 결론의 구조로 종합한다. 핵심 결론은 이미지가 곧 공격 표면이며 최소 베이스+스캔+비밀 분리로 표면을 줄이는 것이 이미지 보안이라는 것. 보고서에 분석·표면·최소화가 모두 들어가면 성공이다."
     verify:
       type: output_contains
       expect: '표면'

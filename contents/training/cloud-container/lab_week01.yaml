@@ -4,37 +4,61 @@ version: standalone-cloud-container
 course: cloud-container
 week: 1
 description: |
-  컨테이너 보안 개론 — 컨테이너 식별(docker ps), 컨테이너 vs VM, 보안 4계층(NIST 800-190),
-  공유 커널 위험, 기본 점검(Privileged/User root 갭). el34 41 컨테이너 실 점검. 명령은 el34 호스트 docker CLI. 신규 설치 없음.
+  컨테이너 보안 개론 점검 실습. 컨테이너는 호스트 커널을 공유해(shared kernel) VM 보다 격리가 얕고,
+  설정 하나(특권·root·과한 권한)가 container escape 로 호스트 전체를 위협할 수 있다. 본 실습에서
+  학생은 점검자(auditor) 관점으로 (1) docker 가용 확인 → (2) 컨테이너 식별(docker ps, el34 41 컨테이너)
+  → (3) 컨테이너 vs VM 격리 차이 정리 → (4) 보안 4계층(NIST SP 800-190: 이미지·런타임·레지스트리·
+  오케스트레이션) 정리 → (5) 공유 커널 위험(특권·root·과한 capability) 정리 → (6) docker inspect 로
+  el34-web 런타임 기본 점검(Privileged=false 양호 + User 비어 root 실행 = CIS Docker Benchmark 4.1 갭)
+  → (7) 최소권한 방어 개요 → (8) 개론 보고서 순으로 진행한다. 핵심 산출물은 미션 6 의 gap=runs_as_root
+  발견이다. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)의 docker CLI 로 실행하며 신규 설치는 없고,
+  읽기 전용 점검만 한다(설정 변경 금지). 표준: CIS Docker Benchmark / NIST SP 800-190.
 difficulty: easy
 duration_minutes: 120
 prerequisites:
-  - "el34 호스트 SSH"
-  - "docker CLI 접근(ccc)"
-  - "lecture §3(4계층) §4(공유커널) §5(기본점검) 숙지"
+  - "el34 호스트 SSH 접속(ssh ccc@192.168.0.151, 비밀번호 1)"
+  - "docker CLI 사용 권한(ccc 계정)"
+  - "lecture §0.5(컨테이너 vs VM·공유 커널·escape·capability·docker inspect) 숙지"
+  - "lecture §4(보안 4계층) §5(공유 커널 위험) §6(기본 점검 root 갭) 숙지"
 objectives:
-  - "컨테이너 식별/구성 파악"
-  - "컨테이너 보안 4계층 이해"
-  - "기본 런타임 갭(root) 점검"
+  - "docker ps 로 실행 중 컨테이너를 식별·집계해 점검 범위를 확정한다"
+  - "컨테이너(커널 공유=얕은 격리) vs VM(별도 OS=강한 격리) 차이를 설명한다"
+  - "컨테이너 보안 4계층(NIST 800-190)과 각 계층의 통제를 정리한다"
+  - "공유 커널 위험(특권·root·과한 capability)이 escape 로 이어지는 이유를 설명한다"
+  - "docker inspect 로 el34-web 의 root 실행 갭(CIS Docker 4.1)을 증적과 함께 판정한다"
+  - "최소권한 기반 컨테이너 방어(비-root·특권금지·cap 최소·읽기전용FS)를 정리한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — docker 가용
+      ## 🎯 목표
+      모든 컨테이너 보안 점검의 도구인 `docker` CLI 가 el34 호스트에서 동작하는지부터 확인한다.
+      도구가 안 되면 이후 점검이 무의미하므로, 본격 점검 전 환경 가동을 검증하는 단계다.
+
+      ## 개념 한 줄
+      `docker` 는 컨테이너를 만들고·실행하고·점검하는 명령줄 도구다. 본 주차의 모든 점검(`docker ps`,
+      `docker inspect`)이 이 CLI 로 이뤄진다. 점검은 호스트(ssh ccc@192.168.0.151)에서 한다.
+
       ## 💻 실행 명령
       ```bash
       docker version --format 'docker={{.Server.Version}}' 2>/dev/null || echo docker_ok
       ```
+
       ## ✅ 합격 기준
-      docker CLI 사용 가능.
+      출력에 `docker` 가 포함된다(서버 버전 또는 `docker_ok`). docker CLI 접근이 확인되면 통과.
+
+      ## 도구 풀이
+      - `docker version` — docker 클라이언트·서버의 버전을 출력한다.
+      - `--format '...'` — Go 템플릿으로 원하는 필드(여기선 `.Server.Version`)만 뽑는다.
+      - `2>/dev/null || echo docker_ok` — 버전 조회가 실패해도 `docker_ok` 를 출력해 가용성만 확인한다.
     hint: 'docker version'
     category: survey
     points: 10
     answer: |
       docker version --format 'docker={{.Server.Version}}' 2>/dev/null || echo docker_ok
       echo docker_ok
-    answer_detail: "컨테이너 보안 점검 도구 = docker CLI(el34 호스트)."
+    answer_detail: "컨테이너 보안 점검의 도구 = el34 호스트의 docker CLI. 본 미션은 본격 점검 전 docker 가용성(CLI 접근·서버 응답)을 확인하는 전제 단계다. 출력에 docker(버전 또는 docker_ok)가 나오면 점검 환경이 준비된 것."
     verify:
       type: output_contains
       expect: 'docker'
@@ -47,13 +71,26 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 컨테이너 식별
+      ## 🎯 목표
+      호스트에서 **무엇이 실행 중인가**(컨테이너 수·이름)를 집계해 점검 범위를 확정한다. 보안 점검의
+      1 단계는 자산 인벤토리 — 모르는 것은 지킬 수 없다.
+
+      ## 개념 한 줄
+      `docker ps` 는 실행 중인 컨테이너를 나열한다. el34 는 단일 VM 위에 41 개 컨테이너(web/ips/siem/
+      fw/attacker 등)가 돌며, 이 목록이 곧 본 주차에 점검할 대상의 범위다.
+
       ## 💻 실행 명령
       ```bash
       echo "containers=$(docker ps -q | wc -l)"; docker ps --format '{{.Names}}' | head -8
       ```
+
       ## ✅ 합격 기준
-      실행 중인 컨테이너를 식별·집계한다.
+      출력에 `containers=` 와 집계 값이 나오고 컨테이너 이름이 나열되면 통과(실행 중 컨테이너 식별 성공).
+
+      ## 도구 풀이
+      - `docker ps -q` — `-q`(quiet)는 컨테이너 ID 만 한 줄씩 출력한다.
+      - `| wc -l` — 줄 수를 세어 실행 중 컨테이너 수를 구한다.
+      - `--format '{{.Names}}'` — 컨테이너 이름만 뽑는 Go 템플릿. `head -8` 로 앞 8 개만 본다.
     hint: 'docker ps'
     category: recon
     points: 14
@@ -62,7 +99,7 @@ steps:
       echo "containers=$(docker ps -q | wc -l)"
       docker ps --format '{{.Names}}' | head -10
       echo "→ el34는 다수 컨테이너(web/ips/siem/fw/attacker 등). 무엇이 도는지 파악이 출발점"
-    answer_detail: "컨테이너 식별 = docker ps. 실행 중 컨테이너 목록/수가 보안 점검 범위."
+    answer_detail: "컨테이너 식별(점검 1단계 = 자산 인벤토리) = docker ps. 실행 중 컨테이너의 수(docker ps -q | wc -l)와 이름 목록이 곧 보안 점검의 범위다. el34 는 41 컨테이너(web/ips/siem/fw/attacker 등)가 단일 호스트에서 돈다. 무엇이 도는지 모르면 어느 것이 특권·root·외부 포트로 떠 있는지도 알 수 없으므로, 식별이 모든 점검의 출발점이다."
     verify:
       type: output_contains
       expect: 'containers='
@@ -75,13 +112,26 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 컨테이너 vs VM
+      ## 🎯 목표
+      컨테이너 보안의 모든 통제가 출발하는 전제 — **컨테이너와 VM 의 격리 차이** — 를 명확히 정리한다.
+      왜 컨테이너에만 추가 설정 통제(특권 금지·비-root)가 필요한지의 근거다.
+
+      ## 개념 한 줄
+      VM 은 하이퍼바이저 위에 **별도 게스트 OS(커널 포함)** 를 통째로 올려 격리가 두껍지만 무겁다.
+      컨테이너는 **호스트 커널을 공유**하고 namespace/cgroups 로 프로세스만 격리해 가볍지만 격리가 얕다.
+
       ## 💻 실행 명령
       ```bash
       echo "VM=하드웨어 가상화+게스트OS(강한격리/무겁다), 컨테이너=커널공유(가볍다/얕은격리)"
       ```
+
       ## ✅ 합격 기준
-      컨테이너와 VM의 격리 차이를 정리한다.
+      출력에 `커널`(공유)이 포함되어 컨테이너와 VM 의 격리 차이가 정리되면 통과.
+
+      ## 용어 풀이
+      - **커널(kernel)** — OS 의 핵심(프로세스·메모리·장치 관리). 컨테이너는 호스트의 커널 하나를 공유.
+      - **namespace/cgroups** — 컨테이너별 격리(이름공간 분리)와 자원 제한을 거는 Linux 커널 기능.
+      - 핵심: 컨테이너의 얕은 격리를 **설정(특권/권한/user)으로 보강**하는 것이 컨테이너 보안이다.
     hint: '커널 공유'
     category: analysis
     points: 12
@@ -90,7 +140,7 @@ steps:
       echo "VM: 하드웨어 가상화 + 게스트 OS 별도 → 강한 격리, 무겁다"
       echo "컨테이너: 호스트 커널 공유 + 프로세스 격리 → 가볍다, 격리 얕다"
       echo "→ 컨테이너 보안 = 얕은 격리를 설정(특권/권한/user)으로 보강"
-    answer_detail: "컨테이너=커널 공유(얕은 격리), VM=별도 OS(강한 격리). 설정 보강이 핵심."
+    answer_detail: "핵심 차이는 커널을 공유하느냐다. 컨테이너 = 호스트 커널 공유 + namespace/cgroups 로 프로세스 격리(가볍지만 격리 얕음). VM = 하이퍼바이저 위 별도 게스트 OS(커널 포함, 무겁지만 격리 강함). 컨테이너의 얕은 격리 때문에 특권 금지·비-root 같은 추가 설정 보강이 필요하다 — 이것이 컨테이너 보안의 출발 전제다. 출력에 커널(공유)이 들어가면 차이를 정리한 것."
     verify:
       type: output_contains
       expect: '커널'
@@ -103,13 +153,26 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 보안 4계층 (NIST 800-190)
+      ## 🎯 목표
+      컨테이너 위협을 **빠짐없이 훑을 체크포인트**로 나눈다. NIST SP 800-190 의 보안 4계층(이미지·
+      런타임·레지스트리·오케스트레이션)을 정리해, 이 트랙 전체의 점검 지도를 세운다.
+
+      ## 개념 한 줄
+      컨테이너 위협은 한 군데가 아니라 4계층에 흩어져 있다. 한 계층만 막으면 다른 계층이 뚫리므로,
+      이미지(무엇으로)·런타임(어떻게 실행)·레지스트리(어디서)·오케스트레이션(어떻게 운영)을 모두 본다.
+
       ## 💻 실행 명령
       ```bash
       echo "이미지/런타임/레지스트리/오케스트레이션"
       ```
+
       ## ✅ 합격 기준
-      컨테이너 보안 4계층을 정리한다.
+      출력에 `런타임`(2 계층)이 포함되어 4계층이 정리되면 통과.
+
+      ## 표준 풀이
+      - **NIST SP 800-190** — 미국 NIST 의 컨테이너 보안 표준. 위험·통제를 4계층으로 정리한다.
+      - **① 이미지** 최소 베이스·취약점 스캔(W02·W03) / **② 런타임** 특권·user·capability(본 주차).
+      - **③ 레지스트리** 출처·서명·무결성(W11 계열) / **④ 오케스트레이션** compose·k8s 설정(W12 계열).
     hint: '이미지/런타임/레지스트리/오케'
     category: analysis
     points: 12
@@ -120,7 +183,7 @@ steps:
       echo "3) 레지스트리: 출처·서명·무결성"
       echo "4) 오케스트레이션: compose/k8s 설정"
       echo "→ 각 계층마다 통제. 한 계층만 강해도 부족"
-    answer_detail: "보안 4계층 = 이미지/런타임/레지스트리/오케스트레이션(NIST 800-190)."
+    answer_detail: "컨테이너 보안 4계층(NIST SP 800-190) = ① 이미지(무엇으로 만드나: 베이스·레이어·취약점·비밀) ② 런타임(어떻게 실행하나: 특권·capability·user·격리) ③ 레지스트리(어디서 가져오나: 출처·서명·무결성) ④ 오케스트레이션(어떻게 운영·확장하나: compose/k8s 설정·시크릿). 위협이 여러 계층에 흩어져 있어 한 계층만 강해도 부족하다 — 4계층이 점검 체크포인트의 골격이다. 출력에 런타임이 들어가면 정리한 것."
     verify:
       type: output_contains
       expect: '런타임'
@@ -133,13 +196,26 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 공유 커널 위험
+      ## 🎯 목표
+      공유 커널 환경에서 컨테이너를 호스트로 **탈출(escape)** 시키는 세 가지 잘못된 런타임 설정을
+      정리한다. 다음 미션(6)의 실제 점검(특권·user)으로 이어지는 위험 분류다.
+
+      ## 개념 한 줄
+      컨테이너는 호스트 커널을 공유하므로(격리가 얕음), 컨테이너가 커널에 미치는 영향력을 키우는 설정
+      — 특권 · root 실행 · 과한 capability — 이 escape 위험을 높인다. escape 는 곧 호스트 장악이다.
+
       ## 💻 실행 명령
       ```bash
       echo "특권 컨테이너(호스트 장악), root 실행, 과한 capability=escape 위험"
       ```
+
       ## ✅ 합격 기준
-      공유 커널의 위험을 정리한다.
+      출력에 `escape`(컨테이너 탈출)가 포함되어 공유 커널 위험이 정리되면 통과.
+
+      ## 용어 풀이
+      - **container escape** — 컨테이너 내부에서 격리를 깨고 호스트(또는 다른 컨테이너)로 빠져나가는 공격.
+      - **특권 컨테이너(--privileged)** — 호스트 장치/커널 기능에 광범위 접근(격리 사실상 무력화).
+      - **capability** — root 권한을 잘게 쪼갠 단위. CAP_SYS_ADMIN 등은 사실상 특권에 준한다.
     hint: 'escape/특권/root'
     category: analysis
     points: 12
@@ -149,7 +225,7 @@ steps:
       echo "root 실행: 컨테이너 root = 탈출 시 호스트 권한 위협"
       echo "과한 capability: CAP_SYS_ADMIN 등은 사실상 특권"
       echo "→ 커널 공유라 컨테이너 탈출이 곧 호스트 위협(escape)"
-    answer_detail: "공유 커널 위험 = 특권/root/과한 cap → escape 시 호스트 장악. 격리가 얕음."
+    answer_detail: "공유 커널 위험 = escape 로 가는 세 길. ① 특권 컨테이너(--privileged): 호스트 장치/커널 접근으로 격리 사실상 무력화. ② root 실행: 컨테이너 uid 0 가 탈출 시 호스트 최고 권한을 위협. ③ 과한 capability(CAP_SYS_ADMIN 등): 특권을 안 걸어도 특권에 준하는 위험. 커널이 공유되므로 한 컨테이너의 탈출(escape)이 곧 호스트와 이웃 컨테이너 전체의 위협이다. 출력에 escape 가 들어가면 핵심을 짚은 것."
     verify:
       type: output_contains
       expect: 'escape'
@@ -162,13 +238,29 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 기본 점검 — Privileged/User
+      ## 🎯 목표 (본 주차 핵심 산출물)
+      추상적 위험(미션 5)을 `docker inspect` 로 **el34-web 의 구체적 설정값**으로 확인한다. 특권 여부와
+      실행 사용자를 읽어, CIS Docker Benchmark 4.1 대비 **root 실행 갭**을 본인 손으로 찾아낸다.
+
+      ## 개념 한 줄
+      `docker inspect` 는 컨테이너의 임대 계약서 전문 — 런타임 권한·사용자 등 모든 설정을 보여준다.
+      `Config.User` 가 비어 있으면 컨테이너가 root(uid 0)로 도는 것이며, 이는 CIS Docker 4.1 위반이다.
+
       ## 💻 실행 명령
       ```bash
       docker inspect el34-web --format 'Priv={{.HostConfig.Privileged}} User=[{{.Config.User}}]'; U=$(docker inspect el34-web --format '{{.Config.User}}'); [ -z "$U" ] && echo "gap=runs_as_root" || echo "user=$U"
       ```
+
       ## ✅ 합격 기준
-      컨테이너가 root로 실행되는 갭을 발견한다.
+      출력에 `gap=runs_as_root` 가 나오면 통과 — `Config.User` 가 빈 값이라 컨테이너가 root 로 도는 갭을
+      판정한 것. (첫 줄은 `Priv=false User=[]` 처럼 나온다: 특권은 양호, 사용자는 미지정.)
+
+      ## 도구/기준 풀이
+      - `docker inspect <c> --format '...'` — 컨테이너 설정을 JSON 으로 읽되 원하는 필드만 추출.
+      - `.HostConfig.Privileged` — 특권 컨테이너 여부(false 여야 양호). `.Config.User` — 실행 사용자.
+      - `[ -z "$U" ]` — 사용자 값($U)이 빈 문자열이면 참 → root 실행이라는 뜻 → `gap=runs_as_root`.
+      - **CIS Docker Benchmark 4.1** — "컨테이너를 비-root 사용자로 실행하라". root 실행은 escape 시
+        피해를 키우므로 갭이다. 출력값(설정 자체)이 곧 판정의 증적이다.
     hint: 'User 비어있음=root'
     category: manipulation
     points: 16
@@ -177,7 +269,7 @@ steps:
       docker inspect el34-web --format 'Priv={{.HostConfig.Privileged}} User=[{{.Config.User}}]'
       U=$(docker inspect el34-web --format '{{.Config.User}}'); [ -z "$U" ] && echo "gap=runs_as_root" || echo "user=$U"
       echo "→ Privileged=false(양호), User 비어있음=root(uid0) 실행 → CIS Docker 4.1 위반(갭)"
-    answer_detail: "기본 점검 = Privileged(false 양호)+User(비어있음=root 갭, CIS 4.1)."
+    answer_detail: "런타임 기본 점검 = docker inspect 로 Privileged(특권 여부)와 User(실행 사용자)를 읽어 CIS Docker 4.1 대비 판정. el34-web 은 Privileged=false(특권 꺼짐 → 큰 위험 하나는 피함, 양호)이나 Config.User 가 빈 값이라 컨테이너가 root(uid 0)로 실행된다 → CIS Docker Benchmark 4.1(비-root 실행 권고) 미달 = gap=runs_as_root. 판정 근거(증적)는 '기준(CIS 4.1) + 현재(User 빈 값) + 판정(갭)'의 삼박자다. 본 주차의 핵심 산출물이며, root 실행은 escape 시 호스트에서 최고 권한을 휘두를 위험을 키운다."
     verify:
       type: output_contains
       expect: 'gap=runs_as_root'
@@ -190,13 +282,27 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 방어 개요 — 최소권한
+      ## 🎯 목표
+      미션 6 에서 찾은 갭(root 실행)을 **어떻게 막을지** 정리한다. escape 를 100% 막을 수 없으므로,
+      평소 권한을 좁혀 **escape 가 나도 피해를 최소화**하는 최소권한(least privilege) 방어를 익힌다.
+
+      ## 개념 한 줄
+      최소권한 = 컨테이너에 꼭 필요한 최소한의 권한만 부여하는 원칙. 비-root user·특권 금지·capability
+      최소화·읽기전용 루트FS 네 통제가 escape 의 영향 범위를 좁힌다.
+
       ## 💻 실행 명령
       ```bash
       echo "비-root user, 특권 금지, capability 최소(drop all+필요만), 읽기전용 루트FS"
       ```
+
       ## ✅ 합격 기준
-      컨테이너 보안 방어 개요를 정리한다.
+      출력에 `최소권한`(least privilege)이 포함되어 방어 개요가 정리되면 통과.
+
+      ## 통제 풀이
+      - **비-root user** — 이미지 USER 지시어(uid ≥ 1000) 또는 --user 로 지정. 미션 6 갭의 정석 시정.
+      - **특권 금지** — --privileged 미사용. 특정 장치만 필요하면 --device 로 그것만 노출.
+      - **capability 최소화** — --cap-drop all 후 필요한 것만 --cap-add(예: NET_BIND_SERVICE).
+      - **읽기전용 루트FS** — --read-only(파일 심기 차단) + --security-opt no-new-privileges(권한 상승 차단).
     hint: '비-root/최소권한'
     category: report
     points: 12
@@ -207,7 +313,7 @@ steps:
       echo "3) capability 최소화(drop all + 필요한 것만 add)"
       echo "4) 읽기전용 루트FS(--read-only) + no-new-privileges"
       echo "→ 핵심: 얕은 격리를 최소권한 설정으로 보강"
-    answer_detail: "방어 = 비-root+특권금지+cap 최소+읽기전용FS. 최소권한으로 escape 영향 축소."
+    answer_detail: "컨테이너 런타임 방어 = 최소권한(least privilege) 원칙의 네 통제. ① 비-root user(USER 지시어 + uid≥1000) — 미션 6 root 갭의 정석 시정. ② 특권 금지(--privileged 미사용). ③ capability 최소화(--cap-drop all 후 필요한 것만 --cap-add). ④ 읽기전용 루트FS(--read-only) + no-new-privileges(권한 상승 차단). escape 를 완전히 막을 수는 없으므로, 평소 권한을 좁혀 escape 의 피해 범위를 최소화하는 것이 핵심이다. 출력에 최소권한이 들어가면 정리한 것."
     verify:
       type: output_contains
       expect: '최소권한'
@@ -220,7 +326,14 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 컨테이너 개론 보고서
+      ## 🎯 목표
+      점검의 산출물은 보고서다. 미션 1–7 을 **식별 → 4계층 → 위험 → 갭 → 방어**의 한 흐름으로 종합해
+      개론 학습을 완성한다. 갭(root 실행)뿐 아니라 준수(특권 양호)도 함께 적는 균형 잡힌 보고를 쓴다.
+
+      ## 개념 한 줄
+      좋은 점검 보고는 갭만 나열하지 않는다 — 무엇이 잘 되어 있고(준수: Privileged=false) 무엇이 부족
+      한가(갭: root 실행)를 함께 제시해, 의뢰인이 현재 보안 수준의 전체 그림을 보게 한다.
+
       ## 💻 보고서 양식
       ```markdown
       # 클라우드·컨테이너 W01 개론 보고서 (학번, 이름)
@@ -228,8 +341,14 @@ steps:
       ## 2. 공유 커널 위험/기본 점검(root 갭)
       ## 3. 방어 개요
       ```
+
       ## ✅ 합격 기준
-      보고서에 4계층 + root 갭 + 방어가 포함된다.
+      보고서에 `4계층`(NIST 800-190) + root 갭(gap=runs_as_root) + 방어(최소권한)가 포함되면 통과.
+
+      ## 보고 풀이
+      - **식별/4계층** — el34 41 컨테이너 식별 + 이미지/런타임/레지스트리/오케스트레이션 4계층.
+      - **위험/갭** — 공유 커널 → escape. el34-web Privileged=false(준수)·User=root(CIS 4.1 갭).
+      - **방어** — 비-root + 특권 금지 + capability 최소 + 읽기전용 루트FS(최소권한으로 escape 영향 축소).
     hint: '4계층+root갭+방어'
     category: report
     points: 12
@@ -241,7 +360,7 @@ steps:
       ## 3. 방어: 비-root user + 특권 금지 + capability 최소 + 읽기전용 루트FS
       ## 결론: 컨테이너는 가볍지만 격리가 얕다. 최소권한 설정으로 escape 영향을 줄이는 것이 핵심
       EOF
-    answer_detail: "개론 보고 = 식별/4계층+공유커널 위험/root 갭+최소권한 방어."
+    answer_detail: "컨테이너 개론 보고 = 미션 1–7 의 종합. (1) 식별/4계층: el34 다수 컨테이너 + NIST 800-190 이미지/런타임/레지스트리/오케스트레이션. (2) 공유 커널 위험(→escape)과 기본 점검 결과: el34-web Privileged=false(준수)·User=root(CIS Docker 4.1 갭=gap=runs_as_root). (3) 최소권한 방어: 비-root user + 특권 금지 + capability 최소 + 읽기전용 루트FS. 갭과 준수를 함께 제시하는 균형 잡힌 보고가 핵심이며, 결론은 '컨테이너는 가볍지만 격리가 얕으니 최소권한 설정으로 escape 영향을 줄인다'이다."
     verify:
       type: output_contains
       expect: '4계층'
