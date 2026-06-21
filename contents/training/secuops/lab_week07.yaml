@@ -4,11 +4,23 @@ version: standalone-secuops
 course: secuops
 week: 7
 description: |
-  el34 의 Linux 호스트(victim = el34-web)를 침해 현장으로 보고, W06 에서 배운 osquery + Wazuh(FIM) 로
-  분석가 시점의 IR(Triage→Investigate→Contain)을 한다. 침해대응 5 시나리오(R/B/P) — 의심 다운로드 /
-  인코딩된 셸 프로세스 / 의심 리스너 / 백도어 계정 / persistence(cron+authorized_keys) — 를 재현하고
-  osquery 로 탐지한 뒤 **반드시 제거(self-clean)** 해 베이스 상태를 보존한다. 호스트는 공유 인프라다.
-  모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-web` / `docker exec el34-attacker` 로.
+  el34 의 Linux 호스트(victim = el34-web)를 **침해 현장**으로 보고, 그 현장에 출동한 **분석가(analyst)**
+  시점에서 침해대응(IR)을 수행한다. 방화벽(W02)·IPS(W03/04)·WAF(W05)가 보는 것은 "지나가는 트래픽"이지만,
+  본 실습이 보는 것은 **이미 호스트 안으로 들어온 공격자가 남긴 흔적** — 떨어진 파일·수상한 프로세스·
+  백도어 리스너·몰래 만든 계정·재진입용 지속성(persistence) — 이다. 이 흔적들은 네트워크에는 거의 남지
+  않고 오직 호스트 내부에만 또렷이 남으므로, W06 에서 배운 **osquery**(OS 를 SQL 로 질의) + **Wazuh
+  FIM**(파일 변경 실시간 감시) 으로 잡는다.
+
+  진행은 분석가의 표준 절차 **SOP 3단계** — Triage(선별) → Investigate(조사) → Contain(봉쇄) — 를 따른다.
+  침해대응 5 시나리오(R/B/P)를 하나씩 **재현(Red) → osquery 탐지(Blue) → 제거(Purple/Contain)** 의 한
+  사이클로 돌린다: ① 의심 다운로드(file) ② 인코딩된 셸 프로세스(processes.cmdline) ③ 백도어 리스너
+  (listening_ports) ④ 백도어 계정(users) ⑤ persistence(crontab + authorized_keys + FIM). el34-web 은
+  공유 인프라이므로, 각 시나리오 끝에 실습 흔적을 **반드시 제거(self-clean)** 해 다음 사람의 베이스 상태를
+  보존하는 것까지가 IR 의 SOP 다.
+
+  접근 경로 — 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에 들어간 뒤
+  `docker exec el34-web ...`(victim 에 osquery) / `docker exec el34-siem ...`(Wazuh 적재 확인) 로 실행한다.
+  (참고: el34-web 은 컨테이너라 `/var/log/auth.log` 대신 컨테이너 로깅을 쓰므로, 본 실습의 주 도구는 osquery 다.)
 difficulty: medium
 duration_minutes: 200
 prerequisites:
@@ -16,11 +28,12 @@ prerequisites:
   - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec (컨테이너 내부 root)"
   - "lecture §1-§9 (두 페르소나 / 텔레메트리 / SOP / R/B/P) 숙지"
 objectives:
-  - "victim 호스트(el34-web)의 osquery + Wazuh agent 상태 확인"
-  - "osquery 로 프로세스/소켓/파일/사용자/cron 을 IR 관점으로 질의"
-  - "침해대응 5 시나리오(R/B/P)를 재현→osquery 탐지→self-clean"
-  - "Wazuh FIM(syscheck) 가 persistence 파일 변경을 잡음을 el34-siem 에서 확인"
-  - "분석가 SOP(Triage→Investigate→Contain)를 사건에 적용 + 종합 보고서"
+  - "IR 첫 단계로 victim 호스트(el34-web)의 텔레메트리(osquery 5.23.0 + Wazuh agent Active)가 살아있는지 점검한다"
+  - "osquery 다섯 핵심 테이블(file / processes / listening_ports / users / crontab)을 침해 신호별로 질의해 탐지한다"
+  - "침해대응 5 시나리오(R/B/P)를 재현(Red) → osquery 탐지(Blue) → 제거(Contain) 한 사이클로 돌린다"
+  - "JOIN(processes ⨝ process_open_sockets)으로 포트의 주인 프로세스를, on_disk=0 으로 은닉 프로세스를 추적한다"
+  - "방화벽이 못 본 호스트 행위가 Wazuh FIM 을 통해 SIEM(el34-siem)으로 적재됨을 확인한다"
+  - "분석가 SOP(Triage→Investigate→Contain)를 사건에 적용해 IR 보고서를 쓰고, 공유 호스트를 self-clean 으로 베이스 보존한다"
 pass_threshold: 0.7
 steps:
 
@@ -28,17 +41,31 @@ steps:
     instruction: |
       ## 🎯 MISSION — victim 호스트(el34-web) 엔드포인트 텔레메트리 점검
 
-      IR 첫 단계 — 조사할 호스트의 도구가 살아있나. osquery 동작 + Wazuh agent active 확인.
-      (el34-web 은 auth.log 대신 컨테이너 로깅을 쓰므로, 본 lab 은 **osquery** 를 주 도구로 한다.)
+      **개념 한 줄** — IR(침해대응)의 0단계는 "조사할 도구가 살아있는가"다. 현장에 도착한 수사관이
+      먼저 손전등과 무전기가 작동하는지 확인하는 것과 같다. 여기서 손전등 = **osquery**(호스트를
+      SQL 로 검색), 무전기 = **Wazuh agent**(호스트 행위를 SIEM 으로 전송).
+
+      이 둘이 정상이어야 이후 모든 탐지(Investigate)와 SIEM 적재가 성립한다. 셋을 확인한다 —
+      osquery 가 동작하는가(버전), 호스트가 살아있는가(프로세스 수), agent 가 SIEM 에 붙어 있는가(Active).
+
+      > **왜 auth.log 가 아니라 osquery 인가** — 일반 서버라면 로그온/sudo 흔적이 `/var/log/auth.log`
+      > 에 쌓이지만, el34-web 은 컨테이너라 그 파일에 의존하지 않는다. 그래서 본 lab 의 **주 도구는
+      > osquery** 다. auth.log 가 없어도 processes·users·listening_ports·crontab·file 테이블만으로
+      > 침해 흔적을 충분히 잡는다.
 
       ## 💻 실행 명령
       ```bash
-      docker exec el34-web osqueryi --version
-      docker exec el34-web osqueryi --json 'SELECT count(*) c FROM processes;'
-      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "Name: web,"
+      docker exec el34-web osqueryi --version                                  # 손전등(osquery) 동작 확인
+      docker exec el34-web osqueryi --json 'SELECT count(*) c FROM processes;' # 호스트가 살아있나(프로세스 수)
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "Name: web,"  # 무전기(agent) SIEM 연결 확인
       ```
+      - `osqueryi --version` — osquery 의 단발 SQL 실행기 버전 출력. el34 는 5.23.0.
+      - `--json 'SELECT count(*) ...'` — 결과를 JSON 으로 받는다. 본 lab 의 모든 탐지가 이 형태다.
+      - `agent_control -l` — Wazuh 매니저(el34-siem)에 등록된 agent 목록. `Name: web` 의 상태가 핵심.
+
       ## ✅ 합격 기준
-      osquery 5.x + processes count + web agent Active.
+      osquery 5.x 버전 + processes count(숫자) + web agent `Active`. agent 가 Disconnected 면 SIEM
+      적재가 끊긴 상태이므로 이후 step 8 의 적재 확인 전에 먼저 점검한다.
     hint: 'osqueryi --version; agent_control -l | grep web'
     category: survey
     points: 10
@@ -49,7 +76,7 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT count(*) c FROM processes;'
       echo "=== Wazuh web agent ==="
       docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "Name: web," || echo "web agent 확인 필요"
-    answer_detail: "osquery 5.23.0 + 프로세스 스냅샷 + web 의 Wazuh agent Active = IR 도구 준비 완료."
+    answer_detail: "IR 의 0단계 = 조사 도구 가용성 점검. osquery 5.23.0(손전등) + 프로세스 스냅샷(호스트 생존) + web 의 Wazuh agent Active(SIEM 무전기) 세 가지가 모두 확인되면 IR 도구 준비 완료. 합격 판정은 출력에 osquery 버전 '5.23' 이 포함되는지로 한다."
     verify:
       type: output_contains
       expect: '5.23'
@@ -67,8 +94,14 @@ steps:
     instruction: |
       ## 🎯 ep-s01 — 의심 외부 다운로드 (R/B/P)
 
-      Red — victim 에 외부 바이너리가 떨어졌다(/tmp/evil.bin). Blue — osquery `file` 로 의심 파일을
-      mtime/size 와 함께 찾는다. Purple — 제거 + 어떻게 들어왔는지 메모.
+      **개념 한 줄** — 침해의 가장 흔한 1단계는 "외부에서 도구(바이너리)를 끌어오는" 것이다. 이렇게
+      떨어진 파일은 네트워크에는 IP 단편만 남거나 아예 안 남지만, 호스트의 **`file` 테이블**에는
+      경로·크기·수정시각으로 또렷이 남는다.
+
+      - **Red** — victim 에 외부 바이너리가 떨어진 상황을 모사한다(`/tmp/evil.bin`). `/tmp` 는 누구나
+        쓸 수 있어 공격자가 즐겨 쓰는 drop 지점이다(`/dev/shm` 도 마찬가지).
+      - **Blue** — osquery `file` 로 그 파일을 메타데이터(size/mtime)와 함께 찾아낸다.
+      - **Purple/Contain** — 파일을 제거하고, "어떻게 들어왔는지"를 메모한다(근본 원인 추적).
 
       ## 💻 단계 명령
       ```bash
@@ -76,8 +109,13 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT path,size,mtime FROM file WHERE path="/tmp/evil.bin";'  # Blue
       docker exec el34-web rm -f /tmp/evil.bin                                  # Contain
       ```
+      - `file` 테이블 — osquery 가 파일 시스템 메타데이터를 보는 테이블. `path`(경로) / `size`(바이트) /
+        `mtime`(마지막 수정 epoch) 컬럼으로 "언제 생긴 얼마짜리 파일인가"를 본다.
+      - `WHERE path="/tmp/evil.bin"` — 정확한 경로 한 건을 지목. 경로 패턴 헌팅은 `LIKE "/tmp/%"` 형태.
+      - `rm -f` — 탐지 확인 후 즉시 제거(Contain). 공유 호스트이므로 잔재를 남기지 않는다.
+
       ## ✅ 합격 기준
-      osquery `file` 결과에 `/tmp/evil.bin` (path/size) 가 보인다.
+      osquery `file` 결과 JSON 에 `/tmp/evil.bin` (path) 와 size 가 보인다.
     hint: 'osquery file 테이블로 /tmp 의 의심 파일 탐지 → 제거'
     category: response
     points: 15
@@ -87,7 +125,7 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT path,size,mtime FROM file WHERE path="/tmp/evil.bin";'
       docker exec el34-web rm -f /tmp/evil.bin
       echo "self-clean done"
-    answer_detail: "다운로드된 파일은 osquery file 테이블로 path/size/mtime 확인. /tmp·/dev/shm 등 쓰기 가능 경로가 흔한 drop 지점."
+    answer_detail: "ep-s01 의 정답 흐름은 Red(파일 drop 모사) → Blue(osquery file 테이블로 path/size/mtime 식별) → Contain(rm -f 제거). 다운로드된 파일은 네트워크에 흔적이 거의 없어도 호스트 file 테이블에는 남는다. /tmp·/dev/shm 등 누구나 쓸 수 있는 경로가 흔한 drop 지점. 합격은 출력에 'evil.bin' 포함 여부로 판정한다."
     verify:
       type: output_contains
       expect: 'evil.bin'
@@ -105,8 +143,15 @@ steps:
     instruction: |
       ## 🎯 ep-s02 — 인코딩/의심 cmdline 프로세스 (R/B/P)
 
-      Red — base64/`-c` 로 위장한 셸이 떠 있다. Blue — osquery `processes` 의 cmdline 패턴으로 잡는다.
-      Purple — 프로세스 종료.
+      **개념 한 줄** — 공격자는 무엇을 실행하는지 숨기려고 명령을 base64 로 인코딩하거나 `-c` 로
+      인라인 실행한다. 하지만 무엇을 실행했든 그 명령행은 osquery **`processes` 테이블의 `cmdline`**
+      에 그대로 남는다. 오히려 "왜 이렇게 꼬아놨지?"라는 난독화 자체가 강력한 탐지 신호가 된다 —
+      Windows 의 PowerShell `-EncodedCommand` 탐지와 똑같은 발상이다.
+
+      - **Red** — base64 로 인코딩된 페이로드를 디코드해 실행하는, 의심 cmdline 을 가진 프로세스를
+        띄운다(실제 악성 아님, 탐지 연습용 lingering 프로세스).
+      - **Blue** — `cmdline` 에 `b64decode` / `-c` 패턴이 있는 프로세스를 SQL `LIKE` 로 찾는다.
+      - **Purple/Contain** — 해당 프로세스를 이름 패턴으로 종료(`pkill -f`)한다.
 
       ## 💻 단계 명령
       ```bash
@@ -118,8 +163,13 @@ steps:
       # Contain — 종료
       docker exec el34-web sh -c 'pkill -f b64decode 2>/dev/null; echo killed'
       ```
+      - `processes` 테이블 — 실행 중 프로세스. `pid`(번호) / `name`(이름) / `cmdline`(전체 명령행)을 본다.
+      - `WHERE cmdline LIKE "%b64decode%"` — 명령행 안에 그 문자열이 들어간 프로세스만. `%` 는 SQL 와일드카드.
+      - `nohup ... &` — Red 가 백그라운드로 띄우는 부분(탐지 대상 생성). `sleep 1` 은 프로세스가 뜰 시간을 준다.
+      - `pkill -f b64decode` — 명령행에 `b64decode` 가 든 프로세스를 이름이 아닌 **명령행 매칭**으로 종료.
+
       ## ✅ 합격 기준
-      osquery 결과 cmdline 에 `python3` + 인코딩 패턴이 보인다.
+      osquery 결과 JSON 의 cmdline 에 `python3` + 인코딩 패턴(b64decode 등)이 보인다.
     hint: 'osquery processes 의 cmdline LIKE 패턴 → pkill'
     category: response
     points: 15
@@ -130,7 +180,7 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT pid,name,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
       docker exec el34-web sh -c 'pkill -f b64decode 2>/dev/null; echo killed'
       echo "self-clean done"
-    answer_detail: "cmdline 패턴(base64/exec/-c)이 osquery processes 에서 강력한 탐지 단서. Windows 의 PowerShell -EncodedCommand 와 같은 발상. 종료로 contain."
+    answer_detail: "ep-s02 정답 흐름은 Red(인코딩 셸 프로세스 생성) → Blue(processes.cmdline 의 LIKE 패턴으로 탐지) → Contain(pkill -f 종료). cmdline 패턴(base64/exec/-c)은 osquery processes 에서 강력한 탐지 단서이며, 난독화 자체가 신호가 된다 — Windows 의 PowerShell -EncodedCommand 와 같은 발상. 합격은 출력에 'python3' 포함 여부로 판정한다."
     verify:
       type: output_contains
       expect: 'python3'
@@ -148,8 +198,14 @@ steps:
     instruction: |
       ## 🎯 ep-s03 — 의심 리스너/외부 연결 (R/B/P)
 
-      Red — 호스트에 백도어 리스너가 떴다(임의 포트). Blue — osquery `listening_ports` /
-      `process_open_sockets` 로 어느 프로세스가 어디서 듣는지 찾는다. Purple — 종료.
+      **개념 한 줄** — 공격자는 재진입이나 명령 수신을 위해 호스트에 **백도어 리스너**(임의 포트를
+      여는 프로세스)를 띄운다. 호스트가 "듣고 있는 포트 목록"은 곧 "외부에서 들어올 수 있는 통로
+      목록"이며, osquery **`listening_ports`** 로 한눈에 본다. 정상 서비스 포트 목록(baseline)에 없는
+      포트가 곧 의심 대상이다.
+
+      - **Red** — 임의 포트(4444)에 리스너가 뜬 상황을 모사한다.
+      - **Blue** — `listening_ports` 로 어느 pid 가 어느 포트를 듣는지 찾는다(어디서 = address).
+      - **Purple/Contain** — 그 리스너 프로세스를 종료한다.
 
       ## 💻 단계 명령
       ```bash
@@ -158,8 +214,15 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT pid,port,address FROM listening_ports WHERE port=4444;'  # Blue
       docker exec el34-web sh -c 'pkill -f "http.server 4444" 2>/dev/null; echo killed'                # Contain
       ```
+      - `listening_ports` 테이블 — LISTEN 상태의 모든 소켓. `pid`(주인 프로세스) / `port`(포트) /
+        `address`(바인딩 주소, 0.0.0.0 이면 모든 인터페이스 노출).
+      - `WHERE port=4444` — 의심 포트 한 건을 지목. (짝꿍 테이블 `process_open_sockets` 는 외부로 나가는
+        연결을 `remote_port` 로 본다 — step 7 에서 JOIN 으로 함께 쓴다.)
+      - `python3 -m http.server 4444` — Red 가 4444 포트를 여는 부분(탐지 대상 생성).
+      - `pkill -f "http.server 4444"` — 그 리스너만 명령행 매칭으로 정확히 종료.
+
       ## ✅ 합격 기준
-      `listening_ports` 에 port `4444` 가 보인다.
+      osquery `listening_ports` 결과에 port `4444` 가 보인다.
     hint: 'osquery listening_ports/process_open_sockets 로 백도어 리스너 → pkill'
     category: response
     points: 15
@@ -170,7 +233,7 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT pid,port,address FROM listening_ports WHERE port=4444;'
       docker exec el34-web sh -c 'pkill -f "http.server 4444" 2>/dev/null; echo killed'
       echo "self-clean done"
-    answer_detail: "백도어 리스너는 listening_ports(어느 포트) + process_open_sockets(어느 연결)로 식별. 정상 서비스 포트 목록과 대조해 비정상 리스너를 찾는다."
+    answer_detail: "ep-s03 정답 흐름은 Red(임의 포트 리스너 생성) → Blue(listening_ports 로 포트·pid 식별) → Contain(pkill 종료). 백도어 리스너는 listening_ports(어느 포트를 듣나) + process_open_sockets(어느 외부와 연결됐나)로 식별하며, 정상 서비스 포트 목록(baseline)과 대조해 비정상 리스너를 찾는다. 합격은 출력에 '4444' 포함 여부로 판정한다."
     verify:
       type: output_contains
       expect: '4444'
@@ -188,8 +251,15 @@ steps:
     instruction: |
       ## 🎯 ep-s04 — 백도어 계정 (R/B/P)
 
-      Red — 침투 후 백도어 계정(uid 1099) 생성. Blue — osquery `users` 로 비정상 계정 식별
-      (낮은 uid·이상 shell·최근 생성). Purple — `userdel` 로 제거.
+      **개념 한 줄** — 공격자는 침투 후 재진입을 위해 **백도어 계정**을 만든다. 계정 추가는 네트워크에
+      흔적이 거의 없어, osquery **`users` 테이블**을 정상 계정 목록(baseline)과 대조하는 것이 사실상
+      유일한 탐지 길이다. 이상한 uid, 예상치 못한 shell, 최근 생성이 단서가 된다.
+
+      - **Red** — 백도어 계정(`w07intruder`, uid 1099)을 생성한다. 실제 공격에서는 `backup`·`monitor`
+        같은 평범한 이름으로 위장하므로, 이름보다 "신규 등록 + 이상 uid/shell" 패턴이 핵심이다.
+      - **Blue** — `users` 로 그 계정을 username/uid/shell/directory 와 함께 식별한다.
+      - **Purple/Contain** — `userdel -r` 로 계정과 홈 디렉터리를 제거한다. **정상 베이스 계정은 절대
+        건드리지 않는다.**
 
       ## 💻 단계 명령
       ```bash
@@ -197,8 +267,14 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE username="w07intruder";'  # Blue
       docker exec el34-web sh -c 'userdel -r w07intruder 2>/dev/null; echo removed'   # Contain
       ```
+      - `users` 테이블 — `/etc/passwd` 의 모든 사용자. `username` / `uid`(사용자 번호) / `shell`(로그인 셸) /
+        `directory`(홈 디렉터리).
+      - `useradd -m -s /bin/bash -u 1099` — Red 가 홈(`-m`)·bash 셸(`-s`)·uid 1099(`-u`)로 계정 생성.
+      - `userdel -r` — 계정과 홈 디렉터리(`-r`)까지 함께 제거(Contain). 앞의 `userdel ... 2>/dev/null`
+        은 이전 잔재가 있으면 먼저 지우는 멱등 처리다.
+
       ## ✅ 합격 기준
-      osquery `users` 에 `w07intruder` 가 보인다.
+      osquery `users` 결과에 `w07intruder` 가 보인다.
     hint: 'osquery users 로 백도어 계정 → userdel'
     category: response
     points: 15
@@ -208,7 +284,7 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE username="w07intruder";'
       docker exec el34-web sh -c 'userdel -r w07intruder 2>/dev/null; echo removed'
       echo "self-clean done"
-    answer_detail: "백도어 계정은 osquery users 로 식별(이상 uid/shell). 정상 계정 baseline 과 대조. userdel 로 제거(contain). 베이스 계정은 보존."
+    answer_detail: "ep-s04 정답 흐름은 Red(백도어 계정 생성) → Blue(users 테이블로 식별) → Contain(userdel -r 제거). 백도어 계정은 이상 uid/shell 을 정상 계정 baseline 과 대조해 찾는다. 계정 추가는 네트워크에 흔적이 거의 없어 호스트 users 테이블이 유일한 탐지 길. 제거 시 실습 계정만 지우고 베이스 계정은 보존한다. 합격은 출력에 'w07intruder' 포함 여부로 판정한다."
     verify:
       type: output_contains
       expect: 'w07intruder'
@@ -226,8 +302,19 @@ steps:
     instruction: |
       ## 🎯 ep-s05 — persistence(cron + authorized_keys) + Wazuh FIM (R/B/P)
 
-      Red — `/etc/cron.d` 백도어 + `/root/.ssh/authorized_keys` 키 추가(append). Blue — osquery `crontab`
-      + Wazuh **FIM(syscheck)** alert 로 파일 변경 탐지. Purple — 제거(키는 append 분만 sed 삭제 → 베이스 보존).
+      **개념 한 줄** — **persistence(지속성)** 는 재부팅·로그아웃 후에도 공격자가 다시 들어오게 만드는
+      장치다 — 몰래 복제해 둔 현관 열쇠와 같다. 대표 수법이 `/etc/cron.d` 의 백도어 cron(주기 실행)과
+      `/root/.ssh/authorized_keys` 의 키 추가(키만 있으면 비밀번호 없이 SSH)다. 이건 방화벽이 절대 못
+      보는 호스트 내부 행위로, 본 step 은 **두 각도**로 잡는다 — osquery `crontab`(지금 그 cron 이
+      있는가, 스냅샷) + Wazuh **FIM(syscheck)**(방금 그 파일이 바뀌었는가, 이벤트). 한 사건을 두 증거로
+      입증하는 것이 핵심이다. 이것이 **방화벽(W02) + 엔드포인트(W07) = 다층 방어**의 결정적 장면이다.
+
+      - **Red** — `/etc/cron.d` 에 백도어 cron 을 만들고(`>`, 덮어쓰기), authorized_keys 에 가짜 키
+        한 줄을 **추가**한다(`>>`, append).
+      - **Blue** — osquery `crontab` 로 cron 지속성을 잡고, 같은 변경이 Wazuh FIM alert 로도 오는지
+        매니저에서 확인한다(step 8).
+      - **Purple/Contain** — cron 파일은 통째로 제거(`rm`), authorized_keys 는 **추가한 한 줄만**
+        `sed` 로 삭제. 파일을 통째로 지우면 정상 키까지 날아가므로 내가 더한 줄만 지운다(베이스 보존).
 
       ## 💻 단계 명령
       ```bash
@@ -237,8 +324,14 @@ steps:
       # Contain — cron 제거 + 추가한 키 1줄만 삭제(베이스 보존)
       docker exec el34-web sh -c 'rm -f /etc/cron.d/w07_backdoor; sed -i "/W07FAKE/d" /root/.ssh/authorized_keys; echo cleaned'
       ```
+      - `crontab` 테이블 — 시스템·사용자의 모든 cron 항목. `command`(실행 명령) / `path`(어느 cron 파일에서 왔나).
+      - `* * * * * root ...` — 매 분, root 권한으로 실행한다는 cron 표기(분 시 일 월 요일 + 사용자 + 명령).
+      - `>` vs `>>` — `>` 는 새 파일로 덮어쓰기(cron), `>>` 는 기존 파일에 한 줄 추가(키). 차이가 Contain
+        방식(rm vs sed)을 가른다.
+      - `sed -i "/W07FAKE/d"` — authorized_keys 에서 `W07FAKE` 가 든 줄만 골라 삭제(`-i` 는 파일 직접 수정).
+
       ## ✅ 합격 기준
-      osquery `crontab` 에 `w07_backdoor` 가 보인다.
+      osquery `crontab` 결과에 `w07_backdoor` 가 보인다(FIM alert 적재 확인은 step 8 에서).
     hint: 'osquery crontab + Wazuh FIM → cron rm + authorized_keys sed 삭제'
     category: response
     points: 15
@@ -251,7 +344,7 @@ steps:
       docker exec el34-web sh -c 'grep -c W07FAKE /root/.ssh/authorized_keys'
       docker exec el34-web sh -c 'rm -f /etc/cron.d/w07_backdoor; sed -i "/W07FAKE/d" /root/.ssh/authorized_keys; echo cleaned'
       echo "self-clean done"
-    answer_detail: "persistence 는 osquery crontab + Wazuh FIM(syscheck 가 /etc, /root/.ssh 감시)로 잡는다. 방화벽이 못 본 호스트 지속성을 엔드포인트가 잡는 다층 방어. 키는 append 분만 sed 삭제 → 베이스 보존."
+    answer_detail: "ep-s05 정답 흐름은 Red(cron 백도어 + authorized_keys 키 추가) → Blue(osquery crontab 스냅샷 + Wazuh FIM syscheck 이벤트 두 각도 탐지) → Contain(cron 은 rm 통째 제거, 키는 W07FAKE 한 줄만 sed 삭제). syscheck 가 /etc·/root/.ssh 를 감시하므로 파일 변경이 SIEM alert 로 올라온다. 방화벽이 못 본 호스트 지속성을 엔드포인트가 잡는 다층 방어의 결정적 장면. 키는 추가분만 삭제해 베이스 보존. 합격은 출력에 'w07_backdoor' 포함 여부로 판정한다."
     verify:
       type: output_contains
       expect: 'w07_backdoor'
@@ -269,9 +362,12 @@ steps:
     instruction: |
       ## 🎯 MISSION — Investigate: osquery JOIN 으로 프로세스↔포트 소유 추적
 
-      분석가의 핵심 — "이 포트를 **어느 프로세스**가 듣고 있나"를 `processes` ⨝ `process_open_sockets`
-      JOIN 으로 한 줄에 본다(의심 포트 → 책임 프로세스 → cmdline). 외부 연결이 있다면
-      `remote_port!=0` 로 필터해 C2 통신을 본다. + `on_disk=0` 헌팅(삭제된 바이너리로 도는 은닉 프로세스).
+      **개념 한 줄** — 앞 step 들이 단서를 하나씩 찾는 Triage 였다면, 본 step 은 단서를 잇는
+      **Investigate(조사)** 다. 분석가가 정말 알고 싶은 것은 "이 포트를 **어느 프로세스**가 듣고 있고,
+      그 명령행이 무엇인가"다. `processes` 와 `process_open_sockets` 두 테이블을 `pid` 로 **JOIN** 하면
+      이 둘을 한 줄에 잇는다(의심 포트 → 책임 프로세스 → cmdline). 세 각도로 본다 — ① 포트의 주인
+      프로세스(JOIN) ② 외부로 나가는 연결(C2 후보, `remote_port!=0`) ③ 디스크에서 지워진 채 도는 은닉
+      프로세스(`on_disk=0`).
 
       ## 💻 실행 명령
       ```bash
@@ -282,8 +378,15 @@ steps:
       # 은닉 프로세스 헌팅
       docker exec el34-web osqueryi --json 'SELECT pid,name,path FROM processes WHERE on_disk=0 LIMIT 5;'
       ```
+      - `JOIN ... USING(pid)` — 두 테이블의 같은 컬럼 `pid` 를 키로 결합. 포트(소켓)와 프로세스를 한 행에 합친다.
+      - `local_port` vs `remote_port` — 내가 여는 포트(리스닝) vs 상대 포트(나가는 연결). `remote_port!=0`
+        은 "어딘가로 연결을 맺은" 소켓만 = 외부 통신(C2) 후보.
+      - `on_disk=0` — 바이너리가 디스크에서 사라졌는데 메모리에서 도는 프로세스 = 은닉/fileless 의심
+        (§강의 6.3). 파일을 지워도 프로세스는 남는다는 점을 노린 헌팅.
+      - `LIMIT 5` — 출력을 5행으로 제한(조사용 표본).
+
       ## ✅ 합격 기준
-      JOIN 결과에 `pid` 와 포트(80/443)가 함께 보인다.
+      JOIN 결과 JSON 에 `pid` 와 포트(80/443)가 함께 보인다(조사 쿼리 정상 동작).
     hint: 'processes JOIN process_open_sockets USING(pid) — 포트의 주인 프로세스'
     category: analysis
     points: 10
@@ -294,7 +397,7 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT p.pid,p.name,s.remote_address,s.remote_port FROM processes p JOIN process_open_sockets s USING(pid) WHERE s.remote_port!=0 LIMIT 5;'
       echo "=== on_disk=0 (삭제된 바이너리로 도는 은닉 프로세스 헌팅) ==="
       docker exec el34-web osqueryi --json 'SELECT pid,name,path FROM processes WHERE on_disk=0 LIMIT 5;'
-    answer_detail: "osquery JOIN 으로 '이 포트의 주인 프로세스는?' 를 한 줄에. 의심 포트→pid→cmdline 으로 역추적. remote_port!=0 은 외부(C2) 연결, on_disk=0 은 삭제된 바이너리로 도는 은닉 프로세스 헌팅. 분석가 timeline 의 핵심 질의."
+    answer_detail: "Investigate 단계의 정답은 세 질의 — ① processes JOIN process_open_sockets USING(pid)로 '이 포트의 주인 프로세스는?'를 한 줄에(의심 포트→pid→cmdline 역추적), ② remote_port!=0 으로 외부(C2) 연결, ③ on_disk=0 으로 삭제된 바이너리로 도는 은닉 프로세스 헌팅. 분석가 timeline 의 핵심 질의다. 합격은 출력에 'pid' 포함 여부로 판정한다."
     verify:
       type: output_contains
       expect: 'pid'
@@ -312,16 +415,27 @@ steps:
     instruction: |
       ## 🎯 MISSION — SIEM: Wazuh 가 본 호스트 활동 (FIM/alert)
 
-      ep-s05 의 파일 변경(/etc/cron.d, /root/.ssh)이 web 의 Wazuh agent → el34-siem 으로 갔는지 확인.
-      방화벽이 못 본 호스트 행위를 SIEM 이 잡는 다층 방어의 마무리.
+      **개념 한 줄** — 지금까지는 분석가가 victim 에 직접 osquery 를 던져 봤다. 본 step 은 그 호스트
+      행위가 **자동으로 SIEM(el34-siem)으로도 흘러드는지** 확인해 다층 방어를 마무리한다. ep-s05 의
+      파일 변경(`/etc/cron.d`, `/root/.ssh`)이 web 의 Wazuh agent(ID 004) → 매니저로 전송돼
+      `alerts.json` 에 syscheck(FIM) alert 로 적재됐는지 본다. 방화벽이 못 본 호스트 행위를 SIEM 이
+      한 화면에 모으는 것 — 이것이 관제가 성립하는 조건이다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "Name: web,"
       docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | grep -iE "syscheck|integrity|added|modified" | tail -3'
       ```
+      - `agent_control -l` — 매니저에 등록된 agent 목록. `Name: web` 이 Active 면 데이터 파이프가 살아있다.
+      - `/var/ossec/logs/alerts/alerts.json` — Wazuh 매니저가 모든 alert 를 적재하는 파일(한 줄 = 한 JSON alert).
+      - `grep -iE "syscheck|integrity|..."` — FIM(파일 무결성) 관련 alert 만 추려 최근 3건을 본다.
+
+      > **직후에 안 보여도 정상** — FIM(syscheck)은 실시간이지만 변경 감지→alert 까지 약간의 주기 지연이
+      > 있다. 그래서 ep-s05 직후 alert 가 비어 있어도 비정상이 아니다. 핵심은 **agent 가 Active** 여서
+      > 데이터 파이프가 살아있는지이며, FIM 적재는 osquery 스냅샷(step 6 의 crontab)과 교차 확인하면 된다.
+
       ## ✅ 합격 기준
-      web agent Active + (FIM 활동 시) syscheck/integrity alert 가 보인다.
+      web agent `Active` + (FIM 활동 반영 시) syscheck/integrity alert 가 보인다.
     hint: 'agent_control web Active + alerts.json 의 syscheck/integrity'
     category: detect
     points: 10
@@ -331,7 +445,7 @@ steps:
       echo "=== el34-siem 의 FIM/syscheck alert ==="
       docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | grep -iE "syscheck|integrity|checksum" | tail -3' || echo "(최근 FIM alert 없음 — 실시간 syscheck 주기 대기)"
       echo "agent web active 확인 완료"
-    answer_detail: "web 의 Wazuh agent 가 active 면 호스트 행위(FIM 포함)가 el34-siem 으로 적재된다. persistence 파일 변경은 syscheck(FIM) alert 로 잡힌다. 공방전과 동일하게 실습 활동도 SIEM 에 logging 된다."
+    answer_detail: "정답은 web agent 가 Active 임을 확인(데이터 파이프 생존) + alerts.json 에서 syscheck/integrity FIM alert 를 확인하는 것. web 의 Wazuh agent(004)가 active 면 호스트 행위(FIM 포함)가 el34-siem 으로 적재된다. ep-s05 의 persistence 파일 변경(/etc/cron.d, /root/.ssh)은 syscheck(FIM) alert 로 잡힌다(주기 지연 가능). 공방전과 동일하게 실습 활동도 SIEM 에 logging 된다. 합격은 출력에 'web' 포함 여부로 판정한다."
     verify:
       type: output_contains
       expect: 'web'
@@ -349,7 +463,10 @@ steps:
     instruction: |
       ## 🎯 MISSION — W07 종합 보고서 (IR SOP + 5 R/B/P)
 
-      STEP 1-8 을 분석가 SOP(Triage→Investigate→Contain) 로 1페이지 정리.
+      **개념 한 줄** — 사건의 마무리는 "정리"다. STEP 1-8 에서 흩어진 탐지 결과를 분석가
+      **SOP(Triage→Investigate→Contain)** 의 틀로 1페이지에 모은다. 보고서는 다음 사람이 읽고
+      재현·후속할 수 있어야 하는 IR 의 산출물이다 — 무엇을 탐지했고(5 시나리오), 어떻게 조사했고
+      (JOIN/헌팅 timeline), SIEM 에 어떻게 적재됐는지(FIM)를 한눈에 잇는다.
 
       ## 💻 보고서 양식
       ```markdown
@@ -381,7 +498,7 @@ steps:
       ## 4. SIEM: web agent → el34-siem, syscheck(FIM) alert
       ## 5. SOP: Triage(alert 선별)→Investigate(osquery)→Contain(kill/userdel/rm)
       EOF
-    answer_detail: "분석가 SOP(Triage→Investigate→Contain) + osquery 5 탐지 + SIEM 적재 종합. 방화벽이 못 본 호스트 행위를 엔드포인트가 잡는 다층 방어의 완성."
+    answer_detail: "정답은 분석가 SOP(Triage→Investigate→Contain) 틀에 5 시나리오 탐지 결과 표 + Investigate timeline(JOIN/헌팅) + SIEM 적재(FIM)를 한 페이지로 종합하는 것. 방화벽이 못 본 호스트 행위를 엔드포인트가 잡는 다층 방어의 완성이며, 보고서는 다음 사람이 재현·후속할 수 있어야 한다. 합격은 출력에 'Contain' 포함 여부로 판정한다."
     verify:
       type: output_contains
       expect: 'Contain'
@@ -398,21 +515,30 @@ steps:
     instruction: |
       ## 🎯 MISSION — 정리 확인 — 베이스 상태 보존
 
-      각 시나리오에서 self-clean 했으므로 실습 흔적(w07intruder / w07_backdoor / W07FAKE / evil.bin /
-      4444 / b64decode)이 **남아 있지 않아야** 한다.
+      **개념 한 줄** — el34-web 은 모든 학생이 함께 쓰는 **공유 호스트**다. 따라서 IR 의 마지막 SOP 는
+      "내 실습이 만든 흔적을 끝까지 지워 다음 사람의 베이스 상태를 보존"하는 self-clean 이다. 각
+      시나리오에서 이미 제거했지만, 본 step 은 6개 식별자(`w07intruder` / `w07_backdoor` / `W07FAKE` /
+      `evil.bin` / `4444` / `b64decode`)가 정말 **0인지** 한 번에 검증한다 — 계정·cron·키·파일·프로세스
+      어느 것도 남으면 안 된다.
 
       ## 💻 확인 명령
       ```bash
       docker exec el34-web sh -c 'id w07intruder 2>/dev/null; ls /etc/cron.d/w07_backdoor /tmp/evil.bin 2>/dev/null; grep -c W07FAKE /root/.ssh/authorized_keys 2>/dev/null; pgrep -f "b64decode|http.server 4444"; echo "---check done---"'
       ```
+      - `id w07intruder` — 백도어 계정 잔재 확인(있으면 출력, 없으면 에러→무시).
+      - `ls .../w07_backdoor /tmp/evil.bin` — cron·다운로드 파일 잔재 확인.
+      - `grep -c W07FAKE ...authorized_keys` — 추가한 SSH 키 줄 수(0 이어야 정상).
+      - `pgrep -f "b64decode|http.server 4444"` — 인코딩 셸·리스너 프로세스 잔재 확인.
+      - `echo "---check done---"` — 모든 점검을 끝까지 돌렸다는 마커.
+
       ## ✅ 합격 기준
-      실습 흔적이 0 이고 `check done` 이 출력된다.
+      6개 식별자 잔재가 모두 0 이고 `check done` 이 출력된다.
     hint: '실습 아티팩트 잔재 0 확인'
     category: cleanup
     points: 5
     answer: |
       docker exec el34-web sh -c 'id w07intruder 2>/dev/null && echo "USER 잔재!" || echo "user ok"; ls /etc/cron.d/w07_backdoor /tmp/evil.bin 2>/dev/null && echo "파일 잔재!" || echo "files ok"; N=$(grep -c W07FAKE /root/.ssh/authorized_keys 2>/dev/null); echo "key 잔재=$N"; pgrep -f "b64decode|http.server 4444" && echo "프로세스 잔재!" || echo "proc ok"; echo "---check done---"'
-    answer_detail: "공유 호스트에선 self-clean 이 필수 SOP. 실습 계정/cron/키/파일/프로세스를 끝까지 남기지 않는다(베이스 보존)."
+    answer_detail: "정답은 6개 식별자(w07intruder/w07_backdoor/W07FAKE/evil.bin/4444/b64decode) 잔재가 모두 0임을 한 번에 검증하는 것. 공유 호스트에선 self-clean 이 필수 SOP — 실습 계정/cron/키/파일/프로세스를 끝까지 남기지 않아 다음 사람의 베이스를 보존한다. 합격은 출력에 'check done' 포함 여부로 판정한다."
     verify:
       type: output_contains
       expect: 'check done'
