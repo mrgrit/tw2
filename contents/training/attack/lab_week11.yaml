@@ -1,0 +1,252 @@
+lab_id: standalone-attack-week11
+title: "권한 상승 — SUID·sudo·cron 오설정 vs 탐지·하드닝"
+version: standalone-attack
+course: attack
+week: 11
+description: |
+  저권한 셸에서 root로 권한 상승 — SUID/sudo/cron/쓰기가능 파일 열거와 GTFObins 경로, 그리고 탐지·하드닝.
+  열거 중심(읽기전용), 실제 상승/하드닝은 점검·개념까지(공유 인프라 보존). 비-root는 `docker exec -u ccc el34-web`.
+  인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "W08(셸 획득) 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(열거) §3(SUID/GTFObins) §4(sudo/cron) 숙지"
+objectives:
+  - "저권한 컨텍스트에서 privesc 열거(SUID/sudo/cron)"
+  - "GTFObins로 권한 상승 경로 식별"
+  - "탐지(osquery/FIM) + 하드닝(최소권한)"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 비-root 컨텍스트
+      ## 💻 실행 명령
+      ```bash
+      docker exec -u ccc el34-web id
+      ```
+      ## ✅ 합격 기준
+      저권한(ccc) 컨텍스트를 확인한다.
+    hint: 'docker exec -u ccc id'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 저권한 컨텍스트 (ccc) ==="
+      docker exec -u ccc el34-web id
+      echo "→ uid 1000(ccc), 비-root. 여기서 root로 상승하는 게 목표"
+    answer_detail: "privesc 출발점 = 저권한 셸(ccc). 그룹(sudo/www-data)도 단서. 여기서 오설정을 찾아 root로."
+    verify:
+      type: output_contains
+      expect: 'ccc'
+      field: stdout
+      semantic:
+        intent: "비-root 컨텍스트 점검"
+        success_criteria: ["ccc uid 1000"]
+        acceptable_methods: ["**[OSS] docker exec -u ccc id (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 SUID 열거
+      ## 💻 실행 명령
+      ```bash
+      docker exec -u ccc el34-web sh -c 'find / -perm -4000 -type f 2>/dev/null'
+      ```
+      ## ✅ 합격 기준
+      SUID 바이너리를 열거한다.
+    hint: 'find -perm -4000'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== SUID 바이너리 열거 ==="
+      docker exec -u ccc el34-web sh -c 'find / -perm -4000 -type f 2>/dev/null'
+      echo "→ root 권한으로 실행되는 파일들. 정상(passwd/su/mount) vs 비정상(셸/에디터=위험)"
+    answer_detail: "SUID 열거 = privesc 1순위. find -perm -4000으로 root 권한 실행 파일 목록. 비정상 SUID(find/vim/bash 등)가 GTFObins 후보."
+    verify:
+      type: output_contains
+      expect: 'passwd'
+      field: stdout
+      semantic:
+        intent: "SUID 열거"
+        success_criteria: ["SUID 목록(passwd 등)"]
+        acceptable_methods: ["**[OSS] find -perm -4000 (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 sudo·그룹 점검
+      ## 💻 실행 명령
+      ```bash
+      docker exec -u ccc el34-web sh -c 'id; sudo -ln 2>/dev/null | head -5 || echo "sudo 비번 필요"'
+      ```
+      ## ✅ 합격 기준
+      sudo 권한/그룹을 점검한다.
+    hint: 'id 그룹 + sudo -ln'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== sudo·그룹 점검 ==="
+      docker exec -u ccc el34-web id
+      docker exec -u ccc el34-web sh -c 'sudo -ln 2>/dev/null | grep -iE "NOPASSWD|ALL|may run" | head -5 || echo "(sudo -l 비번 필요 — 그룹 sudo 멤버십이 단서)"'
+      echo "→ sudo 그룹 멤버 + NOPASSWD/위험 명령(ALL/vi/awk)이 있으면 GTFObins로 root"
+    answer_detail: "sudo 점검 — sudo 그룹 멤버십 + sudo -l의 NOPASSWD/위험 명령. ALL이나 vi/less/awk를 sudo로 실행 가능하면 GTFObins escape로 root."
+    verify:
+      type: output_contains
+      expect: 'sudo'
+      field: stdout
+      semantic:
+        intent: "sudo/그룹 점검"
+        success_criteria: ["sudo 그룹/권한 확인"]
+        acceptable_methods: ["**[OSS] id + sudo -ln (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 cron·쓰기가능 점검
+      ## 💻 실행 명령
+      ```bash
+      docker exec -u ccc el34-web sh -c 'ls -la /etc/cron.d/ /etc/crontab 2>/dev/null; find / -writable -type f 2>/dev/null | grep -vE "^/proc|^/sys|^/tmp|/home/ccc" | head -5'
+      ```
+      ## ✅ 합격 기준
+      cron/쓰기가능 오설정 후보를 점검한다.
+    hint: 'cron.d + world-writable'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== cron 점검 ==="
+      docker exec -u ccc el34-web sh -c 'ls -la /etc/cron.d/ 2>/dev/null; ls -la /etc/crontab 2>/dev/null'
+      echo "=== 쓰기 가능 민감 파일(있으면 위험) ==="
+      docker exec -u ccc el34-web sh -c 'ls -la /etc/passwd /etc/shadow 2>/dev/null | head'
+      echo "→ root cron이 world-writable 스크립트 실행 / 민감 파일 쓰기 가능 = privesc 경로"
+    answer_detail: "cron/쓰기 점검 — root cron이 쓰기 가능 스크립트를 실행하면 그 스크립트로 root 코드 실행. /etc/passwd·sudoers 쓰기 가능 시 직접 권한 추가."
+    verify:
+      type: output_contains
+      expect: 'passwd'
+      field: stdout
+      semantic:
+        intent: "cron/쓰기가능 점검"
+        success_criteria: ["cron + 민감파일 권한"]
+        acceptable_methods: ["**[OSS] cron + writable 점검 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 권한 상승 경로 — GTFObins
+      ## 💻 실행 명령
+      ```bash
+      echo "비정상 SUID/sudo 바이너리 → GTFObins 매핑: find→-exec sh -p, vim→:!sh, awk→system(), less→!sh"
+      ```
+      ## ✅ 합격 기준
+      열거 결과를 GTFObins 경로로 매핑한다.
+    hint: 'GTFObins 매핑'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== GTFObins 권한 상승 경로 ==="
+      echo "find (SUID/sudo):  find . -exec /bin/sh -p \\; -quit → root"
+      echo "vim (SUID/sudo):   vim -c ':!/bin/sh'"
+      echo "awk (sudo):        awk 'BEGIN{system(\"/bin/sh\")}'"
+      echo "less/more (sudo):  !/bin/sh"
+      echo "→ 열거에서 찾은 비정상 SUID/sudo를 GTFObins에 대조해 root 경로 확인"
+    answer_detail: "GTFObins = 정상 바이너리의 권한 상승 악용 DB. 비정상 SUID/sudo 바이너리를 GTFObins에 대조 → root 셸 경로. 핵심은 열거→매핑."
+    verify:
+      type: output_contains
+      expect: 'GTFObins'
+      field: stdout
+      semantic:
+        intent: "GTFObins 경로 매핑"
+        success_criteria: ["SUID/sudo → root 경로"]
+        acceptable_methods: ["**[관리적] GTFObins 매핑 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 탐지 — osquery suid_bin / FIM
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web osqueryi --json 'SELECT path,username FROM suid_bin LIMIT 8;' 2>/dev/null || docker exec el34-web sh -c 'find / -perm -4000 -type f 2>/dev/null | head'
+      ```
+      ## ✅ 합격 기준
+      osquery로 SUID 바이너리를 탐지(방어 관점)한다.
+    hint: 'osquery suid_bin'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 탐지 (osquery suid_bin) ==="
+      docker exec el34-web osqueryi --json 'SELECT path,username FROM suid_bin LIMIT 8;' 2>/dev/null || docker exec el34-web sh -c 'find / -perm -4000 -type f 2>/dev/null | head'
+      echo "→ 방어자는 osquery suid_bin으로 SUID baseline 감시 + FIM(/etc/sudoers,passwd 변경) 탐지"
+    answer_detail: "방어 탐지 = osquery suid_bin(SUID baseline 대비 신규/비정상), FIM(sudoers/passwd 변경), 비정상 root 프로세스. privesc 시도를 호스트에서 잡는다."
+    verify:
+      type: output_contains
+      expect: 'passwd'
+      field: stdout
+      semantic:
+        intent: "osquery SUID 탐지"
+        success_criteria: ["suid_bin/SUID 목록"]
+        acceptable_methods: ["**[OSS] osquery suid_bin (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 하드닝 — 최소 권한
+      ## 💻 실행 명령
+      ```bash
+      echo "불필요 SUID 제거(chmod -s), sudo NOPASSWD/위험명령 감사, cron 스크립트 권한 강화, 민감파일 권한 점검"
+      ```
+      ## ✅ 합격 기준
+      privesc 하드닝(최소 권한)을 정리한다.
+    hint: 'SUID 제거 + sudo 최소화'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 하드닝 (최소 권한) ==="
+      echo "① 불필요 SUID 제거: chmod -s <binary> (셸/에디터 SUID 절대 금지)"
+      echo "② sudo 최소권한: NOPASSWD·ALL·위험 명령(vi/awk/less) 제거, 명시 명령만"
+      echo "③ cron 스크립트 권한 강화(root-only write), 민감 파일(passwd/shadow/sudoers) 권한 점검"
+      echo "→ 최소 권한 원칙: 필요한 것만, root는 최소로"
+    answer_detail: "privesc 하드닝 = 최소 권한. 불필요 SUID 제거, sudo 최소화, cron/민감파일 권한 강화. 공격자의 열거에서 오설정이 안 나오게."
+    verify:
+      type: output_contains
+      expect: '최소 권한'
+      field: stdout
+      semantic:
+        intent: "privesc 하드닝"
+        success_criteria: ["SUID 제거/sudo 최소화"]
+        acceptable_methods: ["**[설명] 최소 권한 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 privesc 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W11 권한 상승 보고서 (학번, 이름)
+      ## 1. 열거 (SUID/sudo/cron)
+      ## 2. 권한 상승 경로 (GTFObins)
+      ## 3. 탐지(osquery/FIM) + 하드닝(최소권한)
+      ```
+      ## ✅ 합격 기준
+      보고서에 열거 + 경로 + 방어가 포함된다.
+    hint: '열거+경로+방어'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 공격 W11 권한 상승 보고서
+      ## 1. 열거: SUID 10개(passwd/su/mount...), sudo 그룹 멤버, cron, 민감파일 권한
+      ## 2. 경로: 비정상 SUID/sudo → GTFObins(find -exec sh -p, vim :!sh, awk system)
+      ## 3. 탐지: osquery suid_bin + FIM(sudoers/passwd). 하드닝: SUID 제거+sudo 최소+민감파일 권한
+      ## 결론: privesc는 열거가 90%. 오설정(비정상 SUID/sudo/cron)을 찾아 root. 방어=최소 권한
+      EOF
+    answer_detail: "privesc = 열거(SUID/sudo/cron)→GTFObins 매핑→root. 방어는 최소 권한 + osquery/FIM 탐지."
+    verify:
+      type: output_contains
+      expect: 'GTFObins'
+      field: stdout
+      semantic:
+        intent: "privesc 종합 보고"
+        success_criteria: ["열거/경로/방어"]
+        acceptable_methods: ["**[관리적] privesc 보고서 (권장)**"]
+    target_vm: web
