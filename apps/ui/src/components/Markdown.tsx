@@ -24,6 +24,25 @@ const quoteStyle: React.CSSProperties = {
   color: 'var(--fg-dim)', background: 'rgba(0,0,0,0.15)',
 }
 
+// mermaid 다이어그램 — index.html 에서 로컬 벤더링된 window.mermaid 로 SVG 렌더.
+// 라이브러리 미로딩/문법오류 시 원문을 <pre> 로 폴백(절대 깨지지 않게).
+function Mermaid({ code }: { code: string }): React.ReactElement {
+  const ref = React.useRef<HTMLDivElement>(null)
+  const [failed, setFailed] = React.useState(false)
+  React.useEffect(() => {
+    let cancelled = false
+    const m = (window as unknown as { mermaid?: { render: (id: string, t: string) => Promise<{ svg: string }> } }).mermaid
+    if (!m) { setFailed(true); return }
+    const id = 'mmd-' + Math.abs(Array.from(code).reduce((a, c) => (a * 31 + c.charCodeAt(0)) | 0, 7)).toString(36)
+    m.render(id, code)
+      .then(({ svg }) => { if (!cancelled && ref.current) ref.current.innerHTML = svg })
+      .catch(() => { if (!cancelled) setFailed(true) })
+    return () => { cancelled = true }
+  }, [code])
+  if (failed) return <pre style={preStyle}><code>{code}</code></pre>
+  return <div ref={ref} style={{ textAlign: 'center', margin: '12px 0', overflowX: 'auto' }} aria-label="diagram" />
+}
+
 function inline(s: string): React.ReactNode[] {
   const out: React.ReactNode[] = []
   const re = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g
@@ -56,13 +75,15 @@ export default function Markdown({ text }: { text: string }): React.ReactElement
   let key = 0
   while (i < lines.length) {
     const line = lines[i]
-    // 코드 블록
+    // 코드 블록 (```lang) — mermaid 는 그래픽, 그 외는 <pre>
     if (line.trimStart().startsWith('```')) {
+      const lang = line.trimStart().slice(3).trim().toLowerCase()
       const code: string[] = []
       i++
       while (i < lines.length && !lines[i].trimStart().startsWith('```')) { code.push(lines[i]); i++ }
       i++
-      blocks.push(<pre key={key++} style={preStyle}><code>{code.join('\n')}</code></pre>)
+      if (lang === 'mermaid') blocks.push(<Mermaid key={key++} code={code.join('\n')} />)
+      else blocks.push(<pre key={key++} style={preStyle}><code>{code.join('\n')}</code></pre>)
       continue
     }
     // 표 (| ... | 다음 줄이 |---| 구분자)
