@@ -1,0 +1,247 @@
+lab_id: standalone-web-vuln-week12
+title: "API 보안 — BOLA/과다 데이터 노출/mass assignment vs API 인가"
+version: standalone-web-vuln
+course: web-vuln
+week: 12
+description: |
+  OWASP API Top 10 — 공개/보호 자원 매핑, BOLA(API1), 과다 데이터 노출(API3), mass assignment(API6),
+  API 인가 방어. juice REST 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+  신규 설치 없음(curl 기본).
+difficulty: hard
+duration_minutes: 160
+prerequisites:
+  - "W01–W11 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §3(BOLA) §4(과다노출) §5(mass assignment) 숙지"
+objectives:
+  - "공개/보호 API 경계 매핑"
+  - "과다 데이터 노출/BOLA 식별"
+  - "객체수준 인가/응답 최소화 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — API 도달
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'api=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Products"
+      ```
+      ## ✅ 합격 기준
+      REST API 도달.
+    hint: 'api 도달'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'api=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Products"
+    answer_detail: "API 보안 점검 대상 = juice REST API."
+    verify:
+      type: output_contains
+      expect: 'api='
+      field: stdout
+      semantic:
+        intent: "API 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 공개 자원 — /api/Products
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'prod=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Products"
+      ```
+      ## ✅ 합격 기준
+      공개 자원(200)을 식별한다.
+    hint: 'Products 200'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== 공개 자원 ==="
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'prod=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Products"
+      echo "→ 200 = 인증 없이 접근 가능한 공개 자원(정상 설계일 수 있음)"
+    answer_detail: "공개 자원 = 인증 불필요(200). 카탈로그 등 의도된 공개. 경계 매핑의 시작."
+    verify:
+      type: output_contains
+      expect: 'prod=200'
+      field: stdout
+      semantic:
+        intent: "공개 자원 식별"
+        success_criteria: ["200 공개"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 보호 자원 — /api/Users
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users"
+      ```
+      ## ✅ 합격 기준
+      보호 자원(401)을 식별한다.
+    hint: 'Users 401'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== 보호 자원 ==="
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users"
+      echo "→ 401 = 인증 필요(양호). 사용자 목록은 보호되어야 정상"
+    answer_detail: "보호 자원 = 인증 필요(401). /api/Users가 보호됨 = BOLA 1차 방어 양호."
+    verify:
+      type: output_contains
+      expect: 'users=401'
+      field: stdout
+      semantic:
+        intent: "보호 자원 식별"
+        success_criteria: ["401 보호"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 과다 데이터 노출 (API3)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Feedbacks | grep -oE 'UserId[^,]*' | head -3"
+      ```
+      ## ✅ 합격 기준
+      무인증 엔드포인트가 불필요 필드(UserId 등)를 노출한다.
+    hint: 'Feedbacks UserId'
+    category: manipulation
+    points: 16
+    answer: |
+      echo "=== 과다 데이터 노출 (API3) ==="
+      docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Feedbacks | grep -oE 'UserId[^,]*' | head -3"
+      echo "→ /api/Feedbacks 무인증 200 + UserId·이메일 조각 노출. 응답이 필요 이상(API3)"
+    answer_detail: "과다 노출 = 응답에 불필요 필드(UserId/이메일). 클라이언트가 안 쓰는 데이터까지 내려줌(API3)."
+    verify:
+      type: output_contains
+      expect: 'UserId'
+      field: stdout
+      semantic:
+        intent: "과다 데이터 노출"
+        success_criteria: ["불필요 필드 노출"]
+        acceptable_methods: ["**[OSS] API 응답 검사 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 BOLA (API1) — 객체수준 인가
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo -n 'bola='; for id in 1 2 3; do curl -sk -o /dev/null -w \"\$id:%{http_code} \" -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users/\$id; done; echo"
+      ```
+      ## ✅ 합격 기준
+      순차 객체 id 접근(BOLA)을 시도하고 인가 상태를 확인한다.
+    hint: 'Users/{id} 순차'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== BOLA (API1) ==="
+      docker exec el34-attacker sh -c "echo -n 'bola='; for id in 1 2 3; do curl -sk -o /dev/null -w \"\$id:%{http_code} \" -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users/\$id; done; echo"
+      echo "→ 순차 객체 id로 남의 자원 접근 시도. 401 = 객체수준 인가 양호. 200이면 BOLA 치명"
+    answer_detail: "BOLA = 순차 객체 id로 타인 자원 접근. 401(보호)=양호. 객체수준 인가가 핵심 방어."
+    verify:
+      type: output_contains
+      expect: 'bola='
+      field: stdout
+      semantic:
+        intent: "BOLA 시도"
+        success_criteria: ["객체수준 인가 점검"]
+        acceptable_methods: ["**[OSS] 순차 id (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 영향
+      ## 💻 실행 명령
+      ```bash
+      echo "BOLA→타인데이터, 과다노출→PII유출, mass assignment→권한상승"
+      ```
+      ## ✅ 합격 기준
+      API 취약점의 영향을 정리한다.
+    hint: 'PII유출/권한상승'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 영향 ==="
+      echo "BOLA(API1): 객체 id 교체로 타인 데이터 대량 수집"
+      echo "과다 노출(API3): 응답의 불필요 필드(이메일/내부ID) → PII 유출"
+      echo "Mass assignment(API6): 미허용 필드(isAdmin) 주입 → 권한 상승"
+      echo "→ API는 UI 통제 우회. 서버측 인가/직렬화 통제 없으면 치명"
+    answer_detail: "영향 = 타인 데이터(BOLA)/PII 유출(과다노출)/권한상승(mass assignment). UI 우회가 핵심."
+    verify:
+      type: output_contains
+      expect: 'PII'
+      field: stdout
+      semantic:
+        intent: "API 영향"
+        success_criteria: ["데이터유출/권한상승"]
+        acceptable_methods: ["**[관리적] 영향 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — API 인가
+      ## 💻 실행 명령
+      ```bash
+      echo "객체수준인가(BOLA), 응답필드최소화(과다노출), 입력allowlist/DTO(mass assignment), 토큰검증"
+      ```
+      ## ✅ 합격 기준
+      API 인가 방어를 정리한다.
+    hint: '객체인가/응답최소화/allowlist'
+    category: report
+    points: 12
+    answer: |
+      echo "=== API 인가 방어 ==="
+      echo "1) 객체수준 인가(BOLA): 모든 객체 접근에 소유권/역할 검사"
+      echo "2) 응답 최소화(과다 노출): 직렬화 allowlist, 필요한 필드만"
+      echo "3) 입력 바인딩 allowlist/DTO(mass assignment): 민감 필드 바인딩 차단"
+      echo "4) 토큰 검증 강화 + 속도 제한 + API 게이트웨이 로깅"
+      echo "→ 핵심: 서버측 객체수준 인가 + 입출력 allowlist"
+    answer_detail: "방어 = 객체수준 인가 + 응답/입력 allowlist + 토큰검증. API는 서버측 강제만 신뢰."
+    verify:
+      type: output_contains
+      expect: 'allowlist'
+      field: stdout
+      semantic:
+        intent: "API 인가 방어"
+        success_criteria: ["객체인가/allowlist"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 API 보안 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹취약점 W12 API 보안 보고서 (학번, 이름)
+      ## 1. 공개/보호 경계 + 과다 노출(API3)/BOLA(API1)
+      ## 2. 영향(PII/권한상승)
+      ## 3. API 인가 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 API 발견 + 인가 방어가 포함된다.
+    hint: 'API3/API1+allowlist'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 웹취약점 W12 API 보안 보고서
+      ## 1. 발견: 공개(/api/Products 200)/보호(/api/Users 401) 경계, 과다 노출(/api/Feedbacks → UserId/이메일), BOLA 시도(Users/{id} 401 보호)
+      ## 2. 영향: PII 유출(과다 노출), 타인 데이터(BOLA), 권한상승(mass assignment)
+      ## 3. 방어: 객체수준 인가 + 응답/입력 allowlist + 토큰검증
+      ## 결론: API는 UI 없는 공격 표면. 서버측 객체수준 인가와 입출력 allowlist가 근본 방어
+      EOF
+    answer_detail: "API 보안 = OWASP API Top10. 과다노출/BOLA 발견, 객체인가+allowlist 방어."
+    verify:
+      type: output_contains
+      expect: 'allowlist'
+      field: stdout
+      semantic:
+        intent: "API 보안 종합 보고"
+        success_criteria: ["API 발견/인가 방어"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
