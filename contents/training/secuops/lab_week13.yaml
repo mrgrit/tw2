@@ -4,9 +4,14 @@ version: standalone-secuops
 course: secuops
 week: 13
 description: |
-  W12의 정적 IOC 매칭을 넘어, 같은 경보라도 맥락(평판·지역·빈도)으로 위험도를 동적으로 올린다.
-  평판 enrichment 격상 룰과 frequency/timeframe 빈도 격상 룰을 작성하고 wazuh-logtest로 검증하며,
-  OpenCTI Stream Connector로 인텔→CDB 자동화를 이해한다. 격상 룰은 끝나면 삭제(공유 매니저 무중단·보존).
+  W12의 정적 IOC 매칭(아느냐/모르느냐)을 넘어, 같은 경보라도 맥락(평판·지역·빈도)으로 위험도를
+  동적으로 올린다. enrichment(맥락 보강)는 경보를 지우거나 만들지 않고 우선순위(level)만 바꾼다는
+  것이 핵심 철칙이다. 본 실습에서는 (1) 평판이 나쁜 출발지를 올리는 평판 enrichment 격상 룰(101302,
+  level 12)과 (2) 같은 출발지의 반복을 잡는 frequency/timeframe 빈도 격상 룰(base 101300 level5 →
+  빈도 101301 level13)을 직접 작성한다. 빈도 룰은 한 줄로는 발화하지 않으므로 wazuh-logtest에 같은
+  로그를 여러 줄(다중 라인) 입력해 누적을 재현하여 검증한다. 마지막으로 손으로 IOC를 넣던 한계를
+  OpenCTI Stream Connector → Wazuh CDB 자동 동기화가 어떻게 넘는지 확인한다. 격상 룰은 검증 후 반드시
+  삭제한다(공유 매니저 무중단·베이스 보존 — el34-siem은 모든 학생이 함께 쓰는 단일 manager).
   모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-<comp>` 로.
 difficulty: hard
 duration_minutes: 200
@@ -15,27 +20,34 @@ prerequisites:
   - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec"
   - "lecture §2(enrichment) §3(빈도) §4(평판격상) §5(자동화) 숙지"
 objectives:
-  - "enrichment(평판/지역) 개념 + 평판 격상 룰(id 101302) logtest 검증"
-  - "frequency/timeframe 빈도 격상 룰(id 101301) logtest 검증"
-  - "enrichment + 빈도 결합으로 동적 우선순위(P1) 이해"
-  - "OpenCTI Stream Connector → CDB 자동화 그림"
-  - "반복 공격이 Wazuh로 수렴(출처 보존) + 베이스 보존"
+  - "enrichment(평판/지역/자산/빈도) 개념과 '우선순위만 바꾼다' 철칙 + 평판 격상 룰(id 101302, level 12) logtest 검증"
+  - "frequency/timeframe + if_matched_sid 빈도 격상 룰(base 101300 → 빈도 101301, level 13)을 다중 라인 logtest로 검증"
+  - "enrichment(평판/지역) + 빈도(반복) 결합으로 같은 경보를 P3→P2→P1로 동적 격상하는 우선순위 로직 이해"
+  - "수작업 IOC 입력의 한계를 OpenCTI Stream Connector → STIX→key:value → Wazuh CDB 자동 동기화가 넘는 그림 이해"
+  - "반복 공격이 같은 출처 IP(10.20.30.202, SNAT 없음)로 Wazuh에 수렴해 빈도 상관의 입력이 됨 + 커스텀 룰 정리로 베이스 보존"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — Wazuh manager + 인텔 스택
+      ## 🎯 점검 — Wazuh 상관 엔진 + 인텔 스택이 살아 있는가
 
-      동적 격상의 기반인 manager(상관 엔진)와 인텔 플랫폼을 확인한다.
+      이번 주의 동적 격상은 두 기반 위에서만 돈다 — (1) 빈도 상관을 계산하는 엔진
+      **analysisd**(W09에서 배운 평결의 '심장')와, (2) enrichment 인텔(평판·STIX)을 공급하는
+      **OpenCTI/connector** 스택이다. 둘 중 하나라도 죽어 있으면 빈도 격상도, 평판 격상도
+      일어나지 않는다. 운영 인수 첫 30초의 점검이다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
       docker ps --format '{{.Names}}' | grep -ciE 'opencti|connector'
       ```
+      - `wazuh-control status` : manager의 daemon 상태 목록. `grep analysisd`로 상관 엔진만 추린다.
+      - `grep -ciE 'opencti|connector'` : OpenCTI/connector 이름을 가진 컨테이너 **개수**를 센다
+        (`-c`=count, `-i`=대소문자 무시, `-E`=확장 정규식).
+
       ## ✅ 합격 기준
-      analysisd running + OpenCTI/connector 가동.
+      `wazuh-analysisd is running` + OpenCTI/connector 컨테이너가 1개 이상 가동(개수 ≥ 1).
     hint: 'wazuh-control analysisd + opencti/connector 수'
     category: survey
     points: 8
@@ -44,7 +56,7 @@ steps:
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
       echo "=== OpenCTI/connector 컨테이너 수 ==="
       docker ps --format '{{.Names}}' | grep -ciE 'opencti|connector'
-    answer_detail: "analysisd가 빈도(frequency) 상관을 돌리는 엔진. OpenCTI/connector가 enrichment·자동화의 인텔 소스. 동적 격상의 기반."
+    answer_detail: "analysisd는 decoder→rule을 돌릴 뿐 아니라 timeframe 안의 반복을 세는 빈도(frequency) 상관까지 담당하는 엔진이다 — 이게 멈추면 빈도 격상 자체가 안 돈다(가용성 점검 1순위). OpenCTI/connector는 enrichment(평판)와 자동화(Stream Connector→CDB)의 인텔 소스다. 둘이 곧 동적 격상의 두 기반."
     verify:
       type: output_contains
       expect: 'analysisd'
@@ -61,8 +73,11 @@ steps:
     instruction: |
       ## 🎯 평판 enrichment 격상 룰 (id 101302)
 
-      같은 경보라도 출발지 평판이 나쁘면 격상한다. enrichment로 붙은 reputation 필드를 룰이 본다.
-      wazuh-logtest로 격상을 검증하고 정리(베이스 보존).
+      enrichment의 가장 직접적인 형태 — **출발지 평판이 나쁘면 같은 경보라도 우선순위를 올린다.**
+      enrichment 단계에서 경보에 붙은 `reputation` 필드를 룰이 읽어, 값이 `known-bad`면 level 12로
+      격상한다. 빈도 룰(다음 미션)과 달리 평판 룰에는 frequency가 없다 — "단 한 번이라도 알려진
+      악성 출발지면 위험"이므로 **한 줄로도 발화**한다. 작업 절차는 (1) 백업 → (2) 룰 추가 →
+      (3) wazuh-logtest로 격상 검증 → (4) cp 복원(self-clean)이다. 룰 id는 W13 네임스페이스 1013xx.
 
       ## 💻 실행 명령
       ```bash
@@ -79,8 +94,13 @@ steps:
       echo '{"reputation":"known-bad","src_ip":"9.9.9.9"}' | sudo /var/ossec/bin/wazuh-logtest
       sudo cp /tmp/w13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w13_lr.bak
       ```
+      - `<decoded_as>json</decoded_as>` : json decoder가 파싱한 로그만 대상으로 좁힌다.
+      - `<field name="reputation">known-bad</field>` : 경보의 `reputation` 필드가 `known-bad`일 때만 매치.
+      - `wazuh-logtest` : 라이브 analysisd를 건드리지 않고 룰셋을 새로 읽어 테스트하는 모의재판 도구.
+
       ## ✅ 합격 기준
-      logtest 에 rule `101302` level 12 격상이 발화한다.
+      logtest Phase 3에 rule `101302` level 12 격상이 "Alert to be generated"로 발화하고,
+      정리 후 잔재가 0이다.
     hint: 'reputation 필드 격상 룰(101302) → logtest → cp 복원'
     category: manipulation
     points: 16
@@ -101,7 +121,7 @@ steps:
       echo "=== 평판 격상 logtest ==="
       docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w13r.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/w13r.json'
       docker exec el34-siem sh -c 'sudo cp /tmp/w13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w13_lr.bak; echo "복원 잔재=$(grep -c 101302 /var/ossec/etc/rules/local_rules.xml)"'
-    answer_detail: "enrichment(평판)이 붙은 reputation 필드가 known-bad면 level 12로 격상 — 같은 경보가 출발지 평판 때문에 우선순위가 오른다. 운영은 CDB list+<list lookup>로 src_ip 평판 조회."
+    answer_detail: "enrichment(평판)이 붙인 reputation 필드가 known-bad면 level 12로 격상 — 경보 자체는 그대로 두고 출발지 평판 때문에 우선순위만 오른다(enrichment의 철칙). 빈도 룰과 달리 frequency가 없어 한 줄로도 발화한다. 운영에서는 reputation을 사람이 넣지 않고 CDB list(평판 IOC)+<list lookup>로 src_ip를 조회해 자동 판정한다. 평판은 시간이 지나면 낡으므로 신선도 관리가 생명 → 자동화(STEP 6)로 이어진다."
     verify:
       type: output_contains
       expect: '101302'
@@ -118,7 +138,10 @@ steps:
     instruction: |
       ## 🎯 반복 IOC 공격 — 같은 출발지에서 반복
 
-      빈도 신호를 만든다 — 같은 알려진 악성 출발지에서 반복 공격.
+      빈도 룰의 입력은 "같은 출발지의 반복"이다. 그 입력을 실제로 만들어내야 다음 미션의 빈도
+      격상을 검증할 수 있다. 외부 공격자(같은 출발지 10.20.30.202)에서 알려진 악성 도구(sqlmap UA)로
+      4회 반복 공격을 흘려보내, web의 ModSecurity audit 로그에 반복 흔적이 남는지 확인한다.
+      단발이면 P3지만, 이렇게 짧은 시간에 반복되면 빈도 룰의 격상 대상이 된다.
 
       ## 💻 실행 명령
       ```bash
@@ -126,8 +149,12 @@ steps:
       sleep 3
       docker exec el34-web sh -c 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -c sqlmap'
       ```
+      - `-A sqlmap/1.7` : User-Agent를 sqlmap으로 위장(알려진 악성 도구 시그니처).
+      - `-H 'Host: dvwa.el34.lab'` : Apache vhost 라우팅을 위한 Host 헤더(공인 .161 경유 dvwa로).
+      - `grep -c sqlmap` : audit 로그에 남은 sqlmap 흔적의 건수를 센다.
+
       ## ✅ 합격 기준
-      반복 공격(sqlmap)이 audit에 여러 건 남는다.
+      반복 공격(sqlmap)이 modsec audit에 여러 건(반복 횟수만큼) 남는다.
     hint: '같은 출처 sqlmap 4회 반복 → audit 다건'
     category: recon
     points: 10
@@ -137,7 +164,7 @@ steps:
       sleep 3
       echo "=== audit 의 sqlmap 반복 건수 ==="
       docker exec el34-web sh -c 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -c sqlmap'
-    answer_detail: "같은 출발지(10.20.30.202)에서 sqlmap 반복 = 빈도 신호. 단발이면 P3지만 반복되면 빈도 룰이 격상한다. enrichment(평판)와 결합하면 즉시 P1."
+    answer_detail: "같은 출발지(10.20.30.202)에서 sqlmap을 반복하면 빈도 신호가 만들어진다 — 이게 다음 미션 빈도 룰(101301)의 입력원이다. 단발이면 P3지만 timeframe 안에 반복되면 빈도 룰이 격상하고, 평판 enrichment(101302)와 결합하면 즉시 P1이 된다. el34는 fw가 SNAT를 안 해 출발지 IP가 보존되므로 same_source_ip 빈도가 정확히 동작한다."
     verify:
       type: output_contains
       expect: 'sqlmap'
@@ -154,7 +181,15 @@ steps:
     instruction: |
       ## 🎯 빈도 격상 룰 — 반복되면 고위험 (id 101301)
 
-      "120초 안에 3회 이상 매칭 → critical 격상" 룰을 쓰고, 반복 입력으로 wazuh-logtest 검증.
+      이번 주의 핵심 — "**120초 안에 3회 이상 매칭되면 critical로 격상**" 하는 빈도 룰을 직접 쓴다.
+      빈도 격상은 항상 **두 단 구조**다 — 한 건을 잡는 base 룰(101300, level 5)과, 그 base의 반복을
+      세는 빈도 룰(101301, level 13). `frequency="3" timeframe="120"`이 "120초 안에 3회+"라는 임계이고,
+      `<if_matched_sid>101300</if_matched_sid>`가 "101300이 그 시간 창 안에 반복됐을 때만" 발동한다는
+      뜻이다.
+
+      ⚠️ **빈도 룰의 함정**: wazuh-logtest에 로그를 **한 줄만** 넣으면 base(101300, level 5)만 뜨고
+      빈도 룰(101301)은 조용하다 — 누적이 안 됐기 때문이다. 그래서 같은 로그를 **5줄(다중 라인)**
+      넣어 frequency=3 임계를 넘겨야 101301(level 13)이 발화한다.
 
       ## 💻 실행 명령
       ```bash
@@ -176,8 +211,14 @@ steps:
       printf '%s\n%s\n%s\n%s\n%s\n' '{"tool":"sqlmap"}' '{"tool":"sqlmap"}' '{"tool":"sqlmap"}' '{"tool":"sqlmap"}' '{"tool":"sqlmap"}' | sudo /var/ossec/bin/wazuh-logtest
       sudo cp /tmp/w13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w13_lr.bak
       ```
+      - `frequency="3" timeframe="120"` : 120초 안에 3회 이상이 격상 임계.
+      - `<if_matched_sid>101300</if_matched_sid>` : base 룰 101300이 그 시간 창 안에 반복됐을 때만 발동.
+      - `printf '%s\n%s\n...'` : 같은 sqlmap 로그를 5줄로 만들어 표준입력으로 흘려 빈도 누적을 재현.
+      - (정밀화) `<same_source_ip/>`를 더하면 "서로 다른 IP 한 번씩"이 아니라 "같은 출처의 반복"만 격상한다.
+
       ## ✅ 합격 기준
-      logtest 에 rule `101301` level 13 빈도 격상이 발화한다.
+      logtest 출력에 rule `101301` level 13 + `frequency` 표시가 떠 빈도 격상이 발화하고,
+      정리 후 잔재가 0이다. (처음 몇 줄은 101300 level 5만 뜨다가 임계를 넘으면 101301로 격상)
     hint: 'base(101300)+frequency(101301) → 반복 입력 logtest 발화 → cp 복원'
     category: manipulation
     points: 18
@@ -206,7 +247,7 @@ steps:
       echo "=== 빈도 격상 logtest (5회 반복) ==="
       docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w13f.json 2>&1 | grep -aE "id: .1013|level: .13|frequency:|Alert to be" | head -6; rm -f /tmp/w13f.json'
       docker exec el34-siem sh -c 'sudo cp /tmp/w13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w13_lr.bak; echo "복원 잔재=$(grep -c 101301 /var/ossec/etc/rules/local_rules.xml)"'
-    answer_detail: "frequency=3 timeframe=120 + if_matched_sid 101300 → 120초내 base 룰 3회+ 반복 시 level 13 격상. 단발 sqlmap(level 5)이 반복되면 critical로. same_source_ip/same_field로 '같은 출처 반복'만 좁힐 수 있다."
+    answer_detail: "frequency=3 timeframe=120 + if_matched_sid 101300 → 120초 안에 base 룰이 3회+ 반복되면 level 13으로 격상. 단발 sqlmap(level 5, P3)이 반복되면 critical(P1)로 올라간다. 빈도 룰은 누적이 일어난 뒤에야 발화하므로 logtest에 다중 라인(5줄)을 넣어야 임계를 넘긴다(한 줄로는 base만 발화). same_source_ip/same_field/if_matched_group으로 '같은 출처/같은 대상/같은 그룹의 반복'만 좁힐 수 있다. 라이브 적용은 restart가 필요하지만 공유 인프라라 logtest 검증만 하고 삭제한다."
     verify:
       type: output_contains
       expect: '101301'
@@ -224,7 +265,10 @@ steps:
     instruction: |
       ## 🎯 결합 분석 — enrichment + 빈도 → 동적 우선순위
 
-      두 신호를 결합하면 평결이 어떻게 바뀌는지 정리한다.
+      평판 격상(STEP 2)과 빈도 격상(STEP 4)을 따로 봤으니, 이제 둘을 결합하면 평결이 어떻게
+      바뀌는지 정리한다. enrichment(맥락)와 빈도(반복)는 서로 독립 신호이므로 결합할수록
+      우선순위가 올라간다. 관제실의 분석가는 응급실 triage처럼 P1부터 처리한다 — **같은 SQLi
+      경보가 맥락에 따라 P3도 P1도 될 수 있다**는 것이 이번 주의 결론이다.
 
       ## 💻 실행 명령
       ```bash
@@ -232,8 +276,9 @@ steps:
       echo "평판 불량(101302)   → P2 (주의)"
       echo "평판 불량 + 반복(101301) → P1 (고위험, 자동 격상)"
       ```
+
       ## ✅ 합격 기준
-      enrichment + 빈도 결합이 P1 격상으로 이어짐을 정리한다.
+      enrichment(평판/지역) + 빈도(반복)의 결합이 P3→P2→P1 격상 사다리로 이어짐을 정리한다.
     hint: '평판 + 빈도 결합 → P1'
     category: analysis
     points: 8
@@ -244,7 +289,7 @@ steps:
       echo "적대 국가(GeoIP)         → P2 (주의)"
       echo "평판 불량 + 반복(101301) → P1 (고위험, 자동 격상)"
       echo "→ enrichment(평판/지역) + 빈도(반복)가 결합되면 같은 경보가 P1로"
-    answer_detail: "맥락이 평결을 바꾼다 — enrichment(평판/지역/자산)와 빈도(반복)를 결합해 우선순위를 동적 조정. 분석가는 P1부터 본다. 정적 매칭(W12)을 넘은 CTI 운영의 성숙."
+    answer_detail: "맥락이 평결을 바꾼다 — enrichment(평판/지역/자산)와 빈도(반복)는 독립 신호라 결합할수록 우선순위가 오른다. 단발 평범=P3, 평판 불량 또는 적대 국가=P2, 평판 불량+반복=P1(자동 격상). 분석가는 응급실 triage처럼 P1부터 본다. 정적 매칭(아느냐/모르느냐, W12)을 넘어 '얼마나 급한가'를 자동 분류하는 CTI 운영의 성숙이다."
     verify:
       type: output_contains
       expect: 'P1'
@@ -260,14 +305,20 @@ steps:
     instruction: |
       ## 🎯 자동화 — OpenCTI Stream Connector → CDB sync
 
-      수작업 IOC 입력의 한계를 자동화로 넘는다. OpenCTI connector가 인텔을 실시간 수집·변환한다.
+      W12에서는 IOC를 사람이 손으로 CDB list에 넣었다. 인텔이 매일 수천 건씩 바뀌는 현실에서는
+      불가능하다. 운영에서는 **OpenCTI Stream Connector**(또는 Python 스크립트)가 OpenCTI의
+      indicator 변경을 실시간 구독(live stream)해 STIX를 key:value로 변환하고 Wazuh CDB list로
+      자동 동기화한다. 그러면 CDB를 조회하는 매칭/격상 룰이 별도 작업 없이 새 IOC를 즉시 인식한다.
+      el34에서 가동 중인 connector 컨테이너를 확인해 이 자동화의 끝그림을 본다.
 
       ## 💻 실행 명령
       ```bash
       docker ps --format '{{.Names}}' | grep -iE 'connector' | head
       ```
+      - `grep -iE 'connector'` : 이름에 connector가 든 컨테이너만 추린다(MITRE/import/export STIX 등).
+
       ## ✅ 합격 기준
-      OpenCTI `connector` 들이 가동 중이다(자동화 기반).
+      OpenCTI `connector` 컨테이너가 하나 이상 가동 중이다(인텔 자동 동기화의 기반).
     hint: 'docker ps 의 connector(자동 sync 기반)'
     category: survey
     points: 8
@@ -275,7 +326,7 @@ steps:
       echo "=== OpenCTI connector (인텔 자동 수집/변환) ==="
       docker ps --format '{{.Names}}' | grep -iE 'connector' | head
       echo "(운영: connector가 OpenCTI indicator 변경 구독 → STIX→key:value → Wazuh CDB 자동 sync → 매칭룰 즉시 인식)"
-    answer_detail: "OpenCTI Stream Connector(또는 Python 스크립트)가 indicator 변경을 실시간 구독해 Wazuh CDB list로 자동 sync. 인텔이 들어오면 SIEM이 자동으로 알아보는 운영 자동화의 끝그림. el34엔 MITRE/import/export connector가 가동 중."
+    answer_detail: "OpenCTI Stream Connector(또는 Python 스크립트)가 indicator 변경을 live stream으로 실시간 구독해 STIX→key:value로 변환하고 Wazuh CDB list(/var/ossec/etc/lists/)로 자동 sync한다. 그러면 CDB를 조회하는 매칭/격상 룰이 별도 작업 없이 새 IOC를 즉시 인식한다 — 인텔이 들어오면 SIEM이 자동으로 알아보는 운영 자동화의 끝그림. W12의 수작업 입력을 넘어선 단계. el34엔 MITRE/import/export connector가 가동 중. 단, 입력 인텔의 신뢰도(confidence) 필터링이 없으면 오탐 IOC가 그대로 격상돼 alert fatigue를 키운다."
     verify:
       type: output_contains
       expect: 'connector'
@@ -292,7 +343,11 @@ steps:
     instruction: |
       ## 🎯 반복 공격 수렴 — 같은 출처 (출처 보존)
 
-      반복 공격이 Wazuh로 수렴하는지(같은 출처 IP) 확인한다 — 빈도 룰의 입력원.
+      빈도 룰의 `same_source_ip`가 동작하려면 같은 공격자의 여러 경보가 **모두 같은 출처 IP**로
+      기록돼야 한다. 만약 중간 장비가 출처를 바꾸면(SNAT) 같은 공격자가 매번 다른 IP로 보여 빈도가
+      세어지지 않는다. el34는 fw가 SNAT를 하지 않아 출처가 보존된다. 외부 SQLi를 3회 반복한 뒤,
+      alerts.json의 ids 그룹에서 같은 출처 IP로 누적되는지 확인한다 — 이 누적이 곧 빈도 상관의
+      입력원이다.
 
       ## 💻 실행 명령
       ```bash
@@ -300,8 +355,12 @@ steps:
       sleep 8
       docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.rule.groups|index(\"ids\"))|.data.src_ip" | sort | uniq -c | tail -3'
       ```
+      - `%27%20UNION%20SELECT%201--%20-` : URL 인코딩된 SQLi 페이로드(' UNION SELECT 1-- -).
+      - `sleep 8` : 공격이 Suricata eve → ips agent → manager → alerts.json까지 흐르는 파이프라인 지연 대기.
+      - `jq ... select(.rule.groups|index("ids"))|.data.src_ip | sort | uniq -c` : ids 그룹 경보의 출처 IP를 모아 건수별로 집계.
+
       ## ✅ 합격 기준
-      alerts.json 에 같은 출처 `10.20.30.202` 가 반복 집계된다.
+      alerts.json ids 그룹에 같은 출처 `10.20.30.202`가 여러 건으로 반복 집계된다(출처 보존).
     hint: '반복 공격 → alerts.json 같은 src 10.20.30.202 다건'
     category: detect
     points: 14
@@ -311,7 +370,7 @@ steps:
       sleep 8
       echo "=== alerts.json 출처별 반복 집계 ==="
       docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.rule.groups|index(\"ids\"))|.data.src_ip" | sort | uniq -c | tail -3'
-    answer_detail: "반복 공격이 같은 출처 10.20.30.202로 alerts.json에 집계 — 출처 보존(SNAT 없음)이 빈도 상관의 전제. same_source_ip 빈도 룰이 이 반복을 격상한다."
+    answer_detail: "반복 공격이 같은 출처 10.20.30.202로 alerts.json에 누적 집계된다 — 출처 보존(el34 fw가 SNAT 안 함)이 빈도 상관의 전제다. 출처가 바뀌면 같은 공격자가 매번 다른 IP로 보여 same_source_ip 빈도가 깨진다. 이 누적이 곧 빈도 룰(101301)의 입력원. 단, 봇넷처럼 여러 IP로 분산하면 same_source_ip로는 못 잡으므로 same_field/if_matched_group 또는 평판 enrichment로 보완한다."
     verify:
       type: output_contains
       expect: '10.20.30.202'
@@ -328,7 +387,9 @@ steps:
     instruction: |
       ## 🎯 종합 보고서 — 맥락이 평결을 바꾼다
 
-      STEP 1–7 을 동적 우선순위 관점으로 정리한다.
+      STEP 1–7을 "동적 우선순위" 관점으로 묶어 운영 보고서로 정리한다. "막았다"가 아니라
+      "어떤 맥락(평판/지역/빈도)이 우선순위를 어떻게 바꿨는가"를 증거로 쓰는 훈련이다 —
+      관제 triage 정책 수립의 기본 양식이다.
 
       ## 💻 보고서 양식
       ```markdown
@@ -354,7 +415,7 @@ steps:
       ## 5. 출처 보존(10.20.30.202) → same_source_ip 빈도 상관 가능
       ## 결론: 정적 매칭(W12)을 넘어 맥락(enrichment+빈도)이 평결을 동적으로 바꾼다
       EOF
-    answer_detail: "동적 우선순위 = enrichment(맥락) + 빈도(반복). 같은 경보도 맥락에 따라 P1까지. 자동화(Stream Connector)로 운영 부담을 줄인다."
+    answer_detail: "동적 우선순위 = enrichment(맥락: 평판/지역/자산) + 빈도(반복). 같은 경보도 맥락에 따라 P3→P2→P1까지 오른다 — enrichment는 경보를 지우지 않고 우선순위만 바꾼다. 빈도(101301)는 다중 라인으로, 평판(101302)은 한 줄로 검증. 출처 보존이 빈도 상관의 전제이고, 자동화(OpenCTI Stream Connector→CDB)로 인텔 동기화의 운영 부담을 줄인다. 정적 매칭(W12)을 넘은 CTI 운영의 성숙."
     verify:
       type: output_contains
       expect: 'enrichment'
@@ -371,8 +432,10 @@ steps:
     instruction: |
       ## 🎯 정리 확인 — 공유 매니저 보존
 
-      커스텀 룰(101300/101301/101302)을 self-clean 했으므로 잔재가 없어야 한다. 라이브 매니저는
-      재시작하지 않았다(logtest로만 검증).
+      el34-siem은 모든 학생이 함께 쓰는 단일 manager다. 본 주차에서 만든 세 커스텀 룰
+      (101300 base / 101301 빈도 / 101302 평판)을 cp 복원으로 self-clean 했으므로 잔재가 0이어야
+      한다. 라이브 매니저는 재시작하지 않았다(logtest로만 검증). 잔재가 남으면 다른 학생의 평결에
+      영향을 준다 — "내가 심은 것은 내가 정리한다"가 공유 SIEM 운영의 기본 의무다.
 
       ## 💻 확인 명령
       ```bash

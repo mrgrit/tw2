@@ -4,11 +4,24 @@ version: standalone-secuops
 course: secuops
 week: 10
 description: |
-  W09 manager 위에 dashboard(el34-wazuh-dashboard)+indexer(el34-wazuh-indexer)를 얹어 통합 운영한다.
-  ① dashboard/indexer 점검 ② FIM(syscheck) 실시간 경로 + 변경 즉시 탐지 ③ 민감 파일 변조 격상 룰
-  (logtest 로드 검증) ④ Active Response 설계 점검(읽기전용) ⑤ 다소스 수렴. FIM canary 와 커스텀 룰은
-  끝나면 정리(공유 인프라 보존). 라이브 manager restart·실제 firewall-drop 금지(다른 학생 영향).
-  모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-<comp>` 로.
+  탐지(W01–W09)는 "무슨 일이 났는가" 까지다. 이번 주는 거기에 ① 한 화면에서 보고(dashboard) ②
+  네트워크가 못 보는 호스트 파일 변조를 잡고(FIM) ③ 손 안 대고 되받아치는(Active Response) — 분석가의
+  조종석(cockpit)을 더해 탐지를 운영으로 바꾼다. 평결(alerts.json)을 색인·검색 가능하게 만드는 부품이
+  indexer(OpenSearch, el34-wazuh-indexer)이고, 그 색인을 패널로 그리는 부품이 dashboard(el34-wazuh-dashboard,
+  vhost siem.el34.lab)다.
+
+  흐름: ① manager(평결)→indexer(색인)→dashboard(표시) 3컴포넌트 생존 점검(indexer https 401=인증
+  보호된 채 살아 있음) → ② web syscheck 의 realtime(즉시·민감 경로) vs frequency(주기·광범위 경로)
+  감시 방식 확인 → ③ realtime 경로(/home/ccc) canary 로 변경 즉시 탐지(rule 554=File added) 후 self-clean
+  → ④ /etc/passwd 변조를 level 12 로 격상하는 커스텀 룰(id 101010)을 local_rules.xml 에 작성하고 라이브
+  재시작 없이 wazuh-logtest 로 룰셋 로드만 검증(syscheck 이벤트는 내부 발생이라 직접 발화 대신 로드 검증)
+  후 self-clean → ⑤ Active Response(firewall-drop+timeout) 설계를 ossec.conf 에서 읽기전용 점검(자가 DoS
+  방지=timeout+화이트리스트) → ⑥ ids(네트워크)+syscheck(호스트) 두 소스가 한 alerts.json 으로 수렴 확인
+  → ⑦ 그 전제인 web agent ship(wazuh-agentd) 점검.
+
+  el34-siem 은 모든 학생이 함께 쓰는 단일 manager 이므로, FIM canary 는 rm 으로, 커스텀 룰은 cp 복원으로
+  정리하고, 라이브 manager 는 재시작하지 않고 active-response 는 활성·트리거하지 않는다(공유 조종석
+  보존·다른 학생 영향 방지). 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-<comp>` 로.
 difficulty: hard
 duration_minutes: 200
 prerequisites:
@@ -16,11 +29,12 @@ prerequisites:
   - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec (컨테이너 root)"
   - "lecture §2(dashboard/indexer) §3(FIM realtime) §4(격상) §5(Active Response) 숙지"
 objectives:
-  - "dashboard + indexer(OpenSearch) 컨테이너 + manager 점검"
-  - "syscheck realtime 경로 확인 + 실시간 FIM 탐지(rule 554)"
-  - "민감 파일 변조 격상 룰(id 101010) 작성 + logtest 로드 검증 + self-clean"
-  - "Active Response(firewall-drop+timeout) 설계 점검(읽기전용)"
-  - "다소스(ids+syscheck) 수렴 + web agent ship 확인"
+  - "조종석 3컴포넌트(manager analysisd=평결 / el34-wazuh-indexer=색인 / el34-wazuh-dashboard=표시)의 생존을 점검하고, indexer https 401 이 '인증 보호된 채 살아 있음' 의 증거임을 이해한다"
+  - "web ossec.conf 에서 syscheck 의 realtime(즉시·민감 경로) vs frequency 43200(12h 주기·광범위 경로) 감시 방식을 구분하고 비용/적시성 트레이드오프를 설명한다"
+  - "realtime 경로(/home/ccc)에 canary 를 만들어 변경 즉시 alerts.json 에 rule 554(File added)가 올라옴을 추적하고 rm 으로 self-clean 한다"
+  - "/etc/passwd 변조를 level 12 로 격상하는 커스텀 룰(id 101010, if_group syscheck+field file)을 local_rules.xml 에 작성하고, 라이브 재시작 없이 wazuh-logtest 로 룰셋 로드만 검증 후 cp 복원으로 self-clean 한다"
+  - "Active Response(firewall-drop+timeout) 설계를 ossec.conf 에서 읽기전용 점검하고, timeout·화이트리스트가 없으면 오탐 한 번에 자가 DoS 가 나는 이유를 설명한다(실제 활성·트리거 금지)"
+  - "ids(네트워크/Suricata)+syscheck(호스트/FIM) 두 소스가 한 alerts.json·한 조종석으로 수렴함을 데이터로 확인하고, 그 전제인 web agent ship(wazuh-agentd)을 점검한다"
 pass_threshold: 0.7
 steps:
 
@@ -28,7 +42,17 @@ steps:
     instruction: |
       ## 🎯 점검 — 조종석이 살아있나 (manager + dashboard + indexer)
 
-      평결이 화면이 되려면 manager(평결)→indexer(색인)→dashboard(표시)가 다 살아야 한다.
+      ### 개념 — 왜 이걸 먼저 하나
+      평결이 화면이 되는 길은 manager(평결)→indexer(색인)→dashboard(표시) 3단계다(도서관의 서고→사서→
+      안내판). 세 컴포넌트가 다 살아야 조종석이 동작한다.
+      - **manager analysisd** = 평결(alerts.json)을 만드는 판사. `el34-siem`.
+      - **indexer(OpenSearch)** = 평결을 `wazuh-alerts-*` 인덱스로 색인해 빠른 검색·집계를 가능케 하는
+        사서. 별도 컨테이너 `el34-wazuh-indexer`.
+      - **dashboard** = 색인을 패널·그래프로 그리는 안내판. 별도 컨테이너 `el34-wazuh-dashboard`
+        (vhost siem.el34.lab).
+
+      핵심: dashboard 화면이 비면 dashboard 가 아니라 거의 항상 그 앞(indexer 색인 또는 평결)이 원인이므로
+      백엔드부터 본다.
 
       ## 💻 실행 명령
       ```bash
@@ -36,8 +60,14 @@ steps:
       docker ps --format '{{.Names}}\t{{.Status}}' | grep -iE 'indexer|dashboard'
       docker exec el34-wazuh-indexer sh -c 'curl -sk -o /dev/null -w "indexer https=%{http_code}\n" https://localhost:9200/'
       ```
+      - `wazuh-control status` : manager daemon 들의 가용성 조회(여기선 평결 엔진 analysisd).
+      - `docker ps ... grep indexer|dashboard` : 두 별도 컨테이너가 `Up` 인지 확인.
+      - `curl -sk -w "%{http_code}"` : indexer 9200 의 https 응답 코드만 출력(`-k` 자체서명 인증서 허용,
+        `-s` 조용히). 인증으로 보호되어 자격 없이 두드리면 **401** 이 정상이다.
+
       ## ✅ 합격 기준
-      analysisd running + `el34-wazuh-indexer`/`-dashboard` Up + indexer 응답(401/200=생존).
+      analysisd running + `el34-wazuh-indexer`/`-dashboard` Up + indexer 응답(401/200=생존). 401 은
+      오류가 아니라 "인증 보호된 채 살아 있음" 의 증거다. 연결 거부(000)면 indexer 가 죽은 것.
     hint: 'analysisd + indexer/dashboard 컨테이너 Up + indexer https 응답(401=alive)'
     category: survey
     points: 10
@@ -65,14 +95,28 @@ steps:
     instruction: |
       ## 🎯 FIM 설정 — 무엇을 실시간으로 감시하나
 
-      syscheck는 경로별로 실시간/주기 감시한다. web agent의 realtime 경로를 확인한다(민감 경로=즉시 반응).
+      ### 개념 — realtime vs 주기 스캔
+      **FIM(File Integrity Monitoring, syscheck)** 은 지정한 디렉터리의 파일을 해싱해 변경(delta)을 잡는
+      금고 CCTV 다. 네트워크 3계층(fw/ips/WAF)이 못 보는 호스트 안의 파일 변조를 잡는 사각지대용이다.
+      감시에는 두 방식이 있고 그 트레이드오프가 핵심이다.
+      - **realtime(실시간 생중계)** : 파일이 바뀌는 그 순간(초 단위) 경보. 비용이 커서 **민감·소수
+        경로**(설정 디렉터리·홈)에만.
+      - **주기 스캔(frequency, 순찰)** : 정해진 간격마다 한 번 훑음. 싸지만 다음 스캔까지 지연 →
+        **광범위·덜 급한 경로**(/usr/bin 등)에.
+
+      el34-web 은 `/etc,/usr/bin,/bin,/boot`=frequency 43200(12h 주기), `/etc/apache2,/etc/modsecurity,
+      /home/ccc`=realtime(+report_changes=무엇이 바뀌었나 diff, +whodata=누가 바꿨나)로 나눠 둔다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'grep -E "directories|frequency" /var/ossec/etc/ossec.conf | head -12'
       ```
+      - `grep -E "directories|frequency"` : ossec.conf 의 `<directories ...>` 감시 경로 줄과 `frequency`
+        주기 설정을 함께 뽑아 realtime/주기 구분이 한눈에 보이게 한다.
+
       ## ✅ 합격 기준
-      `realtime="yes"` 경로(/home/ccc, /etc/modsecurity 등)가 보인다.
+      `realtime="yes"` 경로(/home/ccc, /etc/modsecurity 등)와 frequency 주기 경로가 함께 보인다.
+      realtime 이 하나도 없으면 실시간 탐지가 꺼진 것이다.
     hint: 'web ossec.conf 의 <directories realtime="yes"> 경로'
     category: survey
     points: 8
@@ -96,8 +140,12 @@ steps:
     instruction: |
       ## 🎯 FIM 실시간 탐지 — 변경 즉시 잡기 (rule 554)
 
-      realtime 감시 경로(/home/ccc)에 파일을 만들면 syscheck가 즉시 delta를 잡아 alerts.json에 기록한다.
-      확인 후 삭제(self-clean).
+      ### 개념 — 호스트 사각지대를 초 단위로
+      realtime 감시 경로(/home/ccc)에 파일을 만들면 syscheck 가 즉시 delta 를 잡아 analysisd 를 거쳐
+      alerts.json 에 기록한다. 방화벽·IDS·WAF 가 못 보는 **호스트 안의 파일 변조** 를 FIM 이 초 단위로
+      잡음을 직접 증명하는 미션이다. FIM 의 세 기본 변경 이벤트는 **rule 550(modified·수정) / 554
+      (added·추가) / 555(deleted·삭제)** 이며, 여기선 파일 생성이라 554 가 매치된다. 공유 인프라이므로
+      확인 후 rm 으로 정리(self-clean)한다.
 
       ## 💻 실행 명령
       ```bash
@@ -106,8 +154,15 @@ steps:
       docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -c "select(.syscheck.path?|test(\"w10_canary\"))|{path:.syscheck.path,event:.syscheck.event,rule:.rule.id}" | tail -2'
       docker exec el34-web sh -c 'rm -f /home/ccc/w10_canary.txt'
       ```
+      - `echo > /home/ccc/w10_canary.txt` : realtime 감시 경로에 카나리(미끼) 파일 생성 → 변경 유발.
+      - `sleep 12` : 변경이 syscheck→analysisd→alerts.json 까지 반영되는 파이프라인 지연을 기다림.
+      - `jq -c "select(.syscheck.path?|test(...))"` : alerts.json 평결 중 syscheck.path 에 w10_canary 가
+        포함된 줄만 골라 path/event/rule.id 만 압축 출력.
+      - `rm -f ...` : 카나리 정리(self-clean) — 베이스 보존.
+
       ## ✅ 합격 기준
-      alerts.json 에 `w10_canary.txt` 의 syscheck `added`(rule 554) 경보가 보인다.
+      alerts.json 에 `w10_canary.txt` 의 syscheck `added`(rule 554) 경보가 보인다. sleep 12 후에도 안
+      보이면 web syscheckd 또는 realtime 설정을 점검한다.
     hint: '/home/ccc canary → sleep 12 → alerts.json syscheck added → rm'
     category: detect
     points: 17
@@ -134,8 +189,18 @@ steps:
     instruction: |
       ## 🎯 FIM 격상 룰 — 민감 파일 변조를 상위 level로 (id 101010)
 
-      모든 변경이 같은 위험은 아니다. /etc/passwd 변조(백도어 계정)를 level 12로 격상하는 룰을
-      `local_rules.xml`에 쓰고, **wazuh-logtest 로 룰셋이 에러 없이 로드되는지** 검증 후 정리(베이스 보존).
+      ### 개념 — 위험한 변조만 골라 끌어올린다
+      모든 파일 변경이 같은 위험은 아니다. 로그가 커지는 건 일상이지만 /etc/passwd 에 계정이 끼어드는 건
+      백도어 신호다. 기본 syscheck 룰(550/554/555)은 위험도를 구분하지 않으므로, **민감 파일 변조만 골라
+      상위 level 로 격상** 해 대시보드 최상단에 띄운다. 형식은 W09 의 체이닝 — 기존 syscheck 경보
+      (`<if_group>syscheck</if_group>`) 뒤에 특정 파일(`<field name="file">/etc/passwd</field>`) 조건을 더
+      걸어 level 12 로 올린다.
+
+      **검증 방식 주의.** W09 의 JSON 필드 격상과 달리 syscheck 이벤트는 manager **내부에서 발생** 해
+      로그 한 줄로 직접 발화시키기 어렵다. 그래서 발화가 아니라 **"룰셋이 에러 없이 로드되는지"** 로
+      검증한다. wazuh-logtest 는 시작 때 현재 룰셋을 새로 읽으므로, 우리가 추가한 XML 에 문법 오류가
+      있으면 에러를, 정상이면 `Type one log per line` 프롬프트를 띄운다 → 프롬프트가 뜨면 로드 성공이다.
+      라이브 analysisd 는 건드리지 않는다(공유 인프라 무중단). id 는 1010xx(100000 미만은 Wazuh 예약).
 
       ## 💻 실행 명령
       ```bash
@@ -152,8 +217,16 @@ steps:
       printf "test\n" | sudo /var/ossec/bin/wazuh-logtest 2>&1 | grep -iE "error|Type one log"   # 로드 검증
       sudo cp /tmp/w10_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w10_lr.bak    # self-clean
       ```
+      - `cp ... /tmp/w10_lr.bak` : 베이스 local_rules.xml 백업(나중에 원복용).
+      - `cat >> ... <<EOF` : 격상 룰 그룹을 local_rules.xml 에 추가(append). `if_group`=체이닝 조건,
+        `field name="file"`=대상 파일 한정.
+      - `wazuh-logtest 2>&1 | grep -iE "error|Type one log"` : 룰셋 로드 결과만 추림 — 에러 또는
+        프롬프트(`Type one log per line`)가 보인다. **라이브 manager 무중단**(모의재판).
+      - `cp /tmp/w10_lr.bak ...; rm -f ...` : 베이스 원상복구(self-clean).
+
       ## ✅ 합격 기준
-      룰 id `101010` 작성 + logtest 가 에러 없이 로드(`Type one log per line`).
+      룰 id `101010` 작성 + logtest 가 에러 없이 로드(`Type one log per line` 프롬프트). 라이브 반영은
+      restart 가 필요하지만 공유 인프라라 로드 검증까지만 하고 cp 로 원복한다.
     hint: 'local_rules.xml에 if_group syscheck + field file 격상 룰(101010) → logtest 로드검증 → cp 복원'
     category: manipulation
     points: 16
@@ -191,16 +264,32 @@ steps:
     instruction: |
       ## 🎯 Active Response 점검 — 자동 대응 설계 (읽기전용)
 
-      고위험 경보에 자동 firewall-drop을 매핑하는 설계를 점검한다. ⚠️ 공유 인프라이므로 **실제 활성/트리거
-      금지** — 설정 점검 + 설계(timeout/예외) 서술까지.
+      ### 개념 — 손 안 대고 닫히는 셔터, 그리고 자가 DoS
+      **Active Response(AR)** 는 고위험 경보가 뜨면 사람을 기다리지 않고 자동으로 대응 명령을 실행한다.
+      가장 흔한 게 출처 IP 를 방화벽에서 차단하는 **firewall-drop** 이다(침입 감지 시 내려오는 자동 셔터).
+      설계는 ossec.conf 의 두 블록 조합이다 — `<command>`(무엇을 실행: firewall-drop) + `<active-response>`
+      (언제: level≥12 경보에, timeout=600초 뒤 자동 해제).
+
+      **치명적 함정 = 자가 DoS.** 셔터가 손님을 도둑으로 오인해 내려오고 다시 안 열리면 가게가 스스로
+      마비된다. AR 도 오탐으로 정상 IP 를 영구 차단하면 운영자 스스로 서비스를 막는다. 그래서 **반드시
+      timeout(일정 시간 뒤 자동 해제) + 화이트리스트(절대 차단 금지 출처)** 가 필요하다.
+
+      ⚠️ el34 기본 ossec.conf 의 active-response 는 **주석 처리된 비활성 템플릿** 이다. 공유 인프라이므로
+      **실제 활성/트리거 금지** — 설정 점검 + 설계 서술(왜 timeout/예외가 필요한가)까지만 한다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem sh -c 'grep -nE "active-response|firewall-drop|command" /var/ossec/etc/ossec.conf | head'
       docker exec el34-siem sh -c 'ls -la /var/ossec/logs/active-responses.log 2>/dev/null || echo "(AR 로그 — 트리거 시 기록)"'
       ```
+      - `grep -nE "active-response|firewall-drop|command"` : ossec.conf 에서 AR 설계 블록(템플릿)을
+        줄번호와 함께 확인(`-n` 줄번호).
+      - `ls -la .../active-responses.log` : AR 이 실제 실행되면 기록되는 로그 경로 확인. el34 는 AR
+        미활성이라 비어 있거나 없는 것이 정상.
+
       ## ✅ 합격 기준
-      ossec.conf 에 `active-response` 설정(템플릿)이 확인된다.
+      ossec.conf 에 `active-response` 설정(주석 템플릿)이 확인된다. AR 로그가 비어 있는 것도 정상
+      (el34 미활성). 실제 firewall-drop 을 활성·트리거하면 안 된다.
     hint: 'ossec.conf 의 active-response/firewall-drop 점검 (활성/트리거 금지)'
     category: analysis
     points: 12
@@ -229,7 +318,12 @@ steps:
     instruction: |
       ## 🎯 다소스 수렴 — 한 조종석에 ids + syscheck
 
-      웹공격(네트워크)과 FIM(호스트)이 같은 alerts.json/대시보드로 수렴하는지 본다.
+      ### 개념 — 통합 관제 = 다소스가 한 화면으로
+      조종석의 진짜 힘은 단일 도구가 아니라 **여러 소스를 한 화면에 모으는 것** 이다. 실제 침해는
+      "네트워크로 침투 → 호스트에서 변조/지속성" 처럼 계층을 넘나든다. 네트워크 계층(ids/Suricata)과
+      호스트 계층(syscheck/FIM)이 같은 alerts.json·같은 dashboard 로 수렴해야, 분석가가 한 시간선에서
+      침투와 변조를 잇는다. el34 는 fw 가 SNAT 하지 않아 출처 IP(10.20.30.202)가 전 계층에 보존되므로,
+      두 소스를 출처 IP 라는 공통 키로 한 사건에 묶을 수 있다.
 
       ## 💻 실행 명령
       ```bash
@@ -237,8 +331,15 @@ steps:
       sleep 8
       docker exec el34-siem sh -c 'tail -600 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck" | sort | uniq -c'
       ```
+      - `curl -H 'Host: dvwa.el34.lab' ".../?id=...UNION SELECT..."` : SQLi 웹공격(네트워크 소스)을 재현해
+        Suricata 탐지를 유발(`%27`=`'`, `%20`=공백 URL 인코딩).
+      - `sleep 8` : 공격이 eve.json→agent→manager→alerts.json 까지 반영되는 지연을 기다림.
+      - `jq -r "(.rule.groups|join(\",\"))" | grep -oE "ids|syscheck" | sort | uniq -c` : 최근 평결의
+        rule.groups 에서 ids/syscheck 만 골라 빈도 집계 — 두 계층이 함께 모였는지 한눈에.
+
       ## ✅ 합격 기준
-      최근 경보에 `ids`(네트워크)와 `syscheck`(호스트)가 함께 집계된다.
+      최근 경보에 `ids`(네트워크)와 `syscheck`(호스트)가 함께 집계된다. ids 만 보이면 호스트 계층
+      수집이 끊긴 것일 수 있다.
     hint: '웹공격 재현 → alerts.json 에 ids + syscheck 동시 집계'
     category: analysis
     points: 10
@@ -265,14 +366,25 @@ steps:
     instruction: |
       ## 🎯 agent ship — 호스트 소스를 보내는 web agent
 
-      ModSec/osquery/FIM 가 대시보드로 들어오려면 web 호스트의 Wazuh agent가 manager로 ship해야 한다.
+      ### 개념 — 수렴의 전제는 agent 의 ship
+      앞 실습에서 본 다소스 수렴은 각 호스트의 agent 가 manager 로 로그를 보내야(ship) 성립한다. web 의
+      ModSec/osquery/FIM 가 조종석에 들어오려면 web agent 의 데몬들이 살아 있어야 한다.
+      - **wazuh-agentd** = manager 로 ship(전송)을 담당하는 우체부.
+      - **wazuh-syscheckd** = FIM(파일 변조 감시)을 수행.
+      - **wazuh-modulesd** = osquery/SCA(보안 설정 점검) 등 모듈 수행.
+
+      이 agent 가 down 이면 그 호스트의 소스가 조종석에서 통째로 사라진다 — 통합 가시성의 전제다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c '/var/ossec/bin/wazuh-control status 2>/dev/null | grep -E "agentd|modulesd|syscheckd"'
       ```
+      - `wazuh-control status | grep -E "agentd|modulesd|syscheckd"` : web agent 측 핵심 데몬(ship/FIM/
+        모듈)의 running 여부만 추려 확인.
+
       ## ✅ 합격 기준
-      web 의 `wazuh-agentd`(또는 modulesd/syscheckd) 가 running 이다.
+      web 의 `wazuh-agentd`(또는 modulesd/syscheckd)가 running 이다. 모두 stopped 면 web 계층이
+      조종석에서 사라진 것 → 가시성 구멍.
     hint: 'web /var/ossec/bin/wazuh-control status 의 agentd'
     category: survey
     points: 8
@@ -296,7 +408,12 @@ steps:
     instruction: |
       ## 🎯 종합 보고서 — 조종석 3요소
 
-      STEP 1–7 을 분석가 조종석(관제/FIM/AR) 관점으로 정리한다.
+      ### 개념 — "막았다" 가 아니라 "어느 요소에서 무엇을 봤다"
+      STEP 1–7 을 분석가 조종석의 세 요소로 묶어 운영 보고서로 정리한다 — ① dashboard/indexer(5패널+
+      색인)로 **보고** ② FIM(canary→rule 554 + 격상 101010)으로 호스트 변조를 **잡고** ③ Active Response
+      (firewall-drop+timeout, 안전장치)로 **되받아치기**. 사고 보고는 결론("막았다")이 아니라 요소별
+      증거(어디서 무엇을 봤는가)를 배치하는 것이 핵심이다. 흐름은 탐지(W01-09)→가시화(dashboard)→변조
+      감지(FIM)→자동대응(AR)으로 이어진다.
 
       ## 💻 보고서 양식
       ```markdown
@@ -338,8 +455,11 @@ steps:
     instruction: |
       ## 🎯 정리 확인 — 공유 인프라 보존
 
-      커스텀 룰(101010)과 FIM canary 를 self-clean 했으므로 잔재가 없어야 한다. 라이브 manager는
-      재시작하지 않았고 active-response도 활성하지 않았다(읽기전용).
+      ### 개념 — "내가 심은 것은 내가 정리한다"
+      el34-siem 은 모든 학생이 함께 쓰는 공유 조종석이다. 커스텀 룰(101010)·FIM canary 잔재가 남으면
+      다른 학생의 평결·환경에 영향을 준다. 이번 미션은 그 정리가 실제로 됐는지 최종 확인한다 — 커스텀 룰은
+      cp 로 복원(잔재 0)·백업 파일 제거, canary 는 rm(잔재 0), 라이브 manager 는 무재시작, active-response
+      는 무활성. 잔재가 발견되면 즉시 cp 복원/rm 으로 제거한다.
 
       ## 💻 확인 명령
       ```bash
