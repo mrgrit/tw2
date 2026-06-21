@@ -1,0 +1,257 @@
+lab_id: standalone-attack-week12
+title: "persistence + 안티포렌식 vs 전수 헌팅·로그 무결성"
+version: standalone-attack
+course: attack
+week: 12
+description: |
+  장악 유지 — 다중 persistence(계정/cron/SSH키)와 안티포렌식(로그/히스토리 정리), 그리고 방어자의
+  전수 헌팅(osquery)·로그 무결성(중앙수집/FIM). 심은 발판은 모두 self-clean(공유 인프라 보존).
+  인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "W07(osquery)·W11(root) 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(다중 persistence) §3(안티포렌식) §4(방어) 숙지"
+objectives:
+  - "다중 persistence(계정/cron/키) 심기"
+  - "안티포렌식 시도 + 그 한계"
+  - "전수 헌팅(osquery)로 모든 벡터 발견 + 제거"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — osquery
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web osqueryi --version
+      ```
+      ## ✅ 합격 기준
+      osquery 사용 가능.
+    hint: 'osquery'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-web osqueryi --version
+    answer_detail: "전수 헌팅 도구 = osquery(users/crontab/authorized_keys 등 모든 벡터 질의)."
+    verify:
+      type: output_contains
+      expect: '5.23'
+      field: stdout
+      semantic:
+        intent: "osquery 점검"
+        success_criteria: ["osquery"]
+        acceptable_methods: ["**[OSS] osqueryi (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 다중 persistence 심기
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'userdel -r atkw12bd 2>/dev/null; useradd -m -s /bin/bash atkw12bd; echo "* * * * * root /tmp/.atkw12.sh" > /etc/cron.d/atkw12_persist; echo "ssh-rsa AAAAB3_ATKW12FAKE atk@evil" >> /root/.ssh/authorized_keys 2>/dev/null; echo planted'
+      ```
+      ## ✅ 합격 기준
+      계정/cron/SSH키 다중 persistence를 심는다.
+    hint: 'useradd + cron + authorized_keys'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 다중 persistence 심기 ==="
+      docker exec el34-web sh -c 'userdel -r atkw12bd 2>/dev/null; useradd -m -s /bin/bash atkw12bd && echo "account ok"'
+      docker exec el34-web sh -c 'echo "* * * * * root /tmp/.atkw12.sh" > /etc/cron.d/atkw12_persist && echo "cron ok"'
+      docker exec el34-web sh -c 'mkdir -p /root/.ssh; echo "ssh-rsa AAAAB3_ATKW12FAKE atk@evil" >> /root/.ssh/authorized_keys && echo "key ok"'
+      echo "planted (계정 + cron + SSH키)"
+    answer_detail: "다중 persistence = 독립 발판 여러 개. 계정(atkw12bd) + cron(atkw12_persist) + SSH키(ATKW12FAKE). 하나 지워도 다른 게 재침투."
+    verify:
+      type: output_contains
+      expect: 'planted'
+      field: stdout
+      semantic:
+        intent: "다중 persistence 심기"
+        success_criteria: ["계정+cron+키"]
+        acceptable_methods: ["**[OSS] useradd+cron+key (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 안티포렌식 시도
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'touch -t 202001010000 /etc/cron.d/atkw12_persist; echo "timestomp done (생성시각 위조)"'
+      ```
+      ## ✅ 합격 기준
+      안티포렌식(타임스톰프 등)을 시도한다.
+    hint: 'touch -t 타임스톰프'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 안티포렌식 시도 ==="
+      docker exec el34-web sh -c 'touch -t 202001010000 /etc/cron.d/atkw12_persist; stat -c "%y %n" /etc/cron.d/atkw12_persist'
+      echo "→ 타임스톰프(touch -t)로 생성시각 위조. 히스토리 삭제/로컬 로그 정리도 시도하나..."
+      echo "→ 한계: 중앙 수집(Wazuh)/FIM/외부 백업은 못 지운다"
+    answer_detail: "안티포렌식 = 흔적 은폐. 타임스톰프(touch -t로 시각 위조)/히스토리 삭제/로컬 로그 정리. 한계: 중앙 수집 로그·FIM·백업은 로컬 조작으로 못 지운다."
+    verify:
+      type: output_contains
+      expect: '2020'
+      field: stdout
+      semantic:
+        intent: "안티포렌식 시도 + 한계"
+        success_criteria: ["타임스톰프", "중앙수집 한계"]
+        acceptable_methods: ["**[OSS] touch -t (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 전수 헌팅 (osquery)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="atkw12bd";'
+      docker exec el34-web osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%atkw12%";'
+      docker exec el34-web sh -c 'grep -c ATKW12FAKE /root/.ssh/authorized_keys 2>/dev/null'
+      ```
+      ## ✅ 합격 기준
+      모든 persistence 벡터(계정/cron/키)를 전수 발견한다.
+    hint: 'osquery users/crontab + key'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 전수 헌팅 (osquery) ==="
+      echo "[계정]"; docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="atkw12bd";'
+      echo "[cron]"; docker exec el34-web osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%atkw12%";'
+      echo "[SSH키]"; docker exec el34-web sh -c 'echo "ATKW12FAKE 키=$(grep -c ATKW12FAKE /root/.ssh/authorized_keys 2>/dev/null)"'
+      echo "→ 타임스톰프해도 osquery는 계정/cron/키를 전부 발견. 한 벡터만 보면 놓친다 — 전수가 핵심"
+    answer_detail: "전수 헌팅 = 모든 persistence 벡터를 빠짐없이. osquery users(계정)+crontab(cron)+authorized_keys(키). 타임스톰프는 mtime만 속이지 존재 자체는 못 숨김."
+    verify:
+      type: output_contains
+      expect: 'atkw12bd'
+      field: stdout
+      semantic:
+        intent: "전수 persistence 헌팅"
+        success_criteria: ["계정/cron/키 전부 발견"]
+        acceptable_methods: ["**[OSS] osquery 다벡터 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 로그 무결성 — 안티포렌식 무력화
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,"
+      docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | grep -ciE "syscheck|integrity"'
+      ```
+      ## ✅ 합격 기준
+      중앙 수집(Wazuh)/FIM이 로컬 안티포렌식을 무력화함을 확인한다.
+    hint: 'Wazuh agent + FIM(중앙 로그)'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 로그 무결성 (중앙 수집/FIM) ==="
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web," || echo "(web agent)"
+      echo "최근 FIM/syscheck 경보:"; docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | grep -ciE "syscheck|integrity"'
+      echo "→ 로컬 로그/시각을 위조해도, web agent가 변경을 중앙(el34-siem)으로 이미 ship → 안티포렌식 무력"
+    answer_detail: "로그 무결성 = 안티포렌식의 천적. 변경이 발생하는 순간 Wazuh agent가 중앙으로 ship + FIM이 기록 → 로컬 삭제/타임스톰프로 못 지운다. 불변(append-only) 중앙 로그가 방어."
+    verify:
+      type: output_contains
+      expect: 'web'
+      field: stdout
+      semantic:
+        intent: "로그 무결성으로 안티포렌식 무력화"
+        success_criteria: ["중앙 수집/FIM 확인"]
+        acceptable_methods: ["**[OSS] agent + FIM (권장)**"]
+    target_vm: siem
+
+  - order: 6
+    instruction: |
+      ## 🎯 전수 제거 (self-clean)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'userdel -r atkw12bd 2>/dev/null; rm -f /etc/cron.d/atkw12_persist; sed -i "/ATKW12FAKE/d" /root/.ssh/authorized_keys 2>/dev/null; echo cleaned'
+      ```
+      ## ✅ 합격 기준
+      모든 persistence 벡터를 전수 제거한다.
+    hint: 'userdel + rm cron + sed 키'
+    category: response
+    points: 12
+    answer: |
+      echo "=== 전수 제거 (모든 벡터) ==="
+      docker exec el34-web sh -c 'userdel -r atkw12bd 2>/dev/null; rm -f /etc/cron.d/atkw12_persist; sed -i "/ATKW12FAKE/d" /root/.ssh/authorized_keys 2>/dev/null; echo cleaned'
+      echo "=== 제거 확인 ==="
+      docker exec el34-web sh -c 'id atkw12bd 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /etc/cron.d/atkw12_persist 2>/dev/null && echo "cron 잔재!" || echo "cron ok"'
+    answer_detail: "전수 제거 = 발견한 모든 벡터를 빠짐없이(계정 userdel + cron rm + 키 sed). 하나라도 남으면 재침투. 헌팅과 제거 모두 전수가 원칙."
+    verify:
+      type: output_contains
+      expect: 'cleaned'
+      field: stdout
+      semantic:
+        intent: "전수 persistence 제거"
+        success_criteria: ["계정/cron/키 전부 제거"]
+        acceptable_methods: ["**[OSS] userdel+rm+sed (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 전수 헌팅 + 불변 로그
+      ## 💻 실행 명령
+      ```bash
+      echo "방어: ① 전수 헌팅(모든 벡터 baseline) ② 중앙 수집 불변 로그 ③ FIM(persistence 경로) ④ 최소권한"
+      ```
+      ## ✅ 합격 기준
+      persistence/안티포렌식 방어를 정리한다.
+    hint: '전수 헌팅 + 불변 로그'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 방어 ==="
+      echo "① 전수 헌팅: 계정/cron/키/SUID/서비스 모든 벡터를 baseline 대비 정기 점검(osquery)"
+      echo "② 불변 로그: 중앙 수집(Wazuh)+append-only → 로컬 안티포렌식 무력화"
+      echo "③ FIM: persistence 경로(/etc/cron.d,/root/.ssh,/etc/passwd) 실시간 감시"
+      echo "④ 최소권한 + 정기 무결성 검증"
+      echo "→ 공격자는 다중·은폐, 방어자는 전수·불변으로 맞선다"
+    answer_detail: "방어 = 전수 헌팅(모든 벡터) + 불변 중앙 로그(안티포렌식 무력) + FIM. 공격의 '다중·은폐'에 '전수·불변'으로."
+    verify:
+      type: output_contains
+      expect: '전수'
+      field: stdout
+      semantic:
+        intent: "persistence/안티포렌식 방어"
+        success_criteria: ["전수 헌팅", "불변 로그"]
+        acceptable_methods: ["**[설명] 전수+불변 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 persistence 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W12 persistence 보고서 (학번, 이름)
+      ## 1. 다중 persistence (계정/cron/키)
+      ## 2. 안티포렌식 + 한계
+      ## 3. 전수 헌팅 + 로그 무결성
+      ## 4. 방어(전수+불변)
+      ```
+      ## ✅ 합격 기준
+      보고서에 다중 persistence + 전수 방어가 포함된다.
+    hint: '다중+안티포렌식+전수방어'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 공격 W12 persistence 보고서
+      ## 1. 다중 persistence: 계정(atkw12bd)+cron(atkw12_persist)+SSH키(ATKW12FAKE)
+      ## 2. 안티포렌식: 타임스톰프/히스토리/로컬로그 → 한계(중앙수집 못 지움)
+      ## 3. 전수 헌팅: osquery users/crontab/keys 전부 발견. 로그 무결성(Wazuh FIM)이 안티포렌식 무력화
+      ## 4. 방어: 전수 헌팅 + 불변 중앙 로그 + FIM + 최소권한
+      ## 결론: 공격은 다중·은폐, 방어는 전수·불변. 하나라도 놓치면 재침투
+      EOF
+    answer_detail: "persistence = 다중 발판 + 안티포렌식. 방어 = 전수 헌팅 + 불변 로그. 양쪽 모두 '빠짐없이'가 핵심."
+    verify:
+      type: output_contains
+      expect: 'persistence'
+      field: stdout
+      semantic:
+        intent: "persistence 종합 보고"
+        success_criteria: ["다중/안티포렌식/전수방어"]
+        acceptable_methods: ["**[관리적] persistence 보고서 (권장)**"]
+    target_vm: web
