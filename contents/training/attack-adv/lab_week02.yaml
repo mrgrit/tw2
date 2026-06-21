@@ -1,0 +1,237 @@
+lab_id: standalone-attack-adv-week02
+title: "OSINT·수동 정찰 — 표적이 모르게 공격 표면을 그린다"
+version: standalone-attack-adv
+course: attack-adv
+week: 2
+description: |
+  공격 고급 W02 — OSINT·수동 정찰. 능동 스캔(W01) 전에, 표적이 눈치채지 못하게 공개 정보로 공격 표면을
+  그린다. DNS 열거·TLS 인증서·웹 기술 핑거프린팅·WAF 탐지·HTTP 헤더로 정보를 모은다. el34-attacker
+  (dig·openssl·whatweb·wafw00f) 사용, 인가된 표적(el34-web)에. ⚠️ 인가된 실습만. 외부 정찰 금지.
+difficulty: hard
+duration_minutes: 175
+prerequisites:
+  - "attack-adv W01(킬체인) 통과"
+  - "el34 호스트 SSH + docker exec, el34-attacker"
+  - "lecture §2(수동 vs 능동) §3(정보원) §4(표면 매핑) 숙지"
+objectives:
+  - "수동 정찰(OSINT)과 능동 정찰의 차이·은밀성 이해"
+  - "DNS·TLS·핑거프린팅·WAF 탐지로 정보 수집"
+  - "수집 정보를 공격 표면 지도로 종합"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — OSINT 도구 확인
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "command -v dig openssl whatweb wafw00f whois >/dev/null && echo osint_tools_ok"; echo osint_ready
+      ```
+      ## ✅ 합격 기준
+      OSINT 도구가 가용하면(osint_ready) 통과.
+    hint: 'OSINT 도구'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "command -v dig openssl whatweb wafw00f whois >/dev/null && echo osint_tools_ok"; echo osint_ready
+    answer_detail: "OSINT 도구 = dig(DNS)·openssl(TLS)·whatweb(핑거프린팅)·wafw00f(WAF)·whois. 수동 정찰 도구함."
+    verify:
+      type: output_contains
+      expect: 'osint_ready'
+      field: stdout
+      semantic: {intent: "OSINT 도구", success_criteria: ["dig/openssl"], acceptable_methods: ["**[OSS] OSINT 도구 (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 DNS 열거
+      ## 📖 개념 한 줄
+      DNS는 공격 표면의 지도다 — 호스트명·서브도메인·메일 서버를 드러낸다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "dig +short dvwa.el34.lab 2>/dev/null; nslookup dvwa.el34.lab 2>&1 | grep -i address | head"; echo dns_done
+      ```
+      ## ✅ 합격 기준
+      DNS 정보가 수집되면(dns_done) 통과.
+      ## 🔧 도구 풀이
+      - dig/nslookup: A·MX·TXT·NS 레코드. 실무: 서브도메인 무차별(amass·subfinder)로 표면 확장.
+    hint: 'DNS'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== DNS 열거 ==="
+      docker exec el34-attacker sh -c "dig +short dvwa.el34.lab 2>/dev/null; nslookup dvwa.el34.lab 2>&1 | grep -i address | head"; echo dns_done
+      echo "→ DNS로 호스트 IP 확인. 실무: 서브도메인 열거(amass/subfinder)로 숨은 자산 발견"
+    answer_detail: "DNS 열거 = dig/nslookup으로 호스트·서브도메인·레코드 수집. 공격 표면 지도의 기초."
+    verify:
+      type: output_contains
+      expect: 'dns_done'
+      field: stdout
+      semantic: {intent: "DNS", success_criteria: ["DNS 정보"], acceptable_methods: ["**[OSS] dig (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 TLS 인증서 정보
+      ## 📖 개념 한 줄
+      TLS 인증서의 CN·SAN은 조직명·도메인 체계를 노출한다 — 서브도메인 발견의 보고.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo | timeout 5 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null"; echo cert_done
+      ```
+      ## ✅ 합격 기준
+      인증서 정보(CN/issuer)가 수집되면(cert_done) 통과.
+      ## 🔧 도구 풀이
+      - 인증서 CN/SAN = 도메인 체계 노출. crt.sh(CT 로그)로 발급된 모든 서브도메인 추적 가능.
+    hint: 'TLS 인증서'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== TLS 인증서 정보 ==="
+      docker exec el34-attacker sh -c "echo | timeout 5 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null"; echo cert_done
+      echo "→ 인증서 CN(예: *.6v6.lab)=도메인 체계 노출. CT 로그(crt.sh)로 전 서브도메인 추적"
+    answer_detail: "TLS 인증서 = CN/SAN으로 도메인 체계·조직 노출. CT 로그로 서브도메인 발견. 수동 정찰의 보고."
+    verify:
+      type: output_contains
+      expect: 'cert_done'
+      field: stdout
+      semantic: {intent: "TLS 인증서", success_criteria: ["CN/issuer"], acceptable_methods: ["**[OSS] openssl (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 웹 기술 핑거프린팅
+      ## 📖 개념 한 줄
+      서버·프레임워크·버전을 식별하면 알려진 취약점(CVE)을 매핑할 수 있다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ 2>/dev/null | grep -iE 'server|x-powered|set-cookie' | head; whatweb -a 1 http://10.20.30.1/ --header 'Host: dvwa.el34.lab' 2>/dev/null | head -c 200"; echo; echo fingerprint_done
+      ```
+      ## ✅ 합격 기준
+      기술 스택이 핑거프린팅되면(fingerprint_done) 통과.
+      ## 🔧 도구 풀이
+      - 서버 헤더·쿠키·whatweb로 기술 식별 → CVE 데이터베이스와 매핑.
+    hint: '핑거프린팅'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 웹 기술 핑거프린팅 ==="
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ 2>/dev/null | grep -iE 'server|x-powered|set-cookie' | head; whatweb -a 1 http://10.20.30.1/ --header 'Host: dvwa.el34.lab' 2>/dev/null | head -c 200"; echo; echo fingerprint_done
+      echo "→ Server 헤더·쿠키(PHPSESSID)·whatweb로 기술 스택 식별 → 알려진 CVE 매핑"
+    answer_detail: "핑거프린팅 = 서버 헤더·쿠키·whatweb로 기술/버전 식별. CVE 매핑으로 공격 후보 도출."
+    verify:
+      type: output_contains
+      expect: 'fingerprint_done'
+      field: stdout
+      semantic: {intent: "핑거프린팅", success_criteria: ["기술 스택"], acceptable_methods: ["**[OSS] whatweb (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 WAF·방어 탐지
+      ## 📖 개념 한 줄
+      공격 전 방어를 파악한다 — WAF가 있으면 우회(W03)가 필요함을 미리 안다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "wafw00f http://10.20.30.1/ 2>/dev/null | grep -iE 'is behind|seems|No WAF|result' | head; echo '(또는 악성 요청에 403=WAF 추정)'; curl -s -o /dev/null -w 'malicious_req=%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?x=<script>alert(1)</script>'"; echo; echo waf_done
+      ```
+      ## ✅ 합격 기준
+      WAF·방어 유무가 탐지되면(waf_done) 통과.
+    hint: 'WAF 탐지'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== WAF·방어 탐지 ==="
+      docker exec el34-attacker sh -c "wafw00f http://10.20.30.1/ 2>/dev/null | grep -iE 'is behind|seems|No WAF|result' | head; curl -s -o /dev/null -w 'malicious_req=%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?x=<script>alert(1)</script>'"; echo; echo waf_done
+      echo "→ wafw00f·악성요청 응답(403=차단)으로 WAF 탐지. 있으면 W03 우회 기법 필요"
+    answer_detail: "WAF 탐지 = wafw00f·악성요청 응답코드로 방어 식별. 공격 전 방어 파악 → 우회 전략 수립."
+    verify:
+      type: output_contains
+      expect: 'waf_done'
+      field: stdout
+      semantic: {intent: "WAF 탐지", success_criteria: ["방어 식별"], acceptable_methods: ["**[OSS] wafw00f (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 노출 경로·메타데이터
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "for f in robots.txt .git/config sitemap.xml README.md; do c=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/\$f); echo \$f=\$c; done"; echo metadata_done
+      ```
+      ## ✅ 합격 기준
+      노출 파일·경로가 점검되면(metadata_done) 통과.
+      ## 🔧 도구 풀이
+      - robots.txt(숨기려는 경로 역설적 노출)·.git(소스 유출)·sitemap. 메타데이터=뜻밖의 정보원.
+    hint: '노출 경로'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 노출 경로·메타데이터 ==="
+      docker exec el34-attacker sh -c "for f in robots.txt .git/config sitemap.xml README.md; do c=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/\$f); echo \$f=\$c; done"; echo metadata_done
+      echo "→ robots.txt(숨기려다 역설적 노출)·.git(소스 유출)·README. 200이면 노출 정보원"
+    answer_detail: "노출 경로 = robots.txt/.git/sitemap 점검. 숨기려는 정보가 역설적으로 노출되는 정보원."
+    verify:
+      type: output_contains
+      expect: 'metadata_done'
+      field: stdout
+      semantic: {intent: "노출 경로", success_criteria: ["robots/.git"], acceptable_methods: ["**[OSS] curl (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 공격 표면 종합 (수동 vs 능동)
+      ## 💻 실행 명령
+      ```bash
+      echo "수집 정보(DNS·인증서·기술·WAF·경로)를 공격 표면 지도로 종합. 수동(은밀)→능동(W01 스캔) 순서"
+      ```
+      ## ✅ 합격 기준
+      공격 표면 종합·수동/능동 구분이 정리되면 통과.
+    hint: '표면 종합'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 공격 표면 종합(수동 vs 능동) ==="
+      echo "수동 정찰(OSINT): 표적과 직접 상호작용 최소 → 들킬 위험↓ (DNS/인증서/CT/공개 정보)"
+      echo "능동 정찰(W01): 직접 스캔·요청 → 정확하나 IDS에 흔적"
+      echo "표면 지도: 호스트(DNS)+도메인 체계(인증서)+기술 스택(핑거프린팅)+방어(WAF)+노출 경로"
+      echo "→ 순서: 수동으로 밑그림(은밀) → 능동으로 확증(정밀). 정찰이 충실할수록 침투가 쉽다"
+      echo "surface_mapped"
+    answer_detail: "표면 종합 = 수동(은밀 OSINT)→능동(정밀 스캔) 순서로 공격 표면 지도 완성. 정찰이 침투의 성패를 가름."
+    verify:
+      type: output_contains
+      expect: 'surface_mapped'
+      field: stdout
+      semantic: {intent: "표면 종합", success_criteria: ["수동/능동"], acceptable_methods: ["**[관리적] 표면 지도 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 정찰 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격고급 W02 OSINT·정찰 보고서 (학번, 이름)
+      ## 1. DNS·인증서·기술 스택
+      ## 2. WAF·노출 경로
+      ## 3. 공격 표면 지도·방어 권고
+      ```
+      ## ✅ 합격 기준
+      정보원 + 표면 지도 + 방어 권고 포함.
+    hint: '정보원+표면+방어권고'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 공격고급 W02 OSINT·정찰 보고서
+      ## 1. DNS(호스트 IP)·TLS 인증서(*.6v6.lab 도메인 체계)·기술 스택(서버/PHP/쿠키 핑거프린팅)
+      ## 2. WAF(wafw00f·403 응답으로 탐지)·노출 경로(robots/.git/sitemap 점검)
+      ## 3. 공격 표면 지도(수동→능동). 방어 권고: 인증서 정보 최소화·.git 차단·서버 배너 숨김·WAF 강화
+      ## 결론: 수동 정찰은 은밀하나 강력. 정찰이 충실할수록 침투가 쉬워진다 — 방어는 노출 최소화로 대응
+      EOF
+    answer_detail: "정찰 보고 = DNS/인증서/기술+WAF/경로+표면지도/방어권고. 수동 정찰의 은밀함과 노출 최소화 방어."
+    verify:
+      type: output_contains
+      expect: '정찰'
+      field: stdout
+      semantic: {intent: "정찰 보고", success_criteria: ["정보원/표면/방어"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
