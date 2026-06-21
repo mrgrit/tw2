@@ -4,37 +4,54 @@ version: standalone-web-vuln
 course: web-vuln
 week: 3
 description: |
-  WSTG-INFO 정보수집 — robots.txt, HTML 주석, 백업 파일, VCS 노출, 에러 메시지 등 의도치 않은 정보 노출과
-  그 축소. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+  WSTG-INFO(정보 수집) 실습 — 본격 공격(인증/SQLi/XSS) 에 앞서 표적이 의도치 않게 흘린 정보를 점검한다.
+  robots.txt(숨긴 경로의 역설적 노출), HTML 주석(개발자 메모·자격증명), 백업 파일(.bak/.old/.env 의 소스·설정
+  평문 유출), VCS 디렉토리(.git 노출 → 소스 전체 복원), 메타/에러 메시지(버전·내부 경로 노출) 를 수집하고,
+  흩어진 노출을 하나의 익스플로잇 실마리로 종합한 뒤, 운영자 관점의 노출 축소(차단) 까지 정리한다.
+  점검·공격은 모두 내부 발판 컨테이너 el34-attacker(출처 IP 10.20.30.202) 에서 fw 게이트웨이 10.20.30.1 을
+  거쳐 표적 vhost 로 수행한다. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151) 에서 docker exec 로. 인가된 실습만.
 difficulty: medium
 duration_minutes: 150
 prerequisites:
-  - "W01–W02 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2(노출 수집) §4(축소) 숙지"
+  - "W01(HTTP 헤더·메서드)–W02(스캐너 nikto/whatweb/ffuf) 통과"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec el34-attacker 사용 가능"
+  - "lecture §2(다섯 노출원 수집)·§3(실마리 종합)·§4(노출 축소) 숙지"
 objectives:
-  - "robots.txt/주석/백업/VCS 정보 수집"
-  - "수집 정보를 익스플로잇 실마리로 종합"
-  - "정보 노출 축소 방어"
+  - "robots.txt·HTML 주석·백업 파일·VCS(.git) 노출을 curl 로 빠짐없이 수집한다"
+  - "응답 코드(200=노출 / 404=없음 / 403=차단) 를 점검자 시선으로 해석한다"
+  - "흩어진 노출(숨은 경로+소스+설정+자격증명) 을 다음 공격(인증/SQLi) 의 실마리로 종합한다"
+  - "정보 노출 축소(robots 민감경로 제거·백업 분리·.git 차단·에러 일반화) 방어를 정리한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 대상
+      ## 🎯 목표
+      정보 수집을 시작하기 전, 표적 vhost 에 실제로 도달 가능한지부터 확인한다.
+
+      ## 📖 개념 한 줄
+      모든 웹 점검의 첫 단추는 "대상이 응답하는가"다. el34 에서는 내부 발판 컨테이너 el34-attacker 가
+      방화벽 게이트웨이 10.20.30.1 을 거쳐 표적에 닿고, `Host:` 헤더로 어느 vhost(사이트) 를 볼지 지정한다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
       ```
+
+      ## 🔎 도구·옵션 풀이
+      - `curl` — 명령줄에서 HTTP 요청을 보내는 기본 도구.
+      - `-s` 조용히(진행률 숨김), `-o /dev/null` 본문 버림, `-w 'juice=%{http_code}\n'` 응답 코드만 출력.
+      - `-H 'Host: juice.el34.lab'` — 같은 IP(10.20.30.1) 에서 어느 vhost 를 점검할지 `Host:` 헤더로 지정.
+
       ## ✅ 합격 기준
-      대상 도달.
+      대상 도달 — `juice=200`(또는 302) 처럼 HTTP 코드가 돌아오면 정보 수집을 시작할 준비가 된 것이다.
     hint: '도달성'
     category: survey
     points: 10
     answer: |
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
-    answer_detail: "정보수집 대상 = web vhost들."
+    answer_detail: "정보 수집 대상 = el34 의 web vhost 들(juice/dvwa). 응답 코드가 돌아오면 도달 성공으로, 본격 수집(robots/주석/백업/VCS) 의 전제 조건이 충족된 것이다."
     verify:
       type: output_contains
       expect: 'juice'
@@ -47,13 +64,26 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 robots.txt
+      ## 🎯 목표
+      표적의 robots.txt 를 수집해, 거기 적힌 `Disallow:` 경로(숨긴 곳) 를 다음 점검 후보로 확보한다.
+
+      ## 📖 개념 한 줄
+      robots.txt 는 검색 크롤러에게 "긁지 말 경로"를 알리는 파일이지만, 거기 적힌 경로는 공격자에게는
+      "숨긴 곳 목록"이 된다 — robots 는 접근 차단 수단이 아니라 역설적 노출원이다(lecture §0.5.2).
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -w '\n[robots=%{http_code}]\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/robots.txt | head"
       ```
+
+      ## 🔎 도구·옵션 풀이
+      - `/robots.txt` — 웹루트에 놓이는 크롤러 안내 파일(고정 경로).
+      - `-w '\n[robots=%{http_code}]\n'` — 본문 뒤에 응답 코드를 한 줄로 덧붙여 존재 여부를 함께 본다.
+      - `head` — 응답이 길 수 있으니 앞부분만 확인.
+
       ## ✅ 합격 기준
-      robots.txt(또는 응답)를 수집한다.
+      robots.txt(또는 그 응답) 를 수집한다 — `[robots=200]` 과 `Disallow:` 줄이 보이면 숨긴 경로 확보,
+      `[robots=404]` 면 robots.txt 자체가 없는 것(노출 없음).
     hint: 'curl robots.txt'
     category: recon
     points: 12
@@ -62,7 +92,7 @@ steps:
       docker exec el34-attacker sh -c "curl -s -w '\n[robots=%{http_code}]\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/robots.txt | head"
       docker exec el34-attacker sh -c "curl -s -w '\n[juice robots=%{http_code}]\n' -H 'Host: juice.el34.lab' http://10.20.30.1/robots.txt | head -5"
       echo "→ robots.txt의 Disallow가 숨기려던 경로를 역설적으로 노출"
-    answer_detail: "robots.txt = 크롤러 차단 목록이지만, Disallow 경로가 '숨긴 곳'을 알려준다. 공격자의 첫 정찰."
+    answer_detail: "robots.txt = 크롤러 차단 목록이지만, Disallow 경로가 '숨긴 곳'을 역설적으로 알려준다(접근 차단 수단 아님). 공격자의 첫 정찰 항목으로, 여기서 발견한 관리자·백업 경로가 다음 단계(인증/SQLi) 의 입구가 된다."
     verify:
       type: output_contains
       expect: 'robots='
@@ -75,13 +105,27 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 HTML 주석
+      ## 🎯 목표
+      페이지 소스에 남은 HTML 주석(`<!-- ... -->`) 을 추려, 개발자가 흘린 내부 정보를 점검한다.
+
+      ## 📖 개념 한 줄
+      HTML 주석은 브라우저 화면엔 안 보이지만 소스에는 그대로 남는 개발자 메모다. TODO·내부 경로·디버그
+      정보, 때로는 임시 자격증명이 남기도 한다 — "화면에 안 보임"은 "비공개"가 아니다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -ioE '<!--[^>]{0,60}' | head -3 || echo '주석 없음'"
       ```
+
+      ## 🔎 도구·옵션 풀이
+      - `curl ... | grep` — 페이지 본문을 받아 파이프로 패턴 검색에 넘긴다.
+      - `grep -ioE '<!--[^>]{0,60}'` — 대소문자 무시(`-i`)·매치 부분만(`-o`)·확장정규식(`-E`) 으로
+        `<!--` 뒤 최대 60자를 뽑는다.
+      - `|| echo '주석 없음'` — 주석이 하나도 없으면(grep 실패) 대신 "주석 없음"을 출력.
+
       ## ✅ 합격 기준
-      HTML 주석(또는 없음)을 점검한다.
+      HTML 주석(또는 없음) 을 점검한다 — 내부 경로·자격증명 단서가 보이면 실마리로 기록, 없으면 `주석 없음`
+      이 정상 출력(노출 없음).
     hint: 'curl | grep <!--'
     category: recon
     points: 12
@@ -89,7 +133,7 @@ steps:
       echo "=== HTML 주석 점검 ==="
       docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -ioE '<!--.{0,50}' | head -3 || echo '주석 없음'"
       echo "→ 개발자 주석에 TODO/자격증명/내부경로/디버그 정보가 남기도"
-    answer_detail: "HTML 주석 = 개발자 메모(TODO/내부 경로/때로 자격증명). 페이지 소스에서 grep."
+    answer_detail: "HTML 주석 = 개발자 메모(TODO/내부 경로/때로 자격증명). 브라우저 화면엔 안 보여도 페이지 소스에는 그대로 남으므로 curl+grep 으로 읽힌다. 자격증명이 주석에 남아 그대로 침해로 이어진 실제 사례가 많다."
     verify:
       type: output_contains
       expect: '주석'
@@ -102,13 +146,28 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 백업 파일 탐색
+      ## 🎯 목표
+      흔한 백업·임시 파일 이름을 돌며 응답 코드를 모아, 소스·설정·자격증명이 평문으로 노출되는지 점검한다.
+
+      ## 📖 개념 한 줄
+      서버는 `.php` 는 실행하지만 `.php.bak`/`~`/`.old` 같은 확장자는 실행하지 않고 텍스트로 그대로 내려준다.
+      그래서 백업 파일이 200 이면 소스·DB 접속정보·시크릿이 평문 유출된다. 특히 `.env`(환경 변수) 는 치명적이다.
+
       ## 💻 실행 명령
       ```bash
       for f in index.php.bak index.php~ config.php.old backup.zip .env; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"; done; echo
       ```
+
+      ## 🔎 도구·옵션 풀이
+      - `for f in ...; do ... done` — 흔한 백업 이름 목록을 한 번에 순회한다.
+      - `-o /dev/null -w '$f=%{http_code} '` — 본문은 버리고 "파일명=응답코드"만 한 줄로 나열.
+      - 마지막 `echo` — 줄바꿈 정리(가독성).
+
+      ## 🔢 응답 코드 읽기
+      `=200`(노출! 소스/설정/자격증명 유출) / `=404`(없음) / `=403`(차단). 200 이 보이면 즉시 그 파일을 받아 본다.
+
       ## ✅ 합격 기준
-      백업/임시 파일 노출을 점검한다.
+      백업/임시 파일 노출을 점검한다 — 각 파일의 응답 코드가 한 줄로 나오면 점검 성공이다.
     hint: '.bak/~/.old/.env 탐색'
     category: recon
     points: 12
@@ -116,7 +175,7 @@ steps:
       echo "=== 백업/임시 파일 탐색 ==="
       for f in index.php.bak index.php~ config.php.old backup.zip .env; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"; done; echo
       echo "→ 200이면 백업 파일 노출(소스/설정/자격증명 유출). 404=없음"
-    answer_detail: "백업 파일 = .bak/~/.old/.zip/.env에 소스·설정·자격증명. 200이면 심각한 노출."
+    answer_detail: "백업 파일 = .bak/~/.old/.zip/.env 에 소스·설정·자격증명이 평문으로 남은 것. 서버가 실행하지 않고 텍스트로 내려주므로 200 이면 심각한 노출이며, 특히 .env=200 은 DB 비밀번호·시크릿 유출로 즉시 심각 등급 보고 대상이다."
     verify:
       type: output_contains
       expect: '.env='
@@ -129,13 +188,29 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 VCS/민감 파일
+      ## 🎯 목표
+      웹루트에 노출된 VCS(버전 관리) 디렉토리와 메타 파일의 응답 코드를 모아, 소스 전체 유출 위험을 점검한다.
+
+      ## 📖 개념 한 줄
+      `.git` 폴더에는 프로젝트의 모든 소스와 수정 이력이 들어 있다. 이게 웹에 노출되면 git-dumper 같은 도구로
+      소스 전체를 복원할 수 있어, 정보 수집에서 최고 등급의 발견이다(lecture §0.5.3). `.svn`·`.DS_Store` 도 동류다.
+
       ## 💻 실행 명령
       ```bash
       for f in .git/config .git/HEAD .svn/entries .DS_Store; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"; done; echo
       ```
+
+      ## 🔎 도구·옵션 풀이
+      - `.git/config`·`.git/HEAD` — git 저장소의 핵심 메타 파일(존재 시 .git 노출 확정).
+      - `.svn/entries` — subversion 메타, `.DS_Store` — macOS 가 남기는 디렉토리 목록 파일.
+      - 백업 점검과 같은 `for ... -w '$f=%{http_code}'` 패턴으로 응답 코드만 나열.
+
+      ## 🔢 응답 코드 읽기
+      `.git/config=200` 이면 사실상 **소스 전체 유출**로 간주(최고 등급). `.DS_Store=200` 은 디렉토리 구조 노출.
+      모두 `404` 면 VCS 노출 없음.
+
       ## ✅ 합격 기준
-      VCS/민감 파일 노출을 점검한다.
+      VCS/민감 파일 노출을 점검한다 — 각 파일의 응답 코드가 나오면 점검 성공이다.
     hint: '.git/.svn 탐색'
     category: recon
     points: 12
@@ -143,7 +218,7 @@ steps:
       echo "=== VCS/민감 파일 ==="
       for f in .git/config .git/HEAD .svn/entries .DS_Store; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"; done; echo
       echo "→ .git/config 200 = 전체 소스 복원 가능(매우 위험). .svn/.DS_Store도 정보 노출"
-    answer_detail: "VCS 노출 = .git/.svn 웹 노출 시 전체 소스 복원(git-dumper). .DS_Store는 디렉토리 구조 노출."
+    answer_detail: "VCS 노출 = .git/.svn 이 웹루트에 노출되면 git-dumper 등으로 전체 소스+커밋 이력 복원이 가능해, 하드코딩 비밀번호·숨은 엔드포인트·취약 로직까지 드러난다. .git/config=200 은 사실상 소스 유출 최고 등급. .DS_Store 는 디렉토리 구조를 흘려 다음 탐색의 단서가 된다."
     verify:
       type: output_contains
       expect: '.git/config='
@@ -156,13 +231,26 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 수집 정보 종합
+      ## 🎯 목표
+      미션 2–5 에서 모은 흩어진 노출을, 다음 공격으로 이어지는 하나의 익스플로잇 실마리(피벗) 로 종합한다.
+
+      ## 📖 개념 한 줄
+      정보 수집의 가치는 항목 하나하나가 아니라 그것들을 잇는 데 있다. 숨은 경로(입구) + 자격증명(열쇠) +
+      소스(지도) 가 합쳐지면 비로소 구체적 공격 경로가 된다 — 점 하나는 작지만, 이은 선이 곧 침해다(lecture §3).
+
       ## 💻 실행 명령
       ```bash
       echo "robots(숨긴경로) + 주석(메모) + 백업(소스/설정) + VCS(소스) = 익스플로잇 실마리 종합"
       ```
+
+      ## 🧩 종합의 틀 — 입구·열쇠·지도
+      - 입구: robots 의 Disallow 경로(예: /admin) = 숨은 관리자 페이지.
+      - 열쇠: 백업/주석에서 나온 자격증명.
+      - 지도: .git 복원 소스에서 본 숨은 엔드포인트·취약 쿼리 구조.
+      - 합치면 → "숨은 관리자 페이지에 유출 자격증명으로 로그인 → 소스에서 본 취약점에 정밀 공격"(W04 이후).
+
       ## ✅ 합격 기준
-      수집 정보를 실마리로 종합한다.
+      수집 정보를 실마리로 종합한다 — 개별 노출을 다음 단계(인증/SQLi) 공격으로 이어지는 경로로 묶어 서술하면 통과.
     hint: '정보 종합'
     category: analysis
     points: 10
@@ -170,7 +258,7 @@ steps:
       echo "=== 수집 정보 종합 ==="
       echo "robots.txt → 숨긴 경로(/admin 등) / 주석 → 내부 정보 / 백업 → 소스·설정·자격증명 / VCS → 전체 소스"
       echo "→ 작은 노출이 모이면 큰 그림. 다음 단계(인증/SQLi) 익스플로잇의 실마리"
-    answer_detail: "정보수집 종합 = 흩어진 노출을 실마리로. 숨긴 경로+소스+설정이 후속 익스플로잇을 연다."
+    answer_detail: "정보 수집 종합 = 흩어진 노출을 하나의 실마리(피벗) 로 잇는 것. 숨긴 경로(입구)+자격증명(열쇠)+소스(지도) 가 합쳐지면 W04 이후의 인증 우회·SQLi 로 직접 이어진다. 점검 보고서의 '공격 시나리오' 절이 곧 이 종합이다."
     verify:
       type: output_contains
       expect: '실마리'
@@ -183,13 +271,27 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 방어 — 노출 축소
+      ## 🎯 목표
+      점검자가 찾은 노출 각각에 대해, 운영자 관점의 노출 축소(차단) 통제를 정리한다.
+
+      ## 📖 개념 한 줄
+      정보 수집 방어의 원칙은 하나 — "작은 정보도 주지 않는다". robots 에서 빼는 것만으로는 부족하고,
+      진짜 차단(접근 제어 + 파일 위치 분리 + 정보 최소화) 이 정답이다(lecture §4).
+
       ## 💻 실행 명령
       ```bash
       echo "방어: robots에 민감경로 X(접근제어로), 백업/임시파일 웹루트밖, .git 웹차단, 에러 일반화, 주석 제거"
       ```
+
+      ## 🛡️ 노출원별 통제
+      - robots.txt: 민감 경로를 적지 말고, 인증·접근 제어로 진짜 차단.
+      - 백업·임시 파일: 웹루트 밖에 두고 배포 시 제거(.env 는 웹 접근 차단).
+      - .git/.svn: 웹 서버에서 해당 경로 deny, 배포 산출물에서 제외.
+      - 메타·에러: ServerTokens Prod / ServerSignature Off, 에러 페이지 일반화.
+      - HTML 주석: 배포 빌드 시 제거(자격증명은 코드/주석에 절대 금지).
+
       ## ✅ 합격 기준
-      정보 노출 축소 방어를 정리한다.
+      정보 노출 축소 방어를 정리한다 — 위 다섯 노출원에 대한 통제가 빠짐없이 정리되면 통과.
     hint: '노출 축소'
     category: report
     points: 12
@@ -200,7 +302,7 @@ steps:
       echo "③ .git/.svn 웹 노출 차단(deny), .DS_Store 제거"
       echo "④ 에러 메시지 일반화, HTML 주석/메타 제거(빌드)"
       echo "→ 노출 최소화 = 공격자의 실마리 차단"
-    answer_detail: "노출 축소 = robots/백업/VCS/에러/주석을 모두 정리. 작은 정보도 안 주는 게 방어."
+    answer_detail: "노출 축소 = robots(민감경로 제거+접근제어)/백업(웹루트 밖+제거)/VCS(.git 웹 deny)/에러(일반화)/주석(빌드 시 제거) 을 모두 정리. robots 에서 빼는 것만으로는 부족하며, 진짜 차단+파일 분리+정보 최소화가 정답이다. 이 표가 W03 점검 보고서의 권고 항목이 된다."
     verify:
       type: output_contains
       expect: '노출'
@@ -213,7 +315,13 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 정보수집 보고서
+      ## 🎯 목표
+      미션 1–7 을 WSTG-INFO 점검 보고서 한 장으로 종합해, 수집·실마리·방어를 문서로 입증한다.
+
+      ## 📖 개념 한 줄
+      점검의 최종 산출물은 발견의 나열이 아니라 보고서다 — 무엇을 수집했고(증거), 그것이 어떤 공격으로
+      이어지며(실마리), 어떻게 막을지(방어) 를 한 흐름으로 엮어야 운영자가 조치할 근거가 된다.
+
       ## 💻 보고서 양식
       ```markdown
       # 웹취약점 W03 정보수집 보고서 (학번, 이름)
@@ -221,8 +329,14 @@ steps:
       ## 2. 익스플로잇 실마리
       ## 3. 노출 축소 방어
       ```
+
+      ## 📝 작성 가이드
+      - 1. 수집: 미션 2–5 의 결과(robots Disallow 경로, 주석 단서, 백업·.git 응답 코드) 를 증거로 적는다.
+      - 2. 실마리: 미션 6 의 종합(입구·열쇠·지도 → 다음 공격 경로) 을 한 문장으로.
+      - 3. 방어: 미션 7 의 노출원별 통제(접근제어·파일 분리·정보 최소화) 를 권고로.
+
       ## ✅ 합격 기준
-      보고서에 수집 정보 + 방어가 포함된다.
+      보고서에 수집 정보 + (실마리 +) 방어가 포함되면 통과 — WSTG-INFO 점검 보고서의 표준 구조다.
     hint: '수집+실마리+방어'
     category: report
     points: 10
@@ -234,7 +348,7 @@ steps:
       ## 3. 방어: robots 민감경로 제거, 백업 정리, .git 차단, 에러/주석 일반화
       ## 결론: 작은 정보 노출이 공격을 연다. WSTG-INFO로 빠짐없이 점검, 노출 최소화로 방어
       EOF
-    answer_detail: "정보수집 = WSTG-INFO 정찰. 노출을 모아 실마리로. 방어는 노출 최소화."
+    answer_detail: "정보 수집 = WSTG-INFO 의 첫 점검 단계. 흩어진 노출(robots/주석/백업/VCS) 을 증거로 모아 실마리로 잇고, 노출 최소화(접근제어+파일 분리+정보 최소화) 를 권고로 정리한 보고서가 최종 산출물이다. 작은 정보 노출이 공격을 연다는 것이 핵심 결론."
     verify:
       type: output_contains
       expect: '정보수집'

