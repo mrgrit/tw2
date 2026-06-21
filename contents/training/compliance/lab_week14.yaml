@@ -4,36 +4,50 @@ version: standalone-compliance
 course: compliance
 week: 14
 description: |
-  감사·증적 — 증적 수집(해시+시각), 증적 3요건, 내부감사 vs 인증심사, 감사 계획, 부적합(NC)/CAPA.
-  el34-web 실 증적 생성. 명령은 el34 호스트에서. 신규 설치 없음.
+  감사(ISO 19011)와 증적 수집 실습 — 점검 결과를 "증거능력 있는 증적"으로 전환하는 기술을 손에 익힌다.
+  el34-web 의 보안 설정 파일에 sha256sum(무결성)+date -u(추적)+명령(재현)을 함께 남겨 증적 3요건을 충족시키고,
+  내부감사 vs 인증심사(ISMS-P/ISO)의 차이, 감사 계획(범위·기준·체크리스트), 부적합(NC)/CAPA(시정·예방) 관리,
+  감사 체계 방어, 감사 보고서까지 한 바퀴 돈다. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서
+  docker exec 로 실행하며 신규 설치는 없다(기존 OS 명령 sha256sum/date/hostname/echo 만 사용).
 difficulty: medium
 duration_minutes: 130
 prerequisites:
-  - "W01–W13 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2(증적수집) §3(3요건) §5(부적합) 숙지"
+  - "W01–W13 통과 (영역별 점검 역량을 증적으로 전환하는 주차)"
+  - "el34 호스트 SSH 접속 + docker exec 사용 가능"
+  - "lecture §2(증적 수집) §3(3요건) §4(내부감사/인증심사) §6(부적합/CAPA) 숙지"
 objectives:
-  - "무결성 있는 증적 수집"
-  - "내부감사/인증심사 이해"
-  - "부적합/CAPA 관리"
+  - "sha256sum+date -u 로 재현·무결성·추적 3요건을 갖춘 증적을 직접 수집한다"
+  - "내부감사(1자·개선)와 인증심사(3자·ISMS-P/ISO 인증)의 목적·주체·주기 차이를 구분한다"
+  - "부적합(NC)을 근본원인 분석→CAPA(시정·예방)→후속 확인으로 관리하고 Major/Minor 를 구분한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 대상
+      ## 🎯 목표 — 증적 수집 대상 도달성 확인
+      감사의 전제는 표적에 접근이 된다는 것이다. 본격 증적 수집 전, 감사자는 항상 대상이
+      실제로 가동·점검 가능한 상태인지부터 확인한다(접근이 안 되면 모든 음성 결과가 무의미).
+
+      ## 💡 개념 한 줄
+      증적 수집 대상은 `el34-web`(dmz 계층 Apache+ModSecurity 컨테이너)이며, 그 보안 설정이
+      본 주차 증적의 원천이다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c "hostname; echo target_ok"
       ```
+      - `docker exec el34-web ...` — el34 호스트에서 web 컨테이너 안의 명령을 실행한다.
+      - `hostname` — 컨테이너가 살아 응답하는지 확인(증적 대상의 신원).
+
       ## ✅ 합격 기준
-      대상 접근.
+      출력에 `target_ok` 가 보이면 대상 접근 성공. 응답이 없으면 호스트 SSH·컨테이너
+      상태(`docker ps`)부터 점검한다.
     hint: '대상'
     category: survey
     points: 10
     answer: |
       docker exec el34-web sh -c "hostname; echo target_ok"
-    answer_detail: "감사 증적 수집 대상 = el34-web."
+    answer_detail: "감사 증적 수집 대상 = el34-web(dmz Apache+ModSec). 도달성 확인은 모든 감사의 전제 — 접근 불가 시 음성 결과가 무의미하므로 본격 수집 전 첫 단계로 둔다."
     verify:
       type: output_contains
       expect: 'target_ok'
@@ -46,13 +60,27 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 증적 수집 — 해시+시각
+      ## 🎯 목표 — 증거능력 있는 증적 수집(해시 + 시각)
+      본 주차의 핵심 기술. 설정 파일을 그냥 캡처하는 것과, **해시(무결성) + 수집 시각(추적) +
+      명령(재현)** 을 함께 남기는 것의 차이가 곧 "감사에서 인정되는 증적"과 "그냥 메모"의 차이다.
+
+      ## 💡 개념 한 줄
+      증적 = 해시(무결성) + 시각·대상(추적) + 명령(재현). 셋이 한 묶음이어야 증거능력이 생긴다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c "sha256sum /etc/apache2/conf-available/security.conf | cut -c1-32; date -u +%Y-%m-%dT%H:%M:%SZ; echo evidence_collected"
       ```
+      - `sha256sum <파일>` — SHA-256(256비트, 64자리 16진수) 지문을 출력. 파일이 1비트만 바뀌어도
+        값이 완전히 달라져 변조를 잡아낸다 → **무결성**. (`cut -c1-32` 는 화면 표시용으로 앞 32자만
+        보여줄 뿐, 무결성 원리는 동일.)
+      - `date -u +%Y-%m-%dT%H:%M:%SZ` — 수집 시각을 UTC(세계 표준시)·ISO 8601 형식(끝의 `Z`=UTC)으로
+        기록 → **추적**. 로컬 시간 대신 UTC 를 쓰는 이유는 여러 시스템 로그의 시간 순서를 맞추기 위함.
+      - 명령 자체를 알므로 누구든 다시 실행하면 같은 절차로 검증 가능 → **재현**.
+
       ## ✅ 합격 기준
-      설정 파일의 해시+수집 시각을 함께 남겨 무결성 있는 증적을 만든다.
+      출력에 `evidence_collected` 가 나오고 그 앞에 파일 해시와 UTC 시각이 함께 보이면 성공. 파일을
+      못 읽으면 경로(`/etc/apache2/conf-available/`)·권한을 점검한다.
     hint: 'sha256sum + date'
     category: manipulation
     points: 16
