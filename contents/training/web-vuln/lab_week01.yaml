@@ -1,0 +1,249 @@
+lab_id: standalone-web-vuln-week01
+title: "HTTP 기초 — 위험 메서드·헤더 악용 vs HTTP 보안 점검"
+version: standalone-web-vuln
+course: web-vuln
+week: 1
+description: |
+  WSTG 기반 HTTP 점검 — 메서드 열거(OPTIONS), 위험 메서드(PUT/DELETE/TRACE), 보안 헤더 누락, 헤더 악용
+  (Host/X-Forwarded-For)과 방어. 공격은 el34-attacker, 대상 web vhost. 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: medium
+duration_minutes: 150
+prerequisites:
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec"
+  - "lecture §2(메서드) §3(보안헤더) §4(헤더악용) 숙지"
+objectives:
+  - "OPTIONS로 허용 메서드 열거 + 위험 메서드 점검"
+  - "보안 헤더 누락 식별"
+  - "헤더 악용(Host/XFF) + 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      대상 도달.
+    hint: '도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+    answer_detail: "WSTG HTTP 점검 대상 = web vhost(Apache)."
+    verify:
+      type: output_contains
+      expect: 'dvwa'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 메서드 열거 — OPTIONS
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -i -X OPTIONS -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -iE '^Allow|^HTTP'"
+      ```
+      ## ✅ 합격 기준
+      OPTIONS로 허용 메서드(또는 응답)를 확인한다.
+    hint: 'curl -X OPTIONS | grep Allow'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== HTTP 메서드 열거 (OPTIONS) ==="
+      docker exec el34-attacker sh -c "curl -s -i -X OPTIONS -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -iE '^Allow|^HTTP' | head -3"
+      echo "→ Allow 헤더가 허용 메서드 노출. PUT/DELETE/TRACE 있으면 위험"
+    answer_detail: "OPTIONS로 허용 메서드 열거. Allow 헤더에 PUT/DELETE/TRACE가 있으면 점검 대상. 없거나 405면 제한됨."
+    verify:
+      type: output_contains
+      expect: 'HTTP'
+      field: stdout
+      semantic:
+        intent: "OPTIONS 메서드 열거"
+        success_criteria: ["Allow/응답 확인"]
+        acceptable_methods: ["**[OSS] curl -X OPTIONS (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 위험 메서드 시도 — PUT/DELETE/TRACE
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'PUT=%{http_code} ' -X PUT -H 'Host: dvwa.el34.lab' http://10.20.30.1/test.txt"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'TRACE=%{http_code}\n' -X TRACE -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      위험 메서드의 응답(차단=405/403, 허용=200)을 확인한다.
+    hint: 'PUT/TRACE 응답코드'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 위험 메서드 시도 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'PUT=%{http_code}\n' -X PUT -H 'Host: dvwa.el34.lab' http://10.20.30.1/wvtest.txt"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'DELETE=%{http_code}\n' -X DELETE -H 'Host: dvwa.el34.lab' http://10.20.30.1/wvtest.txt"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'TRACE=%{http_code}\n' -X TRACE -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      echo "→ 405/403=제한(안전), 200/201=허용(위험: PUT 업로드/DELETE 삭제/TRACE XST)"
+    answer_detail: "위험 메서드 — PUT(파일 업로드), DELETE(삭제), TRACE(XST). 405/403이면 제한됨(안전). 200/201이면 위험."
+    verify:
+      type: output_contains
+      expect: 'PUT='
+      field: stdout
+      semantic:
+        intent: "위험 메서드 점검"
+        success_criteria: ["PUT/DELETE/TRACE 응답"]
+        acceptable_methods: ["**[OSS] curl -X PUT/TRACE (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 보안 헤더 점검
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -iE 'strict-transport|content-security|x-frame|x-content' || echo '보안 헤더 누락'"
+      ```
+      ## ✅ 합격 기준
+      보안 헤더 존재/누락을 점검한다.
+    hint: 'curl -sI 보안 헤더 grep'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 보안 헤더 점검 ==="
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -iE 'strict-transport|content-security|x-frame|x-content' || echo '주요 보안 헤더 누락(HSTS/CSP/X-Frame)'"
+      echo "→ 누락된 헤더 = 취약점. HSTS(HTTPS강제)/CSP(XSS완화)/X-Frame(클릭재킹)/nosniff"
+    answer_detail: "보안 헤더 점검 — HSTS/CSP/X-Frame-Options/nosniff 누락 여부. 누락은 낮음~중간 취약점, 보고 대상."
+    verify:
+      type: output_contains
+      expect: '헤더'
+      field: stdout
+      semantic:
+        intent: "보안 헤더 누락 점검"
+        success_criteria: ["보안 헤더 존재/누락 확인"]
+        acceptable_methods: ["**[OSS] curl -sI 헤더 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 헤더 악용 — Host/X-Forwarded-For
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'evilhost=%{http_code} ' -H 'Host: evil.attacker.com' http://10.20.30.1/"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'xff=%{http_code}\n' -H 'Host: dvwa.el34.lab' -H 'X-Forwarded-For: 127.0.0.1' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      Host/XFF 헤더 악용 시도의 결과를 확인한다.
+    hint: 'Host: evil + X-Forwarded-For'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 헤더 악용 ==="
+      echo "[Host 인젝션]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'evilhost=%{http_code}\n' -H 'Host: evil.attacker.com' http://10.20.30.1/"
+      echo "[X-Forwarded-For 위조]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'xff=%{http_code}\n' -H 'Host: dvwa.el34.lab' -H 'X-Forwarded-For: 127.0.0.1' http://10.20.30.1/"
+      echo "→ Host 인젝션(비번재설정/캐시포이즌), XFF 위조(IP 통제/로깅 우회) 시도"
+    answer_detail: "헤더 악용 — Host 인젝션(임의 Host로 비번 재설정 링크 변조/캐시 포이즌), X-Forwarded-For 위조(IP 기반 통제 우회). 응답/동작 변화 관찰."
+    verify:
+      type: output_contains
+      expect: 'evilhost'
+      field: stdout
+      semantic:
+        intent: "Host/XFF 헤더 악용"
+        success_criteria: ["Host/XFF 시도"]
+        acceptable_methods: ["**[OSS] curl -H Host/XFF (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 탐지 — 비정상 메서드
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/dvwa_access.log 2>/dev/null | grep -aE "OPTIONS|PUT|DELETE|TRACE" | tail -5 || sudo tail -30 /var/log/apache2/access.log | grep -aE "OPTIONS|PUT|TRACE"'
+      ```
+      ## ✅ 합격 기준
+      비정상 메서드가 access.log에 남음을 확인한다.
+    hint: 'access.log 의 OPTIONS/PUT/TRACE'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 비정상 메서드 탐지 (access.log) ==="
+      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/dvwa_access.log 2>/dev/null | grep -aE "OPTIONS|PUT|DELETE|TRACE" | tail -6 || echo "(dvwa_access 확인)"'
+      echo "→ 비정상 메서드(OPTIONS/PUT/TRACE)가 access.log에 기록. WAF도 일부 차단"
+    answer_detail: "비정상 메서드 탐지 = access.log의 OPTIONS/PUT/DELETE/TRACE 요청. 정상 트래픽엔 드물어 점검/공격 신호."
+    verify:
+      type: output_contains
+      expect: 'OPTIONS'
+      field: stdout
+      semantic:
+        intent: "비정상 메서드 탐지"
+        success_criteria: ["access.log 메서드 흔적"]
+        acceptable_methods: ["**[OSS] access.log grep (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 메서드 제한 + 헤더
+      ## 💻 실행 명령
+      ```bash
+      echo "방어: 불필요 메서드 비활성(LimitExcept GET POST), TraceEnable off, 보안헤더(HSTS/CSP/X-Frame) 추가, Host 검증"
+      ```
+      ## ✅ 합격 기준
+      HTTP 보안 점검 방어를 정리한다.
+    hint: '메서드 제한 + 보안헤더'
+    category: report
+    points: 10
+    answer: |
+      echo "=== HTTP 보안 방어 ==="
+      echo "① 메서드 제한: Apache <LimitExcept GET POST HEAD>, TraceEnable off"
+      echo "② 보안 헤더: Header set Strict-Transport-Security/Content-Security-Policy/X-Frame-Options/X-Content-Type-Options"
+      echo "③ Host 검증: ServerName 고정, 임의 Host 거부. XFF는 신뢰 프록시만"
+      echo "→ HTTP 표면 최소화 = 웹 보안의 기본"
+    answer_detail: "HTTP 방어 = 메서드 제한(TRACE off) + 보안 헤더 추가 + Host 검증. 표면 최소화."
+    verify:
+      type: output_contains
+      expect: 'TraceEnable'
+      field: stdout
+      semantic:
+        intent: "HTTP 보안 방어"
+        success_criteria: ["메서드 제한", "보안 헤더"]
+        acceptable_methods: ["**[설명] HTTP 하드닝 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 HTTP 점검 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹취약점 W01 HTTP 점검 보고서 (학번, 이름)
+      ## 1. 메서드(허용/위험)
+      ## 2. 보안 헤더 누락
+      ## 3. 헤더 악용
+      ## 4. 방어 권고
+      ```
+      ## ✅ 합격 기준
+      보고서에 메서드 + 헤더 점검이 포함된다.
+    hint: '메서드+헤더+방어'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 웹취약점 W01 HTTP 점검 보고서
+      ## 1. 메서드: OPTIONS 열거, PUT/DELETE/TRACE 응답코드(405=안전/200=위험)
+      ## 2. 보안 헤더: HSTS/CSP/X-Frame/nosniff 누락 여부
+      ## 3. 헤더 악용: Host 인젝션, X-Forwarded-For 위조
+      ## 4. 방어: 메서드 제한(TRACE off), 보안 헤더 추가, Host 검증
+      ## 결론: HTTP 기초 점검으로 표면 위험을 식별. WSTG의 출발점
+      EOF
+    answer_detail: "HTTP 점검 보고 = 메서드+헤더+악용 + 방어 권고. WSTG 방법론의 첫 단계."
+    verify:
+      type: output_contains
+      expect: 'HTTP'
+      field: stdout
+      semantic:
+        intent: "HTTP 점검 종합 보고"
+        success_criteria: ["메서드/헤더/방어"]
+        acceptable_methods: ["**[관리적] HTTP 보고서 (권장)**"]
+    target_vm: web
