@@ -1,0 +1,248 @@
+lab_id: standalone-compliance-week04
+title: "접근통제 컴플라이언스 — 계정·암호정책·권한"
+version: standalone-compliance
+course: compliance
+week: 4
+description: |
+  접근통제 점검 — 계정 식별(UID0), 암호 정책(PASS_MAX_DAYS 갭), 파일 권한(shadow/sudoers),
+  최소권한·직무분리. el34-web 실설정 점검. 명령은 el34 호스트에서. 신규 설치 없음.
+difficulty: medium
+duration_minutes: 130
+prerequisites:
+  - "W01–W03 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(계정) §3(암호정책) §4(권한) 숙지"
+objectives:
+  - "계정/UID0 식별"
+  - "암호 정책 갭(PASS_MAX_DAYS) 발견"
+  - "최소권한·직무분리 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "hostname; echo target_ok"
+      ```
+      ## ✅ 합격 기준
+      대상 접근.
+    hint: '대상'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-web sh -c "hostname; echo target_ok"
+    answer_detail: "접근통제 점검 대상 = el34-web."
+    verify:
+      type: output_contains
+      expect: 'target_ok'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["접근"]
+        acceptable_methods: ["**[OSS] docker exec (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 계정 식별 — UID0/계정 수
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'echo "uid0_count=$(awk -F: "\$3==0" /etc/passwd | wc -l)"; awk -F: "\$3==0 {print \$1}" /etc/passwd'
+      ```
+      ## ✅ 합격 기준
+      UID 0(root) 계정 수를 식별한다(단 1개여야 정상).
+    hint: 'UID0'
+    category: recon
+    points: 14
+    answer: |
+      echo "=== 계정 식별 (UID0) ==="
+      docker exec el34-web sh -c 'echo "uid0_count=$(awk -F: "\$3==0" /etc/passwd | wc -l)"; awk -F: "\$3==0 {print \$1}" /etc/passwd'
+      echo "→ UID0 = root 하나여야 정상. 다중 UID0 = 백도어 의심"
+    answer_detail: "계정 식별 = UID0 점검. root 단일이 정상, 다중은 권한상승 백도어 신호."
+    verify:
+      type: output_contains
+      expect: 'uid0_count='
+      field: stdout
+      semantic:
+        intent: "계정 식별"
+        success_criteria: ["UID0 점검"]
+        acceptable_methods: ["**[OSS] passwd 점검 (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 암호 정책 — PASS_MAX_DAYS 갭
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] 2>/dev/null && echo "gap=no_expiry" || echo "compliant"'
+      ```
+      ## ✅ 합격 기준
+      암호 최대 사용 기간이 기준(≤90)을 초과하는 갭을 발견한다.
+    hint: 'PASS_MAX_DAYS'
+    category: manipulation
+    points: 16
+    answer: |
+      echo "=== 암호 정책 (PASS_MAX_DAYS) ==="
+      docker exec el34-web sh -c 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] 2>/dev/null && echo "gap=no_expiry" || echo "compliant"'
+      echo "→ 99999 = 사실상 무기한. PCI-DSS 8.3.9/CIS는 ≤90일 → 갭. 유출 시 무기한 악용"
+    answer_detail: "암호 정책 = PASS_MAX_DAYS. 99999(무기한)는 PCI/CIS(≤90) 미달 = 갭."
+    verify:
+      type: output_contains
+      expect: 'gap='
+      field: stdout
+      semantic:
+        intent: "암호 정책 갭"
+        success_criteria: ["만료 기준 초과"]
+        acceptable_methods: ["**[OSS] login.defs (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 파일 권한 — shadow/sudoers
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'stat -c "%n %a" /etc/shadow /etc/passwd /etc/sudoers; S=$(stat -c "%a" /etc/shadow); case "$S" in 600|640) echo "compliant=shadow_$S";; *) echo "gap=shadow_$S";; esac'
+      ```
+      ## ✅ 합격 기준
+      민감 파일 권한이 기준(shadow ≤640)을 만족하는지 점검한다.
+    hint: 'shadow 640'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 파일 권한 ==="
+      docker exec el34-web sh -c 'stat -c "%n %a" /etc/shadow /etc/passwd /etc/sudoers; S=$(stat -c "%a" /etc/shadow); case "$S" in 600|640) echo "compliant=shadow_$S";; *) echo "gap=shadow_$S";; esac'
+      echo "→ shadow 640(root:shadow)·sudoers 440 = CIS 준수. shadow 644면 해시 유출 치명 갭"
+    answer_detail: "파일 권한 = shadow 640/sudoers 440 준수. world-readable shadow는 해시 유출 갭."
+    verify:
+      type: output_contains
+      expect: 'compliant=shadow'
+      field: stdout
+      semantic:
+        intent: "파일 권한 점검"
+        success_criteria: ["민감 파일 보호"]
+        acceptable_methods: ["**[OSS] stat (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 최소권한·직무분리
+      ## 💻 실행 명령
+      ```bash
+      echo "최소권한(필요 최소), 직무분리(요청≠승인, 개발≠운영), 권한 재검토(인사이동/정기)"
+      ```
+      ## ✅ 합격 기준
+      최소권한·직무분리 원칙을 정리한다.
+    hint: '최소권한/직무분리'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 최소권한·직무분리 ==="
+      echo "최소권한(Least Privilege): 업무에 필요한 최소 권한만 부여"
+      echo "직무분리(SoD): 요청자≠승인자, 개발≠운영 (단독 악용 방지)"
+      echo "권한 재검토: 인사이동·퇴사 즉시 회수, 정기 재인증"
+      echo "→ 권한은 부여보다 회수·재검토가 더 자주 누락됨"
+    answer_detail: "최소권한+직무분리+재검토. 회수·재검토 누락이 흔한 접근통제 결함."
+    verify:
+      type: output_contains
+      expect: '최소권한'
+      field: stdout
+      semantic:
+        intent: "최소권한/직무분리"
+        success_criteria: ["원칙 정리"]
+        acceptable_methods: ["**[표준] 접근통제 원칙 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 갭 도출
+      ## 💻 실행 명령
+      ```bash
+      echo "갭: PASS_MAX_DAYS 99999(무기한) — 기준 ≤90일 미달"
+      ```
+      ## ✅ 합격 기준
+      발견된 접근통제 갭을 정리한다.
+    hint: '암호 만료 갭'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 갭 도출 ==="
+      echo "갭1: PASS_MAX_DAYS 99999(무기한) — PCI/CIS ≤90 미달"
+      echo "준수: UID0 단일, shadow 640, sudoers 440, PermitRootLogin no(W02)"
+      echo "→ 핵심 갭 = 암호 만료 정책 부재"
+    answer_detail: "갭 = PASS_MAX_DAYS 무기한. 나머지(UID0/권한/root로그인)는 준수."
+    verify:
+      type: output_contains
+      expect: '갭'
+      field: stdout
+      semantic:
+        intent: "갭 도출"
+        success_criteria: ["암호 만료 갭"]
+        acceptable_methods: ["**[관리적] 갭 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 접근통제 강화
+      ## 💻 실행 명령
+      ```bash
+      echo "PASS_MAX_DAYS 90 설정, MFA, 최소권한, 정기 권한 재검토, 공유계정 금지"
+      ```
+      ## ✅ 합격 기준
+      접근통제 방어를 정리한다.
+    hint: '암호정책/MFA/재검토'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 접근통제 방어 ==="
+      echo "1) 암호 정책: PASS_MAX_DAYS 90, 복잡도, 재사용 금지"
+      echo "2) MFA: 관리자/원격 접근 다단계 인증"
+      echo "3) 최소권한 + 직무분리"
+      echo "4) 정기 권한 재검토 + 인사연동 즉시 회수"
+      echo "5) 공유계정 금지(개인 식별성)"
+      echo "→ 핵심: 만료 정책 도입 + MFA + 정기 재검토"
+    answer_detail: "방어 = 암호 만료(90)+MFA+최소권한+정기 재검토+공유계정 금지."
+    verify:
+      type: output_contains
+      expect: 'MFA'
+      field: stdout
+      semantic:
+        intent: "접근통제 방어"
+        success_criteria: ["암호정책/MFA/재검토"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 접근통제 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 컴플라이언스 W04 접근통제 보고서 (학번, 이름)
+      ## 1. 계정/UID0/파일권한
+      ## 2. 갭(PASS_MAX_DAYS 무기한)
+      ## 3. 방어(암호정책/MFA/재검토)
+      ```
+      ## ✅ 합격 기준
+      보고서에 점검 결과 + 갭 + 방어가 포함된다.
+    hint: '점검+갭+방어'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 컴플라이언스 W04 접근통제 보고서
+      ## 1. 점검: UID0 단일(준수), shadow 640/sudoers 440(준수), PermitRootLogin no(준수)
+      ## 2. 갭: PASS_MAX_DAYS 99999(무기한) → PCI-DSS 8.3.9/CIS(≤90) 미달
+      ## 3. 방어: PASS_MAX_DAYS 90 + MFA + 최소권한/직무분리 + 정기 권한 재검토
+      ## 결론: 권한·파일권한은 준수하나 암호 만료 정책 부재가 핵심 갭. 만료+MFA 우선
+      EOF
+    answer_detail: "접근통제 보고 = 점검(대부분 준수)+갭(암호만료)+방어(만료/MFA/재검토)."
+    verify:
+      type: output_contains
+      expect: 'PASS_MAX_DAYS'
+      field: stdout
+      semantic:
+        intent: "접근통제 보고"
+        success_criteria: ["점검/갭/방어"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
