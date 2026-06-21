@@ -1,0 +1,279 @@
+lab_id: standalone-cloud-container-week03
+title: "이미지 취약점 스캔 — Trivy 로 알려진 CVE 찾기"
+version: standalone-cloud-container
+course: cloud-container
+week: 3
+description: |
+  이미지 취약점 스캔 — Trivy(이미지의 패키지를 CVE DB와 대조)로 el34 이미지의 알려진 취약점(HIGH/
+  CRITICAL)을 찾고, severity 분류·조치(베이스 갱신/패치)·CI 통합을 다룬다. Trivy 는 el34 호스트(.151)에
+  설치됨(0.71.2). 명령은 el34 호스트에서 trivy CLI 로. 신규 설치 없음(W03서 설치 완료). 인가된 점검만.
+difficulty: medium
+duration_minutes: 140
+prerequisites:
+  - "W01–W02 통과 (이미지=공격 표면 이해)"
+  - "el34 호스트 SSH + docker/trivy CLI"
+  - "lecture §2(Trivy) §3(severity) §5(조치) 숙지"
+objectives:
+  - "Trivy 로 이미지 취약점 스캔 수행"
+  - "HIGH/CRITICAL severity 분류"
+  - "조치(베이스 갱신/패치)·CI 통합 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — Trivy 가용 확인
+      이미지 취약점 스캐너 Trivy 가 el34 호스트에서 동작하는지 먼저 확인한다.
+      ## 📖 개념 한 줄
+      Trivy 는 이미지 안에 설치된 OS 패키지·라이브러리 목록을 추출해, 알려진 취약점(CVE) 데이터베이스와
+      대조하는 스캐너다. el34 호스트(.151)에 설치되어 있다.
+      ## 💻 실행 명령
+      ```bash
+      /usr/local/bin/trivy --version 2>/dev/null | head -1
+      ```
+      ## ✅ 합격 기준
+      `Version:` 이 출력되면 Trivy 가용. (없으면 설치 경로 `/usr/local/bin/trivy` 확인.)
+      ## 🔧 도구 풀이
+      - `trivy --version` — 설치된 Trivy 버전을 출력한다.
+    hint: 'trivy version'
+    category: survey
+    points: 10
+    answer: |
+      /usr/local/bin/trivy --version 2>/dev/null | head -1
+    answer_detail: "이미지 취약점 스캔 도구 = Trivy(el34 호스트 .151, v0.71.2). Version 출력으로 가용성 확인."
+    verify:
+      type: output_contains
+      expect: 'Version'
+      field: stdout
+      semantic:
+        intent: "Trivy 가용"
+        success_criteria: ["버전 확인"]
+        acceptable_methods: ["**[OSS] trivy (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 목표 — 취약점 DB 준비
+      Trivy 는 CVE 정보를 담은 취약점 DB 로 대조한다. DB 가 로컬에 준비됐는지 확인(없으면 자동 다운로드).
+      ## 📖 개념 한 줄
+      스캐너의 정확도는 DB 의 최신성에 달려 있다 — 새 CVE 가 매일 추가되므로 DB 를 정기 갱신해야 한다.
+      ## 💻 실행 명령
+      ```bash
+      /usr/local/bin/trivy image --download-db-only 2>&1 | tail -1; echo db_ready
+      ```
+      ## ✅ 합격 기준
+      `db_ready` 가 출력되면 DB 준비 완료(이미 최신이면 즉시 끝남).
+      ## 🔧 도구 풀이
+      - `--download-db-only` — 스캔 없이 취약점 DB 만 내려받아 캐시(`~/.cache/trivy`)에 둔다.
+    hint: 'trivy db'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== Trivy DB 준비 ==="
+      /usr/local/bin/trivy image --download-db-only 2>&1 | tail -1; echo db_ready
+    answer_detail: "Trivy DB = CVE 정보 저장소(mirror.gcr.io/aquasec/trivy-db). 최신성이 정확도를 결정 — 정기 갱신 필수. db_ready 출력으로 준비 확인."
+    verify:
+      type: output_contains
+      expect: 'db_ready'
+      field: stdout
+      semantic:
+        intent: "DB 준비"
+        success_criteria: ["DB 캐시"]
+        acceptable_methods: ["**[OSS] trivy db (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 목표 — 이미지 스캔 (HIGH/CRITICAL)
+      el34-web 이미지를 스캔해 알려진 고위험 취약점을 찾는다.
+      ## 📖 개념 한 줄
+      Trivy 가 이미지의 패키지 버전을 CVE DB 와 대조해, 취약한 패키지를 severity 와 함께 보고한다.
+      ## 💻 실행 명령
+      ```bash
+      /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'Total:'
+      ```
+      ## ✅ 합격 기준
+      `Total: N (HIGH: .., CRITICAL: ..)` 형식의 집계가 출력되면 스캔 성공.
+      ## 🔧 도구 풀이
+      - `--scanners vuln` — 취약점 스캐너만 실행. `--severity HIGH,CRITICAL` — 고위험만 필터.
+      - `--no-progress` — 진행 막대 숨김. 결과의 `Total:` 줄이 취약점 집계다.
+    hint: 'trivy image'
+    category: manipulation
+    points: 16
+    answer: |
+      echo "=== 이미지 스캔 (HIGH/CRITICAL) ==="
+      /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'Total:'
+      echo "→ el34-web 이미지에서 알려진 고위험 CVE 집계. 각 취약점은 패키지 버전→CVE 매핑"
+    answer_detail: "Trivy 스캔 = 이미지 패키지를 CVE DB 와 대조. Total: N (HIGH/CRITICAL) 집계가 핵심 산출물. el34-web 은 HIGH 취약점 존재 — 베이스 이미지 패키지의 알려진 CVE."
+    verify:
+      type: output_contains
+      expect: 'Total:'
+      field: stdout
+      semantic:
+        intent: "이미지 스캔"
+        success_criteria: ["CVE 집계"]
+        acceptable_methods: ["**[OSS] trivy image (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 목표 — 취약점 상세 (CVE/패키지)
+      집계를 넘어 개별 취약점(CVE ID·패키지·해결 버전)을 확인한다.
+      ## 📖 개념 한 줄
+      각 취약점은 "어느 패키지의 어느 버전이 어느 CVE 에 취약하고, 어느 버전에서 고쳐지는가"로 구성된다.
+      ## 💻 실행 명령
+      ```bash
+      /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'CVE-' | head -3; echo cve_listed
+      ```
+      ## ✅ 합격 기준
+      CVE ID(또는 `cve_listed` 마커)가 출력되면 상세 확인 성공.
+      ## 🔧 도구 풀이
+      - 출력 표의 각 행 = 패키지 | 취약 버전 | 해결 버전 | CVE-ID | severity. 해결 버전이 패치 목표다.
+    hint: 'CVE 상세'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 취약점 상세 (CVE) ==="
+      /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'CVE-' | head -5; echo cve_listed
+      echo "→ 각 행: 패키지/취약버전/해결버전/CVE-ID/severity. 해결 버전으로 갱신이 조치"
+    answer_detail: "취약점 상세 = 패키지·취약버전·해결버전·CVE-ID·severity. '해결 버전(fixed version)'이 있으면 패치 가능, 없으면 보상 통제 필요."
+    verify:
+      type: output_contains
+      expect: 'cve_listed'
+      field: stdout
+      semantic:
+        intent: "취약점 상세"
+        success_criteria: ["CVE/패키지"]
+        acceptable_methods: ["**[OSS] trivy (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 목표 — 다른 이미지와 비교 (표면 차이)
+      베이스가 다른 이미지의 취약점 수를 비교해 "큰 이미지 = 많은 CVE"를 확인한다.
+      ## 📖 개념 한 줄
+      풀 OS 베이스는 패키지가 많아 CVE 도 많다 — 이미지가 작을수록 스캔 결과도 깨끗해지는 경향.
+      ## 💻 실행 명령
+      ```bash
+      for img in el34-web el34-ips; do echo -n "$img "; /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress "$img:latest" 2>/dev/null | grep -iE 'Total:'; done; echo compared
+      ```
+      ## ✅ 합격 기준
+      두 이미지의 Total 이 비교 출력되고 `compared` 가 나오면 성공.
+      ## 🔧 도구 풀이
+      - 같은 스캔을 여러 이미지에 돌려 취약점 수를 비교 — 표면(패키지 수)이 결과에 비례함을 본다.
+    hint: '이미지 비교'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 이미지 비교 ==="
+      for img in el34-web el34-ips; do echo -n "$img "; /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress "$img:latest" 2>/dev/null | grep -iE 'Total:'; done; echo compared
+      echo "→ 베이스/패키지 수가 많을수록 CVE 도 많은 경향. 최소 베이스가 스캔 결과를 줄인다"
+    answer_detail: "이미지 비교 = 여러 이미지의 취약점 수 대조. 큰 베이스(패키지 多)→CVE 多. 최소화(W02)가 스캔 결과를 직접 줄임을 입증."
+    verify:
+      type: output_contains
+      expect: 'compared'
+      field: stdout
+      semantic:
+        intent: "이미지 비교"
+        success_criteria: ["표면 차이"]
+        acceptable_methods: ["**[OSS] trivy (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 목표 — 조치 (패치/갱신)
+      발견된 취약점을 어떻게 조치하는지 정리한다.
+      ## 📖 개념 한 줄
+      이미지 취약점의 근본 조치는 "베이스 이미지·패키지를 해결 버전으로 갱신 후 재빌드"다.
+      ## 💻 실행 명령
+      ```bash
+      echo "해결버전 있으면 베이스/패키지 갱신 후 재빌드, 없으면 보상통제(WAF/격리)+모니터링"
+      ```
+      ## ✅ 합격 기준
+      조치 방법(갱신/재빌드)이 정리되면 통과.
+    hint: '패치/재빌드'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 조치 (패치/갱신) ==="
+      echo "1) 해결 버전 있음: 베이스 이미지·패키지를 최신으로 갱신 후 이미지 재빌드"
+      echo "2) 해결 버전 없음(미패치 CVE): 보상 통제(WAF 가상패치·격리)+모니터링, 위험 수용 문서화"
+      echo "3) 정기 재스캔으로 신규 CVE 추적(이미지는 안 바뀌어도 새 CVE 가 뜬다)"
+      echo "→ 근본 조치 = 갱신+재빌드. 이미지는 불변이라 '고치기'가 아니라 '다시 굽기'"
+    answer_detail: "조치 = 해결버전으로 베이스/패키지 갱신 후 재빌드(이미지는 불변→재빌드가 패치). 미패치 CVE 는 보상통제+위험수용. 정기 재스캔 필수."
+    verify:
+      type: output_contains
+      expect: '재빌드'
+      field: stdout
+      semantic:
+        intent: "조치"
+        success_criteria: ["갱신/재빌드"]
+        acceptable_methods: ["**[설명] 조치 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 목표 — 방어 (스캔 운영)
+      이미지 스캔을 어떻게 운영에 제도화하는지 정리한다.
+      ## 📖 개념 한 줄
+      스캔은 일회성이 아니라 빌드/배포 파이프라인(CI/CD)에 통합해 자동·정기로 돌려야 한다.
+      ## 💻 실행 명령
+      ```bash
+      echo "CI/CD 통합(빌드 시 스캔, CRITICAL이면 배포 차단)+최소 베이스+정기 재스캔+DB 갱신"
+      ```
+      ## ✅ 합격 기준
+      스캔 운영 방어가 정리되면 통과.
+    hint: 'CI/CD 통합'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 방어 (스캔 운영) ==="
+      echo "1) CI/CD 통합: 빌드 시 자동 스캔, CRITICAL/HIGH 발견 시 배포 차단(gate)"
+      echo "2) 최소 베이스(W02)로 스캔 표면 자체를 축소"
+      echo "3) 정기 재스캔(이미지 불변이어도 신규 CVE 등장) + DB 갱신"
+      echo "4) 해결버전 추적 + 패치 SLA"
+      echo "→ 핵심: 스캔을 파이프라인에 박아 '배포 전 게이트'로"
+    answer_detail: "방어 = CI/CD 스캔 게이트 + 최소 베이스 + 정기 재스캔 + DB 갱신. 일회성이 아닌 파이프라인 통합."
+    verify:
+      type: output_contains
+      expect: 'CI/CD'
+      field: stdout
+      semantic:
+        intent: "스캔 운영 방어"
+        success_criteria: ["CI/CD 통합"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 목표 — 이미지 취약점 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 클라우드·컨테이너 W03 이미지 취약점 보고서 (학번, 이름)
+      ## 1. 스캔 결과(el34-web Total/HIGH)
+      ## 2. CVE 상세/이미지 비교
+      ## 3. 조치(갱신/재빌드) + 스캔 운영(CI/CD)
+      ```
+      ## ✅ 합격 기준
+      보고서에 스캔 결과 + 조치 + 운영이 포함된다.
+    hint: '스캔+조치+운영'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 클라우드·컨테이너 W03 이미지 취약점 보고서
+      ## 1. 스캔: Trivy 로 el34-web 스캔 → HIGH 취약점 발견(Total 집계). 패키지→CVE 매핑
+      ## 2. 상세: CVE-ID/패키지/해결버전. 이미지 비교로 베이스 크기↔CVE 수 상관 확인
+      ## 3. 조치: 해결버전으로 갱신 후 재빌드(이미지 불변), 미패치는 보상통제. 운영: CI/CD 스캔 게이트+정기 재스캔
+      ## 결론: 이미지 취약점은 Trivy 로 자동 발견하고, 최소 베이스+갱신+CI 통합으로 관리. 스캔은 배포 전 게이트
+      EOF
+    answer_detail: "이미지 취약점 보고 = 스캔(Trivy HIGH)+CVE 상세/비교+조치(갱신·재빌드)+CI 운영. 자동 발견→최소화→파이프라인 통합."
+    verify:
+      type: output_contains
+      expect: 'Trivy'
+      field: stdout
+      semantic:
+        intent: "이미지 취약점 보고"
+        success_criteria: ["스캔/조치/운영"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web

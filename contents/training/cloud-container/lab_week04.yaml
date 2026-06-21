@@ -1,0 +1,272 @@
+lab_id: standalone-cloud-container-week04
+title: "런타임 보안 — 특권·Capability·User 점검 (CIS Docker 5)"
+version: standalone-cloud-container
+course: cloud-container
+week: 4
+description: |
+  컨테이너 런타임 보안 — docker inspect 로 특권(Privileged)·capability(CapAdd/CapDrop)·실행 사용자(User)를
+  점검해 CIS Docker Benchmark 갭을 찾는다. el34-web: Priv=false(양호)·CapAdd=NET_ADMIN·CapDrop 없음·
+  User=root(갭). 명령은 el34 호스트 docker CLI. 신규 설치 없음. 읽기 전용 점검.
+difficulty: medium
+duration_minutes: 140
+prerequisites:
+  - "W01–W03 통과 (4계층의 런타임 계층)"
+  - "el34 호스트 SSH + docker CLI"
+  - "lecture §2(특권) §3(capability) §4(user) 숙지"
+objectives:
+  - "특권/capability/user 런타임 설정 점검"
+  - "CIS Docker 5 갭(root 실행·cap 미드롭) 발견"
+  - "최소권한 런타임 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 대상 확인
+      런타임 점검 대상 컨테이너(el34-web)가 떠 있는지 확인한다.
+      ## 📖 개념 한 줄
+      런타임 보안은 "이미지를 어떻게 실행하는가"의 설정(특권·권한·사용자)을 본다 — 같은 이미지도 실행
+      옵션에 따라 위험이 크게 달라진다.
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'state={{.State.Status}}'; echo target_ok
+      ```
+      ## ✅ 합격 기준
+      `target_ok` 출력 시 통과.
+      ## 🔧 도구 풀이
+      - `docker inspect <컨테이너> --format '{{...}}'` — 컨테이너 상세 설정을 Go 템플릿으로 추출.
+    hint: '대상'
+    category: survey
+    points: 10
+    answer: |
+      docker inspect el34-web --format 'state={{.State.Status}}'; echo target_ok
+    answer_detail: "런타임 점검 대상 = el34-web. docker inspect 로 상태 확인 — 런타임 보안은 실행 설정(특권/권한/user)을 점검한다."
+    verify:
+      type: output_contains
+      expect: 'target_ok'
+      field: stdout
+      semantic:
+        intent: "대상 확인"
+        success_criteria: ["가동"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 목표 — 특권 컨테이너 점검 (CIS 5.4)
+      `--privileged` 로 실행된 컨테이너는 호스트 장치·커널 기능에 거의 전부 접근해 격리가 사실상 무력화된다.
+      ## 📖 개념 한 줄
+      특권 컨테이너는 escape 시 호스트를 통째로 내준다 — CIS Docker 5.4 는 특권 사용 금지를 요구한다.
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'privileged={{.HostConfig.Privileged}}'; P=$(docker inspect el34-web --format '{{.HostConfig.Privileged}}'); [ "$P" = "false" ] && echo "compliant=not_privileged" || echo "gap=privileged"
+      ```
+      ## ✅ 합격 기준
+      `compliant=not_privileged` 출력 시 통과(el34-web 은 특권 아님 = 양호).
+    hint: 'Privileged false'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 특권 점검 (CIS 5.4) ==="
+      docker inspect el34-web --format 'privileged={{.HostConfig.Privileged}}'; P=$(docker inspect el34-web --format '{{.HostConfig.Privileged}}'); [ "$P" = "false" ] && echo "compliant=not_privileged" || echo "gap=privileged"
+      echo "→ Privileged=false = 특권 아님(CIS 5.4 준수). true 면 격리 무력화 = 즉시 갭"
+    answer_detail: "특권 점검 = HostConfig.Privileged. el34-web=false(준수, CIS 5.4). true 면 호스트 장치/커널 접근으로 escape 위험 극대."
+    verify:
+      type: output_contains
+      expect: 'compliant=not_privileged'
+      field: stdout
+      semantic:
+        intent: "특권 점검"
+        success_criteria: ["특권 여부"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 목표 — Capability 점검 (CIS 5.3)
+      capability 는 root 권한을 잘게 쪼갠 단위 권한이다. CIS 5.3 은 "모두 drop 후 필요한 것만 add"를 권고.
+      ## 📖 개념 한 줄
+      CapDrop 이 비어 있으면 기본 capability 가 전부 살아 있다 — 최소권한 위반(불필요 권한 잔존).
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'CapAdd={{.HostConfig.CapAdd}} CapDrop={{.HostConfig.CapDrop}}'; D=$(docker inspect el34-web --format '{{.HostConfig.CapDrop}}'); echo "$D" | grep -qiE 'ALL|CAP_' && echo "compliant=caps_dropped" || echo "gap=no_capdrop"
+      ```
+      ## ✅ 합격 기준
+      CapAdd/CapDrop 이 출력되고 판정(`gap=no_capdrop` 또는 compliant)이 나오면 통과.
+      ## 🔧 도구 풀이
+      - CapAdd = 추가된 권한(el34-web=NET_ADMIN), CapDrop = 제거된 권한(비어있음=기본 cap 전부 잔존).
+    hint: 'CapAdd/CapDrop'
+    category: manipulation
+    points: 16
+    answer: |
+      echo "=== Capability 점검 (CIS 5.3) ==="
+      docker inspect el34-web --format 'CapAdd={{.HostConfig.CapAdd}} CapDrop={{.HostConfig.CapDrop}}'; D=$(docker inspect el34-web --format '{{.HostConfig.CapDrop}}'); echo "$D" | grep -qiE 'ALL|CAP_' && echo "compliant=caps_dropped" || echo "gap=no_capdrop"
+      echo "→ CapAdd=NET_ADMIN(추가), CapDrop=[](비어있음) → 기본 cap 전부 잔존 = CIS 5.3 갭(drop all 권고)"
+    answer_detail: "Capability 점검 = CapAdd/CapDrop. el34-web 은 NET_ADMIN 추가 + CapDrop 비어있음 → 기본 cap 전부 잔존 = CIS 5.3 갭(모두 drop 후 필요한 것만 add 권고)."
+    verify:
+      type: output_contains
+      expect: 'gap=no_capdrop'
+      field: stdout
+      semantic:
+        intent: "capability 점검"
+        success_criteria: ["CapDrop 갭"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 목표 — 실행 사용자 점검 (CIS 5.x root 갭)
+      컨테이너가 root(uid 0)로 실행되면 escape 시 호스트 권한 위협이 커진다. 비-root 실행이 권고된다.
+      ## 📖 개념 한 줄
+      User 가 비어 있으면 컨테이너 프로세스가 root 로 돈다 — W01 에서 본 그 갭(CIS Docker 4.1).
+      ## 💻 실행 명령
+      ```bash
+      U=$(docker inspect el34-web --format '{{.Config.User}}'); echo "user=[$U]"; docker exec el34-web id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "compliant=nonroot"
+      ```
+      ## ✅ 합격 기준
+      `gap=runs_as_root` 출력 시 갭 발견 성공.
+      ## 🔧 도구 풀이
+      - `docker exec el34-web id -u` — 컨테이너 내 실제 uid. 0 이면 root 실행.
+    hint: 'User root'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 실행 사용자 점검 ==="
+      U=$(docker inspect el34-web --format '{{.Config.User}}'); echo "user=[$U]"; docker exec el34-web id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "compliant=nonroot"
+      echo "→ User 비어있음 + uid 0 = root 실행(CIS 4.1 갭). USER 지시어로 비-root(uid≥1000) 권고"
+    answer_detail: "실행 사용자 = Config.User + 컨테이너 내 uid. el34-web=root(uid 0) 실행 = CIS 4.1 갭. Dockerfile USER 또는 --user 로 비-root 권고."
+    verify:
+      type: output_contains
+      expect: 'gap=runs_as_root'
+      field: stdout
+      semantic:
+        intent: "사용자 점검"
+        success_criteria: ["root 실행 갭"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 목표 — 읽기전용 루트FS·no-new-privileges
+      추가 런타임 강화 옵션을 점검한다.
+      ## 📖 개념 한 줄
+      읽기전용 루트FS(`--read-only`)는 침해 후 파일 변조/webshell 설치를 막고, no-new-privileges 는 setuid
+      권한상승을 차단한다.
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} SecurityOpt={{.HostConfig.SecurityOpt}}'; echo rofs_checked
+      ```
+      ## ✅ 합격 기준
+      ReadonlyRootfs/SecurityOpt 가 출력되면 통과.
+    hint: 'read-only rootfs'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 읽기전용 루트FS·추가 강화 ==="
+      docker inspect el34-web --format 'ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} SecurityOpt={{.HostConfig.SecurityOpt}}'; echo rofs_checked
+      echo "→ ReadonlyRootfs=false 면 침해 후 파일 변조 가능. no-new-privileges 없으면 setuid 권한상승 가능"
+    answer_detail: "추가 강화 = ReadonlyRootfs(읽기전용, 변조 차단)+SecurityOpt(no-new-privileges 등). false/없음이면 침해 후 영향 확대 — 강화 권고."
+    verify:
+      type: output_contains
+      expect: 'rofs_checked'
+      field: stdout
+      semantic:
+        intent: "런타임 강화 점검"
+        success_criteria: ["읽기전용/보안옵션"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 목표 — 영향 정리
+      발견된 런타임 갭의 영향을 정리한다.
+      ## 💻 실행 명령
+      ```bash
+      echo "root 실행+cap 미드롭 → escape 시 호스트 위협 확대. 최소권한으로 영향 축소"
+      ```
+      ## ✅ 합격 기준
+      런타임 갭의 영향이 정리되면 통과.
+    hint: 'escape 영향'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 영향 ==="
+      echo "root 실행: 컨테이너 침해 시 컨테이너 내 root → escape 결합 시 호스트 root 위협"
+      echo "cap 미드롭: 불필요한 커널 권한 잔존 → escape 경로 증가"
+      echo "특권(해당 시): 격리 사실상 무력화"
+      echo "→ 런타임 갭은 침해의 '폭발 반경'을 키운다. 최소권한이 반경을 줄임"
+    answer_detail: "영향 = root+cap 잔존이 escape 시 호스트 위협(폭발 반경)을 키움. 최소권한(비-root+cap drop)이 침해 영향을 축소."
+    verify:
+      type: output_contains
+      expect: 'escape'
+      field: stdout
+      semantic:
+        intent: "영향 정리"
+        success_criteria: ["폭발 반경"]
+        acceptable_methods: ["**[관리적] 영향 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 목표 — 방어 (최소권한 런타임)
+      ## 💻 실행 명령
+      ```bash
+      echo "비-root(USER/--user) + --cap-drop ALL + 필요한 cap만 add + 특권금지 + --read-only + no-new-privileges"
+      ```
+      ## ✅ 합격 기준
+      최소권한 런타임 방어가 정리되면 통과.
+    hint: '최소권한 런타임'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 최소권한 런타임 방어 ==="
+      echo "1) 비-root 실행: Dockerfile USER 또는 --user 1000"
+      echo "2) capability: --cap-drop ALL 후 필요한 것만 --cap-add"
+      echo "3) 특권 금지: --privileged 사용 안 함"
+      echo "4) --read-only 루트FS + 쓰기 필요 경로만 tmpfs"
+      echo "5) --security-opt no-new-privileges"
+      echo "→ 핵심: 최소권한으로 escape 폭발 반경 최소화"
+    answer_detail: "방어 = 비-root + cap-drop ALL + 특권금지 + read-only + no-new-privileges. 최소권한으로 침해 영향 축소."
+    verify:
+      type: output_contains
+      expect: '최소권한'
+      field: stdout
+      semantic:
+        intent: "런타임 방어"
+        success_criteria: ["최소권한 옵션"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 목표 — 런타임 보안 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 클라우드·컨테이너 W04 런타임 보안 보고서 (학번, 이름)
+      ## 1. 특권(양호)/capability(갭)/user(갭) 점검
+      ## 2. 영향(escape 폭발 반경)
+      ## 3. 최소권한 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 점검 결과 + 갭 + 방어가 포함된다.
+    hint: '점검+갭+방어'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 클라우드·컨테이너 W04 런타임 보안 보고서
+      ## 1. 점검: Privileged=false(준수, CIS 5.4) / CapDrop 비어있음+NET_ADMIN(갭, CIS 5.3) / User=root(갭, CIS 4.1)
+      ## 2. 영향: root+cap 잔존이 escape 시 호스트 위협 확대(폭발 반경)
+      ## 3. 방어: 비-root + cap-drop ALL + 특권금지 + read-only + no-new-privileges
+      ## 결론: 특권은 양호하나 root 실행·cap 미드롭이 핵심 갭. 최소권한 런타임이 escape 영향을 줄이는 근본
+      EOF
+    answer_detail: "런타임 보고 = 특권(준수)/cap(갭)/user(갭)+영향(폭발반경)+최소권한 방어. CIS Docker 5 기준."
+    verify:
+      type: output_contains
+      expect: 'CIS'
+      field: stdout
+      semantic:
+        intent: "런타임 보안 보고"
+        success_criteria: ["점검/갭/방어"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web

@@ -1,0 +1,273 @@
+lab_id: standalone-cloud-container-week05
+title: "컨테이너 격리 — Namespace·Cgroups 점검"
+version: standalone-cloud-container
+course: cloud-container
+week: 5
+description: |
+  컨테이너 격리의 두 기둥 — namespace(무엇이 보이나 분리)와 cgroups(자원 제한) — 를 점검한다.
+  /proc/1/ns 로 namespace 격리를 보고, pid/net 격리·cgroups 자원 한도·공유 커널의 격리 한계를 다룬다.
+  el34-web 대상. 명령은 el34 호스트 docker CLI. 신규 설치 없음. 읽기 전용 점검.
+difficulty: medium
+duration_minutes: 130
+prerequisites:
+  - "W01–W04 통과 (공유 커널 이해)"
+  - "el34 호스트 SSH + docker CLI"
+  - "lecture §2(namespace) §3(cgroups) §4(격리 한계) 숙지"
+objectives:
+  - "namespace 격리(pid/net/mnt 등) 확인"
+  - "cgroups 자원 제한 점검"
+  - "공유 커널 격리 한계·강화 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 대상 확인
+      격리 점검 대상(el34-web)을 확인한다.
+      ## 📖 개념 한 줄
+      컨테이너 격리 = namespace(가시성 분리) + cgroups(자원 제한)를 호스트 커널 위에 소프트웨어로 그은 경계.
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'state={{.State.Status}}'; echo target_ok
+      ```
+      ## ✅ 합격 기준
+      `target_ok` 출력 시 통과.
+    hint: '대상'
+    category: survey
+    points: 10
+    answer: |
+      docker inspect el34-web --format 'state={{.State.Status}}'; echo target_ok
+    answer_detail: "격리 점검 대상 = el34-web. 격리 = namespace(가시성)+cgroups(자원)."
+    verify:
+      type: output_contains
+      expect: 'target_ok'
+      field: stdout
+      semantic:
+        intent: "대상 확인"
+        success_criteria: ["가동"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 목표 — Namespace 목록
+      컨테이너 프로세스가 가진 namespace 들을 확인한다.
+      ## 📖 개념 한 줄
+      namespace 는 프로세스가 "무엇을 볼 수 있는가"를 분리한다 — pid(프로세스)·net(네트워크)·mnt(파일
+      시스템)·ipc·uts(호스트명)·user(uid 매핑) 등.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "ls /proc/1/ns/"; echo ns_listed
+      ```
+      ## ✅ 합격 기준
+      namespace 목록(pid/net/mnt 등)과 `ns_listed` 가 출력되면 통과.
+      ## 🔧 도구 풀이
+      - `/proc/1/ns/` — PID 1(컨테이너 init) 프로세스가 속한 namespace 들의 링크. 각각이 격리 경계 하나.
+    hint: '/proc/1/ns'
+    category: recon
+    points: 14
+    answer: |
+      echo "=== Namespace 목록 ==="
+      docker exec el34-web sh -c "ls /proc/1/ns/"; echo ns_listed
+      echo "→ pid/net/mnt/ipc/uts/user 등 = 각 격리 경계. 컨테이너는 호스트와 다른 namespace 에 격리"
+    answer_detail: "namespace 목록 = /proc/1/ns/(pid/net/mnt/ipc/uts/user 등). 각 namespace 가 가시성 격리 경계 하나. 컨테이너는 호스트와 분리된 namespace 집합을 가진다."
+    verify:
+      type: output_contains
+      expect: 'ns_listed'
+      field: stdout
+      semantic:
+        intent: "namespace 목록"
+        success_criteria: ["격리 경계"]
+        acceptable_methods: ["**[OSS] /proc/ns (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 목표 — PID Namespace 격리
+      컨테이너가 호스트 프로세스를 못 보는지(pid namespace 격리) 확인한다.
+      ## 📖 개념 한 줄
+      pid namespace 덕분에 컨테이너 안에서는 자기 프로세스만 보이고 호스트·다른 컨테이너 프로세스는 안 보인다.
+      ## 💻 실행 명령
+      ```bash
+      echo -n "container_procs="; docker exec el34-web sh -c "ps -e 2>/dev/null | wc -l"; docker inspect el34-web --format 'PidMode=[{{.HostConfig.PidMode}}]'
+      ```
+      ## ✅ 합격 기준
+      컨테이너 내 프로세스 수와 `PidMode=[]`(빈 값=격리)가 출력되면 통과.
+      ## 🔧 도구 풀이
+      - `PidMode` 가 비어 있으면 자체 pid namespace(격리). `host` 면 호스트 pid 공유(격리 깨짐=갭).
+    hint: 'pid namespace'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== PID Namespace 격리 ==="
+      echo -n "container_procs="; docker exec el34-web sh -c "ps -e 2>/dev/null | wc -l"
+      docker inspect el34-web --format 'PidMode=[{{.HostConfig.PidMode}}]'
+      echo "→ PidMode=[](빈 값)=자체 pid namespace(격리). 컨테이너는 자기 프로세스만 봄. host 면 격리 깨짐"
+    answer_detail: "pid namespace = 프로세스 가시성 격리. PidMode 비어있음=격리(컨테이너 자기 프로세스만). --pid=host 면 호스트 프로세스 노출=갭."
+    verify:
+      type: output_contains
+      expect: 'PidMode=[]'
+      field: stdout
+      semantic:
+        intent: "pid 격리"
+        success_criteria: ["pid namespace"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 목표 — 네트워크 Namespace
+      컨테이너의 네트워크 격리(자체 net namespace)를 확인한다.
+      ## 📖 개념 한 줄
+      net namespace 덕분에 컨테이너는 자체 IP·인터페이스·라우팅을 가지며, 호스트 네트워크와 분리된다.
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'NetMode={{.HostConfig.NetworkMode}}'; N=$(docker inspect el34-web --format '{{.HostConfig.NetworkMode}}'); [ "$N" = "host" ] && echo "gap=host_network" || echo "compliant=isolated_net"
+      ```
+      ## ✅ 합격 기준
+      NetMode 와 판정(`compliant=isolated_net`)이 출력되면 통과.
+      ## 🔧 도구 풀이
+      - NetworkMode=`host` 면 호스트 네트워크 공유(격리 없음=갭). 커스텀 네트워크(el34-dmz)면 격리.
+    hint: 'net namespace'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 네트워크 Namespace ==="
+      docker inspect el34-web --format 'NetMode={{.HostConfig.NetworkMode}}'; N=$(docker inspect el34-web --format '{{.HostConfig.NetworkMode}}'); [ "$N" = "host" ] && echo "gap=host_network" || echo "compliant=isolated_net"
+      echo "→ NetMode=el34-dmz(커스텀 네트워크)=격리(준수). host 면 호스트 네트워크 노출=갭"
+    answer_detail: "net namespace = 네트워크 격리. el34-web=el34-dmz 커스텀 네트워크(격리, 준수). --net=host 면 호스트 네트워크 스택 공유=격리 없음 갭."
+    verify:
+      type: output_contains
+      expect: 'compliant=isolated_net'
+      field: stdout
+      semantic:
+        intent: "net 격리"
+        success_criteria: ["net namespace"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 목표 — Cgroups 자원 제한
+      컨테이너의 자원 한도(메모리/CPU)를 점검한다.
+      ## 📖 개념 한 줄
+      cgroups 는 컨테이너가 쓸 수 있는 자원(메모리·CPU)을 제한해, 한 컨테이너가 호스트 자원을 독식
+      (자원 고갈 DoS)하지 못하게 한다.
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'Memory={{.HostConfig.Memory}} NanoCpus={{.HostConfig.NanoCpus}}'; M=$(docker inspect el34-web --format '{{.HostConfig.Memory}}'); [ "$M" = "0" ] && echo "gap=no_mem_limit" || echo "compliant=mem_limited"
+      ```
+      ## ✅ 합격 기준
+      Memory/NanoCpus 와 판정이 출력되면 통과(0 = 무제한 = 갭).
+      ## 🔧 도구 풀이
+      - Memory=0 이면 메모리 한도 없음(자원 고갈 DoS 위험). 양수면 바이트 단위 한도.
+    hint: 'cgroups 자원'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== Cgroups 자원 제한 ==="
+      docker inspect el34-web --format 'Memory={{.HostConfig.Memory}} NanoCpus={{.HostConfig.NanoCpus}}'; M=$(docker inspect el34-web --format '{{.HostConfig.Memory}}'); [ "$M" = "0" ] && echo "gap=no_mem_limit" || echo "compliant=mem_limited"
+      echo "→ Memory=0=무제한(자원 고갈 DoS 위험, 갭). --memory/--cpus 로 한도 설정 권고"
+    answer_detail: "cgroups = 자원 제한. Memory=0 이면 무제한 → 한 컨테이너가 호스트 메모리 독식(DoS) 가능 = 갭. --memory/--cpus 한도 권고."
+    verify:
+      type: output_contains
+      expect: 'mem'
+      field: stdout
+      semantic:
+        intent: "cgroups 점검"
+        success_criteria: ["자원 한도"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 목표 — 격리의 한계 (공유 커널)
+      namespace/cgroups 격리의 근본 한계를 정리한다.
+      ## 💻 실행 명령
+      ```bash
+      echo "namespace/cgroups는 호스트 커널 위 소프트웨어 경계 → 커널 취약점/오설정 시 escape 가능"
+      ```
+      ## ✅ 합격 기준
+      격리의 한계가 정리되면 통과.
+    hint: '공유 커널 한계'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 격리의 한계 ==="
+      echo "namespace/cgroups 는 호스트 커널 하나 위에 그은 소프트웨어 경계(VM 처럼 커널 분리 아님)"
+      echo "→ 커널 취약점(예: dirtypipe)·오설정(특권/과한 cap)으로 경계가 깨지면 escape"
+      echo "→ 그래서 격리에 더해 최소권한(W04)+seccomp/AppArmor+user namespace 가 필요"
+    answer_detail: "격리 한계 = namespace/cgroups 는 공유 커널 위 소프트웨어 경계라 커널 취약점/오설정 시 escape. 추가 강화(seccomp/AppArmor/user ns) 필요."
+    verify:
+      type: output_contains
+      expect: 'escape'
+      field: stdout
+      semantic:
+        intent: "격리 한계"
+        success_criteria: ["공유 커널"]
+        acceptable_methods: ["**[관리적] 한계 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 목표 — 격리 강화 방어
+      ## 💻 실행 명령
+      ```bash
+      echo "user namespace remap + seccomp(시스템콜 제한) + AppArmor/SELinux + cgroups 한도 + pid/net 격리 유지"
+      ```
+      ## ✅ 합격 기준
+      격리 강화 방어가 정리되면 통과.
+    hint: 'seccomp/user ns'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 격리 강화 방어 ==="
+      echo "1) user namespace remap: 컨테이너 root(uid0)를 호스트 비특권 uid 로 매핑"
+      echo "2) seccomp 프로파일: 위험 시스템콜 차단(escape 표면 축소)"
+      echo "3) AppArmor/SELinux: 강제 접근 통제(MAC)"
+      echo "4) cgroups 자원 한도 + namespace 격리 유지(host 모드 금지)"
+      echo "→ 핵심: 얕은 격리를 커널 보안 모듈로 다층 보강"
+    answer_detail: "방어 = user ns remap + seccomp + AppArmor/SELinux + cgroups 한도. 공유 커널의 얕은 격리를 커널 보안 모듈로 다층 보강."
+    verify:
+      type: output_contains
+      expect: 'seccomp'
+      field: stdout
+      semantic:
+        intent: "격리 강화"
+        success_criteria: ["커널 보안 모듈"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 목표 — 격리 점검 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 클라우드·컨테이너 W05 격리 보고서 (학번, 이름)
+      ## 1. namespace(pid/net 격리)/cgroups 점검
+      ## 2. 격리 한계(공유 커널)
+      ## 3. 강화(user ns/seccomp/AppArmor)
+      ```
+      ## ✅ 합격 기준
+      보고서에 격리 점검 + 한계 + 강화가 포함된다.
+    hint: 'namespace+한계+강화'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 클라우드·컨테이너 W05 격리 보고서
+      ## 1. 점검: namespace(pid 격리·net 격리 el34-dmz, 준수), cgroups 자원 한도 확인
+      ## 2. 한계: namespace/cgroups 는 공유 커널 위 소프트웨어 경계 → 커널 취약점/오설정 시 escape
+      ## 3. 강화: user namespace remap + seccomp + AppArmor/SELinux + 자원 한도
+      ## 결론: 격리는 가시성(namespace)+자원(cgroups)이나 공유 커널이 근본 한계. 커널 보안 모듈로 다층 보강
+      EOF
+    answer_detail: "격리 보고 = namespace/cgroups 점검 + 공유커널 한계 + 강화(user ns/seccomp/AppArmor). 얕은 격리의 다층 보강."
+    verify:
+      type: output_contains
+      expect: 'namespace'
+      field: stdout
+      semantic:
+        intent: "격리 보고"
+        success_criteria: ["점검/한계/강화"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
