@@ -1,0 +1,252 @@
+lab_id: standalone-attack-adv-week09
+title: "Active Directory 공격 — Kerberos·BloodHound·도메인 장악 (개념·방법론)"
+version: standalone-attack-adv
+course: attack-adv
+week: 9
+description: |
+  공격 고급 W09 — Active Directory 공격. ⚠️ el34는 순수 Linux 환경으로 AD(도메인 컨트롤러)가 없다. 본 주차는
+  '개념·방법론' 주차다 — 실제 AD를 만났을 때 쓸 정확한 명령·도구·공격 체인(Kerberoasting·AS-REP·BloodHound·
+  DCSync)을 학습한다. el34에서 AD 부재를 스캔으로 확인(정직한 스코핑)하고, 방법론을 익힌다. ⚠️ 인가된 실습만.
+difficulty: hard
+duration_minutes: 175
+prerequisites:
+  - "attack-adv W05(인증)·W08(측면 이동) 통과"
+  - "el34 호스트 SSH + docker exec, el34-attacker"
+  - "lecture §2(AD 구조) §3(Kerberos 공격) §4(BloodHound/장악) 숙지"
+objectives:
+  - "AD 구조(도메인·DC·Kerberos·LDAP)와 공격 표면 이해"
+  - "Kerberoasting·AS-REP roasting·BloodHound 방법론 습득"
+  - "도메인 장악(DCSync/골든티켓)과 AD 방어(티어링) 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 환경 스코핑 (AD 부재 확인)
+      ## 📖 개념 한 줄
+      정직한 정찰 — el34에 AD 포트(88 Kerberos·389 LDAP·445 SMB)가 있는지 확인. 없으면 개념 주차.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nmap -p 88,389,445,636 --open 10.20.30.0/24 2>/dev/null | grep -c open; echo '(0 = AD 없음, Linux 환경)'"; echo scoping_done
+      ```
+      ## ✅ 합격 기준
+      AD 부재가 확인되면(scoping_done) 통과 — 본 주차는 방법론 학습.
+    hint: '환경 스코핑'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 환경 스코핑(AD 부재 확인) ==="
+      docker exec el34-attacker sh -c "nmap -p 88,389,445,636 --open 10.20.30.0/24 2>/dev/null | grep -c open; echo '(0 = AD 포트 없음 → el34는 Linux 환경)'"; echo scoping_done
+      echo "→ AD 포트(88/389/445/636) 부재 확인. 본 주차는 실제 AD 대비 '개념·방법론' 학습"
+    answer_detail: "환경 스코핑 = AD 포트 스캔으로 AD 유무 확인. el34는 Linux(AD 없음) → 방법론 학습 주차. 정직한 스코핑."
+    verify:
+      type: output_contains
+      expect: 'scoping_done'
+      field: stdout
+      semantic: {intent: "환경 스코핑", success_criteria: ["AD 부재"], acceptable_methods: ["**[OSS] nmap (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 AD 구조·공격 표면
+      ## 💻 실행 명령
+      ```bash
+      echo "AD: 도메인(신뢰 경계)·DC(인증 중심)·Kerberos(88,티켓)·LDAP(389,디렉터리)·SMB(445). 중앙 집중=단일 표적"
+      ```
+      ## ✅ 합격 기준
+      AD 구조·공격 표면이 정리되면 통과.
+      ## 🔧 도구 풀이
+      - DC가 인증·정책의 중심 → DC 장악 = 도메인 전체 장악. Kerberos가 인증 프로토콜(티켓 기반).
+    hint: 'AD 구조'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== AD 구조·공격 표면 ==="
+      echo "도메인: 사용자·컴퓨터·정책의 신뢰 경계"
+      echo "DC(도메인 컨트롤러): 인증·정책의 중심 → DC 장악 = 도메인 전체 장악"
+      echo "Kerberos(88): 티켓 기반 인증(TGT→TGS). LDAP(389): 디렉터리 질의. SMB(445): 파일·인증"
+      echo "→ 중앙 집중이 편리하지만 단일 표적: DC 하나가 무너지면 전부 무너짐"
+      echo "ad_structure_done"
+    answer_detail: "AD 구조 = 도메인/DC/Kerberos/LDAP/SMB. DC가 인증 중심 → DC 장악=도메인 장악. 중앙집중=단일표적."
+    verify:
+      type: output_contains
+      expect: 'ad_structure_done'
+      field: stdout
+      semantic: {intent: "AD 구조", success_criteria: ["DC/Kerberos"], acceptable_methods: ["**[설명] AD 구조 (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 AD 열거 (방법론)
+      ## 💻 실행 명령
+      ```bash
+      echo "열거 도구·명령: ldapsearch(디렉터리)·crackmapexec/nxc(SMB)·bloodhound-python(그래프 수집)"
+      ```
+      ## ✅ 합격 기준
+      AD 열거 방법론이 정리되면 통과.
+      ## 🔧 도구 풀이
+      - 인증된 열거: 사용자·그룹·SPN·신뢰관계·ACL 수집. BloodHound가 이를 그래프로 시각화.
+    hint: 'AD 열거'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== AD 열거(방법론) ==="
+      echo "ldapsearch -x -H ldap://DC -b 'dc=corp,dc=local' '(objectClass=user)'  # 사용자 열거"
+      echo "nxc smb DC -u user -p pass --users --groups --shares                    # SMB 열거(crackmapexec 후속)"
+      echo "bloodhound-python -d corp.local -u user -p pass -c All                  # 그래프 데이터 수집"
+      echo "kerbrute userenum -d corp.local users.txt                               # 사용자 존재 확인(Kerberos)"
+      echo "→ 인증된 열거로 사용자·그룹·SPN·ACL·신뢰관계 수집 → 공격 경로의 원재료"
+      echo "ad_enum_done"
+    answer_detail: "AD 열거 = ldapsearch/nxc/bloodhound-python/kerbrute로 사용자·그룹·SPN·ACL 수집. 공격 경로 원재료."
+    verify:
+      type: output_contains
+      expect: 'ad_enum_done'
+      field: stdout
+      semantic: {intent: "AD 열거", success_criteria: ["ldap/bloodhound"], acceptable_methods: ["**[설명] 열거 (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 Kerberoasting
+      ## 💻 실행 명령
+      ```bash
+      echo "GetUserSPNs로 서비스계정 TGS 요청→오프라인 크랙. SPN 있는 계정의 약한 비번이 표적"
+      ```
+      ## ✅ 합격 기준
+      Kerberoasting 체인이 정리되면 통과.
+      ## 🔧 도구 풀이
+      - 임의 인증 사용자가 SPN 계정의 TGS를 요청 가능 → TGS는 서비스 계정 해시로 암호화 → hashcat 크랙.
+    hint: 'Kerberoasting'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== Kerberoasting ==="
+      echo "원리: 임의 도메인 사용자가 SPN(서비스주체명) 계정의 TGS 티켓을 요청 가능"
+      echo "       → TGS는 서비스 계정 비번 해시로 암호화됨 → 오프라인 크랙(hashcat)"
+      echo "명령: impacket-GetUserSPNs corp.local/user:pass -dc-ip DC -request"
+      echo "      hashcat -m 13100 tgs.hash rockyou.txt"
+      echo "→ 표적: SPN 달린 서비스 계정(종종 약한·오래된 비번·고권한). 탐지 회피적(정상 TGS 요청)"
+      echo "kerberoast_done"
+    answer_detail: "Kerberoasting = SPN 계정 TGS 요청→오프라인 크랙. 약한 서비스 계정 비번 표적. GetUserSPNs+hashcat."
+    verify:
+      type: output_contains
+      expect: 'kerberoast_done'
+      field: stdout
+      semantic: {intent: "Kerberoasting", success_criteria: ["SPN/TGS 크랙"], acceptable_methods: ["**[설명] Kerberoast (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 AS-REP Roasting
+      ## 💻 실행 명령
+      ```bash
+      echo "사전인증(pre-auth) 비활성 계정은 AS-REP을 요청만으로 받음→오프라인 크랙. GetNPUsers"
+      ```
+      ## ✅ 합격 기준
+      AS-REP roasting 원리가 정리되면 통과.
+      ## 🔧 도구 풀이
+      - DONT_REQ_PREAUTH 계정은 인증 없이 AS-REP(사용자 해시 암호화) 획득 → 크랙. Kerberoast의 사촌.
+    hint: 'AS-REP'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== AS-REP Roasting ==="
+      echo "원리: Kerberos 사전인증(pre-auth)이 비활성된 계정(DONT_REQ_PREAUTH)은"
+      echo "       인증 없이 AS-REP 응답(사용자 비번 해시로 암호화)을 받을 수 있음 → 오프라인 크랙"
+      echo "명령: impacket-GetNPUsers corp.local/ -usersfile users.txt -dc-ip DC"
+      echo "      hashcat -m 18200 asrep.hash rockyou.txt"
+      echo "→ Kerberoast와 차이: 사전인증 비활성 계정 대상(인증 자격 불필요). 약한 비번이 표적"
+      echo "asrep_done"
+    answer_detail: "AS-REP roasting = pre-auth 비활성 계정의 AS-REP 획득→크랙. 인증 자격 불필요. GetNPUsers+hashcat."
+    verify:
+      type: output_contains
+      expect: 'asrep_done'
+      field: stdout
+      semantic: {intent: "AS-REP", success_criteria: ["pre-auth 비활성"], acceptable_methods: ["**[설명] AS-REP (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 BloodHound — 공격 경로 분석
+      ## 💻 실행 명령
+      ```bash
+      echo "BloodHound: AD 객체·권한을 그래프로 → '내 계정에서 Domain Admin까지 최단 경로' 자동 발견"
+      ```
+      ## ✅ 합격 기준
+      BloodHound 경로 분석 개념이 정리되면 통과.
+    hint: 'BloodHound'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== BloodHound — 공격 경로 분석 ==="
+      echo "수집: bloodhound-python/SharpHound로 사용자·그룹·세션·ACL·신뢰 수집"
+      echo "분석: 그래프 DB에서 '내 계정 → Domain Admin' 최단 경로 질의(Cypher)"
+      echo "발견하는 경로 예: ACL 남용(GenericAll)·세션 탈취·그룹 중첩·위임 악용"
+      echo "→ 사람이 못 보는 복잡한 권한 관계를 그래프로 → AD 공격의 게임체인저"
+      echo "bloodhound_done"
+    answer_detail: "BloodHound = AD 권한을 그래프화→Domain Admin 최단 경로 자동 발견. 복잡한 ACL 관계 시각화."
+    verify:
+      type: output_contains
+      expect: 'bloodhound_done'
+      field: stdout
+      semantic: {intent: "BloodHound", success_criteria: ["경로 그래프"], acceptable_methods: ["**[설명] BloodHound (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 도메인 장악·방어
+      ## 💻 실행 명령
+      ```bash
+      echo "장악: DCSync(krbtgt 추출)→골든티켓(임의 인증). 방어: 티어링·LAPS·강한 서비스비번·위임 제한"
+      ```
+      ## ✅ 합격 기준
+      도메인 장악과 AD 방어가 정리되면 통과.
+    hint: '장악/방어'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 도메인 장악·방어 ==="
+      echo "장악: DCSync(impacket-secretsdump)로 krbtgt 해시 추출 → 골든 티켓(임의 사용자·무제한 위조)"
+      echo "      = 도메인 영구 장악(krbtgt 비번 2회 변경 전까지)"
+      echo "방어: ① 티어링(Tier 0/1/2 분리, DA를 워크스테이션에 안 씀) ② LAPS(로컬 관리자 비번 무작위)"
+      echo "      ③ 강한 서비스 계정 비번(gMSA)·SPN 최소화 ④ 사전인증 강제 ⑤ 위임 제한 ⑥ BloodHound로 방어자도 경로 점검"
+      echo "→ 탐지: 비정상 TGS 대량 요청(Kerberoast)·DCSync 복제·골든티켓 이상(soc-adv W03 SIGMA)"
+      echo "domain_defense_done"
+    answer_detail: "도메인 장악 = DCSync→골든티켓(영구 장악). 방어 = 티어링/LAPS/gMSA/위임제한+탐지(비정상 TGS/DCSync)."
+    verify:
+      type: output_contains
+      expect: 'domain_defense_done'
+      field: stdout
+      semantic: {intent: "장악/방어", success_criteria: ["DCSync/티어링"], acceptable_methods: ["**[관리적] 방어 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 AD 공격 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격고급 W09 AD 공격(개념) 보고서 (학번, 이름)
+      ## 1. AD 구조·열거 방법론
+      ## 2. Kerberoast·AS-REP·BloodHound
+      ## 3. 도메인 장악·방어(티어링)
+      ```
+      ## ✅ 합격 기준
+      구조/열거 + Kerberos공격 + 방어 포함.
+    hint: '구조+Kerberos+방어'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 공격고급 W09 Active Directory 공격(개념·방법론) 보고서
+      ## 1. AD 구조: 도메인/DC/Kerberos(88)/LDAP(389)/SMB(445). DC 장악=도메인 장악. 열거: ldapsearch/nxc/bloodhound-python
+      ## 2. Kerberoasting(SPN TGS 크랙)·AS-REP roasting(pre-auth 비활성)·BloodHound(DA 최단 경로 그래프)
+      ## 3. 장악: DCSync→골든티켓(영구 장악). 방어: 티어링·LAPS·gMSA·위임제한·사전인증강제+탐지(비정상 TGS/DCSync)
+      ## 결론: AD는 중앙집중이라 DC 하나가 전부. (el34는 Linux라 개념 학습) 방어는 티어링+강한 자격+경로 점검
+      EOF
+    answer_detail: "AD 보고 = 구조/열거+Kerberoast/AS-REP/BloodHound+장악/방어. el34는 Linux라 개념 주차. DC=단일표적."
+    verify:
+      type: output_contains
+      expect: 'Active Directory'
+      field: stdout
+      semantic: {intent: "AD 보고", success_criteria: ["구조/Kerberos/방어"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
