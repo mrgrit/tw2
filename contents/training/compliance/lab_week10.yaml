@@ -1,0 +1,249 @@
+lab_id: standalone-compliance-week10
+title: "변경관리와 파일 무결성 모니터링(FIM)"
+version: standalone-compliance
+course: compliance
+week: 10
+description: |
+  변경관리 + FIM(Wazuh syscheck) — 모니터링 설정, FIM 작동 증적, 무단 변경 탐지(canary, self-clean),
+  변경관리↔FIM 연계. el34-web/siem 실 점검. 명령은 el34 호스트에서. 신규 설치 없음.
+difficulty: medium
+duration_minutes: 140
+prerequisites:
+  - "W01–W09 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(FIM설정) §4(무단변경) §5(연계) 숙지"
+objectives:
+  - "FIM 모니터링/작동 확인"
+  - "무단 변경 탐지(canary)"
+  - "변경관리↔FIM 연계 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "hostname; echo target_ok"
+      ```
+      ## ✅ 합격 기준
+      대상 접근.
+    hint: '대상'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-web sh -c "hostname; echo target_ok"
+    answer_detail: "FIM 점검 대상 = el34-web(에이전트)/el34-siem(매니저)."
+    verify:
+      type: output_contains
+      expect: 'target_ok'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["접근"]
+        acceptable_methods: ["**[OSS] docker exec (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 FIM 설정 — 모니터링 디렉토리
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "grep -E '<directories' /var/ossec/etc/ossec.conf | head -8"
+      ```
+      ## ✅ 합격 기준
+      핵심 디렉토리가 FIM 모니터링됨을 확인한다.
+    hint: '<directories>'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== FIM 설정 ==="
+      docker exec el34-web sh -c "grep -E '<directories' /var/ossec/etc/ossec.conf | head -8"
+      echo "→ /etc, /usr/bin, /boot(정기) + /etc/apache2, /etc/modsecurity(realtime+whodata) 감시"
+    answer_detail: "FIM 설정 = syscheck <directories>. 핵심 설정 디렉토리 realtime 감시."
+    verify:
+      type: output_contains
+      expect: 'directories'
+      field: stdout
+      semantic:
+        intent: "FIM 설정 확인"
+        success_criteria: ["모니터링 디렉토리"]
+        acceptable_methods: ["**[OSS] ossec.conf (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 FIM 작동 — syscheck 알림
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'N=$(tail -8000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c syscheck); echo "fim_alerts=$N"'
+      ```
+      ## ✅ 합격 기준
+      FIM이 실제 변경을 탐지·기록 중임을 확인한다.
+    hint: 'syscheck 알림 수'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== FIM 작동 증적 ==="
+      docker exec el34-siem sh -c 'N=$(tail -8000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c syscheck); echo "fim_alerts=$N"'
+      echo "→ syscheck 알림 다수 = FIM 작동(rule 550 변경/554 추가/555 삭제)"
+    answer_detail: "FIM 작동 = syscheck 알림 적재. 변경 탐지가 실제 동작하는 증적."
+    verify:
+      type: output_contains
+      expect: 'fim_alerts='
+      field: stdout
+      semantic:
+        intent: "FIM 작동 확인"
+        success_criteria: ["변경 탐지 동작"]
+        acceptable_methods: ["**[OSS] alerts.json (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 무단 변경 탐지 — canary
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'echo x > /etc/apache2/cp10_canary.txt; test -f /etc/apache2/cp10_canary.txt && echo "fim_canary=created_in_monitored_dir"; rm -f /etc/apache2/cp10_canary.txt; echo cleaned'
+      ```
+      ## ✅ 합격 기준
+      realtime 모니터링 디렉토리에 변경을 일으킨다(FIM이 탐지, self-clean).
+    hint: 'canary 생성/삭제'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 무단 변경 탐지 (canary) ==="
+      docker exec el34-web sh -c 'echo x > /etc/apache2/cp10_canary.txt; test -f /etc/apache2/cp10_canary.txt && echo "fim_canary=created_in_monitored_dir"; rm -f /etc/apache2/cp10_canary.txt; echo cleaned'
+      echo "→ realtime+whodata 디렉토리(/etc/apache2)의 생성→FIM이 변경(+누가)으로 인지. canary 즉시 삭제(self-clean)"
+    answer_detail: "무단 변경 = 모니터링 디렉토리의 변경. realtime FIM이 즉시 탐지(whodata로 행위자). self-clean."
+    verify:
+      type: output_contains
+      expect: 'fim_canary='
+      field: stdout
+      semantic:
+        intent: "무단 변경 탐지"
+        success_criteria: ["변경 발생/탐지"]
+        acceptable_methods: ["**[OSS] canary (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 변경관리 프로세스
+      ## 💻 실행 명령
+      ```bash
+      echo "변경요청→영향평가→승인→테스트→배포→검증→기록(CAB)"
+      ```
+      ## ✅ 합격 기준
+      변경관리 절차를 정리한다.
+    hint: '요청~검증'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 변경관리 프로세스 ==="
+      echo "1) 변경요청(RFC) → 2) 영향평가 → 3) 승인(CAB)"
+      echo "4) 테스트 → 5) 배포 → 6) 검증 → 7) 기록"
+      echo "긴급변경: 사후 승인 + 기록 필수"
+      echo "→ 모든 변경은 추적 가능해야(누가/왜/언제/무엇을)"
+    answer_detail: "변경관리 = 요청→평가→승인→테스트→배포→검증→기록. 추적성이 핵심."
+    verify:
+      type: output_contains
+      expect: '변경관리'
+      field: stdout
+      semantic:
+        intent: "변경관리 프로세스"
+        success_criteria: ["절차"]
+        acceptable_methods: ["**[표준] 변경관리 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 FIM ↔ 변경관리 연계
+      ## 💻 실행 명령
+      ```bash
+      echo "승인 변경(기록 있음)+FIM알림=정상, 무단 변경(기록 없음)+FIM알림=조사 대상"
+      ```
+      ## ✅ 합격 기준
+      FIM 알림과 변경관리 기록의 대조 원리를 정리한다.
+    hint: '정상/무단 구분'
+    category: report
+    points: 12
+    answer: |
+      echo "=== FIM ↔ 변경관리 연계 ==="
+      echo "승인 변경: 변경관리 기록 ↔ FIM 알림 매칭 → 정상"
+      echo "무단 변경: 변경관리 기록 없음 + FIM 알림 → 조사 대상(침해/우회 의심)"
+      echo "기준선(baseline): 승인 상태 등록 → 이후 일탈 탐지"
+      echo "→ FIM 알림 단독이 아니라 변경관리 기록과 대조해야 의미"
+    answer_detail: "FIM↔변경관리 = 알림을 변경기록과 대조. 기록 없는 변경=조사 대상."
+    verify:
+      type: output_contains
+      expect: '무단'
+      field: stdout
+      semantic:
+        intent: "FIM↔변경관리 연계"
+        success_criteria: ["정상/무단 구분"]
+        acceptable_methods: ["**[설명] 연계 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 무결성 통제
+      ## 💻 실행 명령
+      ```bash
+      echo "FIM realtime + 변경관리 의무화 + baseline 관리 + FIM↔기록 대조 + 무단 변경 알림"
+      ```
+      ## ✅ 합격 기준
+      무결성 통제 방어를 정리한다.
+    hint: 'FIM/변경관리/baseline'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 무결성 통제 방어 ==="
+      echo "1) FIM realtime 감시(핵심 설정/바이너리/웹 디렉토리)"
+      echo "2) 변경관리 의무화(승인 없는 변경 금지)"
+      echo "3) baseline 관리 + 정기 검토"
+      echo "4) FIM 알림 ↔ 변경기록 대조 자동화"
+      echo "5) 무단 변경 즉시 알림 + 조사"
+      echo "→ 핵심: 모든 변경의 추적 + 무단 변경 탐지"
+    answer_detail: "방어 = FIM realtime+변경관리+baseline+대조+알림. 추적성+무단변경 탐지."
+    verify:
+      type: output_contains
+      expect: 'baseline'
+      field: stdout
+      semantic:
+        intent: "무결성 통제 방어"
+        success_criteria: ["FIM/변경관리"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 변경관리/FIM 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 컴플라이언스 W10 변경관리/FIM 보고서 (학번, 이름)
+      ## 1. FIM 설정/작동
+      ## 2. 무단 변경 탐지(canary)
+      ## 3. 변경관리↔FIM 연계
+      ```
+      ## ✅ 합격 기준
+      보고서에 FIM + 변경관리 + 연계가 포함된다.
+    hint: 'FIM+변경관리+연계'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 컴플라이언스 W10 변경관리/FIM 보고서
+      ## 1. FIM: /etc/apache2 등 realtime 감시(준수), syscheck 알림 다수(작동)
+      ## 2. 무단 변경: canary 생성→realtime FIM 탐지(whodata). self-clean
+      ## 3. 연계: FIM 알림 ↔ 변경관리 기록 대조 → 정상/무단 구분, baseline 관리
+      ## 결론: 변경관리(절차)와 FIM(탐지)의 결합으로 무단 변경을 통제. 추적성이 핵심
+      EOF
+    answer_detail: "변경관리/FIM 보고 = FIM 작동+무단변경 탐지+변경관리 연계. 추적성 통제."
+    verify:
+      type: output_contains
+      expect: 'FIM'
+      field: stdout
+      semantic:
+        intent: "변경관리/FIM 보고"
+        success_criteria: ["FIM/변경관리/연계"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
