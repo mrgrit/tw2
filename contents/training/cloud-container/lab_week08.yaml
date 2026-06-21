@@ -1,0 +1,264 @@
+lab_id: standalone-cloud-container-week08
+title: "중간고사: 컨테이너 보안 기준선 종합 점검 (W01~W07)"
+version: standalone-cloud-container
+course: cloud-container
+week: 8
+description: |
+  중간 평가 — el34-web 한 컨테이너를 CIS Docker / NIST 800-190 기준선으로 한 바퀴 종합 점검한다.
+  W01~W07 역량(식별·이미지 스캔·런타임 특권/cap/user·격리·시크릿·네트워크)을 통합해 항목별 준수/갭을
+  판정하고 우선순위로 종합한다. 명령은 el34 호스트 docker/trivy CLI. 신규 설치 없음. 읽기 전용 점검.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "W01–W07 통과"
+  - "el34 호스트 SSH + docker/trivy CLI"
+  - "전 주차 점검 명령 숙지"
+objectives:
+  - "컨테이너 종합 기준선 점검 수행"
+  - "이미지·런타임·시크릿·네트워크 준수/갭 판정"
+  - "우선순위 기반 종합 보고"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 대상 식별
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'state={{.State.Status}}'; echo target_ok
+      ```
+      ## ✅ 합격 기준
+      `target_ok` 출력.
+    hint: '대상'
+    category: survey
+    points: 8
+    answer: |
+      docker inspect el34-web --format 'state={{.State.Status}}'; echo target_ok
+    answer_detail: "기준선 종합 점검 대상 = el34-web."
+    verify:
+      type: output_contains
+      expect: 'target_ok'
+      field: stdout
+      semantic: {intent: "대상", success_criteria: ["가동"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 ① 이미지 취약점 (W03)
+      ## 💻 실행 명령
+      ```bash
+      /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'Total:'
+      ```
+      ## ✅ 합격 기준
+      `Total:` 집계 출력.
+    hint: 'trivy'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 이미지 취약점 (W03) ==="
+      /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'Total:'
+      echo "→ HIGH 취약점 존재(갭). 최소 베이스+갱신"
+    answer_detail: "이미지 취약점(W03) = Trivy HIGH 집계. 베이스 패키지 CVE 갭."
+    verify:
+      type: output_contains
+      expect: 'Total:'
+      field: stdout
+      semantic: {intent: "이미지 스캔", success_criteria: ["CVE 집계"], acceptable_methods: ["**[OSS] trivy (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 ② 특권 (W04, CIS 5.4)
+      ## 💻 실행 명령
+      ```bash
+      P=$(docker inspect el34-web --format '{{.HostConfig.Privileged}}'); echo "privileged=$P"; [ "$P" = "false" ] && echo "compliant=not_privileged" || echo "gap=privileged"
+      ```
+      ## ✅ 합격 기준
+      `compliant=not_privileged` 출력(양호).
+    hint: 'privileged'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== 특권 (W04) ==="
+      P=$(docker inspect el34-web --format '{{.HostConfig.Privileged}}'); echo "privileged=$P"; [ "$P" = "false" ] && echo "compliant=not_privileged" || echo "gap=privileged"
+      echo "→ Privileged=false = CIS 5.4 준수"
+    answer_detail: "특권(W04) = Privileged false(준수, CIS 5.4)."
+    verify:
+      type: output_contains
+      expect: 'compliant=not_privileged'
+      field: stdout
+      semantic: {intent: "특권", success_criteria: ["준수"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 ③ Capability (W04, CIS 5.3)
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'CapDrop={{.HostConfig.CapDrop}}'; D=$(docker inspect el34-web --format '{{.HostConfig.CapDrop}}'); echo "$D" | grep -qiE 'ALL|CAP_' && echo "compliant=caps_dropped" || echo "gap=no_capdrop"
+      ```
+      ## ✅ 합격 기준
+      `gap=no_capdrop` 판정(갭).
+    hint: 'capdrop'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== Capability (W04) ==="
+      docker inspect el34-web --format 'CapDrop={{.HostConfig.CapDrop}}'; D=$(docker inspect el34-web --format '{{.HostConfig.CapDrop}}'); echo "$D" | grep -qiE 'ALL|CAP_' && echo "compliant=caps_dropped" || echo "gap=no_capdrop"
+      echo "→ CapDrop 비어있음 = CIS 5.3 갭(drop all 권고)"
+    answer_detail: "Capability(W04) = CapDrop 비어있음 갭(CIS 5.3)."
+    verify:
+      type: output_contains
+      expect: 'gap=no_capdrop'
+      field: stdout
+      semantic: {intent: "capability", success_criteria: ["갭"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 ④ 실행 사용자 (W04, CIS 4.1)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "compliant=nonroot"
+      ```
+      ## ✅ 합격 기준
+      `gap=runs_as_root` 판정(갭).
+    hint: 'root'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== 실행 사용자 (W04) ==="
+      docker exec el34-web id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "compliant=nonroot"
+      echo "→ root(uid0) 실행 = CIS 4.1 갭"
+    answer_detail: "실행 사용자(W04) = root 실행 갭(CIS 4.1)."
+    verify:
+      type: output_contains
+      expect: 'gap=runs_as_root'
+      field: stdout
+      semantic: {intent: "user", success_criteria: ["root 갭"], acceptable_methods: ["**[OSS] docker exec (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 ⑤ 시크릿 노출 (W06)
+      ## 💻 실행 명령
+      ```bash
+      D=$(docker inspect el34-web --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -ciE 'pass|secret|token|key|cred'); echo "env_secrets=$D"; [ "$D" -gt 0 ] && echo "gap=secret_in_env" || echo "compliant=no_env_secret"
+      ```
+      ## ✅ 합격 기준
+      `gap=secret_in_env` 판정(갭).
+    hint: 'secret env'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 시크릿 노출 (W06) ==="
+      D=$(docker inspect el34-web --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -ciE 'pass|secret|token|key|cred'); echo "env_secrets=$D"; [ "$D" -gt 0 ] && echo "gap=secret_in_env" || echo "compliant=no_env_secret"
+      echo "→ env 에 비밀(SSH_PASS) 노출 = 갭"
+    answer_detail: "시크릿(W06) = env 비밀 노출 갭(SSH_PASS)."
+    verify:
+      type: output_contains
+      expect: 'gap=secret_in_env'
+      field: stdout
+      semantic: {intent: "시크릿", success_criteria: ["env 노출"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 ⑥ 격리 (W05)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "ls /proc/1/ns/ | tr '\n' ' '"; echo; echo ns_ok
+      ```
+      ## ✅ 합격 기준
+      namespace 목록과 `ns_ok` 출력.
+    hint: 'namespace'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 격리 (W05) ==="
+      docker exec el34-web sh -c "ls /proc/1/ns/ | tr '\n' ' '"; echo; echo ns_ok
+      echo "→ 자체 namespace 격리(준수). 단 공유 커널 한계"
+    answer_detail: "격리(W05) = namespace 격리 확인(준수)."
+    verify:
+      type: output_contains
+      expect: 'ns_ok'
+      field: stdout
+      semantic: {intent: "격리", success_criteria: ["namespace"], acceptable_methods: ["**[OSS] /proc/ns (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 ⑦ 네트워크 (W07)
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'; echo nets_ok
+      ```
+      ## ✅ 합격 기준
+      소속 네트워크와 `nets_ok` 출력.
+    hint: 'network'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 네트워크 (W07) ==="
+      docker inspect el34-web --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'; echo nets_ok
+      echo "→ 4-tier 분리(준수). web 은 dmz/int 다리"
+    answer_detail: "네트워크(W07) = 4-tier 분리 소속 확인(준수)."
+    verify:
+      type: output_contains
+      expect: 'nets_ok'
+      field: stdout
+      semantic: {intent: "네트워크", success_criteria: ["분리"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}
+    target_vm: web
+
+  - order: 9
+    instruction: |
+      ## 🎯 ⑧ docker.sock 권한 (CIS 3.15)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "ls -la /var/run/docker.sock 2>/dev/null || echo no_sock_in_container"; echo sock_checked
+      ```
+      ## ✅ 합격 기준
+      docker.sock 점검 결과와 `sock_checked` 출력(컨테이너에 sock 미마운트가 정상).
+    hint: 'docker.sock'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== docker.sock 권한 (CIS 3.15) ==="
+      docker exec el34-web sh -c "ls -la /var/run/docker.sock 2>/dev/null || echo no_sock_in_container"; echo sock_checked
+      echo "→ 컨테이너에 docker.sock 마운트 안 됨=양호(마운트 시 컨테이너→호스트 docker 장악 위험)"
+    answer_detail: "docker.sock(CIS 3.15) = 컨테이너 내 미마운트가 양호. 마운트되면 컨테이너가 호스트 docker 를 제어 = escape 경로."
+    verify:
+      type: output_contains
+      expect: 'sock_checked'
+      field: stdout
+      semantic: {intent: "docker.sock", success_criteria: ["sock 점검"], acceptable_methods: ["**[OSS] docker exec (권장)**"]}
+    target_vm: web
+
+  - order: 10
+    instruction: |
+      ## 🎯 종합 기준선 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 클라우드·컨테이너 W08 기준선 감사 보고서 (학번, 이름)
+      ## 1. 준수 항목 / 2. 갭 항목 / 3. 우선순위
+      ```
+      ## ✅ 합격 기준
+      준수/갭 종합 + 우선순위 포함.
+    hint: '준수/갭/우선순위'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 클라우드·컨테이너 W08 기준선 감사 보고서
+      ## 1. 준수: 특권 없음(CIS 5.4), namespace 격리(W05), 4-tier 네트워크 분리(W07), docker.sock 미마운트(3.15)
+      ## 2. 갭: 이미지 HIGH 취약점(W03), CapDrop 비어있음(CIS 5.3), root 실행(CIS 4.1), env 비밀 SSH_PASS(W06)
+      ## 3. 우선순위: ①env 비밀 즉시 rotation ②root→비-root+cap drop ALL ③이미지 갱신/재빌드 ④healthcheck 추가
+      ## 결론: 격리·분리·특권은 양호하나 root 실행·cap 미드롭·env 비밀·이미지 CVE 가 핵심 갭. 최소권한+시크릿 외부주입 우선
+      EOF
+    answer_detail: "종합 기준선 = 준수(특권/격리/분리/sock)+갭(이미지CVE/cap/root/시크릿)+우선순위. W01~07 통합 감사."
+    verify:
+      type: output_contains
+      expect: '우선순위'
+      field: stdout
+      semantic: {intent: "종합 보고", success_criteria: ["준수/갭/우선순위"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web

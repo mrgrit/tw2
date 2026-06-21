@@ -1,0 +1,241 @@
+lab_id: standalone-cloud-container-week09
+title: "CIS Docker Benchmark — 데몬·호스트 구성 점검"
+version: standalone-cloud-container
+course: cloud-container
+week: 9
+description: |
+  CIS Docker Benchmark — 컨테이너 런타임(W04)을 넘어 Docker 데몬·호스트 구성을 점검한다. docker.sock
+  권한(CIS 3.15), daemon.json 설정, 컨테이너 healthcheck(CIS 5.26)·restart policy 를 기준 대조한다.
+  명령은 el34 호스트 docker CLI/파일 점검. 신규 설치 없음. 읽기 전용 점검.
+difficulty: medium
+duration_minutes: 140
+prerequisites:
+  - "W01–W08 통과"
+  - "el34 호스트 SSH + docker CLI"
+  - "lecture §2(docker.sock) §3(daemon) §4(healthcheck) 숙지"
+objectives:
+  - "docker.sock·daemon 구성 점검"
+  - "healthcheck/restart 정책 점검"
+  - "CIS Docker Benchmark 항목 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 점검 환경 확인
+      ## 💻 실행 명령
+      ```bash
+      docker version --format 'server={{.Server.Version}}' 2>/dev/null || echo docker_ok
+      ```
+      ## ✅ 합격 기준
+      `docker`(버전 또는 docker_ok) 출력.
+    hint: 'docker'
+    category: survey
+    points: 10
+    answer: |
+      docker version --format 'server={{.Server.Version}}' 2>/dev/null || echo docker_ok
+      echo docker_ok
+    answer_detail: "CIS Docker 점검 환경 = el34 호스트 docker. CIS Docker Benchmark 는 호스트/데몬/이미지/런타임 항목으로 구성."
+    verify:
+      type: output_contains
+      expect: 'docker'
+      field: stdout
+      semantic: {intent: "환경", success_criteria: ["docker"], acceptable_methods: ["**[OSS] docker (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 목표 — docker.sock 권한 (CIS 3.15)
+      ## 📖 개념 한 줄
+      `/var/run/docker.sock` 은 docker 데몬 제어 소켓 — 이걸 쥐면 호스트의 모든 컨테이너를 제어한다.
+      소유 root, 그룹 docker, 권한 660(others 접근 불가)이어야 한다.
+      ## 💻 실행 명령
+      ```bash
+      ls -la /var/run/docker.sock; P=$(stat -c '%a' /var/run/docker.sock 2>/dev/null); case "$P" in 660|600) echo "compliant=sock_$P";; *) echo "gap=sock_$P";; esac
+      ```
+      ## ✅ 합격 기준
+      `compliant=sock_660`(또는 600) 출력(권한 양호).
+      ## 🔧 도구 풀이
+      - `stat -c '%a'` — 8진수 권한. 660=root:docker rw, others 없음(CIS 3.15 준수). 666 등이면 갭.
+    hint: 'docker.sock'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== docker.sock 권한 (CIS 3.15) ==="
+      ls -la /var/run/docker.sock; P=$(stat -c '%a' /var/run/docker.sock 2>/dev/null); case "$P" in 660|600) echo "compliant=sock_$P";; *) echo "gap=sock_$P";; esac
+      echo "→ 660(root:docker)=준수. docker.sock 은 데몬 제어 = 사실상 호스트 root 권한"
+    answer_detail: "docker.sock(CIS 3.15) = 660 root:docker 준수. 이 소켓 접근=전 컨테이너 제어=호스트 장악. world-writable(666)이면 치명 갭."
+    verify:
+      type: output_contains
+      expect: 'compliant=sock'
+      field: stdout
+      semantic: {intent: "docker.sock 권한", success_criteria: ["660 준수"], acceptable_methods: ["**[OSS] stat (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 목표 — Docker 데몬 설정 (daemon.json)
+      ## 📖 개념 한 줄
+      `/etc/docker/daemon.json` 은 데몬 전역 보안 옵션(userland-proxy, live-restore, icc, userns-remap 등)을
+      담는다. CIS 는 여러 데몬 옵션을 권고한다.
+      ## 💻 실행 명령
+      ```bash
+      cat /etc/docker/daemon.json 2>/dev/null | head -8 || echo no_daemon_json; echo daemon_checked
+      ```
+      ## ✅ 합격 기준
+      daemon.json 내용(또는 부재)과 `daemon_checked` 출력.
+      ## 🔧 도구 풀이
+      - daemon.json 부재 시 데몬은 기본값으로 동작 — CIS 권고 옵션(icc=false 등)이 미설정일 수 있다.
+    hint: 'daemon.json'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== Docker 데몬 설정 ==="
+      cat /etc/docker/daemon.json 2>/dev/null | head -8 || echo no_daemon_json; echo daemon_checked
+      echo "→ daemon.json 의 보안 옵션 점검. icc/userns-remap/live-restore 등 CIS 권고 항목 확인"
+    answer_detail: "데몬 설정(daemon.json) = 전역 보안 옵션. CIS 는 icc=false(컨테이너 간 기본 통신 차단)·userns-remap·live-restore 등 권고. 부재면 기본값."
+    verify:
+      type: output_contains
+      expect: 'daemon_checked'
+      field: stdout
+      semantic: {intent: "데몬 설정", success_criteria: ["daemon.json"], acceptable_methods: ["**[OSS] cat (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 목표 — Healthcheck (CIS 5.26)
+      ## 📖 개념 한 줄
+      Healthcheck 는 컨테이너 내부 상태를 주기 점검해 비정상 시 자동 재시작/교체를 돕는다. CIS 5.26 은
+      healthcheck 설정을 권고한다.
+      ## 💻 실행 명령
+      ```bash
+      H=$(docker inspect el34-web --format '{{if .Config.Healthcheck}}yes{{else}}none{{end}}'); echo "healthcheck=$H"; [ "$H" = "none" ] && echo "gap=no_healthcheck" || echo "compliant=healthcheck"
+      ```
+      ## ✅ 합격 기준
+      `gap=no_healthcheck` 판정(el34-web 은 healthcheck 없음 = 갭).
+    hint: 'healthcheck'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== Healthcheck (CIS 5.26) ==="
+      H=$(docker inspect el34-web --format '{{if .Config.Healthcheck}}yes{{else}}none{{end}}'); echo "healthcheck=$H"; [ "$H" = "none" ] && echo "gap=no_healthcheck" || echo "compliant=healthcheck"
+      echo "→ healthcheck 없음 = CIS 5.26 갭. 비정상 컨테이너를 자동 감지 못 함"
+    answer_detail: "Healthcheck(CIS 5.26) = el34-web 없음(갭). 컨테이너 상태 자동 점검·교체 불가 → HEALTHCHECK 지시어 권고."
+    verify:
+      type: output_contains
+      expect: 'gap=no_healthcheck'
+      field: stdout
+      semantic: {intent: "healthcheck", success_criteria: ["갭"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 목표 — Restart Policy
+      ## 📖 개념 한 줄
+      재시작 정책은 가용성·복원력 통제다. `unless-stopped`/`on-failure` 는 비정상 종료 시 자동 복구.
+      ## 💻 실행 명령
+      ```bash
+      R=$(docker inspect el34-web --format '{{.HostConfig.RestartPolicy.Name}}'); echo "restart=$R"; case "$R" in unless-stopped|on-failure|always) echo "compliant=restart_$R";; *) echo "gap=no_restart";; esac
+      ```
+      ## ✅ 합격 기준
+      `compliant=restart_unless-stopped` 출력(양호).
+    hint: 'restart policy'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== Restart Policy ==="
+      R=$(docker inspect el34-web --format '{{.HostConfig.RestartPolicy.Name}}'); echo "restart=$R"; case "$R" in unless-stopped|on-failure|always) echo "compliant=restart_$R";; *) echo "gap=no_restart";; esac
+      echo "→ unless-stopped = 비정상 종료 시 자동 복구(복원력 준수)"
+    answer_detail: "Restart Policy = el34-web unless-stopped(준수). 비정상 종료 자동 복구 = 가용성/복원력 통제."
+    verify:
+      type: output_contains
+      expect: 'compliant=restart'
+      field: stdout
+      semantic: {intent: "restart policy", success_criteria: ["복원력"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 목표 — CIS Docker Benchmark 자동화
+      ## 📖 개념 한 줄
+      CIS Docker Benchmark 는 수백 항목 — docker-bench-security(공식 스크립트)로 자동 점검한다.
+      ## 💻 실행 명령
+      ```bash
+      echo "docker-bench-security 로 호스트/데몬/이미지/런타임 수백 항목 자동 점검 → WARN/PASS 리포트"
+      ```
+      ## ✅ 합격 기준
+      CIS 자동화(docker-bench) 개념이 정리되면 통과.
+    hint: 'docker-bench'
+    category: report
+    points: 12
+    answer: |
+      echo "=== CIS Docker 자동화 ==="
+      echo "docker-bench-security: CIS Docker Benchmark 를 자동 점검하는 공식 셸 스크립트"
+      echo "점검 범위: 1 호스트 / 2 데몬 / 3 데몬설정파일 / 4 이미지 / 5 런타임 / 6 운영"
+      echo "출력: 항목별 [PASS]/[WARN]/[INFO] → WARN 을 시정 목록으로"
+      echo "→ 수동 점검(이번 미션들)을 docker-bench 로 정기 자동화"
+    answer_detail: "CIS 자동화 = docker-bench-security(공식 스크립트)로 수백 항목 자동 점검. 수동 점검을 정기 자동화."
+    verify:
+      type: output_contains
+      expect: 'docker-bench'
+      field: stdout
+      semantic: {intent: "CIS 자동화", success_criteria: ["docker-bench"], acceptable_methods: ["**[OSS] docker-bench (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 목표 — 방어 종합
+      ## 💻 실행 명령
+      ```bash
+      echo "docker.sock 660 + daemon.json(icc=false/userns-remap) + healthcheck + 최소권한 런타임 + docker-bench 정기점검"
+      ```
+      ## ✅ 합격 기준
+      CIS Docker 방어가 정리되면 통과.
+    hint: 'CIS 방어'
+    category: report
+    points: 12
+    answer: |
+      echo "=== CIS Docker 방어 종합 ==="
+      echo "1) 호스트/데몬: docker.sock 660, daemon.json(icc=false, userns-remap, live-restore)"
+      echo "2) 런타임: 최소권한(W04 비-root/cap drop/특권금지)"
+      echo "3) 가용성: healthcheck + restart policy"
+      echo "4) 자동화: docker-bench-security 정기 점검 + 시정 추적"
+      echo "→ 핵심: 호스트·데몬·런타임을 CIS 기준선으로 정기 점검"
+    answer_detail: "CIS 방어 = docker.sock 권한+daemon 옵션+healthcheck+최소권한 런타임+docker-bench 자동화."
+    verify:
+      type: output_contains
+      expect: 'docker-bench'
+      field: stdout
+      semantic: {intent: "CIS 방어", success_criteria: ["호스트/데몬/런타임"], acceptable_methods: ["**[설명] 방어 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 목표 — CIS Docker 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 클라우드·컨테이너 W09 CIS Docker 보고서 (학번, 이름)
+      ## 1. docker.sock/daemon/healthcheck/restart 점검
+      ## 2. 준수/갭
+      ## 3. 방어(docker-bench 자동화)
+      ```
+      ## ✅ 합격 기준
+      점검 + 준수/갭 + 방어 포함.
+    hint: '점검+갭+방어'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 클라우드·컨테이너 W09 CIS Docker 보고서
+      ## 1. 점검: docker.sock 660(준수, CIS 3.15), daemon.json 존재, healthcheck 없음(갭 CIS 5.26), restart unless-stopped(준수)
+      ## 2. 준수/갭: 준수=sock 권한·restart / 갭=healthcheck 없음·daemon CIS 옵션 점검 필요
+      ## 3. 방어: docker-bench-security 정기 자동 점검 + healthcheck 추가 + daemon 보안 옵션
+      ## 결론: 호스트/데몬 기본은 양호하나 healthcheck 부재가 갭. docker-bench 로 수백 항목 정기 점검 자동화
+      EOF
+    answer_detail: "CIS Docker 보고 = sock/daemon/healthcheck/restart 점검+준수·갭+docker-bench 자동화."
+    verify:
+      type: output_contains
+      expect: 'CIS'
+      field: stdout
+      semantic: {intent: "CIS 보고", success_criteria: ["점검/갭/방어"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
