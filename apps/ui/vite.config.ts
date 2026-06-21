@@ -17,6 +17,7 @@ const proxy = {
   '/monitoring':  API,
   '/me':          API,   // 내 워크북/제출 — 누락 시 SPA fallback(index.html)이 반환돼 깨짐
   '/llm':         API,   // 드래그-질문 AI 튜터(모델/설정/ask)
+  '/training':    API,   // 트레이닝(강의/실습/워크북) — 누락 시 SPA fallback 으로 목록이 안 뜸
   '/battles':   { target: API, changeOrigin: false, ws: false },
   '/initiative':  API,   // 이니셔티브 게시판
   '/health':      API,
