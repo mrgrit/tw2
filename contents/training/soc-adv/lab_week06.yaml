@@ -1,0 +1,241 @@
+lab_id: standalone-soc-adv-week06
+title: "위협 헌팅 — 가설 기반 능동 탐지"
+version: standalone-soc-adv
+course: soc-adv
+week: 6
+description: |
+  SOC 고급 W06 — 위협 헌팅은 "룰이 울리길 기다리는" 수동 탐지를 넘어, 가설을 세워 잠복 위협을 능동적으로
+  찾는다. osquery(스냅샷)+호스트 Sysmon(이벤트)로 은닉 프로세스·지속성·이상 연결을 사냥한다. el34-web
+  osquery·호스트 Sysmon 사용. 인가된 실습만. 명령은 el34 호스트에서. 신규 설치 없음.
+difficulty: hard
+duration_minutes: 170
+prerequisites:
+  - "soc W12(UEBA)·secuops W14(헌팅) + soc-adv W01~W05 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(가설 기반) §3(osquery/sysmon) §4(IOC vs TTP 헌팅) 숙지"
+objectives:
+  - "가설 기반 헌팅 방법론"
+  - "osquery/Sysmon로 은닉 위협 사냥"
+  - "헌팅 결과의 탐지룰 환류"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 헌팅 대상 확인
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "osqueryi --version 2>/dev/null | head -1"; echo hunt_ready
+      ```
+      ## ✅ 합격 기준
+      osquery 가용(hunt_ready).
+    hint: 'osquery'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-web sh -c "osqueryi --version 2>/dev/null | head -1"; echo hunt_ready
+    answer_detail: "위협 헌팅 도구 = osquery(스냅샷)+호스트 Sysmon(이벤트). el34-web 대상."
+    verify:
+      type: output_contains
+      expect: 'hunt_ready'
+      field: stdout
+      semantic: {intent: "헌팅 대상", success_criteria: ["osquery"], acceptable_methods: ["**[OSS] osquery (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 가설 수립
+      ## 📖 개념 한 줄
+      헌팅은 "공격자가 X를 했다면 Y 흔적이 있을 것"이라는 가설에서 출발한다(가설 기반, hypothesis-driven).
+      ## 💻 실행 명령
+      ```bash
+      echo "가설: '침입자가 발판을 심었다면 → 디스크에 없는 프로세스/비표준 포트 리스너/최근 생성 계정이 있다'"
+      ```
+      ## ✅ 합격 기준
+      검증 가능한 가설이 정리되면 통과.
+    hint: '가설'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 가설 수립 ==="
+      echo "가설1: 침입자 발판 → on_disk=0(지워진 채 도는) 프로세스"
+      echo "가설2: 백도어 리스너 → 비표준 포트 LISTEN"
+      echo "가설3: 지속성 → 최근 생성 계정/cron/authorized_keys"
+      echo "→ 헌팅은 막연한 둘러보기가 아니라 검증 가능한 가설에서 시작"
+      echo "hypothesis_set"
+    answer_detail: "가설 기반 헌팅 = '공격자가 X면 Y 흔적' 가설 수립. 검증 가능해야(osquery/Sysmon로 확인)."
+    verify:
+      type: output_contains
+      expect: 'hypothesis_set'
+      field: stdout
+      semantic: {intent: "가설 수립", success_criteria: ["검증 가능 가설"], acceptable_methods: ["**[관리적] 가설 (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 헌팅 ① 은닉 프로세스 (osquery)
+      ## 📖 개념 한 줄
+      디스크에서 지워진 채 메모리에서 도는 프로세스(on_disk=0)는 강한 침해 신호다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "osqueryi --json 'SELECT pid,name,on_disk FROM processes WHERE on_disk=0 LIMIT 5' 2>/dev/null; echo proc_hunted"
+      ```
+      ## ✅ 합격 기준
+      on_disk=0 헌팅 쿼리가 수행되면(proc_hunted) 통과.
+      ## 🔧 도구 풀이
+      - on_disk=0 = 실행 파일이 디스크에 없음 → 삭제 후 실행 중(은닉) 의심.
+    hint: 'on_disk=0'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 헌팅 ① 은닉 프로세스 ==="
+      docker exec el34-web sh -c "osqueryi --json 'SELECT pid,name,on_disk FROM processes WHERE on_disk=0 LIMIT 5' 2>/dev/null; echo proc_hunted"
+      echo "→ on_disk=0 = 디스크에서 지워진 채 도는 프로세스(은닉 발판 의심). 비어있으면 해당 위협 없음"
+    answer_detail: "은닉 프로세스 헌팅 = processes WHERE on_disk=0. 삭제 후 실행 중인 발판 탐지. 비어있음도 유효한 결과."
+    verify:
+      type: output_contains
+      expect: 'proc_hunted'
+      field: stdout
+      semantic: {intent: "프로세스 헌팅", success_criteria: ["on_disk 쿼리"], acceptable_methods: ["**[OSS] osquery (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 헌팅 ② 비표준 리스너 (osquery)
+      ## 📖 개념 한 줄
+      예상 밖 포트에서 LISTEN하는 프로세스는 백도어 리스너 신호다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "osqueryi --json 'SELECT DISTINCT port,protocol FROM listening_ports ORDER BY port LIMIT 8' 2>/dev/null; echo ports_hunted"
+      ```
+      ## ✅ 합격 기준
+      리스닝 포트 헌팅이 수행되면(ports_hunted) 통과.
+      ## 🔧 도구 풀이
+      - listening_ports로 전체 LISTEN 포트 열거 → 정상 baseline과 대조해 비표준 포트 식별.
+    hint: 'listening_ports'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 헌팅 ② 비표준 리스너 ==="
+      docker exec el34-web sh -c "osqueryi --json 'SELECT DISTINCT port,protocol FROM listening_ports ORDER BY port LIMIT 8' 2>/dev/null; echo ports_hunted"
+      echo "→ LISTEN 포트를 정상 baseline(80/443 등)과 대조 → 예상 밖 포트=백도어 리스너 의심"
+    answer_detail: "리스너 헌팅 = listening_ports를 baseline과 대조. 비표준 포트 LISTEN=백도어 신호."
+    verify:
+      type: output_contains
+      expect: 'ports_hunted'
+      field: stdout
+      semantic: {intent: "리스너 헌팅", success_criteria: ["포트 열거"], acceptable_methods: ["**[OSS] osquery (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 헌팅 ③ Sysmon 이벤트 (단명 행위)
+      ## 📖 개념 한 줄
+      osquery 스냅샷은 "지금"만 본다. 짧게 생겼다 사라진 행위(단명 프로세스·base64 디코드 실행)는 호스트
+      Sysmon 이벤트 스트림으로 사냥한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "echo hunt_marker_$(date +%s) > /dev/null; echo sysmon_hunt"
+      ```
+      ## ✅ 합격 기준
+      이벤트 기반 헌팅 개념 확인(sysmon_hunt).
+      ## 🔧 도구 풀이
+      - 호스트 Sysmon(eBPF)이 컨테이너 프로세스 생성/네트워크/파일까지 이벤트로 기록 → grep b64decode 등으로 헌팅.
+    hint: 'Sysmon 이벤트'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 헌팅 ③ Sysmon 이벤트 (단명 행위) ==="
+      docker exec el34-web sh -c "echo hunt_marker_$(date +%s) > /dev/null; echo sysmon_hunt"
+      echo "→ osquery는 스냅샷(지금)만, Sysmon은 이벤트 스트림(과거~현재). base64 디코드 실행·단명 프로세스 헌팅"
+      echo "→ 호스트 /var/log/syslog의 Linux-Sysmon EventID 1(ProcessCreate)/3(NetworkConnect)/11(FileCreate)"
+    answer_detail: "Sysmon 헌팅 = 이벤트 스트림으로 단명 행위(base64 실행 등) 사냥. osquery 스냅샷의 사각을 보완."
+    verify:
+      type: output_contains
+      expect: 'sysmon_hunt'
+      field: stdout
+      semantic: {intent: "Sysmon 헌팅", success_criteria: ["이벤트 스트림"], acceptable_methods: ["**[OSS] sysmon (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 IOC 헌팅 vs TTP 헌팅
+      ## 💻 실행 명령
+      ```bash
+      echo "IOC 헌팅(알려진 지표 검색)=빠르나 변형에 약함. TTP 헌팅(행위 패턴)=강하나 가설·전문성 필요"
+      ```
+      ## ✅ 합격 기준
+      두 헌팅 방식 차이가 정리되면 통과.
+    hint: 'IOC vs TTP 헌팅'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== IOC 헌팅 vs TTP 헌팅 ==="
+      echo "IOC 헌팅: 알려진 지표(해시/IP/UA)를 환경에서 검색 — 빠르나 공격자가 지표 바꾸면 놓침"
+      echo "TTP 헌팅: 수법 패턴(on_disk=0·비표준 리스너·base64 실행)을 가설로 사냥 — 변형에 강하나 전문성 필요"
+      echo "→ 성숙한 헌팅은 IOC(빠름)+TTP(지속) 병행. 피라미드 오브 페인 상단을 노린다"
+      echo "ioc_vs_ttp"
+    answer_detail: "IOC 헌팅(빠름/변형 약함) vs TTP 헌팅(지속/전문성). 병행이 성숙. TTP가 공격자에게 더 고통."
+    verify:
+      type: output_contains
+      expect: 'ioc_vs_ttp'
+      field: stdout
+      semantic: {intent: "헌팅 방식", success_criteria: ["IOC/TTP"], acceptable_methods: ["**[표준] 헌팅 (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 헌팅 결과의 탐지룰 환류
+      ## 💻 실행 명령
+      ```bash
+      echo "헌팅에서 찾은 패턴→SIGMA/Wazuh 룰로 자동화. 한 번 사냥한 위협은 다시 손으로 안 찾게"
+      ```
+      ## ✅ 합격 기준
+      헌팅→탐지 자동화 환류가 정리되면 통과.
+    hint: '헌팅 환류'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 헌팅 결과의 탐지룰 환류 ==="
+      echo "헌팅으로 새 위협 패턴 발견 → SIGMA/Wazuh 룰(W03)로 자동화 → CDB list/인텔(W05)로 환류"
+      echo "원칙: 한 번 손으로 사냥한 위협은 룰로 만들어 다시는 수동 반복 안 함"
+      echo "→ 헌팅(능동·수동)과 탐지(자동)는 서로 먹인다: 헌팅이 새 룰을 낳고, 룰이 헌팅 시간을 번다"
+      echo "hunt_to_rule"
+    answer_detail: "헌팅 환류 = 발견 패턴을 SIGMA/Wazuh 룰로 자동화. 헌팅(능동)↔탐지(자동) 상호 강화."
+    verify:
+      type: output_contains
+      expect: 'hunt_to_rule'
+      field: stdout
+      semantic: {intent: "헌팅 환류", success_criteria: ["룰 자동화"], acceptable_methods: ["**[설명] 환류 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 위협 헌팅 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC고급 W06 위협 헌팅 보고서 (학번, 이름)
+      ## 1. 가설·헌팅 결과(프로세스/리스너/Sysmon)
+      ## 2. IOC vs TTP 헌팅
+      ## 3. 탐지룰 환류
+      ```
+      ## ✅ 합격 기준
+      가설+헌팅+환류 포함.
+    hint: '가설+헌팅+환류'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # SOC고급 W06 위협 헌팅 보고서
+      ## 1. 가설: 발판→on_disk=0 프로세스/비표준 리스너/지속성. 헌팅: osquery(스냅샷)+Sysmon(이벤트)로 검증
+      ## 2. IOC 헌팅(빠름/변형 약함) vs TTP 헌팅(지속/전문성) 병행 — 피라미드 오브 페인 상단
+      ## 3. 환류: 헌팅에서 찾은 패턴을 SIGMA/Wazuh 룰로 자동화 → 다시 수동 반복 안 함
+      ## 결론: 헌팅은 룰을 기다리지 않고 가설로 잠복 위협을 능동 사냥. 결과를 룰로 환류해 자동화로 잇는다
+      EOF
+    answer_detail: "헌팅 보고 = 가설/헌팅(osquery·Sysmon)+IOC/TTP+룰 환류. 능동 탐지를 자동화로 잇는다."
+    verify:
+      type: output_contains
+      expect: '헌팅'
+      field: stdout
+      semantic: {intent: "헌팅 보고", success_criteria: ["가설/헌팅/환류"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
