@@ -1,0 +1,241 @@
+lab_id: standalone-soc-adv-week15
+title: "종합 APT 대응 — 탐지·포렌식·대응·교훈 통합 캡스톤"
+version: standalone-soc-adv
+course: soc-adv
+week: 15
+description: |
+  SOC 고급 W15 — 종합 캡스톤. APT 침해 시나리오 하나에 W01~W14 전 역량을 쏟는다. 킬체인(정찰→침투→발판)을
+  다계층(Suricata·ModSec·Wazuh·osquery)으로 탐지하고, 출처 IP로 교차 상관(포렌식)하고, IR/SOAR로 대응하고,
+  ATT&CK 매핑·탐지 환류로 마무리한다. el34 4개 컨테이너 통합 사용. 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "soc-adv W01~W14 전 주차 통과(이 캡스톤은 통합 시험)"
+  - "el34 호스트 SSH + docker exec (el34-attacker/web/ips/siem)"
+  - "lecture §2(킬체인 통합) §3(교차 상관) §4(대응·환류) 숙지"
+objectives:
+  - "APT 킬체인을 다계층으로 탐지(네트워크·웹·호스트)"
+  - "출처 IP로 전 계층 교차 상관(통합 포렌식)"
+  - "IR/SOAR 대응 + ATT&CK 매핑 + 탐지 환류로 완결"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 캡스톤 — 통합 환경 점검
+      ## 📖 개념 한 줄
+      종합 대응은 모든 계층이 가동돼야 한다 — 공격(attacker)·웹(web)·네트워크(ips)·SIEM(siem) 확인.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c "test -f /var/log/suricata/eve.json && echo ips_ok"; docker exec el34-siem sh -c "test -f /var/ossec/logs/alerts/alerts.json && echo siem_ok"; docker exec el34-web sh -c "command -v osqueryi >/dev/null && echo web_ok"; echo capstone_ready
+      ```
+      ## ✅ 합격 기준
+      4계층 환경이 가동되면(capstone_ready) 통과.
+    hint: '통합 환경'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 캡스톤: 통합 환경 점검 ==="
+      docker exec el34-ips sh -c "test -f /var/log/suricata/eve.json && echo ips_ok"; docker exec el34-siem sh -c "test -f /var/ossec/logs/alerts/alerts.json && echo siem_ok"; docker exec el34-web sh -c "command -v osqueryi >/dev/null && echo web_ok"; echo capstone_ready
+      echo "→ 네트워크(IPS)·SIEM·호스트(osquery) 다계층 가시성 = APT 대응의 전제"
+    answer_detail: "통합 환경 = IPS(네트워크)+SIEM(상관)+osquery(호스트) 다계층. APT는 한 계층으로 못 잡음."
+    verify:
+      type: output_contains
+      expect: 'capstone_ready'
+      field: stdout
+      semantic: {intent: "통합 환경", success_criteria: ["다계층"], acceptable_methods: ["**[OSS] 다계층 (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 킬체인 ① 정찰 탐지 (T1046)
+      ## 📖 개념 한 줄
+      APT의 첫 단계는 정찰 — 공격자가 스캔하고, 네트워크 계층(Suricata)이 그 흔적을 본다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nmap -sS -T4 --top-ports 50 10.20.30.1 2>/dev/null | grep -c open"; echo recon_detected
+      ```
+      ## ✅ 합격 기준
+      정찰(스캔)이 수행·탐지되면(recon_detected) 통과.
+    hint: '정찰'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 킬체인① 정찰(T1046 Network Service Discovery) ==="
+      docker exec el34-attacker sh -c "nmap -sS -T4 --top-ports 50 10.20.30.1 2>/dev/null | grep -c open"; echo recon_detected
+      echo "→ 공격자 스캔 → Suricata가 네트워크 계층에서 포착. 킬체인의 시작"
+    answer_detail: "정찰(T1046) = 포트 스캔. 네트워크 계층(Suricata)이 탐지. APT 킬체인 1단계."
+    verify:
+      type: output_contains
+      expect: 'recon_detected'
+      field: stdout
+      semantic: {intent: "정찰", success_criteria: ["스캔"], acceptable_methods: ["**[OSS] nmap (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 킬체인 ② 초기 침투 탐지 (T1190)
+      ## 📖 개념 한 줄
+      정찰 후 공격자는 취약 웹앱을 노린다 — 웹 계층(ModSec)+SIEM(Wazuh)이 SQLi를 탐지.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--'"; echo; echo intrusion_detected
+      ```
+      ## ✅ 합격 기준
+      침투(SQLi)가 수행·탐지되면(intrusion_detected) 통과.
+    hint: '초기 침투'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 킬체인② 초기 침투(T1190 Exploit Public-Facing App) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--'"; echo; echo intrusion_detected
+      echo "→ SQLi UNION 탈취 → ModSec(웹)+Wazuh(SIEM) 다계층 탐지. 403이면 WAF 차단"
+    answer_detail: "초기 침투(T1190) = SQLi 데이터 탈취. 웹(ModSec)+SIEM(Wazuh) 다계층 탐지. 킬체인 2단계."
+    verify:
+      type: output_contains
+      expect: 'intrusion_detected'
+      field: stdout
+      semantic: {intent: "초기 침투", success_criteria: ["SQLi"], acceptable_methods: ["**[OSS] curl (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 킬체인 ③ 발판·지속성 헌팅 (T1505)
+      ## 📖 개념 한 줄
+      침투에 성공하면 공격자는 발판(웹셸·백도어)을 심는다 — 호스트 계층(osquery)이 은닉 발판을 헌팅.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "osqueryi --json \"SELECT count(*) c FROM processes WHERE on_disk=0\" 2>/dev/null | grep -o '\"c\":\"[0-9]*\"' || echo '\"c\":\"0\"'"; echo foothold_hunted
+      ```
+      ## ✅ 합격 기준
+      발판 헌팅(on_disk=0 점검)이 수행되면(foothold_hunted) 통과.
+      ## 🔧 도구 풀이
+      - 발판 헌팅: osquery on_disk=0(W06)·listening_ports로 은닉 백도어·웹셸 탐지(호스트 계층).
+    hint: '발판 헌팅'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 킬체인③ 발판·지속성 헌팅(T1505 Server Software Component) ==="
+      docker exec el34-web sh -c "osqueryi --json \"SELECT count(*) c FROM processes WHERE on_disk=0\" 2>/dev/null | grep -o '\"c\":\"[0-9]*\"' || echo '\"c\":\"0\"'"; echo foothold_hunted
+      echo "→ osquery로 은닉 발판(on_disk=0) 헌팅. 호스트 계층 — 네트워크/웹이 못 보는 침투 후 행위"
+    answer_detail: "발판 헌팅(T1505) = osquery on_disk=0으로 은닉 웹셸/백도어 탐지. 호스트 계층. 킬체인 3단계."
+    verify:
+      type: output_contains
+      expect: 'foothold_hunted'
+      field: stdout
+      semantic: {intent: "발판 헌팅", success_criteria: ["호스트 헌팅"], acceptable_methods: ["**[OSS] osquery (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 통합 포렌식 — 출처 IP 교차 상관
+      ## 📖 개념 한 줄
+      핵심 — 출처 IP 하나로 정찰(네트워크)+침투(웹)+발판(호스트)을 한 공격자의 타임라인으로 묶는다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c "echo IPS:; tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'"; docker exec el34-siem sh -c "echo SIEM:; tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c '10.20.30.202'"; echo correlated
+      ```
+      ## ✅ 합격 기준
+      출처 IP로 다계층 교차 상관(correlated)되면 통과.
+    hint: '교차 상관'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 통합 포렌식: 출처 IP 교차 상관 ==="
+      docker exec el34-ips sh -c "echo IPS:; tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'"; docker exec el34-siem sh -c "echo SIEM:; tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c '10.20.30.202'"; echo correlated
+      echo "→ 출처 IP(10.20.30.202, SNAT 없음 보존)로 IPS+SIEM 교차 상관 → 단일 공격자 타임라인 복원"
+      echo "→ W02 SIEM·W07 네트워크 포렌식·W12 정규화가 여기서 하나로 — 다계층을 한 사건으로"
+    answer_detail: "교차 상관 = 출처 IP로 네트워크+웹+호스트 계층을 한 공격자 타임라인으로 통합. APT 대응의 핵심."
+    verify:
+      type: output_contains
+      expect: 'correlated'
+      field: stdout
+      semantic: {intent: "교차 상관", success_criteria: ["다계층 통합"], acceptable_methods: ["**[OSS] 교차 상관 (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 통합 대응 — IR + SOAR
+      ## 📖 개념 한 줄
+      식별된 APT를 PICERL(W11)+SOAR(W10)로 대응 — 격리(AR)·근절·복구.
+      ## 💻 실행 명령 (드라이런)
+      ```bash
+      docker exec el34-siem sh -c "ls /var/ossec/active-response/bin/firewall-drop >/dev/null 2>&1 && echo ar_ready"; echo response_done
+      ```
+      ## ✅ 합격 기준
+      IR/SOAR 대응 계획이 검증되면(response_done) 통과.
+    hint: '통합 대응'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 통합 대응: IR + SOAR ==="
+      docker exec el34-siem sh -c "ls /var/ossec/active-response/bin/firewall-drop >/dev/null 2>&1 && echo ar_ready"; echo response_done
+      echo "PICERL: 식별(교차상관 완료)→격리(firewall-drop으로 .202 차단+망분리)→근절(웹셸/발판 제거+패치)→복구(검증)"
+      echo "SOAR: 고위험 알림→플레이북 자동(보강→차단→티켓). 비가역은 사람 승인(HITL)"
+      echo "→ (실차단 미발동·계획 검증). 탐지(W01~)→대응(W10/W11)이 하나로"
+    answer_detail: "통합 대응 = PICERL(격리/근절/복구)+SOAR(플레이북 자동화). 탐지를 실제 대응으로 연결."
+    verify:
+      type: output_contains
+      expect: 'response_done'
+      field: stdout
+      semantic: {intent: "통합 대응", success_criteria: ["IR/SOAR"], acceptable_methods: ["**[관리적] PICERL+SOAR (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 ATT&CK 매핑 · 탐지 환류
+      ## 💻 실행 명령
+      ```bash
+      echo "사건을 ATT&CK로 매핑(T1046→T1190→T1505), 탐지 격차를 룰/CTI로 환류(W03/W05/W13)"
+      ```
+      ## ✅ 합격 기준
+      ATT&CK 매핑 + 탐지 환류가 정리되면 통과.
+    hint: 'ATT&CK 환류'
+    category: report
+    points: 12
+    answer: |
+      echo "=== ATT&CK 매핑 · 탐지 환류 ==="
+      echo "킬체인 매핑: T1046(정찰)→T1190(침투)→T1505(발판)→(이후 T1041 유출 등)"
+      echo "환류: 탐지 격차→SIGMA/Wazuh 룰(W03/W13), 새 IOC→CTI/CDB(W05), 플레이북 보강(W10)"
+      echo "교훈(W11): 타임라인·근본원인(입력검증·패치 지연)·MTTR 평가·개선과제"
+      echo "→ 사건이 끝이 아니라 다음 방어의 시작 — 탐지·인텔·플레이북이 모두 강화됨"
+      echo "feedback_done"
+    answer_detail: "ATT&CK 매핑+환류 = 킬체인을 T번호로 기록, 격차를 룰/CTI/플레이북으로 환류. 사건→방어 강화."
+    verify:
+      type: output_contains
+      expect: 'feedback_done'
+      field: stdout
+      semantic: {intent: "ATT&CK 환류", success_criteria: ["매핑/환류"], acceptable_methods: ["**[관리적] 환류 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 종합 APT 대응 보고서 (캡스톤)
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC고급 W15 종합 APT 대응 보고서 (학번, 이름)
+      ## 1. 킬체인 다계층 탐지(정찰·침투·발판)
+      ## 2. 출처 IP 교차 상관(통합 포렌식)
+      ## 3. IR/SOAR 대응 + ATT&CK 매핑 + 탐지 환류
+      ```
+      ## ✅ 합격 기준
+      킬체인 + 교차상관 + 대응/환류 모두 포함.
+    hint: '킬체인+상관+대응'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # SOC고급 W15 종합 APT 대응 보고서 (캡스톤)
+      ## 1. 킬체인 다계층 탐지: 정찰(T1046, Suricata)→침투(T1190 SQLi, ModSec+Wazuh)→발판(T1505, osquery on_disk=0)
+      ## 2. 통합 포렌식: 출처 IP(10.20.30.202, SNAT 없음)로 IPS+SIEM+호스트 교차 상관 → 단일 공격자 타임라인
+      ## 3. 대응: PICERL(격리 firewall-drop→근절→복구)+SOAR 플레이북(HITL). ATT&CK 매핑+탐지 환류(SIGMA/CTI/플레이북)
+      ## 결론: APT는 한 계층으로 못 잡는다. 다계층 가시성+교차 상관+신속 대응+교훈 환류가 SOC 고급의 완성
+      ## 적용 역량: W01성숙도 W02상관 W03SIGMA W04YARA W05CTI W06헌팅 W07/08포렌식 W09분석 W10SOAR W11IR W12로그 W13퍼플 W14AI
+      EOF
+    answer_detail: "캡스톤 = 킬체인 다계층 탐지+교차상관+IR/SOAR+ATT&CK 환류. SOC고급 W01~W14 전 역량 통합."
+    verify:
+      type: output_contains
+      expect: 'APT'
+      field: stdout
+      semantic: {intent: "캡스톤 보고", success_criteria: ["킬체인/상관/대응"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
