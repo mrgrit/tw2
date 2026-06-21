@@ -1,0 +1,243 @@
+lab_id: standalone-soc-adv-week11
+title: "인시던트 대응(IR) — 준비·식별·격리·근절·복구·교훈"
+version: standalone-soc-adv
+course: soc-adv
+week: 11
+description: |
+  SOC 고급 W11 — 인시던트 대응(NIST 800-61 / PICERL). 실제 침해 사건을 가정해 IR 수명주기 한 바퀴를 돈다.
+  공격을 흘려 사건을 일으키고, Wazuh로 식별, 격리(AR 드라이런), 근절, 복구 검증, 교훈까지. el34 Wazuh/
+  Suricata/osquery를 IR 증거로 사용. 인가된 실습만(실차단 미발동). 명령은 el34 호스트에서. 신규 설치 없음.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "soc W09(IR 기초)·soc-adv W07~W10(포렌식/분석/SOAR) 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(PICERL 6단계) §3(증거·타임라인) §4(교훈) 숙지"
+objectives:
+  - "IR 수명주기(PICERL) 6단계를 순서대로 수행"
+  - "식별→격리→근절→복구의 증거 기반 대응"
+  - "사후 검토(교훈)로 재발 방지"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 1단계 준비(Preparation) — IR 도구 점검
+      ## 📖 개념 한 줄
+      IR의 성패는 사건 전에 갈린다 — 탐지(Wazuh)·증거(Suricata/osquery)·대응(AR) 도구가 준비됐는지 점검.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c "test -f /var/ossec/logs/alerts/alerts.json && echo siem_ok; ls /var/ossec/active-response/bin/firewall-drop >/dev/null 2>&1 && echo ar_ok"; echo prep_ready
+      ```
+      ## ✅ 합격 기준
+      탐지·대응 도구가 준비되면(prep_ready) 통과.
+    hint: '준비'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 1단계 준비(Preparation) ==="
+      docker exec el34-siem sh -c "test -f /var/ossec/logs/alerts/alerts.json && echo siem_ok; ls /var/ossec/active-response/bin/firewall-drop >/dev/null 2>&1 && echo ar_ok"; echo prep_ready
+      echo "→ 준비 = 탐지(alerts.json)·대응(AR)·증거(Suricata/osquery) 도구가 사건 전에 가동 중인지 점검"
+    answer_detail: "준비(P) = 사건 전 탐지/증거/대응 도구·런북 점검. IR 성패는 준비에서 갈린다."
+    verify:
+      type: output_contains
+      expect: 'prep_ready'
+      field: stdout
+      semantic: {intent: "준비", success_criteria: ["도구 점검"], acceptable_methods: ["**[관리적] 준비 (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 사건 발생 — 공격 트리거
+      ## 📖 개념 한 줄
+      IR 실습의 대상 사건을 만든다 — 공격을 흘려 침해를 일으킨다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?x=1%27%20UNION%20SELECT%20user,password%20FROM%20users--'"; echo; echo incident_occurred
+      ```
+      ## ✅ 합격 기준
+      사건(공격)이 발생하면(incident_occurred) 통과.
+    hint: '사건 발생'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 사건 발생(공격 트리거) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?x=1%27%20UNION%20SELECT%20user,password%20FROM%20users--'"; echo; echo incident_occurred
+      echo "→ SQLi UNION 탈취 시도 = 우리의 IR 대상 사건. 이제 PICERL로 대응한다"
+    answer_detail: "사건 = SQLi UNION 데이터 탈취 시도. IR 대상 사건을 발생시켜 수명주기 실습."
+    verify:
+      type: output_contains
+      expect: 'incident_occurred'
+      field: stdout
+      semantic: {intent: "사건 발생", success_criteria: ["공격"], acceptable_methods: ["**[OSS] curl (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 2단계 식별(Identification) — 사건 확증
+      ## 📖 개념 한 줄
+      알림이 곧 사건은 아니다 — 증거(Wazuh 알림+출처)로 "진짜 침해인가"를 확증한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c "tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c '10.20.30.202'"; echo identified
+      ```
+      ## ✅ 합격 기준
+      출처 증거로 사건 확증(identified)되면 통과.
+      ## 🔧 도구 풀이
+      - 식별: 알림+출처 IP 상관(W07)+영향 범위 판단. 오탐/실제 침해 구분이 핵심.
+    hint: '식별'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 2단계 식별(Identification) ==="
+      docker exec el34-siem sh -c "tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c '10.20.30.202'"; echo identified
+      echo "→ Wazuh 알림+출처(10.20.30.202) 상관으로 사건 확증. 심각도·영향 범위 판단(triage)"
+    answer_detail: "식별(I) = 알림+증거로 침해 확증·triage(심각도/범위). 오탐과 실제 사건 구분이 핵심."
+    verify:
+      type: output_contains
+      expect: 'identified'
+      field: stdout
+      semantic: {intent: "식별", success_criteria: ["사건 확증"], acceptable_methods: ["**[OSS] Wazuh alerts (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 3단계 격리(Containment) — 확산 차단
+      ## 📖 개념 한 줄
+      근절 전에 먼저 피를 멈춘다 — 공격 출처를 격리해 확산을 끊는다(단기 격리).
+      ## 💻 실행 명령 (드라이런)
+      ```bash
+      echo "단기 격리: firewall-drop으로 공격 IP(10.20.30.202) 차단 + 감염 호스트 망 분리 (실차단 미발동·계획 검증)"
+      docker exec el34-siem sh -c "ls /var/ossec/active-response/bin/firewall-drop >/dev/null 2>&1 && echo ar_available"
+      ```
+      ## ✅ 합격 기준
+      격리 계획(차단/분리)이 검증되면(contained) 통과.
+    hint: '격리'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 3단계 격리(Containment) ==="
+      echo "단기 격리: 공격 IP(10.20.30.202)를 firewall-drop으로 차단 + 감염 호스트 망 분리(증거 보존 위해 종료 X)"
+      docker exec el34-siem sh -c "ls /var/ossec/active-response/bin/firewall-drop >/dev/null 2>&1 && echo ar_available"
+      echo "장기 격리: 임시 패치·우회 차단 유지하며 근절 준비. (실차단 미발동·계획만 검증)"
+      echo "contained"
+    answer_detail: "격리(C) = 확산 차단(IP 차단·망 분리). 증거 보존 위해 종료 대신 격리. 단기→장기 격리."
+    verify:
+      type: output_contains
+      expect: 'contained'
+      field: stdout
+      semantic: {intent: "격리", success_criteria: ["확산 차단"], acceptable_methods: ["**[관리적] 격리 (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 4단계 근절(Eradication) — 원인 제거
+      ## 📖 개념 한 줄
+      증상이 아니라 원인을 제거한다 — 웹셸·백도어·취약점을 모두 없앤다(osquery로 확인).
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "osqueryi --json \"SELECT count(*) c FROM processes WHERE on_disk=0\" 2>/dev/null | grep -o '\"c\":\"[0-9]*\"' || echo '\"c\":\"0\"'"; echo eradicated
+      ```
+      ## ✅ 합격 기준
+      근절(은닉 발판 확인·제거 계획)이 수행되면(eradicated) 통과.
+      ## 🔧 도구 풀이
+      - 근절: 웹셸 삭제·백도어 계정 제거·취약점 패치. on_disk=0(W06) 잔존 발판 확인이 핵심.
+    hint: '근절'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 4단계 근절(Eradication) ==="
+      docker exec el34-web sh -c "osqueryi --json \"SELECT count(*) c FROM processes WHERE on_disk=0\" 2>/dev/null | grep -o '\"c\":\"[0-9]*\"' || echo '\"c\":\"0\"'"; echo eradicated
+      echo "→ 근절 = 웹셸/백도어/은닉 발판(on_disk=0) 제거 + 취약점 패치. 증상 아닌 원인 제거"
+    answer_detail: "근절(E) = 원인 제거(웹셸·백도어·취약점). on_disk=0 잔존 발판 확인. 증상 아닌 뿌리 제거."
+    verify:
+      type: output_contains
+      expect: 'eradicated'
+      field: stdout
+      semantic: {intent: "근절", success_criteria: ["원인 제거"], acceptable_methods: ["**[OSS] osquery (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 5단계 복구(Recovery) — 정상화·검증
+      ## 📖 개념 한 줄
+      서비스를 복구하고, 재침해가 없는지 모니터링으로 검증한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"; echo; echo recovered
+      ```
+      ## ✅ 합격 기준
+      서비스 정상 응답 + 모니터링 검증(recovered)되면 통과.
+    hint: '복구'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 5단계 복구(Recovery) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"; echo; echo recovered
+      echo "→ 복구 = 서비스 정상화(응답 확인) + 강화된 모니터링으로 재침해 감시. 깨끗함을 검증하고 복귀"
+    answer_detail: "복구(R) = 서비스 정상화+재침해 모니터링. 강화 감시 하에 단계적 복귀. 깨끗함 검증 필수."
+    verify:
+      type: output_contains
+      expect: 'recovered'
+      field: stdout
+      semantic: {intent: "복구", success_criteria: ["정상화/검증"], acceptable_methods: ["**[OSS] 검증 (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 6단계 교훈(Lessons Learned) — 사후 검토
+      ## 💻 실행 명령
+      ```bash
+      echo "사후 검토: 타임라인·근본원인·대응평가·개선과제(탐지룰/플레이북 보강)로 재발 방지"
+      ```
+      ## ✅ 합격 기준
+      교훈(타임라인·근본원인·개선과제)이 정리되면 통과.
+    hint: '교훈'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 6단계 교훈(Lessons Learned) ==="
+      echo "1) 타임라인: 침입(SQLi)→탐지(Wazuh)→격리→근절→복구의 시각별 기록(W07/W08 포렌식)"
+      echo "2) 근본 원인: 입력 검증 부재(웹) + 탐지 지연 등"
+      echo "3) 대응 평가: MTTD/MTTR, 잘된 점·아쉬운 점"
+      echo "4) 개선 과제: 탐지룰(SIGMA) 추가·플레이북(SOAR) 보강·취약점 패치·교육"
+      echo "→ 교훈은 IR의 끝이자 다음 '준비'의 시작 — IR은 순환한다"
+      echo "lessons_done"
+    answer_detail: "교훈(L) = 타임라인·근본원인·대응평가·개선과제. 재발 방지로 환류. IR의 끝이자 준비의 시작."
+    verify:
+      type: output_contains
+      expect: 'lessons_done'
+      field: stdout
+      semantic: {intent: "교훈", success_criteria: ["사후 검토"], acceptable_methods: ["**[관리적] 교훈 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 IR 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC고급 W11 인시던트 대응 보고서 (학번, 이름)
+      ## 1. 준비·식별(triage)
+      ## 2. 격리·근절·복구
+      ## 3. 교훈·개선 과제
+      ```
+      ## ✅ 합격 기준
+      PICERL 6단계 + 타임라인 + 교훈 포함.
+    hint: 'PICERL+타임라인+교훈'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # SOC고급 W11 인시던트 대응 보고서
+      ## 1. 준비(탐지/대응 도구 가동). 식별: Wazuh 알림+출처(10.20.30.202)로 SQLi 침해 확증·triage
+      ## 2. 격리(공격 IP 차단·망 분리, 증거 보존). 근절(웹셸/on_disk=0 발판 제거+패치). 복구(정상화+재침해 감시)
+      ## 3. 교훈: 타임라인·근본원인(입력검증 부재)·MTTR 평가·개선(SIGMA룰/SOAR 플레이북/패치/교육)
+      ## 결론: IR = PICERL 순환. 증거 기반 대응 + 교훈 환류로 다음 사건의 준비를 강화
+      EOF
+    answer_detail: "IR 보고 = PICERL 6단계+타임라인+교훈. 증거 기반 대응과 교훈 환류로 재발 방지·준비 강화."
+    verify:
+      type: output_contains
+      expect: '인시던트 대응'
+      field: stdout
+      semantic: {intent: "IR 보고", success_criteria: ["PICERL/타임라인/교훈"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
