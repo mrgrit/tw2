@@ -4,9 +4,15 @@ version: standalone-attack
 course: attack
 week: 9
 description: |
-  scapy로 패킷을 직접 조립해 SYN 스캔·비정상 스캔(FIN/XMAS/NULL)을 하고, 대규모 스캔의 Suricata 탐지와
-  비정상 플래그 탐지룰을 다룬다. 공격은 el34-attacker(scapy 2.7), 방어는 Suricata. 룰은 self-clean.
-  인가된 실습만. 명령은 el34 호스트에서.
+  완성 도구(nmap)를 넘어 scapy로 TCP 패킷을 한 필드씩 직접 조립한다. SYN 을 보내 응답 플래그
+  (SYN-ACK 0x12=open / RST 0x14=closed)로 포트 상태를 판정하고, 표준이 아닌 비정상 스캔
+  (FIN/XMAS/NULL)으로 일부 stateless 필터·스택을 우회하려 시도한다. 이어 방어자 시선으로
+  돌아서서, 대규모 스캔(100+ 포트)이 Suricata 의 임계 기반 탐지에 걸리는 것과, 정상 트래픽에
+  결코 없는 NULL 패킷(flags:0)을 시그니처 룰로 잡는 것을 직접 확인한다. 마지막으로 은밀(소량·
+  저속) ↔ 탐지(대량·고속)의 trade-off 를 정리한다. 공격은 el34-attacker(scapy 2.7, root → raw
+  socket 가능, hping3 없음), 방어는 el34-ips 의 Suricata. 작성한 IDS 룰은 sid(9409xxx)로
+  self-clean 해 베이스 룰을 보존한다. 인가된 실습 환경(el34)에서만 수행하며, 모든 명령은 el34
+  호스트(ssh ccc@192.168.0.151)에서 docker exec 로 실행한다.
 difficulty: hard
 duration_minutes: 180
 prerequisites:
@@ -14,27 +20,41 @@ prerequisites:
   - "el34 호스트 SSH + docker exec"
   - "lecture §2(scapy) §3(비정상 스캔) §4(탐지) 숙지"
 objectives:
-  - "scapy로 SYN 패킷 크래프팅 + open 포트 식별"
-  - "비정상 스캔(FIN/XMAS/NULL) 수행"
-  - "대규모 스캔의 Suricata 탐지 + 비정상 플래그 탐지룰"
+  - "패킷 크래프팅의 개념을 이해하고 scapy 로 IP()/TCP() 패킷을 한 필드씩 조립·전송한다"
+  - "scapy SYN 스캔으로 응답 플래그(0x12=open)를 읽어 open 포트를 식별한다"
+  - "비정상 스캔(FIN/XMAS/NULL)을 수행하고 그 우회 원리와 탐지 취약성을 설명한다"
+  - "임계 기반 탐지를 이해하고 대규모 스캔(100+ 포트)이 Suricata 에 잡히는 것을 증거로 보인다"
+  - "NULL 스캔(flags:0)을 잡는 시그니처 룰(sid 9409001)을 작성·검증·트리거·삭제한다"
+  - "은밀(소량·저속) vs 탐지(대량·고속)의 trade-off 를 정리하고 보고서로 종합한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — scapy
+      ## 🎯 목표
+      패킷 크래프팅 도구 scapy 가 attacker 컨테이너에서 동작하는지 점검한다. 모든 패킷 작업의
+      출발점이다.
+
+      ## 개념 한 줄
+      **scapy** = 파이썬으로 패킷을 한 필드씩 조립·전송·분석하는 라이브러리. 패킷을 보내려면
+      OS 의 **raw socket**(낮은 계층 패킷을 직접 다루는 root 권한)이 필요한데, attacker
+      컨테이너는 root 라 그대로 동작한다. (el34 에는 같은 목적의 hping3 가 없으므로 scapy 만
+      쓴다.)
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker python3 -c "import scapy; print('scapy', scapy.__version__)"
       ```
+
       ## ✅ 합격 기준
-      scapy 사용 가능.
+      `scapy <버전>`(2.7 계열)이 출력되면 크래프팅 준비 완료. import 오류가 나면 라이브러리·
+      권한 문제이므로 먼저 해결한다.
     hint: 'python3 import scapy'
     category: survey
     points: 10
     answer: |
       docker exec el34-attacker python3 -c "import scapy; print('scapy', scapy.__version__)"
-    answer_detail: "scapy = 패킷 직접 조립 라이브러리. raw socket(root) 필요 — attacker 컨테이너는 root."
+    answer_detail: "scapy = 패킷을 한 필드씩 직접 조립하는 라이브러리. raw socket(낮은 계층 패킷 전송)에 root 권한이 필요하며 attacker 컨테이너는 root 라 동작한다. 버전 문자열이 stdout 에 출력되면 가용으로 판정. el34 엔 hping3 가 없어 패킷 크래프팅은 scapy 로 한다."
     verify:
       type: output_contains
       expect: 'scapy'
@@ -47,13 +67,27 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 SYN 크래프팅 — open 포트 식별
+      ## 🎯 목표
+      scapy 로 SYN 패킷을 직접 조립해 여러 포트에 보내고, 응답으로 열린 포트를 식별한다(도구가
+      자동화하던 일을 패킷 한 필드씩 수동으로).
+
+      ## 개념 한 줄
+      포트 스캔의 본질은 **SYN 을 보내고 무엇이 돌아오는지 보는 것**이다 — 열린 포트는
+      SYN-ACK(flags **0x12**)을, 닫힌 포트는 RST(0x14)을 답한다. `sr()`(send-receive)은 패킷을
+      보내고 응답을 받아 (응답온것 ans, 안온것 u) 으로 돌려준다. SYN 만 보내고 마지막 ACK 은
+      안 보내 연결을 끝까지 안 맺는 "반열림 스캔"이다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker python3 -c "from scapy.all import *; ans,u=sr(IP(dst='10.20.30.1')/TCP(dport=[22,80,443,8001,8002,3306],flags='S'),timeout=4,verbose=0); print('open:', sorted(p[1].sport for p in ans if p[1][TCP].flags==0x12))"
       ```
+      `IP(dst=...)` 위에 `/TCP(dport=[...],flags='S')` 를 쌓아 SYN 패킷을 만들고(scapy 의 `/` 는
+      계층을 포갬), `sr` 로 보낸 뒤 응답 플래그가 `0x12`(SYN-ACK)인 것만 골라 그 출발 포트
+      (`sport`)를 모은다 = 열린 포트.
+
       ## ✅ 합격 기준
-      scapy SYN 스캔으로 open 포트를 식별한다.
+      출력 `open: [...]` 에 열린 포트가 나타나면 통과. SYN-ACK(0x12)=open, RST(0x14)=closed,
+      무응답=filtered 로 해석한다.
     hint: 'scapy sr SYN → SYN-ACK(0x12)=open'
     category: manipulation
     points: 12
@@ -61,7 +95,7 @@ steps:
       echo "=== scapy SYN 크래프팅 ==="
       docker exec el34-attacker python3 -c "from scapy.all import *; ans,u=sr(IP(dst='10.20.30.1')/TCP(dport=[22,80,443,8001,8002,3306,5432],flags='S'),timeout=4,verbose=0); print('open:', sorted(p[1].sport for p in ans if p[1][TCP].flags==0x12))"
       echo "→ SYN 보내 SYN-ACK(0x12) 받으면 open, RST(0x14) 받으면 closed"
-    answer_detail: "scapy로 SYN 직접 조립 → 응답 플래그로 포트 상태 판정(SYN-ACK=open). nmap이 자동화하는 걸 수동으로 — 플래그 임의 조작 가능."
+    answer_detail: "scapy 로 SYN 을 직접 조립(IP/TCP flags='S')해 보내고, 응답 플래그로 포트 상태를 판정한다 — SYN-ACK(0x12)=open, RST(0x14)=closed, 무응답=filtered. stdout 의 'open:' 목록으로 채점한다. nmap 이 자동화하는 반열림 스캔을 패킷 한 필드씩 수동으로 한 것이며, 그래서 다음 미션의 비정상 플래그 조합도 자유롭게 만들 수 있다."
     verify:
       type: output_contains
       expect: 'open:'
@@ -74,13 +108,27 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 비정상 스캔 — FIN/XMAS/NULL
+      ## 🎯 목표
+      표준 SYN 으로 막히는 곳을 우회하려는 시도로, 비정상 플래그 조합(FIN·XMAS·NULL) 패킷을
+      scapy 로 직접 만들어 보낸다.
+
+      ## 개념 한 줄
+      **비정상 스캔** = TCP 규약상 정상 연결엔 나오지 않는 플래그 조합을 보내, stateless 필터·
+      오래된 스택의 처리 차이를 노리는 정찰. **FIN(`flags='F'`)** =FIN 만, **XMAS(`flags='FPU'`)**
+      =FIN+PSH+URG 를 다 켬(불 켜진 트리 모양), **NULL(`flags=0`)** =플래그를 하나도 안 켬(정상엔
+      결코 없는 모양).
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='F'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='FPU'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags=0),timeout=2,verbose=0); print('FIN/XMAS/NULL sent')"
       ```
+      플래그 문자열만 `F`→`FPU`→`0` 으로 바꿔 세 비정상 패킷을 차례로 전송한다(nmap 의
+      -sF/-sX/-sN 에 대응하지만 scapy 는 더 낮은 계층에서 임의 조합까지 가능).
+
       ## ✅ 합격 기준
-      비정상 플래그 스캔(FIN/XMAS/NULL)을 전송한다.
+      `FIN/XMAS/NULL sent` 가 출력되면 세 비정상 패킷이 와이어로 나간 것. 학습 초점은 응답
+      결과가 아니라 "표준 밖 플래그를 직접 조립했다"는 경험과, 이 비정상 모양이 §5 에서
+      시그니처에 확실히 잡힌다는 점이다.
     hint: 'flags=F / FPU / 0'
     category: manipulation
     points: 12
@@ -88,7 +136,7 @@ steps:
       echo "=== 비정상 스캔 (FIN/XMAS/NULL) ==="
       docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='F'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='FPU'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags=0),timeout=2,verbose=0); print('FIN/XMAS/NULL sent')"
       echo "→ FIN(F)/XMAS(FPU)/NULL(0) — 표준 아닌 플래그로 일부 필터/스택 우회 시도"
-    answer_detail: "비정상 스캔 = 표준 SYN 대신 FIN/XMAS/NULL 플래그. 일부 stateless 필터/오래된 스택 우회. scapy라 임의 플래그 조립 가능(nmap도 -sF/-sX/-sN)."
+    answer_detail: "비정상 스캔 = 표준 SYN 대신 FIN(F)/XMAS(FPU)/NULL(0) 플래그로 보내 일부 stateless 필터·오래된 스택의 처리 차이를 노리는 정찰. scapy 라 플래그 문자열만 바꿔 임의 조합을 조립한다(nmap 의 -sF/-sX/-sN 대응). 'sent' 출력으로 전송 성공을 채점한다. 우회를 노리지만 정상에 없는 모양이라 오히려 시그니처 탐지에 취약하다는 trade-off 가 핵심."
     verify:
       type: output_contains
       expect: 'sent'
@@ -101,15 +149,28 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 대규모 스캔 → Suricata 탐지
+      ## 🎯 목표
+      같은 SYN 스캔이라도 규모가 임계를 넘으면 탐지된다는 것을 증거로 확인한다 — 대규모(100+
+      포트) 스캔을 보내고 Suricata 의 scan 경보를 집계한다.
+
+      ## 개념 한 줄
+      **임계 기반 IDS 탐지** = 개별 패킷의 모양이 아니라 "짧은 시간에 같은 출처가 N개 넘는
+      포트를 건드렸나"라는 빈도·규모로 스캔을 판정. 그래서 소량(미션 2 의 6~7개)은 임계 미달로
+      빠져나가고, **대량(100+ 포트)** 이라야 탐지된다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=(1,200),flags='S'),timeout=6,verbose=0); print('mass scan sent')"
       sleep 5
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
       ```
+      `dport=(1,200)` 은 포트 1~200 을 **범위**로 지정하는 scapy 문법(튜플=범위). `eve.json` 은
+      Suricata 가 탐지를 JSON 한 줄씩 적는 로그이고, `jq` 로 출처 IP 10.20.30.202(attacker —
+      el34 는 SNAT 없어 출처 보존)이면서 시그니처에 `scan` 이 든 경보만 추려 센다.
+
       ## ✅ 합격 기준
-      대규모 스캔이 Suricata에 scan으로 탐지된다.
+      집계 결과에 `scan` 을 포함한 시그니처가 나타나면 통과. 핵심 깨달음 — 소규모는 은밀,
+      대규모는 탐지. 규모가 탐지 여부를 가른다.
     hint: 'scapy dport=(1,200) 대량 → eve scan'
     category: detect
     points: 14
@@ -120,7 +181,7 @@ steps:
       echo "=== Suricata scan 탐지 ==="
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
       echo "→ 대량 SYN(200포트)이 Suricata 임계 초과 → scan 탐지. 소량은 임계 미달(은밀)"
-    answer_detail: "소량 스캔(W09-2)은 임계 미달이지만 대량(200포트)은 Suricata 스캔 임계 초과 → 'scan' 탐지. 공격자는 느린/소량으로 회피, 방어자는 임계 튜닝."
+    answer_detail: "임계 기반 탐지는 빈도·규모로 잡는다 — 소량 스캔(미션 2 의 6~7개)은 임계 미달로 통과하지만 대량(1~200, 100+ 포트)은 Suricata 의 스캔 임계를 초과해 eve.json 에 'scan' 시그니처로 남는다. 출처 IP 10.20.30.202(SNAT 없어 보존) 필터로 집계한 결과에 scan 이 보이면 탐지. 공격자는 느림·소량으로 회피, 방어자는 임계 튜닝(미탐↔오탐 균형)으로 대응한다."
     verify:
       type: output_contains
       expect: 'scan'
@@ -133,13 +194,26 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 패킷 분석 — 응답 플래그 해석
+      ## 🎯 목표
+      정찰의 절반은 "받은 것"을 읽는 일이다. 응답 패킷 하나를 받아 TCP 플래그를 필드 단위로
+      해석하는 패킷 분석의 기본을 익힌다.
+
+      ## 개념 한 줄
+      **`sr1()`(send-receive-1)** = 첫 응답 패킷 하나만 돌려주는 함수. 그 응답의 TCP 플래그를
+      읽으면 포트 상태를 안다 — **SA**(SYN-ACK)=open, **RA**(RST-ACK)=closed, **무응답**
+      =filtered. (미션 2 는 같은 플래그를 숫자 0x12 로 걸렀고, 여기선 글자 SA 로 읽는다 — 같은
+      정보의 다른 표현.)
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker python3 -c "from scapy.all import *; a=sr1(IP(dst='10.20.30.1')/TCP(dport=80,flags='S'),timeout=3,verbose=0); print('flags:', a[TCP].flags if a else 'no-resp')"
       ```
+      포트 80 에 SYN 하나(`sr1`)를 보내 응답 패킷 `a` 를 받고, `a[TCP].flags` 로 그 TCP 플래그를
+      직접 꺼내 출력한다. 응답이 없으면 `no-resp`.
+
       ## ✅ 합격 기준
-      응답 패킷의 플래그를 해석한다(SA=open).
+      `flags: SA`(또는 RA/no-resp)가 출력되면 통과. 응답의 플래그 한 필드가 곧 포트 상태의
+      정보임을 읽어 낸다.
     hint: 'sr1 응답 flags 해석'
     category: analysis
     points: 12
@@ -147,7 +221,7 @@ steps:
       echo "=== 패킷 분석 (응답 플래그) ==="
       docker exec el34-attacker python3 -c "from scapy.all import *; a=sr1(IP(dst='10.20.30.1')/TCP(dport=80,flags='S'),timeout=3,verbose=0); print('port 80 응답 flags:', str(a[TCP].flags) if a else 'no-resp')"
       echo "→ SA(SYN-ACK)=open, RA(RST-ACK)=closed, no-resp=filtered. 플래그가 포트 상태를 말한다"
-    answer_detail: "응답 플래그 해석 = 패킷 분석의 핵심. SA(0x12)=open, RA(0x14)=closed, 무응답=filtered. scapy로 raw 응답을 직접 검사."
+    answer_detail: "응답 플래그 해석 = 패킷 분석의 핵심. sr1 로 받은 응답의 TCP 플래그를 직접 꺼내 SA(0x12)=open, RA(0x14)=closed, 무응답=filtered 로 판정한다. stdout 의 'flags' 출력으로 채점. 미션 2 가 숫자(0x12)로 걸렀다면 여기선 같은 플래그를 글자(SA)로 읽는다 — 와이어의 응답을 필드 단위로 해독하는 정찰·디버깅의 토대."
     verify:
       type: output_contains
       expect: 'flags'
@@ -160,7 +234,16 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 네트워크 탐지룰 — NULL 스캔 (sid 9409001)
+      ## 🎯 목표
+      방어자 시선으로 돌아서서, 임계로는 못 잡는 소량 비정상 패킷(NULL 스캔)을 시그니처 룰로
+      잡는다. 룰을 작성→문법검증→reload→트리거→확인→삭제하는 수명주기 전체를 수행한다.
+
+      ## 개념 한 줄
+      **시그니처 탐지** = 정상 트래픽엔 결코 없는 패턴(NULL=flags 전부 0)이 단 하나만 보여도
+      즉시 경보(임계와 달리 횟수로 못 숨김). 룰은 Suricata 의 `local.rules` 에 한 줄씩 적고
+      고유 번호 **sid**(이번 주 네임스페이스 `9409xxx`)로 식별하며, 끝나면 그 sid 만 삭제해
+      베이스 룰을 보존한다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
@@ -172,8 +255,14 @@ steps:
       docker exec el34-ips sh -c 'sudo grep "9409001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature}"'
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
       ```
+      룰 문법: `alert tcp any any -> any any` =어떤 TCP 든, `msg:"..."` =경보 설명, **`flags:0`**
+      =핵심 조건(플래그 0인 NULL 패킷), `sid:9409001` =고유 번호. **`suricatasc -c reload-rules`**
+      는 데몬을 멈추지 않고 룰만 다시 읽는 무중단 명령. (정답 스크립트는 적용 전 `suricata -T`
+      로 문법을 먼저 검증한다.)
+
       ## ✅ 합격 기준
-      NULL 스캔 탐지룰(9409001)이 발화한다(정리 후 보존).
+      트리거 후 eve.json 에 `W9 NULL scan detected` 가 잡히고(베스트에포트), 마지막 sed 정리
+      후 local.rules 에서 9409001 잔재가 0 이면 통과. base 룰은 그대로 보존된다.
     hint: 'flags:0 룰(9409001) → NULL 스캔 → eve → 삭제'
     category: manipulation
     points: 14

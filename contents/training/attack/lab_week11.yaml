@@ -4,31 +4,43 @@ version: standalone-attack
 course: attack
 week: 11
 description: |
-  저권한 셸에서 root로 권한 상승 — SUID/sudo/cron/쓰기가능 파일 열거와 GTFObins 경로, 그리고 탐지·하드닝.
-  열거 중심(읽기전용), 실제 상승/하드닝은 점검·개념까지(공유 인프라 보존). 비-root는 `docker exec -u ccc el34-web`.
-  인가된 실습만. 명령은 el34 호스트에서.
+  W08에서 얻은 셸은 거의 언제나 저권한(www-data/일반 계정)이다. 본 실습은 그 저권한 셸을 root로 끌어올리는
+  권한 상승(privilege escalation)을 다룬다. 리눅스 privesc의 4대 단골 경로 — SUID 오설정·sudo 오설정·cron
+  작업 탈취·쓰기 가능 민감 파일 — 을 직접 열거(enumeration)로 찾아내고, 그것을 root로 잇는 GTFObins 경로를
+  식별한 뒤, 방어자 시선으로 osquery·FIM 탐지와 최소 권한 하드닝까지 종합한다. privesc의 90%는 화려한
+  익스플로잇이 아니라 "이미 잘못 놓인 오설정을 찾는 열거"다.
+  본 실습은 열거 중심(읽기 전용)이며, 실제 root 상승(GTFObins 실행)·하드닝(권한 변경)은 개념·점검까지만 한다
+  (공유 인프라 보존). 공격(열거)은 저권한 `docker exec -u ccc el34-web`, 방어(탐지)는 관리 권한 `docker exec
+  el34-web`로. 인가된 실습 환경(el34)에서만, 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 실행한다.
 difficulty: hard
 duration_minutes: 180
 prerequisites:
-  - "W08(셸 획득) 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2(열거) §3(SUID/GTFObins) §4(sudo/cron) 숙지"
+  - "W08(익스플로잇 체인 → 저권한 셸 획득) 통과"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151, 비밀번호 1) + docker exec 사용 가능"
+  - "lecture §1(셸≠root) §2(열거) §3(SUID/sudo/cron/파일 권한 + GTFObins) §5(탐지·하드닝) 숙지"
 objectives:
-  - "저권한 컨텍스트에서 privesc 열거(SUID/sudo/cron)"
-  - "GTFObins로 권한 상승 경로 식별"
-  - "탐지(osquery/FIM) + 하드닝(최소권한)"
+  - "저권한(ccc, uid 1000) 컨텍스트에서 privesc 열거 3종 세트(SUID 바이너리·sudo 권한·cron/쓰기 가능 파일) 수행"
+  - "정상 SUID(passwd/su/mount)와 비정상 SUID(셸/에디터/find 등)를 구분하고, 비정상 바이너리를 GTFObins 경로로 매핑"
+  - "방어자 시선으로 osquery suid_bin·FIM으로 탐지하고, 최소 권한 원칙(불필요 SUID 제거·sudo 최소화)으로 하드닝"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
       ## 🎯 점검 — 비-root 컨텍스트
+      privesc의 전제는 "지금 내가 저권한"이라는 사실이다. 침투 테스터는 상승을 시도하기 전에
+      항상 현재 권한부터 확인한다 — 셸을 막 얻은 공격자의 첫 명령이 `id`/`whoami`다.
+      el34 컨테이너는 기본 root로 동작하므로, privesc 시연을 위해 비-root 사용자 `ccc`(uid 1000)가
+      준비돼 있다. `docker exec`에 **`-u ccc`**를 주면 "침투로 막 얻은 저권한 셸"을 모사한다.
       ## 💻 실행 명령
       ```bash
       docker exec -u ccc el34-web id
       ```
+      ## 🔎 용어 — `docker exec -u ccc`
+      `-u ccc`는 해당 명령을 컨테이너의 `ccc` 사용자(uid 1000)로 실행하라는 옵션이다. 옵션을 빼면
+      컨테이너 기본 사용자(root, uid 0)로 실행된다 — 그 둘의 차이가 본 실습의 출발선이다.
       ## ✅ 합격 기준
-      저권한(ccc) 컨텍스트를 확인한다.
+      출력에 `uid=1000(ccc)`(비-root)가 보이면 저권한 출발점 확보. `id`의 그룹 멤버십도 다음 단서다.
     hint: 'docker exec -u ccc id'
     category: survey
     points: 10
@@ -36,7 +48,7 @@ steps:
       echo "=== 저권한 컨텍스트 (ccc) ==="
       docker exec -u ccc el34-web id
       echo "→ uid 1000(ccc), 비-root. 여기서 root로 상승하는 게 목표"
-    answer_detail: "privesc 출발점 = 저권한 셸(ccc). 그룹(sudo/www-data)도 단서. 여기서 오설정을 찾아 root로."
+    answer_detail: "privesc 출발점 = 저권한 셸(ccc, uid 1000). id로 현재 권한과 그룹 멤버십(sudo/www-data 등)을 확인한다 — 그룹이 곧 다음 단계의 단서. 판정: 출력에 uid 1000(ccc) 비-root 컨텍스트가 보이면 합격. 여기서 오설정을 찾아 root로 상승하는 것이 W11의 목표."
     verify:
       type: output_contains
       expect: 'ccc'
@@ -49,13 +61,19 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 SUID 열거
+      ## 🎯 SUID 열거 — privesc 1순위
+      SUID(Set-User-ID) 비트가 붙은 실행 파일은, 누가 실행하든 **파일 소유자(root) 권한으로** 동작한다.
+      그래서 SUID 바이너리 목록이 곧 가장 빠른 root 경로 후보이며, 열거의 1순위다.
       ## 💻 실행 명령
       ```bash
       docker exec -u ccc el34-web sh -c 'find / -perm -4000 -type f 2>/dev/null'
       ```
+      ## 🔎 용어 — `find / -perm -4000 -type f`
+      `-perm -4000`은 "권한 비트에 SUID(8진수 4000)가 **포함된** 파일"을 뜻한다(`-` 접두사 = 비트 포함).
+      `-type f`는 일반 파일만, `2>/dev/null`은 권한 없는 디렉터리 접근 오류를 버린다.
       ## ✅ 합격 기준
-      SUID 바이너리를 열거한다.
+      SUID 목록이 출력된다(`passwd` 등 정상 SUID 포함). 핵심은 정상(passwd/su/mount)과 비정상
+      (find/vim/bash/cp/awk = 셸·에디터·범용 도구)을 구분하는 것 — 비정상 SUID가 곧 GTFObins root 후보.
     hint: 'find -perm -4000'
     category: recon
     points: 12
@@ -63,7 +81,7 @@ steps:
       echo "=== SUID 바이너리 열거 ==="
       docker exec -u ccc el34-web sh -c 'find / -perm -4000 -type f 2>/dev/null'
       echo "→ root 권한으로 실행되는 파일들. 정상(passwd/su/mount) vs 비정상(셸/에디터=위험)"
-    answer_detail: "SUID 열거 = privesc 1순위. find -perm -4000으로 root 권한 실행 파일 목록. 비정상 SUID(find/vim/bash 등)가 GTFObins 후보."
+    answer_detail: "SUID 열거 = privesc 1순위. find -perm -4000으로 root 권한 실행 파일 목록을 뽑는다. 판정: 출력에 SUID 목록(passwd 등)이 보이면 합격. 핵심 해석은 정상 SUID(passwd/su/mount/sudo = 의도된 것)와 비정상 SUID(find/vim/bash/cp/awk = 임의 코드·파일 능력)의 구분이며, 비정상 바이너리가 GTFObins root 셸 후보다."
     verify:
       type: output_contains
       expect: 'passwd'
@@ -76,13 +94,20 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 sudo·그룹 점검
+      ## 🎯 sudo·그룹 점검 — 너무 넓은 대리 허가 찾기
+      `sudo`는 지정된 명령을 root로 실행하게 해 주는 도구다. "이 명령에 한해 root 대리"라는 최소 권한으로
+      써야 안전한데, NOPASSWD·`ALL`·위험 명령을 허용하면 그 하나가 곧 root 셸이 된다. SUID 다음으로 흔한 경로.
       ## 💻 실행 명령
       ```bash
       docker exec -u ccc el34-web sh -c 'id; sudo -ln 2>/dev/null | head -5 || echo "sudo 비번 필요"'
       ```
+      ## 🔎 용어 — `sudo -ln` / NOPASSWD / sudo 그룹
+      `sudo -l`은 "내가 sudo로 무엇을 할 수 있나"를 보여준다. `-n`(non-interactive)을 더한 `sudo -ln`은
+      비밀번호 프롬프트 없이 조회만 시도한다(비번이 필요하면 조용히 실패). `NOPASSWD:`는 비번 없이 실행 가능,
+      `id`의 그룹에 `sudo`(데비안)·`wheel`(레드햇)이 보이면 폭넓은 권한일 수 있어 그 자체가 단서다.
       ## ✅ 합격 기준
-      sudo 권한/그룹을 점검한다.
+      `id`와 sudo 권한 점검이 수행된다. `(ALL) ALL`·`NOPASSWD`·위험 명령(vi/awk/less)이 보이면 root 경로,
+      비번이 필요해 막히면 그룹 멤버십이 차선 단서다.
     hint: 'id 그룹 + sudo -ln'
     category: recon
     points: 12
@@ -91,7 +116,7 @@ steps:
       docker exec -u ccc el34-web id
       docker exec -u ccc el34-web sh -c 'sudo -ln 2>/dev/null | grep -iE "NOPASSWD|ALL|may run" | head -5 || echo "(sudo -l 비번 필요 — 그룹 sudo 멤버십이 단서)"'
       echo "→ sudo 그룹 멤버 + NOPASSWD/위험 명령(ALL/vi/awk)이 있으면 GTFObins로 root"
-    answer_detail: "sudo 점검 — sudo 그룹 멤버십 + sudo -l의 NOPASSWD/위험 명령. ALL이나 vi/less/awk를 sudo로 실행 가능하면 GTFObins escape로 root."
+    answer_detail: "sudo 오설정 점검 — id의 sudo 그룹 멤버십과 sudo -ln의 NOPASSWD/위험 명령을 함께 본다. 판정: 출력에 sudo 관련 정보(그룹 또는 권한)가 보이면 합격. ALL이나 vi/less/awk를 sudo로 실행 가능하면 그 명령의 셸 탈출(GTFObins escape)로 root. 비번이 필요해 sudo -l이 막히면 그룹 멤버십이 차선 단서."
     verify:
       type: output_contains
       expect: 'sudo'
@@ -104,13 +129,21 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 cron·쓰기가능 점검
+      ## 🎯 cron·쓰기 가능 점검 — 자동 순찰 코스의 함정 + 권한의 원장
+      SUID·sudo가 막혀도 두 경로가 더 있다. ① **cron 작업 탈취** — root cron이 부르는 스크립트가 쓰기 가능
+      하면, 그 내용을 바꿔 다음 실행 시각에 root 코드를 돌린다. ② **쓰기 가능 민감 파일** — /etc/passwd·
+      shadow·sudoers가 world-writable이면 권한 체계를 직접 고쳐 root가 된다.
       ## 💻 실행 명령
       ```bash
       docker exec -u ccc el34-web sh -c 'ls -la /etc/cron.d/ /etc/crontab 2>/dev/null; find / -writable -type f 2>/dev/null | grep -vE "^/proc|^/sys|^/tmp|/home/ccc" | head -5'
       ```
+      ## 🔎 용어 — cron 탈취의 두 조건 / world-writable
+      cron 탈취는 ① root가 실행하는 cron 작업이 있고 ② 그 작업이 부르는 스크립트를 내가 쓸 수 있을 때만 성립
+      한다. `find -writable`은 내가 쓸 수 있는 파일을 찾으며, 여기선 /proc·/sys·/tmp·/home/ccc(당연히 쓰는 곳)를
+      제외해 정말 위험한 시스템 경로만 추린다. world-writable = 권한 끝자리(others)에 `w`가 붙은 상태.
       ## ✅ 합격 기준
-      cron/쓰기가능 오설정 후보를 점검한다.
+      cron 정의와 민감 파일 권한이 출력된다(`passwd` 등 확인). 정상은 /etc/passwd가 `-rw-r--r--`, /etc/shadow가
+      `-rw-r-----` — others에 `w`가 보이면 치명적 오설정이다.
     hint: 'cron.d + world-writable'
     category: recon
     points: 12
@@ -120,7 +153,7 @@ steps:
       echo "=== 쓰기 가능 민감 파일(있으면 위험) ==="
       docker exec -u ccc el34-web sh -c 'ls -la /etc/passwd /etc/shadow 2>/dev/null | head'
       echo "→ root cron이 world-writable 스크립트 실행 / 민감 파일 쓰기 가능 = privesc 경로"
-    answer_detail: "cron/쓰기 점검 — root cron이 쓰기 가능 스크립트를 실행하면 그 스크립트로 root 코드 실행. /etc/passwd·sudoers 쓰기 가능 시 직접 권한 추가."
+    answer_detail: "cron 탈취·쓰기 가능 민감 파일 점검 — root cron이 쓰기 가능 스크립트를 실행하면 그 스크립트를 교체해 root 코드 실행. /etc/passwd·shadow·sudoers가 world-writable이면 uid 0 계정/규칙을 직접 추가. 판정: 출력에 cron 정의와 민감 파일 권한(passwd 등)이 보이면 합격. 민감 파일 others에 w가 없으면(정상) 그 경로는 막힌 것."
     verify:
       type: output_contains
       expect: 'passwd'

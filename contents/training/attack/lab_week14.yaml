@@ -4,39 +4,63 @@ version: standalone-attack
 course: attack
 week: 14
 description: |
-  Purple team 사이클 — Caldera로 ATT&CK 에뮬레이션(레드), 안 잡힌 갭을 Wazuh 룰로 보강(블루),
-  재에뮬레이션으로 재검증. 탐지 커버리지를 측정→보강→재검증으로 끌어올린다. 룰은 logtest 검증+삭제.
-  인가된 실습만. 명령은 el34 호스트에서.
+  공격기법 W14 — Purple Team(퍼플팀) 사이클을 한 바퀴 직접 돈다. W13 에서 미탐지로 드러난
+  커버리지 갭(T1087 계정 열거, cat /etc/passwd)을 골라, 레드 시선으로 다시 에뮬레이션하고 →
+  wazuh-logtest 로 보강 전 상태(미탐지/저레벨)를 증거로 측정하고 → 블루 시선으로 그 갭을 닫는
+  Wazuh 탐지 룰(local_rules.xml, rule id 101414, level 10)을 작성해 logtest 로 발화를 검증하고 →
+  다시 같은 기법을 에뮬레이션해 갭이 닫혔음(❌→✅)을 재검증한다. 보강 전후를 커버리지 매트릭스로
+  정리하고 사이클을 보고서로 종합한다.
+  핵심 원칙 — "고쳤다고 믿지 말고 다시 공격해 확인". 탐지 커버리지를 '추측'이 아니라 '검증된
+  데이터'로 끌어올린다. el34 의 Wazuh manager(el34-siem, v4.10)는 여러 학생이 함께 쓰는 공유
+  SIEM 이므로, 룰은 매니저 재시작 없이 wazuh-logtest 로 검증만 하고 cp 로 원복(baseline 보존)한다.
+  인가된 실습 환경(el34)에서만. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec 로.
+  합격 임계값 0.7.
 difficulty: hard
 duration_minutes: 180
 prerequisites:
-  - "W13(에뮬레이션)·W04(Wazuh 룰) 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §1(purple 사이클) §2(측정) §3(보강) 숙지"
+  - "W13(Caldera 자동 에뮬레이션·갭 식별)·W04(Wazuh local_rules.xml 룰 작성) 통과"
+  - "el34 호스트 SSH 접속(ssh ccc@192.168.0.151) + docker exec 로 컨테이너 진입"
+  - "lecture §1(왜 갭을 찾기만으로는 부족한가) §2(퍼플 4단계: 에뮬→측정→보강→재검증) §3(Wazuh decoder→rule 파이프라인·logtest 무중단 검증) 숙지"
 objectives:
-  - "커버리지 갭 측정(미탐지 기법)"
-  - "Wazuh 룰로 갭 보강 + logtest 검증"
-  - "재에뮬레이션으로 재검증 + 커버리지 매트릭스"
+  - "W13 의 커버리지 갭(T1087 계정 열거, 읽기성 정찰이라 시그니처 약함)을 재에뮬레이션해 측정 대상으로 무대에 올림"
+  - "wazuh-logtest 로 보강 전 상태 측정 — decoder 는 T1087 을 파싱하나 격상 룰 부재로 미탐지/저레벨(갭) 임을 증거로 확인"
+  - "갭을 닫는 Wazuh 룰(rule id 101414, level 10, field name=technique) 작성 → 매니저 무중단 logtest 발화 검증 → cp 원복(공유 SIEM baseline 보존)"
+  - "재에뮬레이션으로 갭 닫힘(❌→✅) 재검증 + 보강 전후 커버리지 매트릭스 정리 + 사이클 보고서 종합"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — Caldera + Wazuh
+      ## 🎯 목표 — 점검: Caldera + Wazuh
+      퍼플 사이클을 시작하기 전, 공격 측 도구(Caldera)와 방어 측 탐지 엔진(Wazuh analysisd)이
+      모두 준비됐는지 점검한다.
+
+      ## 📖 개념 한 줄
+      퍼플팀 사이클(에뮬레이션→측정→보강→재검증)의 전제는 **에뮬레이션 도구 + 탐지 엔진**이
+      양쪽 다 살아 있어야 한다는 것이다. analysisd 가 멈춰 있으면 어떤 룰도 평가되지 않는다(lecture §1·§3.1).
+
       ## 💻 실행 명령
       ```bash
       ls ~/caldera-src/server.py 2>/dev/null && echo "caldera ok"
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
       ```
+      - `ls ~/caldera-src/server.py` — 호스트에 Caldera 소스(W13 에서 설치)가 있는지 확인.
+      - `docker exec el34-siem ... wazuh-control status | grep analysisd` — Wazuh 의 핵심 데몬
+        **analysisd**(디코더·룰의 심장)가 가동 중인지 확인.
+
+      ## 🧰 처음 나오는 도구
+      - **Caldera** — ATT&CK 기법을 자동 에뮬레이션하는 레드팀 프레임워크(W13). el34 기본에 없어 호스트에 설치됨.
+      - **analysisd** — Wazuh manager 의 데몬으로, 들어온 로그를 decoder→rule 로 평가해 alert 를 만든다(W09).
+
       ## ✅ 합격 기준
-      Caldera + Wazuh 준비.
+      Caldera 소스가 보이고 `analysisd` 가 `is running` 으로 출력된다(사이클 착수 준비 완료).
     hint: 'caldera + analysisd'
     category: survey
     points: 10
     answer: |
       ls ~/caldera-src/server.py 2>/dev/null && echo "caldera ok" || echo "caldera 미설치"
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
-    answer_detail: "Purple team 도구 = Caldera(에뮬레이션) + Wazuh(탐지/보강)."
+    answer_detail: "퍼플 사이클 착수 점검 — 에뮬레이션 도구(Caldera, 호스트 ~/caldera-src)와 탐지 엔진(Wazuh analysisd) 양쪽의 가용성을 확인. analysisd 가 'is running' 이면 디코더·룰 평가가 동작하므로 측정·보강으로 넘어갈 수 있다고 판정. 둘 중 하나라도 없으면 사이클을 시작할 수 없다."
     verify:
       type: output_contains
       expect: 'analysisd'
@@ -49,13 +73,27 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 갭 재현 — 안 잡히는 기법
+      ## 🎯 목표 — 퍼플 사이클 ① 갭 재현: 안 잡히던 기법을 다시 일으킨다
+      W13 에서 미탐지로 드러난 T1087(계정 열거)을 다시 에뮬레이션해, 본 사이클에서 "닫을 대상"을 무대에 올린다.
+
+      ## 📖 개념 한 줄
+      **T1087 Account Discovery** 는 ATT&CK Discovery 전술의 "계정 열거" 기법이다. Linux 의 가장
+      단순한 형태가 `cat /etc/passwd`(계정 목록 파일 읽기)다. **읽기 명령**이라 변경·통신·위험
+      프로세스 신호가 없어 기본 룰이 잡을 단서가 약하다 — 이것이 갭의 본질이다(lecture §2.1).
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'echo "[T1087 Account Discovery]"; cat /etc/passwd | head -2; echo emulated'
       ```
+      - `cat /etc/passwd | head -2` — 시스템 계정 목록 파일의 앞 2줄을 읽어 계정 열거(T1087)를 모사.
+      - `echo emulated` — 에뮬레이션이 수행됐음을 표시하는 마커.
+
+      ## 🧰 처음 나오는 용어
+      - **T1087** — ATT&CK 계정 열거 기법 ID. **`/etc/passwd`** 는 누구나 읽을 수 있는(world-readable)
+        리눅스 계정 목록 파일로, 공격자가 침투 후 어떤 계정을 노릴지 정찰하는 데 읽는다.
+
       ## ✅ 합격 기준
-      커버리지 갭 기법(discovery)을 에뮬레이션한다.
+      계정 목록 일부가 출력되고 `emulated` 마커가 찍힌다(갭 기법이 무대에 오름).
     hint: 'T1087 discovery 에뮬'
     category: recon
     points: 12

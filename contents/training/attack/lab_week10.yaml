@@ -4,37 +4,58 @@ version: standalone-attack
 course: attack
 week: 10
 description: |
-  WAF 필터를 빠져나가는 우회 기법 — 인코딩(이중/유니코드), 분할(주석/공백), 난독화(대소문자)와 그에
-  맞서는 ModSec CRS의 정규화(transformation). 같은 공격을 다르게 표현해도 정규화로 대부분 잡힘을 본다.
-  공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+  공격기법 W10 — WAF 필터를 빠져나가는 우회(evasion) 기법과 그에 맞서는 ModSec CRS 의 정규화
+  (normalization) 방어. 핵심 원리는 "WAF 가 보는 표현"과 "백엔드가 실행하는 의미"의 분리다.
+  공격자(el34-attacker, 10.20.30.202)는 평문 SQLi(`UNION SELECT`)를 baseline 으로 던져 dvwa
+  (차단 모드)가 403 으로 막는 것을 확인한 뒤, 같은 공격을 인코딩(이중·유니코드)·분할(주석·공백)·
+  난독화(대소문자)로 변형해 다시 던진다. ModSec CRS 는 검사 전에 transformation(urlDecodeUni/
+  removeComments/compressWhitespace/lowercase)으로 모든 변형을 하나의 원형으로 되돌려 942 룰군에
+  다시 잡으므로, 단순 우회는 대부분 여전히 403 이다. 마지막에 우회의 한계(단순 우회=무력)와 고급
+  방향(정규화가 놓치는 인코딩·WAF–백엔드 파서 차이·HPP)을 정리한다.
+  실습은 페이로드 전송 + 로그 읽기뿐이라 심는 흔적이 없다(공유 인프라 보존). 인가된 실습 환경
+  (el34)에서만. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec 로. 합격 임계값 0.7.
 difficulty: medium
 duration_minutes: 160
 prerequisites:
-  - "W04–W05(SQLi/XSS·WAF) 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2(인코딩) §3(분할) §4(정규화) 숙지"
+  - "W04–W05(SQLi/XSS·WAF) 통과 — CRS 942 룰군·anomaly score·949110 차단 메커니즘 이해"
+  - "el34 호스트 SSH 접속 + docker exec 로 컨테이너 진입"
+  - "lecture §1(우회 원리: 표현 ≠ 의미) §2(인코딩) §3(분할·난독화) §4(정규화 방어) 숙지"
 objectives:
-  - "인코딩/분할/난독화 우회 시도"
-  - "ModSec 정규화의 효과(대부분 여전히 차단) 이해"
-  - "우회의 한계와 고급 방향"
+  - "WAF 우회의 근본 원리(WAF 가 보는 표현 ≠ 백엔드가 실행하는 의미) 이해"
+  - "평문 SQLi 를 baseline(403)으로 잡고, 인코딩·분할·난독화로 변형해 우회 시도"
+  - "CRS transformation(정규화)이 모든 변형을 원형으로 되돌려 942 에 다시 잡음을 증거로 확인"
+  - "우회의 한계(단순 우회=무력)와 고급 방향(파서 차이·특이 인코딩·HPP) 구분"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 대상
+      ## 🎯 목표
+      우회 실습을 시작하기 전, 대상 vhost `dvwa.el34.lab` 이 도달 가능한지 점검한다.
+
+      ## 📖 개념 한 줄
+      WAF 우회 실습의 무대는 **차단 모드 vhost** 여야 우회 성공/실패가 또렷이 보인다. el34 에서
+      dvwa 는 ModSec 차단 모드(403), juice 는 탐지만(200)이므로 대상은 dvwa 다(lecture §1.3).
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
       ```
+      - `-H 'Host: dvwa.el34.lab'` — fw 게이트웨이(10.20.30.1)에 보내되 Host 헤더로 dvwa vhost 지정.
+      - `-w 'dvwa=%{http_code}'` — 응답 코드만 `dvwa=<코드>` 형태로 출력.
+      - `-o /dev/null` — 응답 본문은 버린다(코드만 볼 때 유용).
+
+      ## 🧰 처음 나오는 도구
+      - **curl** — 명령줄 HTTP 클라이언트. 본 주차의 모든 우회 페이로드를 이 도구로 전송한다.
+
       ## ✅ 합격 기준
-      대상 도달.
+      `dvwa=<코드>` 형태로 응답이 출력된다(대상 도달). 우회를 시험할 수 있는 상태.
     hint: '도달성'
     category: survey
     points: 10
     answer: |
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
-    answer_detail: "필터 우회 대상 = dvwa(차단 모드, ModSec CRS)."
+    answer_detail: "필터 우회 대상 = dvwa(차단 모드, ModSec CRS). 응답 코드가 출력되면 대상 도달로 판정 — 차단형 vhost 라야 평문 403 대비 우회의 성공/실패를 또렷이 측정할 수 있다."
     verify:
       type: output_contains
       expect: 'dvwa'
@@ -47,13 +68,27 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 기준 공격 — 평문 SQLi (baseline)
+      ## 🎯 목표
+      변형 없는 **평문 SQLi** 를 던져 dvwa 가 403 으로 막는 것을 확인하고, 이를 우회 평가의
+      기준점(baseline)으로 삼는다.
+
+      ## 📖 개념 한 줄
+      우회 성공/실패는 baseline 대비로만 판정할 수 있다. 평문 `UNION SELECT` 가 403 이어야,
+      "변형이 이 403 을 200 으로 바꿀 수 있는가"라는 우회의 질문이 성립한다(lecture §1.1).
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'plain=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
       ```
+      - `id=1%27%20UNION%20SELECT%201--` — `%27`=작은따옴표(`'`), `%20`=공백. 평문 `1' UNION SELECT 1--`.
+      - 변형이 전혀 없는 전형적 UNION 기반 SQLi 다. CRS 942 룰군이 곧장 잡는 표준 패턴.
+
+      ## 🧰 개념 풀이
+      - **baseline** — 비교의 기준점. 여기선 평문 SQLi 의 403 차단.
+      - **UNION SELECT** — 원 질의 결과에 공격자가 고른 데이터를 덧붙여 빼내는 전형적 SQLi 기법.
+
       ## ✅ 합격 기준
-      평문 SQLi가 403(baseline)이다.
+      평문 SQLi 의 응답이 `403`(WAF 차단=baseline)이다. 이 403 이 이후 우회 시도의 기준선.
     hint: '평문 UNION → 403'
     category: manipulation
     points: 12
@@ -61,7 +96,7 @@ steps:
       echo "=== 기준 공격 (평문 SQLi) ==="
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'plain=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
       echo "→ 평문 SQLi = 403(차단). 이게 baseline. 우회로 이걸 통과시킬 수 있나?"
-    answer_detail: "baseline = 평문 SQLi → 403. 우회 기법이 이 차단을 통과시키는지가 관건."
+    answer_detail: "baseline = 평문 SQLi → 403. 변형 없는 UNION SELECT 가 CRS 942 룰군에 곧장 잡혀 anomaly score 누적 → 949110 차단(403). 이후 우회 기법이 이 차단을 200 으로 통과시키는지가 본 주차의 관건."
     verify:
       type: output_contains
       expect: '403'
@@ -74,14 +109,28 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 인코딩 우회 — 이중/유니코드
+      ## 🎯 목표
+      가장 기본적인 우회 계열인 **인코딩**(이중 인코딩·부분 URL 인코딩)으로 평문 SQLi 를 변형해
+      던지고, 그 결과(대부분 여전히 403)를 확인한다.
+
+      ## 📖 개념 한 줄
+      인코딩 우회는 "WAF 가 디코드 **전**에 검사한다"는 가정에 기댄다. 그러나 CRS 는 정규화
+      (`t:urlDecodeUni`)로 **먼저 디코드한 뒤** 검사하므로 이 가정이 깨진다(lecture §2, §4).
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dbl=%{http_code} ' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%2527%20UNION%20SELECT'"
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'mix=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20%55NION%20%53ELECT'"
       ```
+      - `%2527` — **이중 인코딩**. `%` 를 `%25` 로 한 번 더 인코딩 → 디코드 시 `%2527`→`%27`→`'`.
+      - `%55NION %53ELECT` — **부분 URL 인코딩**. `%55`=`U`, `%53`=`S` → 디코드 시 `UNION SELECT`.
+
+      ## 🧰 처음 나오는 용어
+      - **URL 인코딩** — 문자를 `%`+16진수로 표기(`U`=`%55`).
+      - **이중 인코딩** — 이미 인코딩한 문자열을 한 번 더 인코딩(`%`→`%25`).
+
       ## ✅ 합격 기준
-      인코딩 우회 시도의 결과(대부분 여전히 403)를 확인한다.
+      인코딩 변형의 응답이 **대부분 여전히 403**(우회 실패)임을 확인한다. CRS 가 디코드 후 잡는다.
     hint: '이중인코딩 %2527, %55NION'
     category: manipulation
     points: 12
@@ -90,7 +139,7 @@ steps:
       echo "[이중 인코딩]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dbl=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%2527%20UNION%20SELECT'"
       echo "[부분 URL 인코딩]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'mix=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20%55NION%20%53ELECT'"
       echo "→ %55=U 등 인코딩 → CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403"
-    answer_detail: "인코딩 우회 = 같은 문자를 인코딩으로 표현(%55=U). CRS의 t:urlDecodeUni transformation이 디코드 후 검사 → 우회 실패(403)."
+    answer_detail: "인코딩 우회 = 같은 문자를 다른 표기로 적기(%55=U, %2527=이중인코딩→'). 노림수는 'WAF 가 디코드 전에 검사한다'는 가정이지만, CRS 는 t:urlDecodeUni transformation 으로 먼저 디코드한 뒤 검사하므로 원형 UNION SELECT 로 되돌아가 942 에 잡힘 → 우회 실패(대부분 403)."
     verify:
       type: output_contains
       expect: '403'
@@ -103,14 +152,29 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 분할·난독화 — 주석/공백/대소문자
+      ## 🎯 목표
+      인코딩과 결이 다른 우회 — 키워드의 형태를 흐트러뜨리는 **분할·난독화**(주석 삽입·탭 공백)로
+      변형해 던지고, 그 결과(대부분 여전히 403)를 확인한다.
+
+      ## 📖 개념 한 줄
+      분할·난독화는 문자를 다르게 적는 게 아니라 키워드 **형태**를 쪼갠다. 그러나 CRS 의
+      `t:removeComments`·`t:compressWhitespace`·`t:lowercase` 가 정확히 이를 겨냥한다(lecture §3, §4).
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'cmt=%{http_code} ' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT'"
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'tab=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%09UNION%09SELECT'"
       ```
+      - `UN/**/ION SE/**/LECT` — **주석 삽입**. SQL 빈 주석 `/**/` 으로 키워드를 쪼갬. DB 는 `UNION`으로 실행.
+      - `%09` — **탭 공백 대체**. 공백 대신 탭으로 토큰 구분. DB 는 탭도 구분자로 받아들임.
+
+      ## 🧰 처음 나오는 용어
+      - **주석 삽입** — SQL 주석 `/**/` 을 키워드 사이에 끼워 패턴을 쪼갬.
+      - **공백 대체** — 공백을 탭(`%09`)·개행(`%0a`)·주석 등 다른 공백류로 바꿈.
+      - **케이스 변조** — 키워드 대소문자를 섞음(`UnIoN`). SQL 키워드는 대소문자 무관.
+
       ## ✅ 합격 기준
-      분할/난독화 우회 결과(대부분 여전히 403)를 확인한다.
+      분할/난독화 변형의 응답이 **대부분 여전히 403**(우회 실패)임을 확인한다.
     hint: 'UN/**/ION 주석, %09 탭'
     category: manipulation
     points: 12
@@ -119,7 +183,7 @@ steps:
       echo "[주석 분할]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'cmt=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT'"
       echo "[탭 공백]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'tab=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%09UNION%09SELECT'"
       echo "→ 주석(/**/)·탭(%09)으로 키워드 분할 → CRS t:removeComments/compressWhitespace로 정규화 → 403"
-    answer_detail: "분할/난독화 = 주석/공백/대소문자로 키워드 쪼개기. CRS의 t:removeComments, t:compressWhitespace, t:lowercase가 정규화 → 우회 실패."
+    answer_detail: "분할/난독화 = 문자가 아니라 키워드 형태를 흐트러뜨리기(주석 UN/**/ION, 탭 %09, 대소문자 UnIoN). CRS 의 t:removeComments(주석 제거)·t:compressWhitespace(공백 단일화)·t:lowercase(소문자화)가 모두 원형 union select 로 되돌려 942 매치 → 우회 실패(대부분 403)."
     verify:
       type: output_contains
       expect: '403'
@@ -132,13 +196,28 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 정규화 확인 — CRS가 이긴다
+      ## 🎯 목표
+      미션 2–4 에서 인코딩·분할·난독화 변형이 모두 403 으로 막힌 이유를 한곳에 모아, CRS 의
+      **정규화(transformation)** 메커니즘으로 설명한다.
+
+      ## 📖 개념 한 줄
+      정규화는 검사 **전에** 다양한 표현을 하나의 원형으로 통일하는 과정이다. 공격자가 표현을
+      N 가지로 늘려도, 정규화 한 번이면 모두 같은 패턴(942)으로 수렴한다(lecture §4).
+
       ## 💻 실행 명령
       ```bash
       echo "평문/이중인코딩/주석/탭/대소문자 → 모두 정규화 후 같은 패턴 → 대부분 403"
       ```
+      위 한 줄로 핵심 사실을 정리하되, 아래 4종 transformation 과 각자가 막는 우회를 짝지어 말한다.
+
+      ## 🧰 핵심 transformation 4종 (lecture §4.2)
+      - `t:urlDecodeUni` — URL/유니코드 디코드(`%55`→`U`, `%2527`→`'`). **인코딩 우회** 무력화.
+      - `t:removeComments` — SQL 주석 제거(`UN/**/ION`→`UNION`). **주석 삽입** 무력화.
+      - `t:compressWhitespace` — 공백류 단일화(`%09`→` `). **공백 대체** 무력화.
+      - `t:lowercase` — 소문자화(`UnIoN`→`union`). **케이스 변조** 무력화.
+
       ## ✅ 합격 기준
-      정규화로 우회가 무력화됨을 정리한다.
+      4종 transformation 과 각자가 무력화하는 우회를 짝지어, 정규화가 우회를 이기는 원리를 정리한다.
     hint: '정규화 transformation'
     category: analysis
     points: 12
