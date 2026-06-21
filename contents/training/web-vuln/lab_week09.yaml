@@ -4,36 +4,50 @@ version: standalone-web-vuln
 course: web-vuln
 week: 9
 description: |
-  OWASP A01 Broken Access Control — 무인증 관리 엔드포인트, 강제 브라우징, 인가 일관성, IDOR.
-  juiceshop 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+  OWASP Top 10 의 1위 취약점인 A01(Broken Access Control, 취약한 접근제어)을 WSTG-ATHZ(인가 점검)
+  방법론으로 점검한다. 인증(누구냐)은 통과하거나 아예 요구되지 않더라도, 인가(무엇을 할 수 있느냐)
+  검사가 비면 남의 자원·관리 기능에 닿는다. el34 의 JuiceShop(juice.el34.lab)을 표적으로,
+  점검자 컨테이너 el34-attacker(출처 IP 10.20.30.202)에서 네 가지 접근제어 결함을 차례로 입증한다 —
+  ① 무인증 관리 엔드포인트(로그인 없이 200), ② 강제 브라우징(링크 없는 /ftp 직접 접근), ③ 인가
+  일관성 부재(보호 401 vs 노출 200 불일치), ④ IDOR(순차 자원 ID 바꿔치기 = 수평 권한상승). 발견의
+  증거는 모두 HTTP 응답 코드(200=노출/취약, 401·403=보호)이며, 흔적은 web 의 access.log 에 남는다.
+  근본 방어는 서버측 인가(소유권·역할 전수 검사 + 기본 거부)뿐임을 보고서로 정리한다.
+  모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec 로 실행하며, 인가된 표적만 점검한다.
 difficulty: hard
 duration_minutes: 160
 prerequisites:
   - "W01–W08 통과"
   - "el34 호스트 SSH + docker exec"
-  - "lecture §2(점검) §3(IDOR) §4(방어) 숙지"
+  - "lecture §2(WSTG-ATHZ 4축) §4(서버측 인가) 숙지"
 objectives:
-  - "무인증 관리/강제 브라우징 발견"
-  - "인가 일관성 점검"
-  - "서버측 인가 방어"
+  - "무인증 관리 엔드포인트(수직 권한상승의 극단형)와 강제 브라우징(UI 숨김은 방어 아님)을 응답 코드로 발견한다"
+  - "보호(401) vs 노출(200) 대조로 인가 일관성 부재가 통제 누락의 신호임을 확인한다"
+  - "순차 자원 ID(IDOR=수평 권한상승)로 소유권 검사 여부를 점검한다"
+  - "서버측 인가(소유권·역할 전수 검사 + 기본 거부)를 근본 방어로 정리하고 종합 보고서를 작성한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 대상
+      ## 🎯 목표
+      접근제어 점검을 시작하기 전에, 표적 JuiceShop 에 요청이 도달하는지부터 확인한다.
+      ## 개념 한 줄
+      도달성(reachability) 확인은 점검의 전제다 — 연결이 안 되면 이후 "접근 안 됨" 결과가 모두 무의미하다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
       ```
       ## ✅ 합격 기준
-      대상 도달.
+      `juice=<코드>`(예: 200)가 출력되어 표적에 도달함이 확인된다.
+      - **curl**: 명령줄 HTTP 클라이언트. `-H 'Host: juice.el34.lab'` 로 어느 vhost(사이트)를 칠지 지정하고,
+        `-o /dev/null -w '%{http_code}'` 로 본문은 버리고 응답 코드만 출력한다.
+      - **10.20.30.1**: el34 방화벽(fw) 게이트웨이. 여기로 보낸 요청이 fw → web(Apache) 경로로 JuiceShop 에 닿는다.
     hint: '도달성'
     category: survey
     points: 10
     answer: |
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
-    answer_detail: "접근제어 점검 대상 = juiceshop."
+    answer_detail: "접근제어 점검 대상 = JuiceShop. juice=<코드>가 출력되면 fw→web 경로로 표적에 도달한 것 — 점검 착수 가능."
     verify:
       type: output_contains
       expect: 'juice'
@@ -46,13 +60,19 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 무인증 관리 엔드포인트 (A01)
+      ## 🎯 목표
+      로그인 없이(익명으로) 관리 엔드포인트에 접근되는지 확인해 가장 손쉬운 접근제어 실패(A01)를 입증한다.
+      ## 개념 한 줄
+      무인증 노출 = *관리자만* 접근해야 할 자원이 인증조차 요구하지 않고 열려 있는 것 — 수직 권한상승의 극단형이다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
       ```
       ## ✅ 합격 기준
-      인증 없이 관리 설정에 접근(200)된다 = A01 취약.
+      `admincfg=200` — 인증 헤더 없이 관리 설정(application-configuration)이 노출됨 = A01 취약. (401/403 이면 보호됨.)
+      - **/rest/admin/application-configuration**: 이름 그대로 *관리(admin)* 설정 엔드포인트. 익명 200 이면 서버가
+        "관리자만"이라는 역할 검사를 빼먹은 것이다.
+      - **A01(Broken Access Control)**: OWASP Top 10 의 1위 결함. 권한 검사를 서버에서 누락해 권한 밖 자원에 닿는 모든 경우.
     hint: 'application-configuration'
     category: manipulation
     points: 14
@@ -60,7 +80,7 @@ steps:
       echo "=== 무인증 관리 엔드포인트 ==="
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
       echo "→ 200 = 인증 없이 앱 설정 노출. 인가 통제 부재(A01)"
-    answer_detail: "무인증 관리 엔드포인트 = 인가 검사 누락. 200이면 A01 취약."
+    answer_detail: "무인증 관리 엔드포인트 = 역할(role) 검사 누락. admincfg=200 이면 익명에게 관리 설정이 노출된 것 = A01 취약(수직 권한상승의 극단형). 401/403 이면 보호됨."
     verify:
       type: output_contains
       expect: 'admincfg=200'
@@ -73,13 +93,18 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 강제 브라우징
+      ## 🎯 목표
+      화면 메뉴에 링크가 없는 경로(/ftp)를 URL 로 직접 호출해, "UI 에 안 보이면 안전하다"는 착각을 깬다.
+      ## 개념 한 줄
+      강제 브라우징(Forced Browsing) = 링크를 따르지 않고 URL 을 직접 입력해 숨겨진 경로에 접근을 시도하는 점검 기법.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
       ```
       ## ✅ 합격 기준
-      링크되지 않은 /ftp 디렉토리에 강제 접근된다.
+      `ftp=<코드>`가 출력되고 그 값이 접근 가능(예: 200)을 가리킨다 — 링크가 없어도 접근 자체는 막히지 않음을 확인.
+      - **/ftp**: JuiceShop 의 화면 메뉴에 링크가 없는 디렉터리. 직접 호출해 접근되면 UI 숨김이 방어가 아님이 입증된다.
+      - **자동화 참고**: 단어 목록으로 경로 수천 개를 던지는 디렉터리 퍼저 **ffuf** 가 attacker 에 있다(본 미션은 curl 로 단일 경로만 확인).
     hint: '/ftp'
     category: manipulation
     points: 14
@@ -87,7 +112,7 @@ steps:
       echo "=== 강제 브라우징 ==="
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
       echo "→ UI에 링크 없어도 직접 URL로 접근. 인가는 UI 숨김이 아니다"
-    answer_detail: "강제 브라우징 = 링크 없는 자원에 직접 URL 접근. UI 숨김은 방어가 아님."
+    answer_detail: "강제 브라우징 = 링크 없는 자원(/ftp)에 URL 직접 접근. ftp= 코드가 접근 가능(예: 200)을 가리키면 'UI 숨김은 방어가 아님'이 입증됨. 진짜 방어는 그 경로에도 인가 검사를 두는 것."
     verify:
       type: output_contains
       expect: 'ftp='
@@ -100,13 +125,19 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 인가 일관성 — 보호 vs 노출
+      ## 🎯 목표
+      보호되는 엔드포인트(401)와 노출되는 엔드포인트(200)를 나란히 호출해 인가 정책의 불일치를 드러낸다.
+      ## 개념 한 줄
+      인가 일관성 부재 = 접근제어가 중앙에서 균일하게 강제되지 않아, 어떤 곳은 막고(401) 어떤 곳은 여는(200) 구조적 약점.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users"
       ```
       ## ✅ 합격 기준
-      보호 엔드포인트(401)와 노출 엔드포인트(200)의 불일치를 확인한다.
+      `users=<코드>`가 출력되고, `/api/Users`(보호 401)와 admin-config(노출 200)의 불일치가 확인된다.
+      - **/api/Users**: 보호되어야 정상인 사용자 컬렉션 엔드포인트. 401 이면 인가가 동작 중이라는 뜻.
+      - **401 vs 403**: 401=인증 필요(누군지 모름), 403=인가 거부(누군진 알지만 권한 없음). 둘 다 "막힘". 200 이 곧 노출(취약).
+      - **불일치의 의미**: 한쪽은 막고 한쪽은 여는 것 자체가 "중앙 인가 정책이 없다"는 신호다.
     hint: '401 vs 200'
     category: analysis
     points: 14
@@ -115,7 +146,7 @@ steps:
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users"
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'admincfg=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration"
       echo "→ /api/Users(401 보호) vs admin-config(200 노출). 일관성 부재가 취약의 신호"
-    answer_detail: "인가 일관성 = 일부는 보호(401)·일부는 노출(200). 불일치가 통제 누락 신호."
+    answer_detail: "인가 일관성 = 같은 종류 자원인데 일부는 보호(401)·일부는 노출(200)되는 불일치. users= 코드가 보호 쪽(401)을 가리키고 admin-config 가 노출 쪽(200)이면, 둘의 불일치 자체가 중앙 인가 정책 부재(통제 누락)의 신호다."
     verify:
       type: output_contains
       expect: 'users='
@@ -128,13 +159,19 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 IDOR 시도
+      ## 🎯 목표
+      자원 ID 를 1, 2, 3 으로 바꿔가며 호출해, 서버가 소유권을 검사하는지(남의 자원이 노출되는지) 점검한다.
+      ## 개념 한 줄
+      IDOR(Insecure Direct Object Reference) = 자원 ID 만 바꿔 소유권 검사 없는 틈으로 남의 자원에 접근하는 결함 = 수평 권한상승.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "for id in 1 2 3; do curl -s -o /dev/null -w \"user\$id=%{http_code} \" -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users/\$id; done; echo"
       ```
       ## ✅ 합격 기준
-      순차 ID로 자원 접근을 시도한다(소유권 검사 점검).
+      `user1=/user2=/user3=` 형태로 순차 ID 응답 코드가 출력된다 — 각 ID 가 401/403 이면 소유권 검사 동작, 200 이면 노출(치명적).
+      - **for id in 1 2 3**: 셸 반복문으로 ID 를 순차 증가시켜 보낸다. 순차 ID 는 예측 가능해 반복문 하나로 전체를 훑을 수 있다(대량 유출 위험).
+      - **소유권 검사(ownership)**: 요청한 자원이 *그 토큰 주인의 것인지* 서버가 확인하는 것. IDOR 의 유일한 근본 방어.
+      - 형식상 완전히 정상인 요청이라 WAF 로는 잡히지 않는다 — 앱이 직접 막아야 한다.
     hint: '순차 ID'
     category: manipulation
     points: 14
@@ -142,7 +179,7 @@ steps:
       echo "=== IDOR 시도 ==="
       docker exec el34-attacker sh -c "for id in 1 2 3; do curl -s -o /dev/null -w \"user\$id=%{http_code} \" -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users/\$id; done; echo"
       echo "→ idor= 순차 자원ID로 남의 자원 접근 시도. 보호되면 401, 소유권검사 없으면 노출"
-    answer_detail: "IDOR = 순차 자원 ID 교체로 소유권 검사 없는 자원 접근. 보호 자원이 노출되면 치명적."
+    answer_detail: "IDOR = 순차 자원 ID(1,2,3) 교체로 소유권 검사 없는 자원에 접근. 각 ID 가 401/403 이면 소유권 검사가 동작, 200 이면 남의 자원 노출(수평 권한상승, 치명적). 형식상 정상 요청이라 WAF 로 안 잡히므로 서버의 소유권 검사가 유일한 방어."
     verify:
       type: output_contains
       expect: 'idor='
@@ -155,13 +192,19 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 탐지 — 접근 로그
+      ## 🎯 목표
+      방어자 관점으로 전환해, 앞서 보낸 접근제어 점검 요청이 web 의 접근 로그에 흔적을 남기는지 확인한다.
+      ## 개념 한 줄
+      접근제어 공격은 형식상 정상이라 WAF 룰에 안 걸린다 — 유일한 가시성은 access.log 의 경로·출처 IP 패턴이다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c "sudo tail -40 /var/log/apache2/access.log 2>/dev/null | grep -c admin || echo logcheck"
       ```
       ## ✅ 합격 기준
-      관리 엔드포인트 접근 시도가 로그에 남는다.
+      access.log 에서 admin/ftp/Users 접근 시도 흔적이 확인된다(관리 경로 카운트 또는 logcheck/detected 출력).
+      - **/var/log/apache2/access.log**: el34-web(Apache)의 접근 로그. fw 가 SNAT 를 안 하므로 점검자 출처 IP(10.20.30.202)가 그대로 남는다.
+      - **sudo tail -N**: 로그 끝 N 줄을 권한으로 읽는다. **grep -c admin**: admin 이 든 줄 개수를 센다(접근 시도 흔적).
+      - 인가 *실패* 자체를 앱이 로깅하고 SIEM 으로 모으는 것이 형식상 정상인 이 공격을 잡는 핵심 운영이다.
     hint: 'access.log'
     category: analysis
     points: 10
@@ -169,7 +212,7 @@ steps:
       echo "=== 탐지 (접근 로그) ==="
       docker exec el34-web sh -c "sudo tail -60 /var/log/apache2/access.log 2>/dev/null | grep -E 'admin|ftp|Users' | tail -5; echo detected"
       echo "→ 무인증 관리/강제브라우징 시도는 access.log에 흔적. 인가실패는 앱 로그 모니터링 필요"
-    answer_detail: "탐지 = access.log의 관리/ftp/Users 접근 흔적. 인가 실패는 앱 레벨 로깅·모니터링 핵심."
+    answer_detail: "탐지 = web access.log 의 admin/ftp/Users 접근 흔적(출처 IP 10.20.30.202 보존). 접근제어 공격은 형식상 정상이라 WAF 패턴에 안 걸리므로, 인가 실패의 앱·웹 로깅과 모니터링이 유일한 가시성이다."
     verify:
       type: output_contains
       expect: 'detected'
@@ -182,13 +225,19 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 방어 — 서버측 인가
+      ## 🎯 목표
+      점검으로 발견한 결함을 막는 근본 방어 — 서버측 인가 — 를 정리한다.
+      ## 개념 한 줄
+      인가는 서버가 모든 요청마다 직접 검사해야 한다 — UI 숨김·순차 ID 회피·클라이언트 검사는 전부 우회되므로 방어가 아니다.
       ## 💻 실행 명령
       ```bash
       echo "모든 자원 접근에 서버측 인가(소유권/역할) 검사, 기본 deny, UI 숨김 의존 금지"
       ```
       ## ✅ 합격 기준
-      서버측 인가 방어를 정리한다.
+      서버측 인가의 네 기둥이 정리되어 출력된다 — ① 전수 인가 검사 ② 소유권 검사 ③ 역할 검사 ④ 기본 거부(default deny).
+      - **소유권 검사**: 자원이 토큰 주인의 것인지 확인 → IDOR·수평 권한상승 차단.
+      - **역할 검사**: 기능이 그 역할에 허용되는지 확인 → 무인증/관리 노출·수직 권한상승 차단.
+      - **기본 거부(default deny)**: 명시 허용 외 모두 거부 → 새 엔드포인트에서 검사를 깜빡해도 "열린 채" 방치되지 않음.
     hint: '서버측 인가/기본 deny'
     category: report
     points: 12
@@ -199,7 +248,7 @@ steps:
       echo "3) UI 숨김/순차ID 회피는 방어 아님(보안=서버측 강제)"
       echo "4) 인가 실패 로깅·모니터링"
       echo "→ 핵심: 서버측에서 모든 요청을 인가 검사"
-    answer_detail: "방어 = 서버측 인가(소유권/역할) 전수 검사 + 기본 deny. 클라이언트 통제는 무력."
+    answer_detail: "방어 = 서버측 인가의 네 기둥 — 모든 자원에 인가 전수 검사 + 소유권 검사(IDOR 차단) + 역할 검사(수직 권한상승 차단) + 기본 거부(default deny). UI 숨김·순차 ID 회피·클라이언트측 검사는 curl 직접 요청으로 우회되므로 방어가 아니다."
     verify:
       type: output_contains
       expect: '서버측'
@@ -212,7 +261,10 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 접근제어 보고서
+      ## 🎯 목표
+      미션 1~7 의 발견과 방어를 한 문서로 종합해 접근제어 점검을 완성한다.
+      ## 개념 한 줄
+      점검의 산출물은 보고서다 — 발견을 증거(응답 코드)와 함께 정리하고 서버측 인가를 근본 방어로 제시해야 점검이 끝난다.
       ## 💻 보고서 양식
       ```markdown
       # 웹취약점 W09 접근제어 보고서 (학번, 이름)
@@ -221,7 +273,10 @@ steps:
       ## 3. 서버측 인가 방어
       ```
       ## ✅ 합격 기준
-      보고서에 A01 발견 + 서버측 인가 방어가 포함된다.
+      보고서에 ① 발견(무인증 관리 admin-config 200·강제 브라우징 /ftp·IDOR)과 증거(응답 코드), ② 인가 일관성(401 vs 200) 분석,
+      ③ 서버측 인가(소유권/역할/기본 deny) 방어 + 결론이 포함된다.
+      - 접근제어는 OWASP A01(1위) 결함이므로 보고서 우선순위 최상단에 둔다.
+      - 발견마다 "이렇게 발견했다(응답 코드) → 방어 측 access.log 에 이렇게 남더라 → 이렇게 막는다(서버측 인가)" 구조로 적는다.
     hint: 'A01+서버측 인가'
     category: report
     points: 12
@@ -233,7 +288,7 @@ steps:
       ## 3. 방어: 서버측 인가(소유권/역할) 전수 검사 + 기본 deny + 인가실패 로깅
       ## 결론: 접근제어는 OWASP A01 1위. 서버측 인가 강제가 유일한 근본 방어
       EOF
-    answer_detail: "접근제어 = A01. 무인증/강제브라우징/IDOR 발견, 서버측 인가가 근본 방어."
+    answer_detail: "접근제어 종합 = OWASP A01(1위). 발견(무인증 관리·강제 브라우징·IDOR)을 응답 코드 증거와 함께 정리하고, 인가 일관성(401 vs 200) 분석을 더하며, 서버측 인가(소유권/역할 전수 검사 + 기본 deny)를 유일한 근본 방어로 결론지어야 점검이 완성된다."
     verify:
       type: output_contains
       expect: '서버측'

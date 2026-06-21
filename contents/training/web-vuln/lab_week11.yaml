@@ -4,37 +4,54 @@ version: standalone-web-vuln
 course: web-vuln
 week: 11
 description: |
-  A05 Security Misconfiguration — 버전 배너, 상세 에러 페이지, DB 에러 노출, 헤더 누출 점검과
-  정보 최소화 방어. juiceshop/dvwa 대상. 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
-  신규 설치 없음(curl 기본).
+  OWASP A05(Security Misconfiguration) — 정보 노출(Information Disclosure)을 네 채널로 점검한다:
+  ① 응답 헤더의 Server 배너(웹서버 버전 → CVE 매핑), ② 잘못된 경로의 상세 에러(내부 라우팅 노출),
+  ③ 잘못된 입력의 DB 엔진 에러(SQLITE_ERROR → 엔진 확정 + SQLi 표면 입증, 가장 위험),
+  ④ 비표준 헤더 누출(X-Recruiting → 기술 스택·숨은 경로). 정보 노출은 직접 침해가 아니라
+  공격자의 정찰(reconnaissance)을 가속해 후속 공격의 시간·시도를 줄인다는 점을 입증하고,
+  정보 최소화(ServerTokens Prod·커스텀 에러 페이지·DB 에러 generic 화·불필요 헤더 제거)로 방어한다.
+  WSTG-INFO/ERRH. 표적은 juiceshop(juice.el34.lab, DetectionOnly 라 노출이 그대로 보임).
+  점검은 el34-attacker. 인가된 실습만. 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec.
+  신규 설치 없음(curl 기본 탑재).
 difficulty: medium
 duration_minutes: 140
 prerequisites:
-  - "W01–W10 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2(배너) §3(에러) §4(DB에러) 숙지"
+  - "W01–W10 통과 (특히 W03 정보수집, W05 SQLi 표면 개념)"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151, 비밀번호 1) + docker exec el34-attacker"
+  - "lecture §2(네 채널 점검: 배너/상세에러/DB에러/헤더), §3(정찰 가속), §4(정보 최소화 방어) 숙지"
 objectives:
-  - "배너/에러/DB에러/헤더 노출 식별"
-  - "정찰 가속 영향 이해"
-  - "정보 최소화(배너억제/커스텀에러) 방어"
+  - "네 채널(배너·상세에러·DB에러·헤더)에서 정보 노출을 식별하고 응답 증거로 입증한다"
+  - "각 노출이 공격자에게 무엇을 주는지(버전→CVE / 에러→내부경로 / DB에러→엔진+SQLi표면 / 헤더→스택+숨은경로) 설명한다"
+  - "정보 노출이 직접 침해가 아니라 정찰을 가속한다는 본질(A05)을 이해한다"
+  - "정보 최소화(ServerTokens Prod·커스텀 에러·DB에러 generic·헤더 제거)로 방어를 설계한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 대상
+      ## 🎯 목표 — 표적 JuiceShop 도달성 점검
+      본격 점검에 앞서 표적에 요청이 닿는지부터 확인한다. 연결이 안 되면 이후의 모든
+      "노출 없음" 결과가 무의미하기 때문이다.
+
+      ## 개념 한 줄
+      el34 의 web(Apache)은 한 IP/포트에서 여러 사이트를 운영하므로, `Host: juice.el34.lab`
+      헤더로 표적 vhost 를 지정해 fw 게이트웨이(10.20.30.1)로 보낸다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
       ```
+      - `-o /dev/null` 은 본문을 버리고 `-w '%{http_code}'` 로 응답 코드만 출력한다(도달성 확인 관용구).
+      - `-s` 조용히, `-k` 인증서 검증 생략, `-H 'Host: ...'` 로 표적 vhost 지정.
+
       ## ✅ 합격 기준
-      대상 도달.
+      출력에 `juice` 가 보이고 HTTP 응답 코드(200 등)가 돌아온다 = 표적이 점검 가능한 상태.
     hint: '도달성'
     category: survey
     points: 10
     answer: |
       docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
-    answer_detail: "정보 노출 점검 대상 = juiceshop."
+    answer_detail: "정보 노출 점검 대상 = JuiceShop(juice.el34.lab). 출력에 juice 가 보이고 HTTP 코드가 돌아오면 도달 성공으로 판정. JuiceShop vhost 는 DetectionOnly 라 점검 요청이 차단(403)되지 않고 통과해 노출을 끝까지 입증하기 좋다."
     verify:
       type: output_contains
       expect: 'juice'
@@ -47,13 +64,24 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 배너 노출 — Server 버전
+      ## 🎯 목표 — ① 배너 노출(Server 헤더의 웹서버 버전)
+      응답 헤더 한 줄(`Server:`)에 웹서버 종류·버전이 그대로 실려 나오는지 확인한다.
+      가장 적은 노력으로 얻는 정찰 정보다.
+
+      ## 개념 한 줄
+      배너(banner)는 가게 간판처럼 서버가 스스로 적어 보내는 자기 소개다 — 버전 한 줄이
+      공격자에게 "그 버전의 알려진 취약점(CVE)을 찾아라"는 출발점을 공짜로 준다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -sk -D - -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -i 'server:'"
       ```
+      - `-D -` 는 응답 헤더를 표준출력으로 덤프한다(헤더 보기 핵심 옵션).
+      - `-o /dev/null` 로 본문은 버리고, `grep -i 'server:'` 로 Server 줄만 추출한다.
+
       ## ✅ 합격 기준
-      Server 헤더에서 웹서버 버전이 노출된다.
+      `Server: Apache/2.4.x (Ubuntu)` 처럼 웹서버 종류·버전이 노출된다.
+      (방어가 잘 된 서버는 `Server: Apache` 한 단어만 나온다 — el34 JuiceShop 은 학습용으로 버전을 노출.)
     hint: 'Server: Apache'
     category: recon
     points: 14
@@ -61,7 +89,7 @@ steps:
       echo "=== 배너 노출 ==="
       docker exec el34-attacker sh -c "curl -sk -D - -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -i 'server:'"
       echo "→ Apache/2.4.x 버전 노출 → 해당 버전 CVE 매핑에 악용"
-    answer_detail: "배너 = Server 헤더의 웹서버/버전. 버전→CVE 매핑으로 정찰 가속. ServerTokens Prod로 억제."
+    answer_detail: "배너 = Server 헤더에 실린 웹서버 종류/버전. 출력에 Apache 가 보이면 노출 확인. 버전→해당 버전 CVE 즉시 매핑으로 정찰을 가속한다. 방어는 ServerTokens Prod(+ ServerSignature Off)로 버전·OS 를 숨겨 Server: Apache 한 단어까지 억제."
     verify:
       type: output_contains
       expect: 'Apache'
@@ -74,13 +102,23 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 상세 에러 — 내부 경로 노출
+      ## 🎯 목표 — ② 상세 에러(내부 경로/라우팅 노출)
+      존재하지 않는 경로를 일부러 호출해, 앱이 일반 메시지 대신 내부 경로·라우팅을 그대로
+      토해내는지(상세 에러) 확인한다.
+
+      ## 개념 한 줄
+      잘 만든 앱은 에러에 "처리할 수 없습니다"만 보여주고 상세는 서버 로그로만 남긴다.
+      상세 에러가 노출되면 공격자는 그걸로 내부 구조를 읽어 공격 표면 지도를 그린다(WSTG-ERRH).
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Nonexistent123 | grep -oE 'Unexpected path[^<]*' | head -1"
       ```
+      - `/api/Nonexistent123` 은 일부러 없는 경로다(에러 유발용).
+      - `grep -oE 'Unexpected path[^<]*'` 은 응답 본문에서 그 에러 문구만 추출한다.
+
       ## ✅ 합격 기준
-      존재하지 않는 경로 요청 시 상세 에러(내부 경로)가 노출된다.
+      존재하지 않는 경로 요청에 `Unexpected path: /api/...` 같은 상세 에러(내부 경로)가 노출된다.
     hint: 'Unexpected path'
     category: manipulation
     points: 14
@@ -88,7 +126,7 @@ steps:
       echo "=== 상세 에러 페이지 ==="
       docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Nonexistent123 | grep -oE 'Unexpected path[^<]*' | head -1"
       echo "→ 'Unexpected path: /api/...' = 라우팅 구조/내부 경로 노출. 커스텀 에러로 숨겨야"
-    answer_detail: "상세 에러 = 내부 경로/구조 노출. 커스텀 에러 페이지로 일반 메시지만 표시해야."
+    answer_detail: "상세 에러 = 잘못된 경로 요청에 내부 경로/라우팅 구조가 그대로 노출되는 것(Unexpected path 문구가 증거). 공격자에게 공격 표면 지도를 준다. 방어는 커스텀 에러 페이지로 사용자에겐 일반 메시지만, 상세 원인은 서버측 로그에만 남기는 것."
     verify:
       type: output_contains
       expect: 'Unexpected path'
@@ -101,13 +139,25 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 DB 에러 노출 (가장 위험)
+      ## 🎯 목표 — ③ DB 에러 노출 (네 채널 중 가장 위험)
+      검색 파라미터에 따옴표 하나(`'`)를 넣어 SQL 문법을 깨뜨려, 앱이 DB 원본 에러를
+      사용자에게 그대로 보여주는지 확인한다.
+
+      ## 개념 한 줄
+      DB 원본 에러는 두 가지를 한 번에 준다 — (1) `SQLITE_ERROR` 라는 문자열로 DB 엔진이
+      SQLite 임을 확정하고, (2) 내 따옴표가 질의에 섞여 오류를 냈다는 것 = 이 지점이 SQLi
+      표면(주입 가능 입력 지점)임을 입증한다. 그래서 단독 위험이 가장 크다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' \"http://10.20.30.1/rest/products/search?q=test'\" | grep -oE 'SQLITE_ERROR[^<]*' | head -1"
       ```
+      - `q=test'` 의 끝 따옴표가 DB 질의의 문법을 깬다(잘못된 입력 유발).
+      - `grep -oE 'SQLITE_ERROR[^<]*'` 로 노출된 DB 엔진 에러 문구만 추출한다.
+
       ## ✅ 합격 기준
-      잘못된 입력에 DB 엔진 에러(SQLITE_ERROR)가 노출된다.
+      잘못된 입력에 `SQLITE_ERROR: ... syntax error` 같은 DB 엔진 에러가 노출된다
+      (= 엔진 확정 + SQLi 표면 입증).
     hint: 'SQLITE_ERROR'
     category: manipulation
     points: 16
@@ -115,7 +165,7 @@ steps:
       echo "=== DB 에러 노출 ==="
       docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' \"http://10.20.30.1/rest/products/search?q=test'\" | grep -oE 'SQLITE_ERROR[^<]*' | head -1"
       echo "→ SQLITE_ERROR = DB 엔진(SQLite) 확정 + SQLi 표면 입증. 공격자에게 주입 문법을 알려줌"
-    answer_detail: "DB 에러 = 엔진 확정 + SQLi 표면 입증(가장 위험). generic 메시지+로그로만 처리해야."
+    answer_detail: "DB 에러 = 잘못된 입력(따옴표)에 DB 원본 에러가 노출되는 것(SQLITE_ERROR 가 증거). DB 엔진(SQLite) 확정 + SQLi 표면 입증으로 곧바로 다음 공격(SQLi)으로 이어지므로 네 채널 중 가장 위험. 방어 1차는 사용자에겐 generic 메시지·원본은 로그로만, 근본 방어는 입력 검증·parameterized query(W05)."
     verify:
       type: output_contains
       expect: 'SQLITE_ERROR'
@@ -128,13 +178,22 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 헤더 누출 — 숨은 경로/스택
+      ## 🎯 목표 — ④ 헤더 누출(비표준 헤더의 숨은 경로/스택)
+      운영에 꼭 필요하지 않은 비표준 헤더(`X-...`)가 기술 스택이나 화면에 없는 숨은 경로를
+      흘리는지 확인한다.
+
+      ## 개념 한 줄
+      `X-Powered-By` 는 어떤 언어·프레임워크인지, `X-Recruiting` 같은 앱별 헤더는 링크에 없는
+      숨은 경로(메뉴)를 알려준다 — 공격자의 다음 진입점 단서다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -sk -D - -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -iE 'x-recruiting|x-powered|feature-policy'"
       ```
+      - `-D -` 로 응답 헤더를 떠서 `grep -iE` 로 비표준 헤더 후보만 골라 본다(대소문자 무시).
+
       ## ✅ 합격 기준
-      비표준 헤더(X-Recruiting 등)에서 숨은 경로/스택 힌트가 노출된다.
+      `X-Recruiting: /#/jobs` 같은 비표준 헤더에서 숨은 경로/스택 힌트가 노출된다.
     hint: 'X-Recruiting'
     category: recon
     points: 12
@@ -142,7 +201,7 @@ steps:
       echo "=== 헤더 누출 ==="
       docker exec el34-attacker sh -c "curl -sk -D - -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -iE 'x-recruiting|x-powered|feature-policy'"
       echo "→ X-Recruiting: /#/jobs = 숨은 경로 힌트. 불필요 헤더는 제거"
-    answer_detail: "헤더 누출 = X-Powered-By(스택)/X-Recruiting(숨은 경로). 불필요 헤더 제거 필요."
+    answer_detail: "헤더 누출 = 비표준 헤더가 정보를 흘리는 것 — X-Powered-By(기술 스택)/X-Recruiting(/#/jobs 숨은 경로). 출력에 Recruiting 등 X- 헤더가 보이면 노출 확인. 방어는 운영에 불필요한 헤더를 응답에서 제거."
     verify:
       type: output_contains
       expect: 'Recruiting'
@@ -155,13 +214,22 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 영향 — 정찰 가속
+      ## 🎯 목표 — 영향 종합(정찰 가속)
+      미션 2–5 의 네 노출이 따로따로가 아니라 한 점(공격자의 정찰 가속)으로 모인다는 것을
+      정리한다.
+
+      ## 개념 한 줄
+      정보 노출은 직접 침해가 아니라, 공격자가 원래 시간·시도를 들여 알아내야 할 것을 공짜로
+      줘서 후속 공격의 정찰 단계를 단축한다(= 성공 확률 상승). 이것이 정보 노출의 진짜 위험이다.
+
       ## 💻 실행 명령
       ```bash
-      echo "배너→CVE매핑, 에러→내부경로, DB에러→SQLi표면+엔진, 헤더→스택/숨은경로"
+      echo "배너→CVE매핑, 에러→내부경로, DB에러→SQLi표면+엔진, 헤더→스택/숨은경로 → 정찰 가속"
       ```
+      - 각 노출이 후속 공격의 어느 정찰 작업을 줄여주는지 한 줄로 종합한다.
+
       ## ✅ 합격 기준
-      정보 노출이 정찰을 어떻게 가속하는지 정리한다.
+      네 노출이 정찰을 어떻게 가속하는지(직접 침해가 아니라 정찰 비용을 낮춤) 정리되어 출력된다.
     hint: '정찰 가속'
     category: analysis
     points: 10
@@ -172,7 +240,7 @@ steps:
       echo "DB 에러: 엔진(SQLite) 확정 + SQLi 주입 문법 노출"
       echo "헤더: 기술 스택/숨은 경로(/#/jobs)"
       echo "→ 단독 침해는 아니나 모든 후속 공격을 가속(정찰 단계 단축)"
-    answer_detail: "영향 = 정찰 가속(CVE 매핑/표면 지도/주입 문법). 직접 침해 아니나 공격 비용을 낮춤."
+    answer_detail: "영향 = 정찰 가속 — 배너→CVE 매핑, 상세에러→공격 표면 지도, DB에러→엔진+SQLi 주입 문법, 헤더→스택/숨은 경로. 직접 침해는 아니나 공격자의 정찰 시간·시도를 줄여 후속 공격 성공 확률을 높인다. 출력에 '정찰'(가속) 관점이 정리되면 정답."
     verify:
       type: output_contains
       expect: '정찰'
@@ -185,13 +253,24 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 방어 — 정보 최소화
+      ## 🎯 목표 — 방어(정보 최소화)
+      네 채널 각각을 어떻게 막는지 정리한다. 핵심 원칙: 사용자에겐 최소 정보만, 운영자에겐
+      로그로 충분히.
+
+      ## 개념 한 줄
+      정보 노출 방어는 새 잠금장치가 아니라 흘리던 정보를 막는 설정의 문제다 — 그래서
+      A05(Security Misconfiguration)이며, 비용 대비 효과가 크다.
+
       ## 💻 실행 명령
       ```bash
       echo "ServerTokens Prod, 커스텀 에러페이지, DB에러 generic+로그, 불필요 헤더 제거"
       ```
+      - 채널별 방어: ① 배너 억제(ServerTokens Prod + ServerSignature Off, X-Powered-By 제거)
+        ② 커스텀 에러 페이지(일반 메시지 + 서버측 로깅) ③ DB 에러 generic 화(원본은 로그로만)
+        ④ 불필요 헤더 제거.
+
       ## ✅ 합격 기준
-      정보 최소화 방어를 정리한다.
+      ServerTokens 를 포함한 정보 최소화 방어 네 가지가 정리되어 출력된다.
     hint: 'ServerTokens/커스텀에러'
     category: report
     points: 12
@@ -202,7 +281,7 @@ steps:
       echo "3) DB 에러: 사용자에게 generic 메시지만, 원본은 로그로만"
       echo "4) 불필요 헤더(X-Recruiting 등) 제거"
       echo "→ 핵심: 사용자에겐 최소 정보, 운영자에겐 로그로 충분히"
-    answer_detail: "방어 = 배너억제(ServerTokens Prod)+커스텀에러+DB에러 generic+헤더정리. 정보 최소화."
+    answer_detail: "방어 = 정보 최소화(A05 는 설정 문제). ① 배너 억제 ServerTokens Prod(+ServerSignature Off, X-Powered-By 제거) ② 커스텀 에러 페이지(일반 메시지+서버측 로깅) ③ DB 에러 generic 화(원본은 로그로만) ④ 불필요 헤더 제거. 출력에 ServerTokens 가 포함되면 정답."
     verify:
       type: output_contains
       expect: 'ServerTokens'
@@ -215,16 +294,26 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 정보 노출 보고서
+      ## 🎯 목표 — 정보 노출 종합 보고서
+      미션 2–7 의 발견을 한 문서로 종합한다. 점검의 산출물은 보고서이며, 증거 없는 주장이
+      아니라 응답 증거(헤더 값·에러 문구)와 함께 적어야 점수다.
+
+      ## 개념 한 줄
+      A05 점검 보고서의 표준 구조는 "노출 항목 → 정찰 가속 영향 → 정보 최소화 방어 → 결론"이다.
+
       ## 💻 보고서 양식
       ```markdown
       # 웹취약점 W11 정보 노출 보고서 (학번, 이름)
-      ## 1. 배너/상세에러/DB에러/헤더 노출
-      ## 2. 정찰 가속 영향
-      ## 3. 정보 최소화 방어
+      ## 1. 노출 항목(증거 포함)
+      - 배너: Server: Apache/2.4.x   /  상세 에러: Unexpected path
+      - DB 에러: SQLITE_ERROR        /  헤더: X-Recruiting: /#/jobs
+      ## 2. 정찰 가속 영향 (직접 침해 아님 — 정찰 비용을 낮춤)
+      ## 3. 정보 최소화 방어 (ServerTokens Prod + 커스텀 에러 + DB에러 generic + 헤더 제거)
       ```
+
       ## ✅ 합격 기준
-      보고서에 노출 항목 + 정보 최소화 방어가 포함된다.
+      보고서에 네 노출 항목(증거 포함) + 정찰 가속 영향 + 정보 최소화 방어(ServerTokens 포함)가
+      담긴다.
     hint: '노출항목+ServerTokens'
     category: report
     points: 12
@@ -236,7 +325,7 @@ steps:
       ## 3. 방어: ServerTokens Prod + 커스텀 에러 + DB에러 generic + 불필요 헤더 제거
       ## 결론: 정보 노출은 직접 침해는 아니나 모든 공격의 정찰을 가속(A05). 정보 최소화가 근본
       EOF
-    answer_detail: "정보 노출 = A05. 배너/에러/DB에러/헤더 노출, 정보 최소화가 방어."
+    answer_detail: "정보 노출 = A05(Security Misconfiguration). 네 채널(배너/상세에러/DB에러/헤더)의 노출을 증거와 함께 정리하고, 정찰 가속 영향과 정보 최소화 방어로 종합. 보고서에 노출 항목 + 정보 최소화(ServerTokens 포함)가 담기면 정답."
     verify:
       type: output_contains
       expect: 'ServerTokens'
