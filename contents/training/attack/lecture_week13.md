@@ -29,6 +29,22 @@
 
 핵심: Caldera는 결국 **ATT&CK 기법별 atomic 명령을 자동 실행**하는 것. 손으로 하던 걸 일관·반복·자동으로.
 
+### 2.1 설치 과정 (el34에 원래 없던 도구 — 참고)
+
+Caldera는 el34 기본에 없어 **호스트에 직접 설치**했다. 설치 흐름(root):
+```bash
+# ① 소스 클론 (--recursive: plugins/stockpile, sandcat 등 서브모듈 포함 — 필수)
+git clone https://github.com/mitre/caldera.git --recursive ~/caldera-src
+# ② Python 의존성 설치
+cd ~/caldera-src && python3 -m pip install -r requirements.txt   # pip 없으면 apt-get install -y python3-pip
+# ③ 서버 실행(최초 실행 시 UI 빌드) — 웹 UI/REST API
+python3 server.py --insecure   # 기본 8888 포트, conf/default.yml로 설정
+```
+- **--recursive 중요**: stockpile(ability 라이브러리)·sandcat(agent) 플러그인이 서브모듈. 빼면 ability가 없다.
+- **agent(sandcat)**: 타깃에서 `server:8888/file/download`로 받아 실행 → ability를 자동 수행하고 결과 보고.
+- **선행 조건**: 호스트 인터넷(github + pip), python3. UI 빌드엔 node가 필요할 수 있다.
+- 본 실습 lab은 Caldera가 자동화하는 **atomic 기법을 수동 실행**해 탐지를 측정(서버/agent 풀 운영은 별도).
+
 ---
 
 ## 3. ATT&CK 기법 = atomic 명령

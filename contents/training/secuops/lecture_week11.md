@@ -37,6 +37,24 @@ sysmon -c                           # 현재 RuleGroup(필터) 확인
   없이 읽음).
 - **이벤트 종류**(이 환경 config): **EventID 1 ProcessCreate**, **3 NetworkConnect**, **11 FileCreate**.
   (ProcessTerminate(5)는 노이즈라 억제.)
+
+### 2.1 설치 과정 (el34에 원래 없던 도구 — 참고)
+
+sysmon은 el34 기본 이미지에 없어 **호스트에 직접 설치**했다. 설치 흐름(Ubuntu 22.04, root):
+```bash
+# ① Microsoft 패키지 저장소 등록
+curl -sSL -o /tmp/ms-prod.deb https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+dpkg -i /tmp/ms-prod.deb && apt-get update
+# ② sysmonforlinux 설치 (eBPF 센서 sysinternalsebpf 의존성 자동)
+apt-get install -y sysmonforlinux        # → /usr/bin/sysmon + systemd 'sysmon' 서비스
+# ③ config.xml로 시작(=eBPF 로드). 필터 RuleGroup 지정
+sysmon -accepteula -i /opt/sysmon-w11.xml   # 재설정은 sysmon -c <file>
+```
+- **왜 호스트인가**: 컨테이너(el34-web)는 비특권이라 CAP_BPF/SYS_ADMIN이 없어 eBPF 센서를 못 올린다.
+  호스트는 root+커널 접근이 되고, 컨테이너 프로세스는 호스트 커널 프로세스라 **호스트 sysmon이 다 본다**.
+- **config 필터**: 공유 호스트 syslog 폭주를 막으려 실습 마커(`b64decode`/`dev/tcp`/`w11`, 포트 `53666`)에
+  한정. 운영에선 더 폭넓게 캡처 후 분석에서 필터한다.
+- **선행 조건**: 호스트 인터넷(packages.microsoft.com 도달), root. eBPF는 커널 5.x+ 필요(el34 호스트 6.8).
 - ⚠️ 이 lab config는 실습 마커(`b64decode`/`dev/tcp`/`w11`, 포트 `53666`)에 **필터링**돼 있다 —
   공유 호스트 syslog 폭주 방지. 운영 sysmon은 보통 더 폭넓게 캡처하고 분석에서 필터한다.
 

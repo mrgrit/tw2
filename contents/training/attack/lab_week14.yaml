@@ -1,0 +1,277 @@
+lab_id: standalone-attack-week14
+title: "Caldera+Wazuh 탐지 커버리지 측정·보강·재검증 (Purple Team)"
+version: standalone-attack
+course: attack
+week: 14
+description: |
+  Purple team 사이클 — Caldera로 ATT&CK 에뮬레이션(레드), 안 잡힌 갭을 Wazuh 룰로 보강(블루),
+  재에뮬레이션으로 재검증. 탐지 커버리지를 측정→보강→재검증으로 끌어올린다. 룰은 logtest 검증+삭제.
+  인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "W13(에뮬레이션)·W04(Wazuh 룰) 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §1(purple 사이클) §2(측정) §3(보강) 숙지"
+objectives:
+  - "커버리지 갭 측정(미탐지 기법)"
+  - "Wazuh 룰로 갭 보강 + logtest 검증"
+  - "재에뮬레이션으로 재검증 + 커버리지 매트릭스"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — Caldera + Wazuh
+      ## 💻 실행 명령
+      ```bash
+      ls ~/caldera-src/server.py 2>/dev/null && echo "caldera ok"
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      ```
+      ## ✅ 합격 기준
+      Caldera + Wazuh 준비.
+    hint: 'caldera + analysisd'
+    category: survey
+    points: 10
+    answer: |
+      ls ~/caldera-src/server.py 2>/dev/null && echo "caldera ok" || echo "caldera 미설치"
+      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+    answer_detail: "Purple team 도구 = Caldera(에뮬레이션) + Wazuh(탐지/보강)."
+    verify:
+      type: output_contains
+      expect: 'analysisd'
+      field: stdout
+      semantic:
+        intent: "Caldera+Wazuh 점검"
+        success_criteria: ["caldera + analysisd"]
+        acceptable_methods: ["**[OSS] 점검 (권장)**"]
+    target_vm: siem
+
+  - order: 2
+    instruction: |
+      ## 🎯 갭 재현 — 안 잡히는 기법
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'echo "[T1087 Account Discovery]"; cat /etc/passwd | head -2; echo emulated'
+      ```
+      ## ✅ 합격 기준
+      커버리지 갭 기법(discovery)을 에뮬레이션한다.
+    hint: 'T1087 discovery 에뮬'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== 갭 기법 에뮬레이션 (T1087 Account Discovery) ==="
+      docker exec el34-web sh -c 'echo "[T1087]"; cat /etc/passwd | head -2; echo emulated'
+      echo "→ W13에서 discovery는 탐지 갭. 읽기 명령이라 기본 룰이 안 잡음"
+    answer_detail: "갭 기법 = W13에서 탐지 안 된 discovery(T1087, cat /etc/passwd). 읽기 명령이라 시그니처가 약해 기본 커버리지 갭."
+    verify:
+      type: output_contains
+      expect: 'emulated'
+      field: stdout
+      semantic:
+        intent: "갭 기법 에뮬레이션"
+        success_criteria: ["T1087 discovery"]
+        acceptable_methods: ["**[OSS] discovery 에뮬 (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 커버리지 측정 — 갭 확인
+      ## 💻 실행 명령
+      ```bash
+      echo '{"technique":"T1087","action":"account_discovery"}' | docker exec -i el34-siem /var/ossec/bin/wazuh-logtest | grep -iE "no rule|level"
+      ```
+      ## ✅ 합격 기준
+      해당 기법이 (보강 전) 미탐지/저레벨임을 확인한다.
+    hint: 'logtest로 미탐지 확인'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 커버리지 측정 (보강 전: 갭) ==="
+      docker exec el34-siem sh -c 'cat > /tmp/aw14m.json <<EOF
+      {"technique":"T1087","action":"account_discovery"}
+      EOF'
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/aw14m.json 2>&1 | grep -aE "Completed|decoder|No rule|level:" | head -5; rm -f /tmp/aw14m.json'
+      echo "→ 커스텀 룰 없으면 T1087이 미탐지/저레벨 = 커버리지 갭(보강 전)"
+    answer_detail: "보강 전 측정 — T1087 마커가 json decoder엔 파싱되나 커스텀 룰 없으면 escalate 안 됨(미탐지/저레벨) = 커버리지 갭."
+    verify:
+      type: output_contains
+      expect: 'Completed'
+      field: stdout
+      semantic:
+        intent: "커버리지 갭 측정(보강 전)"
+        success_criteria: ["미탐지/저레벨 확인"]
+        acceptable_methods: ["**[OSS] logtest 보강전 (권장)**"]
+    target_vm: siem
+
+  - order: 4
+    instruction: |
+      ## 🎯 갭 보강 룰 (id 101414)
+      ## 💻 실행 명령
+      ```bash
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/aw14_lr.bak
+      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name="atk_w14,">
+        <rule id="101414" level="10">
+          <decoded_as>json</decoded_as>
+          <field name="technique">T1087</field>
+          <description>ATK W14 - account discovery detected (gap closed)</description>
+        </rule>
+      </group>
+      EOF'
+      echo '{"technique":"T1087","action":"account_discovery"}' | sudo /var/ossec/bin/wazuh-logtest
+      sudo cp /tmp/aw14_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/aw14_lr.bak
+      ```
+      ## ✅ 합격 기준
+      보강 룰(101414)이 갭 기법을 탐지한다(정리 후 보존).
+    hint: '보강 룰(101414) → logtest → cp 복원'
+    category: manipulation
+    points: 16
+    answer: |
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/aw14_lr.bak'
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"atk_w14,\">
+        <rule id=\"101414\" level=\"10\">
+          <decoded_as>json</decoded_as>
+          <field name=\"technique\">T1087</field>
+          <description>ATK W14 account discovery detected gap closed</description>
+        </rule>
+      </group>
+      EOF"'
+      docker exec el34-siem sh -c 'cat > /tmp/aw14.json <<EOF
+      {"technique":"T1087","action":"account_discovery"}
+      EOF'
+      echo "=== 보강 룰 logtest ==="
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/aw14.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/aw14.json'
+      docker exec el34-siem sh -c 'sudo cp /tmp/aw14_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/aw14_lr.bak; echo "복원 잔재=$(grep -c 101414 /var/ossec/etc/rules/local_rules.xml)"'
+    answer_detail: "갭 보강 = T1087을 탐지하는 Wazuh 룰(101414, level 10) 작성 → logtest 발화 확인. 커버리지 갭을 룰로 메운다. cp 복원으로 보존."
+    verify:
+      type: output_contains
+      expect: '101414'
+      field: stdout
+      semantic:
+        intent: "갭 보강 룰 + 검증"
+        success_criteria: ["id 101414 발화", "cp 복원"]
+        acceptable_methods: ["**[OSS] 보강 룰 + logtest (권장)**"]
+    target_vm: siem
+
+  - order: 5
+    instruction: |
+      ## 🎯 재검증 — 갭이 닫혔나
+      ## 💻 실행 명령
+      ```bash
+      echo "보강 전: T1087 미탐지(❌) → 보강 후: 101414 level 10 발화(✅). 갭 닫힘"
+      ```
+      ## ✅ 합격 기준
+      재에뮬레이션으로 갭이 닫혔음(❌→✅)을 확인한다.
+    hint: '보강 전후 ❌→✅'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 재검증 (재에뮬레이션) ==="
+      echo "보강 전: T1087(account discovery) → 미탐지 ❌"
+      echo "보강 후: 룰 101414 → level 10 발화 ✅"
+      echo "→ 같은 기법을 다시 에뮬레이션해 탐지 확인 = 갭 닫힘. '고쳤다 믿지 말고 다시 공격해 확인'"
+    answer_detail: "재검증 = purple team의 핵심. 보강 후 같은 기법을 다시 에뮬레이션해 이제 잡히는지 확인(❌→✅). 룰이 실제 동작함을 입증."
+    verify:
+      type: output_contains
+      expect: '갭 닫힘'
+      field: stdout
+      semantic:
+        intent: "재검증으로 갭 닫힘 확인"
+        success_criteria: ["보강 전후 ❌→✅"]
+        acceptable_methods: ["**[설명] 재검증 (권장)**"]
+    target_vm: siem
+
+  - order: 6
+    instruction: |
+      ## 🎯 커버리지 매트릭스
+      ## 💻 실행 명령
+      ```bash
+      echo "Discovery T1087: ❌→✅ / Persistence T1136: ✅ / Execution T1059: ✅ → 커버리지 향상"
+      ```
+      ## ✅ 합격 기준
+      보강 전후 커버리지 매트릭스를 정리한다.
+    hint: '커버리지 매트릭스'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 탐지 커버리지 매트릭스 ==="
+      echo "| Tactic | 기법 | 보강 전 | 보강 후 |"
+      echo "| Discovery | T1087 | ❌ | ✅(101414) |"
+      echo "| Persistence | T1136 | ✅ | ✅ |"
+      echo "| Execution | T1059 | ✅ | ✅ |"
+      echo "→ 갭(T1087) 보강으로 커버리지 향상. 매트릭스로 우선순위화·지속 개선"
+    answer_detail: "커버리지 매트릭스 = ATT&CK 기법별 탐지 여부 시각화. 보강으로 갭(❌)이 ✅로. purple team이 매트릭스를 채워간다."
+    verify:
+      type: output_contains
+      expect: '커버리지'
+      field: stdout
+      semantic:
+        intent: "커버리지 매트릭스 정리"
+        success_criteria: ["보강 전후 매트릭스"]
+        acceptable_methods: ["**[관리적] 매트릭스 (권장)**"]
+    target_vm: siem
+
+  - order: 7
+    instruction: |
+      ## 🎯 Purple 사이클 정리
+      ## 💻 실행 명령
+      ```bash
+      echo "에뮬레이션→측정→보강→재검증 반복. 레드+블루 협업으로 커버리지 지속 향상"
+      ```
+      ## ✅ 합격 기준
+      purple team 사이클을 정리한다.
+    hint: '에뮬→측정→보강→재검증'
+    category: report
+    points: 12
+    answer: |
+      echo "=== Purple Team 사이클 ==="
+      echo "① 에뮬레이션(Caldera) → ② 커버리지 측정(잡혔나?) → ③ 갭 보강(Wazuh 룰) → ④ 재검증(재에뮬레이션) → ①…"
+      echo "→ 레드(공격)+블루(방어) 협업. 객관적·지속적 탐지 개선. '추측'이 아닌 '검증된 커버리지'"
+    answer_detail: "purple team = 에뮬레이션→측정→보강→재검증 반복. 레드/블루가 함께 커버리지를 객관적으로 끌어올린다. 추측 아닌 데이터 기반."
+    verify:
+      type: output_contains
+      expect: 'Purple'
+      field: stdout
+      semantic:
+        intent: "purple 사이클 정리"
+        success_criteria: ["4단계 사이클"]
+        acceptable_methods: ["**[설명] purple 사이클 (권장)**"]
+    target_vm: siem
+
+  - order: 8
+    instruction: |
+      ## 🎯 커버리지 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W14 커버리지 보고서 (학번, 이름)
+      ## 1. 갭 측정 (미탐지 기법)
+      ## 2. 보강 룰(101414) + logtest
+      ## 3. 재검증 (❌→✅)
+      ## 4. 커버리지 매트릭스 + purple 사이클
+      ```
+      ## ✅ 합격 기준
+      보고서에 측정·보강·재검증이 포함된다.
+    hint: '측정+보강+재검증'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 공격 W14 커버리지 보고서
+      ## 1. 갭 측정: T1087(discovery) 미탐지(❌)
+      ## 2. 보강: Wazuh 룰 101414(technique=T1087, level 10) → logtest 발화
+      ## 3. 재검증: 재에뮬레이션 → 이제 탐지(✅). 갭 닫힘
+      ## 4. 매트릭스: Discovery ❌→✅, Persistence/Execution ✅. purple 사이클(에뮬→측정→보강→재검증)
+      ## 결론: 레드+블루 협업으로 커버리지를 객관 측정·보강·재검증. 지속 개선
+      EOF
+    answer_detail: "커버리지 = 측정→보강→재검증의 purple team 산출물. 갭을 데이터로 찾아 닫고, 닫혔음을 재공격으로 입증."
+    verify:
+      type: output_contains
+      expect: '재검증'
+      field: stdout
+      semantic:
+        intent: "커버리지 종합 보고"
+        success_criteria: ["측정/보강/재검증"]
+        acceptable_methods: ["**[관리적] 커버리지 보고서 (권장)**"]
+    target_vm: siem
