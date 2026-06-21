@@ -1,0 +1,217 @@
+lab_id: standalone-cloud-container-week12
+title: "오케스트레이션 보안 — Compose·Kubernetes 보안 통제"
+version: standalone-cloud-container
+course: cloud-container
+week: 12
+description: |
+  오케스트레이션 보안 — 다수 컨테이너를 자동 배포·운영하는 계층(Docker Compose / Kubernetes)의 보안 통제.
+  el34 스택의 재시작 정책 일관성을 점검하고, compose 시크릿·k8s Pod 보안(SecurityContext/RBAC/
+  NetworkPolicy/Secret)을 다룬다. 명령은 el34 호스트 docker CLI. 신규 설치 없음. 읽기 전용 점검.
+difficulty: medium
+duration_minutes: 140
+prerequisites:
+  - "W01–W11 통과 (4계층의 오케스트레이션 계층)"
+  - "el34 호스트 SSH + docker CLI"
+  - "lecture §2(compose) §3(k8s 보안) 숙지"
+objectives:
+  - "오케스트레이션 계층의 보안 통제 이해"
+  - "스택 운영 일관성(restart 등) 점검"
+  - "k8s Pod 보안(SecurityContext/RBAC/NetworkPolicy) 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 스택 확인
+      ## 💻 실행 명령
+      ```bash
+      echo "stack_containers=$(docker ps -q | wc -l)"; echo target_ok
+      ```
+      ## ✅ 합격 기준
+      스택 컨테이너 수와 `target_ok` 출력.
+    hint: '스택'
+    category: survey
+    points: 10
+    answer: |
+      echo "stack_containers=$(docker ps -q | wc -l)"; echo target_ok
+    answer_detail: "오케스트레이션 = 다수 컨테이너의 배포·확장·운영 자동화(compose/k8s). el34 는 다수 컨테이너 스택."
+    verify:
+      type: output_contains
+      expect: 'target_ok'
+      field: stdout
+      semantic: {intent: "스택", success_criteria: ["컨테이너 수"], acceptable_methods: ["**[OSS] docker ps (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 목표 — 운영 일관성 (restart 정책)
+      ## 📖 개념 한 줄
+      오케스트레이션은 스택 전체에 일관된 운영 정책(재시작·복원력)을 적용한다. 일부만 다르면 그 컨테이너가
+      장애 시 복구 안 되는 약한 고리가 된다.
+      ## 💻 실행 명령
+      ```bash
+      docker ps -q | head -6 | while read c; do docker inspect "$c" --format '{{.Name}} restart={{.HostConfig.RestartPolicy.Name}}'; done; echo restart_audited
+      ```
+      ## ✅ 합격 기준
+      각 컨테이너 restart 정책과 `restart_audited` 출력.
+      ## 🔧 도구 풀이
+      - 스택 전체의 RestartPolicy 를 훑어 일관성 점검 — unless-stopped/always 가 복원력 정책.
+    hint: 'restart 일관성'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 운영 일관성 (restart) ==="
+      docker ps -q | head -8 | while read c; do docker inspect "$c" --format '{{.Name}} restart={{.HostConfig.RestartPolicy.Name}}'; done; echo restart_audited
+      echo "→ 스택 전반 unless-stopped = 일관된 복원력 정책(준수). no 인 컨테이너가 있으면 약한 고리"
+    answer_detail: "운영 일관성 = 스택 전체 RestartPolicy 점검. el34 는 unless-stopped 일관(복원력 준수). 오케스트레이션은 정책을 스택 단위로 강제."
+    verify:
+      type: output_contains
+      expect: 'restart_audited'
+      field: stdout
+      semantic: {intent: "운영 일관성", success_criteria: ["restart 정책"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 목표 — Compose 보안
+      ## 📖 개념 한 줄
+      Docker Compose 파일은 스택의 설정을 코드로 정의한다(IaC) — 여기에 비밀 평문·특권·과한 포트가 있으면
+      스택 전체에 퍼진다. compose 의 `secrets:` 로 비밀을 env 가 아닌 파일로 주입한다.
+      ## 💻 실행 명령
+      ```bash
+      echo "compose: 특권/포트/볼륨/env 비밀이 코드에. secrets: 블록으로 비밀을 파일 주입(env 금지)"
+      ```
+      ## ✅ 합격 기준
+      compose 보안 요점이 정리되면 통과.
+    hint: 'compose secrets'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== Compose 보안 ==="
+      echo "compose 파일(IaC)에 담기는 위험: 평문 env 비밀, privileged: true, 과한 ports, 호스트 볼륨 마운트"
+      echo "통제: secrets: 블록(비밀을 env 아닌 파일로), read_only: true, cap_drop, user 지정, 최소 ports"
+      echo "compose 파일도 코드 리뷰·비밀 스캔(gitleaks) 대상"
+      echo "compose_secured"
+    answer_detail: "Compose 보안 = IaC 파일의 비밀/특권/포트 통제 + secrets: 블록(파일 주입). compose 파일도 코드 리뷰·비밀 스캔 대상."
+    verify:
+      type: output_contains
+      expect: 'compose_secured'
+      field: stdout
+      semantic: {intent: "compose 보안", success_criteria: ["secrets/특권"], acceptable_methods: ["**[설명] 개념 (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 목표 — Kubernetes Pod 보안
+      ## 📖 개념 한 줄
+      대규모는 Kubernetes 로 오케스트레이션한다 — Pod SecurityContext(비-root/특권금지), RBAC(권한),
+      NetworkPolicy(통신 제어), Secret(비밀)이 핵심 통제다.
+      ## 💻 실행 명령
+      ```bash
+      echo "k8s: SecurityContext(runAsNonRoot/readOnlyRootFS) + RBAC + NetworkPolicy + Secret + PodSecurity"
+      ```
+      ## ✅ 합격 기준
+      k8s 핵심 보안 통제가 정리되면 통과.
+    hint: 'k8s 보안'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== Kubernetes Pod 보안 ==="
+      echo "1) SecurityContext: runAsNonRoot, readOnlyRootFilesystem, allowPrivilegeEscalation:false, drop ALL caps"
+      echo "2) RBAC: 서비스어카운트별 최소 권한(과한 cluster-admin 금지)"
+      echo "3) NetworkPolicy: Pod 간 통신 화이트리스트(기본 deny)"
+      echo "4) Secret: env 대신 마운트, etcd 암호화"
+      echo "5) Pod Security Admission: 네임스페이스별 보안 표준 강제"
+      echo "→ 컨테이너 단위 통제(W04~07)를 k8s 가 선언적으로 스택 전체에 강제"
+    answer_detail: "k8s Pod 보안 = SecurityContext(비-root/cap drop)+RBAC+NetworkPolicy+Secret+PSA. 컨테이너 통제를 선언적으로 강제."
+    verify:
+      type: output_contains
+      expect: 'SecurityContext'
+      field: stdout
+      semantic: {intent: "k8s 보안", success_criteria: ["SecurityContext/RBAC/NetworkPolicy"], acceptable_methods: ["**[표준] k8s (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 목표 — 오케스트레이션 위협
+      ## 💻 실행 명령
+      ```bash
+      echo "k8s API 노출, 과한 RBAC, 네트워크 정책 부재(평면), etcd 평문 비밀, 컨트롤플레인 침해"
+      ```
+      ## ✅ 합격 기준
+      오케스트레이션 위협이 정리되면 통과.
+    hint: '오케 위협'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 오케스트레이션 위협 ==="
+      echo "1) k8s API 서버 노출/약한 인증 → 클러스터 장악"
+      echo "2) 과한 RBAC(cluster-admin 남발) → 한 워크로드 침해가 클러스터 전체로"
+      echo "3) NetworkPolicy 부재 → Pod 간 평면 통신(측면 이동)"
+      echo "4) etcd 비밀 평문 → 클러스터 비밀 일괄 유출"
+      echo "→ 오케스트레이션 계층 침해는 스택 전체 침해. 컨트롤플레인 보호가 핵심"
+    answer_detail: "오케 위협 = API 노출+과한 RBAC+네트워크정책 부재+etcd 평문. 오케 계층 침해=스택 전체."
+    verify:
+      type: output_contains
+      expect: 'RBAC'
+      field: stdout
+      semantic: {intent: "오케 위협", success_criteria: ["API/RBAC/정책"], acceptable_methods: ["**[관리적] 위협 (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 목표 — 방어
+      ## 💻 실행 명령
+      ```bash
+      echo "compose secrets + 일관 정책 + k8s(SecurityContext/RBAC 최소/NetworkPolicy 기본deny/Secret 암호화)"
+      ```
+      ## ✅ 합격 기준
+      오케스트레이션 방어가 정리되면 통과.
+    hint: '오케 방어'
+    category: report
+    points: 14
+    answer: |
+      echo "=== 오케스트레이션 방어 ==="
+      echo "1) Compose: secrets: 블록 + read_only + cap_drop + 최소 ports + 일관 정책"
+      echo "2) k8s: SecurityContext(runAsNonRoot 등) + RBAC 최소권한 + NetworkPolicy 기본 deny"
+      echo "3) Secret 암호화(etcd) + API 서버 인증·감사"
+      echo "4) Pod Security Admission/정책 엔진(OPA/Kyverno)으로 표준 강제"
+      echo "→ 컨테이너 단위 최소권한을 오케스트레이션이 선언적으로 스택 전체에 강제"
+    answer_detail: "방어 = compose secrets/일관정책 + k8s SecurityContext/RBAC최소/NetworkPolicy/Secret암호화 + 정책엔진."
+    verify:
+      type: output_contains
+      expect: 'NetworkPolicy'
+      field: stdout
+      semantic: {intent: "오케 방어", success_criteria: ["선언적 강제"], acceptable_methods: ["**[설명] 방어 (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 목표 — 오케스트레이션 보안 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 클라우드·컨테이너 W12 오케스트레이션 보안 보고서 (학번, 이름)
+      ## 1. 운영 일관성(restart)/compose 보안
+      ## 2. k8s Pod 보안(SecurityContext/RBAC/NetworkPolicy)
+      ## 3. 방어(선언적 최소권한 강제)
+      ```
+      ## ✅ 합격 기준
+      일관성 + k8s 보안 + 방어 포함.
+    hint: '일관성+k8s+방어'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 클라우드·컨테이너 W12 오케스트레이션 보안 보고서
+      ## 1. 점검: el34 스택 restart 일관(unless-stopped, 복원력 준수). compose 비밀은 secrets: 블록으로
+      ## 2. k8s: SecurityContext(비-root/cap drop) + RBAC 최소권한 + NetworkPolicy 기본 deny + Secret 암호화
+      ## 3. 방어: 컨테이너 단위 최소권한(W04~07)을 오케스트레이션이 선언적으로 스택 전체에 강제 + 정책엔진(OPA/Kyverno)
+      ## 결론: 오케스트레이션은 보안을 '스택 전체에 일관 강제'하는 계층. 컨트롤플레인 보호와 선언적 최소권한이 핵심
+      EOF
+    answer_detail: "오케 보고 = 운영 일관성+compose/k8s 보안+선언적 최소권한 강제. 컨트롤플레인 보호 핵심."
+    verify:
+      type: output_contains
+      expect: 'NetworkPolicy'
+      field: stdout
+      semantic: {intent: "오케 보고", success_criteria: ["일관성/k8s/방어"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web

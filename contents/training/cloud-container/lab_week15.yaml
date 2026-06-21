@@ -1,0 +1,222 @@
+lab_id: standalone-cloud-container-week15
+title: "기말: 컨테이너 보안 종합 감사 — 전 영역 점검→준수율→로드맵"
+version: standalone-cloud-container
+course: cloud-container
+week: 15
+description: |
+  기말 종합 — el34-web 한 컨테이너를 W01~W14 전 영역(이미지 스캔·런타임 특권/cap/user·격리·시크릿·
+  네트워크·CIS Docker·런타임 탐지)으로 한 바퀴 감사해 준수율·갭·시정 로드맵을 산출한다.
+  명령은 el34 호스트 docker/trivy CLI. 신규 설치 없음. 읽기 전용 점검.
+difficulty: hard
+duration_minutes: 200
+prerequisites:
+  - "W01–W14 통과"
+  - "el34 호스트 SSH + docker/trivy CLI"
+  - "전 주차 점검 명령 숙지"
+objectives:
+  - "컨테이너 보안 전 영역 종합 감사"
+  - "준수율 산정·갭 도출"
+  - "위험 기반 시정 로드맵 작성"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 대상 식별
+      ## 💻 실행 명령
+      ```bash
+      echo "containers=$(docker ps -q | wc -l)"; docker inspect el34-web --format 'state={{.State.Status}}'; echo target_ok
+      ```
+      ## ✅ 합격 기준
+      `target_ok` 출력.
+    hint: '대상'
+    category: survey
+    points: 8
+    answer: |
+      echo "containers=$(docker ps -q | wc -l)"; docker inspect el34-web --format 'state={{.State.Status}}'; echo target_ok
+    answer_detail: "기말 종합 감사 대상 = el34-web(전 영역 한 바퀴)."
+    verify: {type: output_contains, expect: 'target_ok', field: stdout, semantic: {intent: "대상", success_criteria: ["가동"], acceptable_methods: ["**[OSS] docker (권장)**"]}}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 ① 이미지 취약점 (W03)
+      ## 💻 실행 명령
+      ```bash
+      /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'Total:'
+      ```
+      ## ✅ 합격 기준
+      `Total:` 출력.
+    hint: 'trivy'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== ① 이미지 취약점 (W03) ==="
+      /usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'Total:'
+    answer_detail: "이미지 취약점(W03) = Trivy HIGH 집계(갭). 최소 베이스+갱신."
+    verify: {type: output_contains, expect: 'Total:', field: stdout, semantic: {intent: "이미지", success_criteria: ["CVE"], acceptable_methods: ["**[OSS] trivy (권장)**"]}}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 ② 특권 (W04)
+      ## 💻 실행 명령
+      ```bash
+      P=$(docker inspect el34-web --format '{{.HostConfig.Privileged}}'); [ "$P" = "false" ] && echo "compliant=not_privileged" || echo "gap=privileged"
+      ```
+      ## ✅ 합격 기준
+      `compliant=not_privileged`.
+    hint: 'privileged'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== ② 특권 (W04) ==="
+      P=$(docker inspect el34-web --format '{{.HostConfig.Privileged}}'); [ "$P" = "false" ] && echo "compliant=not_privileged" || echo "gap=privileged"
+    answer_detail: "특권(W04) = false(준수, CIS 5.4)."
+    verify: {type: output_contains, expect: 'compliant=not_privileged', field: stdout, semantic: {intent: "특권", success_criteria: ["준수"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 ③ Capability·User (W04)
+      ## 💻 실행 명령
+      ```bash
+      D=$(docker inspect el34-web --format '{{.HostConfig.CapDrop}}'); echo "$D" | grep -qiE 'ALL|CAP_' && echo "caps_ok" || echo "gap=no_capdrop"; docker exec el34-web id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "nonroot"
+      ```
+      ## ✅ 합격 기준
+      `gap=runs_as_root` 출력(갭).
+    hint: 'cap/user'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== ③ Capability·User (W04) ==="
+      D=$(docker inspect el34-web --format '{{.HostConfig.CapDrop}}'); echo "$D" | grep -qiE 'ALL|CAP_' && echo "caps_ok" || echo "gap=no_capdrop"
+      docker exec el34-web id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "nonroot"
+    answer_detail: "Cap/User(W04) = CapDrop 비어있음+root 실행(CIS 5.3/4.1 갭)."
+    verify: {type: output_contains, expect: 'gap=runs_as_root', field: stdout, semantic: {intent: "cap/user", success_criteria: ["갭"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 ④ 시크릿 (W06)
+      ## 💻 실행 명령
+      ```bash
+      D=$(docker inspect el34-web --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -ciE 'pass|secret|token|key'); [ "$D" -gt 0 ] && echo "gap=secret_in_env" || echo "no_env_secret"
+      ```
+      ## ✅ 합격 기준
+      `gap=secret_in_env`(갭).
+    hint: 'secret'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== ④ 시크릿 (W06) ==="
+      D=$(docker inspect el34-web --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -ciE 'pass|secret|token|key'); [ "$D" -gt 0 ] && echo "gap=secret_in_env" || echo "no_env_secret"
+    answer_detail: "시크릿(W06) = env 비밀 노출(갭, SSH_PASS). 즉시 rotation."
+    verify: {type: output_contains, expect: 'gap=secret_in_env', field: stdout, semantic: {intent: "시크릿", success_criteria: ["env 노출"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 ⑤ 격리 (W05)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "ls /proc/1/ns/ | wc -l"; echo ns_ok
+      ```
+      ## ✅ 합격 기준
+      namespace 수와 `ns_ok`.
+    hint: 'namespace'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== ⑤ 격리 (W05) ==="
+      docker exec el34-web sh -c "ls /proc/1/ns/ | wc -l"; echo ns_ok
+    answer_detail: "격리(W05) = namespace 격리(준수). 단 공유 커널 한계 → seccomp/AppArmor 강화."
+    verify: {type: output_contains, expect: 'ns_ok', field: stdout, semantic: {intent: "격리", success_criteria: ["namespace"], acceptable_methods: ["**[OSS] /proc/ns (권장)**"]}}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 ⑥ 네트워크 (W07)
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'; echo nets_ok
+      ```
+      ## ✅ 합격 기준
+      소속 네트워크와 `nets_ok`.
+    hint: 'network'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== ⑥ 네트워크 (W07) ==="
+      docker inspect el34-web --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}'; echo nets_ok
+    answer_detail: "네트워크(W07) = 4-tier 분리(준수)."
+    verify: {type: output_contains, expect: 'nets_ok', field: stdout, semantic: {intent: "네트워크", success_criteria: ["분리"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 ⑦ CIS Docker (W09) — healthcheck
+      ## 💻 실행 명령
+      ```bash
+      H=$(docker inspect el34-web --format '{{if .Config.Healthcheck}}yes{{else}}none{{end}}'); [ "$H" = "none" ] && echo "gap=no_healthcheck" || echo "healthcheck_ok"
+      ```
+      ## ✅ 합격 기준
+      `gap=no_healthcheck`(갭).
+    hint: 'healthcheck'
+    category: manipulation
+    points: 10
+    answer: |
+      echo "=== ⑦ CIS Docker (W09) ==="
+      H=$(docker inspect el34-web --format '{{if .Config.Healthcheck}}yes{{else}}none{{end}}'); [ "$H" = "none" ] && echo "gap=no_healthcheck" || echo "healthcheck_ok"
+      ls -la /var/run/docker.sock 2>/dev/null | awk '{print "sock="$1}'
+    answer_detail: "CIS Docker(W09) = healthcheck 없음(갭, CIS 5.26). docker.sock 660(준수)."
+    verify: {type: output_contains, expect: 'gap=no_healthcheck', field: stdout, semantic: {intent: "CIS", success_criteria: ["갭"], acceptable_methods: ["**[OSS] docker inspect (권장)**"]}}
+    target_vm: web
+
+  - order: 9
+    instruction: |
+      ## 🎯 ⑧ 런타임 탐지 (W10)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json 2>/dev/null | head -c 40; echo; echo runtime_mon_ok'
+      ```
+      ## ✅ 합격 기준
+      Wazuh 적재 + `runtime_mon_ok`.
+    hint: 'runtime detection'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== ⑧ 런타임 탐지 (W10) ==="
+      docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json 2>/dev/null | head -c 40; echo; echo runtime_mon_ok'
+    answer_detail: "런타임 탐지(W10) = Wazuh+호스트 Sysmon 행위 모니터링(준수). 정적 점검 보완."
+    verify: {type: output_contains, expect: 'runtime_mon_ok', field: stdout, semantic: {intent: "런타임 탐지", success_criteria: ["모니터링"], acceptable_methods: ["**[OSS] Wazuh (권장)**"]}}
+    target_vm: web
+
+  - order: 10
+    instruction: |
+      ## 🎯 종합 감사 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 클라우드·컨테이너 W15 종합 감사 보고서 (학번, 이름)
+      ## 1. 준수율(준수/전체) / 2. 갭 목록 / 3. 시정 로드맵
+      ```
+      ## ✅ 합격 기준
+      준수율 + 갭 + 시정 로드맵 포함.
+    hint: '준수율+갭+로드맵'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 클라우드·컨테이너 W15 종합 감사 보고서
+      ## 1. 준수율: 준수(특권 없음·namespace 격리·4-tier 분리·docker.sock 660·런타임 모니터링) / 갭(이미지 CVE·cap 미드롭·root 실행·env 비밀·healthcheck 없음) → 8영역 중 갭 5
+      ## 2. 갭 목록:
+      ##   - [High] env 비밀 SSH_PASS 노출(W06) — docker inspect 로 탈취
+      ##   - [High] root 실행 + CapDrop 비어있음(W04, CIS 4.1/5.3) — escape 폭발 반경
+      ##   - [Medium] 이미지 HIGH 취약점(W03) — 베이스 갱신/재빌드
+      ##   - [Medium] healthcheck 없음(W09, CIS 5.26)
+      ## 3. 시정 로드맵: ①env 비밀 즉시 rotation+시크릿 매니저 ②비-root+cap drop ALL 재배포 ③이미지 갱신/재빌드+Trivy CI 게이트 ④healthcheck 추가
+      ## 결론: 격리·분리·특권·런타임 모니터링은 양호. 최소권한(root/cap)·시크릿 외부주입·이미지 갱신이 최우선 시정
+      EOF
+    answer_detail: "종합 감사 = 준수율(격리/분리/특권/모니터링)+갭(시크릿/root/cap/이미지/healthcheck)+위험기반 로드맵. W01~14 통합."
+    verify: {type: output_contains, expect: '시정', field: stdout, semantic: {intent: "종합 보고", success_criteria: ["준수율/갭/로드맵"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}}
+    target_vm: web
