@@ -1,0 +1,249 @@
+lab_id: standalone-cloud-container-week02
+title: "이미지 보안 — 레이어·베이스·크기·노출 포트"
+version: standalone-cloud-container
+course: cloud-container
+week: 2
+description: |
+  이미지 보안 — 레이어/히스토리, 베이스 이미지(Ubuntu full), 이미지 크기·공격표면, 노출 포트(EXPOSE 22),
+  이미지 최소화(멀티스테이지/distroless). el34 이미지 실 점검. 명령은 el34 호스트 docker CLI. 신규 설치 없음.
+difficulty: medium
+duration_minutes: 130
+prerequisites:
+  - "W01 통과"
+  - "el34 호스트 SSH + docker CLI"
+  - "lecture §2(레이어) §3(베이스) §5(최소화) 숙지"
+objectives:
+  - "이미지 레이어/베이스 분석"
+  - "이미지 크기/노출 포트 = 공격표면"
+  - "이미지 최소화 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'image={{.Config.Image}}' 2>/dev/null; echo target_ok
+      ```
+      ## ✅ 합격 기준
+      대상 이미지 확인.
+    hint: '대상'
+    category: survey
+    points: 10
+    answer: |
+      docker inspect el34-web --format 'image={{.Config.Image}}' 2>/dev/null; echo target_ok
+    answer_detail: "이미지 보안 점검 대상 = el34-web 이미지."
+    verify:
+      type: output_contains
+      expect: 'target_ok'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["이미지 확인"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 레이어/히스토리
+      ## 💻 실행 명령
+      ```bash
+      echo "layers=$(docker history -q el34-web 2>/dev/null | wc -l)"; docker history el34-web --format '{{.Size}} {{.CreatedBy}}' | head -5
+      ```
+      ## ✅ 합격 기준
+      이미지 레이어/빌드 히스토리를 분석한다.
+    hint: 'docker history'
+    category: recon
+    points: 14
+    answer: |
+      echo "=== 레이어/히스토리 ==="
+      echo "layers=$(docker history -q el34-web 2>/dev/null | wc -l)"
+      docker history el34-web --format '{{.Size}} {{.CreatedBy}}' | head -6
+      echo "→ 레이어별 명령/크기. COPY로 굽힌 비밀/파일은 삭제해도 이전 레이어에 잔존"
+    answer_detail: "레이어 = RUN/COPY 누적. history로 빌드 단계 분석. 비밀 레이어 잔존 위험."
+    verify:
+      type: output_contains
+      expect: 'layers='
+      field: stdout
+      semantic:
+        intent: "레이어 분석"
+        success_criteria: ["히스토리"]
+        acceptable_methods: ["**[OSS] docker history (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 베이스 이미지
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'cat /etc/os-release | head -1'
+      ```
+      ## ✅ 합격 기준
+      베이스 이미지를 식별한다(full OS = 큰 표면).
+    hint: 'os-release'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 베이스 이미지 ==="
+      docker exec el34-web sh -c 'cat /etc/os-release | head -1'
+      echo "→ Ubuntu 22.04(full OS) 베이스 = 공격 표면 큼. 권고는 distroless/alpine/slim(트레이드오프)"
+    answer_detail: "베이스 = Ubuntu full OS(표면 큼). 최소 베이스(distroless)가 보안 권고."
+    verify:
+      type: output_contains
+      expect: 'Ubuntu'
+      field: stdout
+      semantic:
+        intent: "베이스 이미지 식별"
+        success_criteria: ["베이스 OS"]
+        acceptable_methods: ["**[OSS] os-release (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 이미지 크기 — 공격 표면
+      ## 💻 실행 명령
+      ```bash
+      docker images --format '{{.Repository}} {{.Size}}' | grep -i el34 | head -5
+      ```
+      ## ✅ 합격 기준
+      이미지 크기를 공격 표면 관점으로 본다.
+    hint: '이미지 크기'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 이미지 크기 ==="
+      docker images --format 'size_check {{.Repository}} {{.Size}}' | grep -i el34 | head -6
+      echo "→ web 560MB·attacker 4GB 등. 크기=패키지 수=CVE 수=침해 후 악용 도구. 최소화 필요"
+    answer_detail: "이미지 크기 = 공격 표면. 클수록 패키지/CVE/악용도구 많음. 최소화가 방어."
+    verify:
+      type: output_contains
+      expect: 'size_check'
+      field: stdout
+      semantic:
+        intent: "이미지 크기 분석"
+        success_criteria: ["표면 관점"]
+        acceptable_methods: ["**[OSS] docker images (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 노출 포트 — EXPOSE
+      ## 💻 실행 명령
+      ```bash
+      docker inspect el34-web --format 'ports={{.Config.ExposedPorts}}'
+      ```
+      ## ✅ 합격 기준
+      이미지에 정의된 노출 포트(불필요 SSH 등)를 점검한다.
+    hint: 'ExposedPorts 22'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 노출 포트 (EXPOSE) ==="
+      docker inspect el34-web --format 'ports={{.Config.ExposedPorts}}'
+      echo "→ 22/tcp(SSH)+80/443. 웹 이미지에 SSH 서버 포함 = 추가 공격 표면(필요성 검토 대상)"
+    answer_detail: "노출 포트 = EXPOSE. 웹 이미지의 SSH(22)는 불필요 표면일 수 있음(검토)."
+    verify:
+      type: output_contains
+      expect: '22'
+      field: stdout
+      semantic:
+        intent: "노출 포트 점검"
+        success_criteria: ["EXPOSE 검토"]
+        acceptable_methods: ["**[OSS] docker inspect (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 이미지 최소화
+      ## 💻 실행 명령
+      ```bash
+      echo "멀티스테이지(빌드도구 분리), distroless/alpine, .dockerignore, 비밀 미포함"
+      ```
+      ## ✅ 합격 기준
+      이미지 최소화 기법을 정리한다.
+    hint: '멀티스테이지/distroless'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 이미지 최소화 ==="
+      echo "1) 멀티스테이지 빌드: 빌드 도구는 빌드 단계만, 최종엔 산출물만"
+      echo "2) 최소 베이스: distroless/alpine/slim"
+      echo "3) .dockerignore: 비밀·불필요 파일 컨텍스트 제외"
+      echo "4) 비밀 미포함: 빌드 시 주입(레이어에 굽지 않기)"
+      echo "→ 작은 이미지 = 작은 표면 + 빠른 배포"
+    answer_detail: "최소화 = 멀티스테이지+distroless+.dockerignore+비밀 미포함. 표면 축소."
+    verify:
+      type: output_contains
+      expect: '멀티스테이지'
+      field: stdout
+      semantic:
+        intent: "이미지 최소화"
+        success_criteria: ["최소화 기법"]
+        acceptable_methods: ["**[설명] 최소화 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 이미지 위생
+      ## 💻 실행 명령
+      ```bash
+      echo "최소 베이스 + 정기 재빌드(패치) + 취약점 스캔 + 비밀 분리 + 신뢰 레지스트리"
+      ```
+      ## ✅ 합격 기준
+      이미지 위생 방어를 정리한다.
+    hint: '최소베이스/재빌드/스캔'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 이미지 위생 방어 ==="
+      echo "1) 최소 베이스(distroless/slim)"
+      echo "2) 정기 재빌드로 베이스 패치 반영"
+      echo "3) 취약점 스캔(Trivy, W03)을 CI에 통합"
+      echo "4) 비밀은 이미지에 굽지 않기(런타임 주입)"
+      echo "5) 신뢰할 수 있는 레지스트리/서명(W11)"
+      echo "→ 핵심: 작게 만들고, 자주 패치하고, 스캔하고, 비밀 분리"
+    answer_detail: "이미지 위생 = 최소베이스+정기재빌드+스캔+비밀분리+신뢰 레지스트리."
+    verify:
+      type: output_contains
+      expect: '스캔'
+      field: stdout
+      semantic:
+        intent: "이미지 위생 방어"
+        success_criteria: ["위생 통제"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 이미지 보안 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 클라우드·컨테이너 W02 이미지 보안 보고서 (학번, 이름)
+      ## 1. 레이어/베이스(Ubuntu full)/크기
+      ## 2. 노출 포트(SSH)
+      ## 3. 최소화/위생 방어
+      ```
+      ## ✅ 합격 기준
+      보고서에 이미지 분석 + 표면 + 최소화가 포함된다.
+    hint: '베이스+표면+최소화'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 클라우드·컨테이너 W02 이미지 보안 보고서
+      ## 1. 분석: el34-web = Ubuntu 22.04 full 베이스(560MB), 레이어 다수
+      ## 2. 표면: EXPOSE 22(SSH)+80/443 → 웹 이미지에 SSH = 불필요 표면 가능성
+      ## 3. 최소화: 멀티스테이지+distroless+.dockerignore. 위생: 정기 재빌드+스캔(Trivy)+비밀 분리
+      ## 결론: 이미지가 곧 공격 표면. 최소 베이스 + 스캔 + 비밀 분리로 표면을 줄이는 것이 이미지 보안
+      EOF
+    answer_detail: "이미지 보고 = 레이어/베이스/크기+노출포트+최소화/위생. 이미지=공격 표면."
+    verify:
+      type: output_contains
+      expect: '표면'
+      field: stdout
+      semantic:
+        intent: "이미지 보안 보고"
+        success_criteria: ["분석/표면/최소화"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
