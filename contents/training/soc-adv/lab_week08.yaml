@@ -1,0 +1,240 @@
+lab_id: standalone-soc-adv-week08
+title: "메모리 포렌식 — 휘발성 메모리에서 은닉 위협 복원"
+version: standalone-soc-adv
+course: soc-adv
+week: 8
+description: |
+  SOC 고급 W08 — 메모리 포렌식. 디스크에 없는 것이 메모리에는 있다. /proc 가상 파일시스템으로 실행 중
+  프로세스의 메모리 영역·인자·환경변수·열린 파일을 분석하고, 디스크에서 삭제된 실행 파일(on_disk=0)의
+  원본을 메모리에서 복원한다. el34-web /proc 사용. 인가된 실습만. 명령은 el34 호스트에서. 신규 설치 없음.
+difficulty: hard
+duration_minutes: 175
+prerequisites:
+  - "soc-adv W06(헌팅 on_disk=0)·W07(네트워크 포렌식) 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(/proc 구조) §3(메모리 복원) §4(휘발성 순서) 숙지"
+objectives:
+  - "/proc로 프로세스 메모리·인자·환경 분석"
+  - "삭제된 실행 파일을 메모리에서 복원"
+  - "휘발성 순서(order of volatility) 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — /proc 접근
+      ## 📖 개념 한 줄
+      메모리 포렌식의 소스 = /proc 가상 파일시스템(커널이 실행 중 프로세스를 파일처럼 노출).
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "ls -d /proc/[0-9]* 2>/dev/null | wc -l"; echo proc_ready
+      ```
+      ## ✅ 합격 기준
+      /proc 접근 가능(proc_ready).
+    hint: '/proc'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-web sh -c "ls -d /proc/[0-9]* 2>/dev/null | wc -l"; echo proc_ready
+    answer_detail: "메모리 포렌식 소스 = /proc 가상 파일시스템. 각 /proc/<pid>가 실행 중 프로세스의 창."
+    verify:
+      type: output_contains
+      expect: 'proc_ready'
+      field: stdout
+      semantic: {intent: "/proc 접근", success_criteria: ["/proc"], acceptable_methods: ["**[OSS] /proc (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 프로세스 인자 (cmdline)
+      ## 📖 개념 한 줄
+      /proc/<pid>/cmdline은 프로세스 실행 인자 — ps로 잘리는 전체 명령행과 숨겨진 옵션을 본다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); tr '\0' ' ' < /proc/\$PID/cmdline 2>/dev/null | head -c 60; echo"; echo cmdline_read
+      ```
+      ## ✅ 합격 기준
+      cmdline 분석(cmdline_read)이 수행되면 통과.
+    hint: 'cmdline'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 프로세스 인자(cmdline) ==="
+      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); tr '\0' ' ' < /proc/\$PID/cmdline 2>/dev/null | head -c 60; echo"; echo cmdline_read
+      echo "→ cmdline = 전체 실행 인자(NUL 구분). ps에서 잘리는 긴 명령·숨은 옵션·평문 비밀번호 발견"
+    answer_detail: "cmdline = /proc/<pid>/cmdline. NUL 구분 실행 인자. ps가 자르는 전체 명령행 복원."
+    verify:
+      type: output_contains
+      expect: 'cmdline_read'
+      field: stdout
+      semantic: {intent: "cmdline", success_criteria: ["인자"], acceptable_methods: ["**[OSS] /proc/cmdline (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 환경 변수 (environ)
+      ## 📖 개념 한 줄
+      /proc/<pid>/environ은 프로세스 환경변수 — 메모리에만 있는 비밀(토큰·DB 자격)이 노출되곤 한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); tr '\0' '\n' < /proc/\$PID/environ 2>/dev/null | grep -c '=' "; echo environ_read
+      ```
+      ## ✅ 합격 기준
+      environ 분석(environ_read)이 수행되면 통과.
+      ## 🔧 도구 풀이
+      - environ: 프로세스 시작 시 환경. 디스크 .env가 지워져도 메모리엔 남음 → 비밀 복원·유출 점검.
+    hint: 'environ'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== 환경 변수(environ) ==="
+      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); tr '\0' '\n' < /proc/\$PID/environ 2>/dev/null | grep -c '=' "; echo environ_read
+      echo "→ environ = 프로세스 환경변수. 디스크 .env가 지워져도 메모리엔 남아 비밀(토큰/자격) 복원"
+    answer_detail: "environ = /proc/<pid>/environ. 메모리에만 남은 비밀(토큰·DB 자격) 복원·유출 점검 핵심."
+    verify:
+      type: output_contains
+      expect: 'environ_read'
+      field: stdout
+      semantic: {intent: "environ", success_criteria: ["환경변수"], acceptable_methods: ["**[OSS] /proc/environ (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 삭제된 실행 파일 복원 (exe)
+      ## 📖 개념 한 줄
+      /proc/<pid>/exe는 실행 중 바이너리 링크 — 디스크에서 지워져도(on_disk=0) 메모리 이미지로 복원 가능.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); readlink /proc/\$PID/exe 2>/dev/null; echo '(지워졌다면 (deleted) 표시 → exe로 원본 복원)'"; echo exe_recovered
+      ```
+      ## ✅ 합격 기준
+      exe 복원 원리(exe_recovered)가 수행되면 통과.
+    hint: 'exe 복원'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 삭제된 실행 파일 복원(exe) ==="
+      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); readlink /proc/\$PID/exe 2>/dev/null; echo '(지워졌다면 (deleted) 표시)'"; echo exe_recovered
+      echo "→ W06의 on_disk=0(디스크 삭제 후 실행 중) 위협을, /proc/<pid>/exe를 cp 하여 원본 바이너리 복원"
+      echo "→ 메모리 포렌식의 힘: 디스크에 없는 멀웨어를 분석 가능한 파일로 되살림"
+    answer_detail: "exe 복원 = /proc/<pid>/exe 링크. on_disk=0(삭제 후 실행) 멀웨어를 메모리에서 원본 복원."
+    verify:
+      type: output_contains
+      expect: 'exe_recovered'
+      field: stdout
+      semantic: {intent: "exe 복원", success_criteria: ["바이너리 복원"], acceptable_methods: ["**[OSS] /proc/exe (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 메모리 영역·열린 파일 (maps·fd)
+      ## 📖 개념 한 줄
+      /proc/<pid>/maps(메모리 매핑)·fd(열린 파일 디스크립터)로 인젝션된 영역·은닉 파일 핸들을 본다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); echo maps:; grep -c rwxp /proc/\$PID/maps 2>/dev/null; echo fd:; ls /proc/\$PID/fd 2>/dev/null | wc -l"; echo maps_fd_read
+      ```
+      ## ✅ 합격 기준
+      maps·fd 분석(maps_fd_read)이 수행되면 통과.
+      ## 🔧 도구 풀이
+      - maps의 rwxp(쓰기+실행 영역) = 코드 인젝션 의심. fd = 은닉 파일/소켓 핸들(삭제 파일도 보임).
+    hint: 'maps/fd'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 메모리 영역·열린 파일(maps·fd) ==="
+      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); echo maps:; grep -c rwxp /proc/\$PID/maps 2>/dev/null; echo fd:; ls /proc/\$PID/fd 2>/dev/null | wc -l"; echo maps_fd_read
+      echo "→ maps의 rwxp(쓰기+실행) = 코드 인젝션 의심. fd = 열린 파일/소켓(삭제된 파일 핸들도 복원)"
+    answer_detail: "maps/fd = 메모리 매핑(rwxp=인젝션 의심)·열린 파일 디스크립터(은닉 핸들). 인젝션·은닉 탐지."
+    verify:
+      type: output_contains
+      expect: 'maps_fd_read'
+      field: stdout
+      semantic: {intent: "maps/fd", success_criteria: ["메모리 영역"], acceptable_methods: ["**[OSS] /proc/maps (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 은닉 프로세스 탐지 (/proc vs ps)
+      ## 📖 개념 한 줄
+      루트킷은 ps의 출력을 숨길 수 있다 — /proc의 PID 목록과 ps를 교차 비교해 은닉 프로세스를 찾는다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c "PROC=\$(ls /proc | grep -cE '^[0-9]+$'); PS=\$(ps -e 2>/dev/null | grep -c '[0-9]'); echo proc=\$PROC ps=\$PS"; echo crosscheck_done
+      ```
+      ## ✅ 합격 기준
+      /proc vs ps 교차 비교(crosscheck_done)가 수행되면 통과.
+    hint: '교차 비교'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 은닉 프로세스 탐지(/proc vs ps) ==="
+      docker exec el34-web sh -c "PROC=\$(ls /proc | grep -cE '^[0-9]+$'); PS=\$(ps -e 2>/dev/null | grep -c '[0-9]'); echo proc=\$PROC ps=\$PS"; echo crosscheck_done
+      echo "→ /proc(커널 직접)과 ps(라이브러리 경유)의 개수 차이 = ps를 가린 루트킷 의심"
+      echo "→ 커널이 노출하는 /proc은 사용자공간 도구보다 속이기 어렵다"
+    answer_detail: "교차 비교 = /proc PID 목록 vs ps 출력. 차이 = ps를 가린 루트킷의 은닉 프로세스 의심."
+    verify:
+      type: output_contains
+      expect: 'crosscheck_done'
+      field: stdout
+      semantic: {intent: "교차 비교", success_criteria: ["은닉 탐지"], acceptable_methods: ["**[OSS] /proc vs ps (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 휘발성 순서 (order of volatility)
+      ## 💻 실행 명령
+      ```bash
+      echo "증거는 휘발성 높은 순(CPU레지스터/캐시→메모리→네트워크상태→디스크) 으로 수집"
+      ```
+      ## ✅ 합격 기준
+      휘발성 순서 원칙이 정리되면 통과.
+    hint: '휘발성 순서'
+    category: report
+    points: 10
+    answer: |
+      echo "=== 휘발성 순서(order of volatility) ==="
+      echo "1) CPU 레지스터·캐시 (가장 휘발성↑ — 즉시 사라짐)"
+      echo "2) 메모리(RAM)·실행 프로세스 (/proc — 재부팅 시 소멸)"
+      echo "3) 네트워크 연결 상태·ARP·라우팅"
+      echo "4) 디스크 (가장 휘발성↓ — 비교적 영속)"
+      echo "→ 원칙: 휘발성 높은 것부터 수집. 메모리(/proc)는 재부팅 전에 떠야 한다 — RFC 3227"
+      echo "volatility_order_done"
+    answer_detail: "휘발성 순서 = 레지스터→메모리→네트워크→디스크. 휘발성 높은 것부터 수집(RFC 3227)."
+    verify:
+      type: output_contains
+      expect: 'volatility_order_done'
+      field: stdout
+      semantic: {intent: "휘발성 순서", success_criteria: ["수집 순서"], acceptable_methods: ["**[관리적] 휘발성 순서 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 메모리 포렌식 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC고급 W08 메모리 포렌식 보고서 (학번, 이름)
+      ## 1. cmdline·environ 분석(메모리 속 비밀)
+      ## 2. exe 복원·maps/fd·은닉 프로세스
+      ## 3. 휘발성 순서·증거 보전
+      ```
+      ## ✅ 합격 기준
+      메모리분석 + 복원 + 휘발성순서 포함.
+    hint: '분석+복원+휘발성'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # SOC고급 W08 메모리 포렌식 보고서
+      ## 1. /proc/<pid>/cmdline(전체 인자)·environ(메모리 속 비밀) 분석 — 디스크에 없는 단서 복원
+      ## 2. /proc/<pid>/exe로 삭제된(on_disk=0) 멀웨어 원본 복원. maps(rwxp=인젝션)·fd(은닉 핸들). /proc vs ps로 은닉 프로세스 탐지
+      ## 3. 휘발성 순서(레지스터→메모리→네트워크→디스크): 메모리는 재부팅 전에 수집(RFC 3227)
+      ## 결론: 메모리 포렌식 = 디스크에 없는 것을 메모리에서 복원. 안티포렌식·파일리스 위협의 마지막 보루
+      EOF
+    answer_detail: "메모리 포렌식 보고 = cmdline/environ+exe복원/maps/은닉탐지+휘발성순서. 파일리스 위협 대응."
+    verify:
+      type: output_contains
+      expect: '메모리 포렌식'
+      field: stdout
+      semantic: {intent: "메모리 포렌식 보고", success_criteria: ["분석/복원/휘발성"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
