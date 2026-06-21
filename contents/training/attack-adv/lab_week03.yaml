@@ -1,0 +1,251 @@
+lab_id: standalone-attack-adv-week03
+title: "네트워크 우회·방어 회피 — 인코딩·정규화·IDS 회피의 군비경쟁"
+version: standalone-attack-adv
+course: attack-adv
+week: 3
+description: |
+  공격 고급 W03 — 방어 회피. WAF(ModSec CRS)·IDS(Suricata)를 우회하는 기법(페이로드 인코딩·케이스/주석
+  변형·프래그먼트/타이밍 스캔·터널링)을 실행하고, 현대 WAF의 정규화가 naive 우회를 어떻게 무력화하는지
+  실측한다. el34-attacker에서 인가 표적(el34-web)에. ⚠️ 인가된 실습만. 외부 시스템 금지.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "attack-adv W01~W02 + web-vuln/secuops WAF 이해"
+  - "el34 호스트 SSH + docker exec, el34-attacker"
+  - "lecture §2(WAF 우회) §3(IDS 회피) §4(정규화/군비경쟁) 숙지"
+objectives:
+  - "WAF 우회 기법(인코딩·케이스·주석)을 실행하고 응답 해석"
+  - "현대 WAF의 정규화가 naive 우회를 무력화함을 실측"
+  - "IDS 회피(프래그먼트·타이밍)와 방어 회피의 한계 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 베이스라인 — 정상 vs 차단
+      ## 📖 개념 한 줄
+      우회의 기준선을 잡는다 — 정상 요청(302)과 공격 요청(403 차단)의 응답 차이를 확인.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo benign:; curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1'; echo; echo attack:; curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%20UNION%20SELECT%20password%20FROM%20users'"; echo; echo baseline_done
+      ```
+      ## ✅ 합격 기준
+      정상(302)/공격(403) 차이가 확인되면(baseline_done) 통과.
+    hint: '베이스라인'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 베이스라인: 정상 vs 차단 ==="
+      docker exec el34-attacker sh -c "echo benign:; curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1'; echo; echo attack:; curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%20UNION%20SELECT%20password%20FROM%20users'"; echo; echo baseline_done
+      echo "→ 정상=302(로그인 리다이렉트), 공격=403(ModSec CRS 차단). 403이 우리가 우회할 벽"
+    answer_detail: "베이스라인 = 정상(302) vs SQLi(403 차단). ModSec CRS가 SQLi를 막음. 이 403을 우회하는 게 목표."
+    verify:
+      type: output_contains
+      expect: 'baseline_done'
+      field: stdout
+      semantic: {intent: "베이스라인", success_criteria: ["302/403"], acceptable_methods: ["**[OSS] curl (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 우회 시도 ① 케이스 변형
+      ## 📖 개념 한 줄
+      고전 기법 — SQL 키워드 대소문자 섞기(UnIoN SeLeCt)로 단순 시그니처를 피하려 시도.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'case_variation=%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%20UnIoN%20SeLeCt%20pass'"; echo; echo case_done
+      ```
+      ## ✅ 합격 기준
+      케이스 변형 시도·응답이 확인되면(case_done) 통과.
+      ## 🔧 도구 풀이
+      - 케이스 변형: 옛 시그니처는 'UNION'만 봐서 우회됨. 그러나 CRS는 소문자 정규화 후 매칭 → 여전히 403.
+    hint: '케이스 변형'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 우회① 케이스 변형 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'case_variation=%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%20UnIoN%20SeLeCt%20pass'"; echo; echo case_done
+      echo "→ 결과 403: CRS가 소문자 정규화 후 매칭하므로 케이스 변형은 무력. naive 우회의 한계 실측"
+    answer_detail: "케이스 변형 = UnIoN SeLeCt. 옛 시그니처는 우회되나 CRS는 정규화로 차단(403). naive 우회 실패."
+    verify:
+      type: output_contains
+      expect: 'case_done'
+      field: stdout
+      semantic: {intent: "케이스 변형", success_criteria: ["응답 확인"], acceptable_methods: ["**[OSS] curl (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 우회 시도 ② 인라인 주석
+      ## 📖 개념 한 줄
+      SQL 인라인 주석(UN/**/ION)으로 키워드를 쪼개 시그니처를 피하려 시도.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'inline_comment=%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%2F**%2FUNION%2F**%2FSELECT'"; echo; echo comment_done
+      ```
+      ## ✅ 합격 기준
+      인라인 주석 시도·응답이 확인되면(comment_done) 통과.
+      ## 🔧 도구 풀이
+      - 인라인 주석: /**/는 SQL이 공백처럼 처리. CRS도 주석 제거 정규화 → 여전히 403.
+    hint: '인라인 주석'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 우회② 인라인 주석 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'inline_comment=%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%2F**%2FUNION%2F**%2FSELECT'"; echo; echo comment_done
+      echo "→ 결과 403: CRS가 주석 제거 후 매칭. 인라인 주석도 무력. 현대 WAF는 정규화가 핵심"
+    answer_detail: "인라인 주석 = UN/**/ION. SQL은 공백 처리하나 CRS도 주석 제거 정규화로 차단(403)."
+    verify:
+      type: output_contains
+      expect: 'comment_done'
+      field: stdout
+      semantic: {intent: "인라인 주석", success_criteria: ["응답 확인"], acceptable_methods: ["**[OSS] curl (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 정규화의 이해 — 왜 naive 우회가 실패하나
+      ## 💻 실행 명령
+      ```bash
+      echo "현대 WAF(CRS)는 매칭 전 정규화: 소문자화·주석제거·디코딩·공백통일. 그 후 시그니처+이상점수"
+      ```
+      ## ✅ 합격 기준
+      정규화 원리와 우회의 어려움이 정리되면 통과.
+      ## 🔧 도구 풀이
+      - 정규화(normalization): WAF가 입력을 '표준형'으로 바꾼 뒤 매칭 → 표면 변형(케이스/주석)은 무력.
+    hint: '정규화'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 정규화의 이해 ==="
+      echo "현대 WAF(OWASP CRS)의 매칭 전 정규화 파이프라인:"
+      echo "  1) URL/엔티티 디코딩(다중)  2) 소문자화  3) 주석 제거  4) 공백 통일"
+      echo "→ 케이스/주석/단순 인코딩은 정규화로 표준형이 되어 시그니처에 다시 걸림(실측 403)"
+      echo "→ 게다가 CRS는 이상 점수(anomaly scoring): 여러 약한 신호 합산 → 임계 초과 차단"
+      echo "→ 따라서 진짜 우회는: 정규화가 못 푸는 인코딩·룰 사각·앱 로직(WAF가 못 보는 곳) 공략"
+      echo "normalization_understood"
+    answer_detail: "정규화 = WAF가 디코딩/소문자/주석제거로 표준형 후 매칭. 표면 변형 무력화. 이상점수까지 → naive 우회 실패."
+    verify:
+      type: output_contains
+      expect: 'normalization_understood'
+      field: stdout
+      semantic: {intent: "정규화", success_criteria: ["정규화 원리"], acceptable_methods: ["**[설명] 정규화 (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 IDS 회피 — 프래그먼트·타이밍 스캔
+      ## 📖 개념 한 줄
+      네트워크 계층 회피 — 패킷 분할(-f)·저속(-T1)으로 IDS 임계 탐지를 피하려 시도.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "nmap -f -T1 -p 80,443 10.20.30.1 2>/dev/null | grep -E 'open|PORT' | head"; echo ids_evasion_done
+      ```
+      ## ✅ 합격 기준
+      회피 스캔이 수행되면(ids_evasion_done) 통과.
+      ## 🔧 도구 풀이
+      - -f(프래그먼트=시그니처 분할)·-T1(저속=임계 회피)·-D(디코이=출처 위장). 단 현대 IDS는 재조립.
+    hint: 'IDS 회피'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== IDS 회피: 프래그먼트·타이밍 ==="
+      docker exec el34-attacker sh -c "nmap -f -T1 -p 80,443 10.20.30.1 2>/dev/null | grep -E 'open|PORT' | head"; echo ids_evasion_done
+      echo "→ -f(패킷 분할로 시그니처 쪼갬)·-T1(저속으로 임계 회피)·-D(디코이 위장)"
+      echo "→ 단 Suricata는 스트림 재조립 → 분할도 재결합 후 탐지. 네트워크 회피도 군비경쟁"
+    answer_detail: "IDS 회피 = nmap -f(분할)·-T1(저속)·-D(디코이). 현대 IDS는 재조립/상관으로 대응. 네트워크 군비경쟁."
+    verify:
+      type: output_contains
+      expect: 'ids_evasion_done'
+      field: stdout
+      semantic: {intent: "IDS 회피", success_criteria: ["프래그먼트/타이밍"], acceptable_methods: ["**[OSS] nmap (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 터널링·프로토콜 회피
+      ## 💻 실행 명령
+      ```bash
+      echo "허용 채널에 숨기기: DNS 터널링·HTTPS(443) C2·도메인 프론팅. 방화벽이 막기 어려운 합법 포트 악용"
+      ```
+      ## ✅ 합격 기준
+      터널링·프로토콜 회피 개념이 정리되면 통과.
+    hint: '터널링'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 터널링·프로토콜 회피 ==="
+      echo "원리: 방화벽이 허용할 수밖에 없는 채널에 악성 트래픽을 숨김"
+      echo "  - DNS 터널링: 데이터를 DNS 쿼리에 인코딩(53 포트는 거의 항상 열림)"
+      echo "  - HTTPS C2: 443 암호화 채널 → 내용 검사 어려움(W07 flow 메타로만 탐지)"
+      echo "  - 도메인 프론팅: CDN 뒤에 C2 숨김"
+      echo "→ 탐지: 비정상 DNS량·JA3 핑거프린트·flow 이상(soc-adv W07/W14). 회피도 탐지도 진화"
+      echo "tunneling_done"
+    answer_detail: "터널링 = DNS터널/HTTPS C2/도메인프론팅으로 허용 채널에 은닉. 탐지는 flow/JA3 이상으로. 군비경쟁."
+    verify:
+      type: output_contains
+      expect: 'tunneling_done'
+      field: stdout
+      semantic: {intent: "터널링", success_criteria: ["허용 채널 은닉"], acceptable_methods: ["**[설명] 터널링 (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 회피의 한계 — 군비경쟁과 다층 방어
+      ## 💻 실행 명령
+      ```bash
+      echo "정규화+이상점수+재조립+다층(WAF+IDS+호스트)이 단일 회피를 무력화. 방어 다층화가 회피를 어렵게"
+      ```
+      ## ✅ 합격 기준
+      회피의 한계·다층 방어가 정리되면 통과.
+    hint: '회피 한계'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 회피의 한계 — 군비경쟁 ==="
+      echo "공격(회피)            방어(대응)"
+      echo "케이스/주석 변형  →   정규화(표준형 후 매칭)"
+      echo "단편 시그니처     →   이상 점수(약신호 합산)"
+      echo "패킷 분할         →   스트림 재조립"
+      echo "단일 계층 회피    →   다층 방어(WAF+IDS+호스트+상관)"
+      echo "→ 한 계층을 우회해도 다른 계층이 잡음(soc-adv W15 다계층 상관). 완벽한 회피는 없다"
+      echo "→ 진짜 고급 회피는 '룰 사각'과 '앱 로직'(WAF가 못 보는 곳) — 끝없는 군비경쟁"
+      echo "limits_done"
+    answer_detail: "회피 한계 = 정규화/이상점수/재조립/다층이 단일 회피 무력화. 다층 상관이 핵심. 완벽한 회피는 없다."
+    verify:
+      type: output_contains
+      expect: 'limits_done'
+      field: stdout
+      semantic: {intent: "회피 한계", success_criteria: ["군비경쟁/다층"], acceptable_methods: ["**[설명] 한계 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 회피 분석 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격고급 W03 방어 회피 보고서 (학번, 이름)
+      ## 1. WAF 우회 시도·응답(케이스/주석)
+      ## 2. 정규화·IDS 회피·터널링
+      ## 3. 회피 한계·방어 권고
+      ```
+      ## ✅ 합격 기준
+      우회시도 + 정규화이해 + 방어권고 포함.
+    hint: '우회+정규화+방어권고'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 공격고급 W03 방어 회피 보고서
+      ## 1. WAF 우회: 케이스 변형(403)·인라인 주석(403) — CRS 정규화로 naive 우회 실패 실측
+      ## 2. 정규화(디코딩/소문자/주석제거)+이상점수가 표면 변형 무력화. IDS 회피(-f/-T1)는 재조립에 막힘. 터널링(DNS/HTTPS C2)
+      ## 3. 한계: 다층 방어(WAF+IDS+호스트)가 단일 회피 무력화. 방어 권고: CRS 최신·이상점수·다층 상관·아웃바운드 통제
+      ## 결론: 회피는 군비경쟁. 잘 구성된 WAF(정규화+이상점수)는 고전 우회에 강하다 — 방어는 정규화+다층화
+      EOF
+    answer_detail: "회피 보고 = WAF우회시도/응답+정규화/IDS/터널링+한계/방어권고. 군비경쟁에서 정규화+다층이 우위."
+    verify:
+      type: output_contains
+      expect: '회피'
+      field: stdout
+      semantic: {intent: "회피 보고", success_criteria: ["우회/정규화/방어"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
