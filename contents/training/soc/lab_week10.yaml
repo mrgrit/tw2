@@ -4,39 +4,56 @@ version: standalone-soc
 course: soc
 week: 10
 description: |
-  웹쉘 침해를 웹 로그로 포렌식하고 호스트에서 헌팅해 끊어낸다. SQLi→웹쉘 파일→콜백 리스너를 재현하고,
-  Apache/ModSec 로그로 침투 경로를 복원하고, osquery로 웹쉘/콜백을 헌팅하고, IR 절차(격리·제거·복구)로
-  대응한다. 격리 룰/웹쉘은 self-clean(공유 인프라 보존). 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+  웹쉘(web shell)은 공격자가 웹 서버에 심는 작은 스크립트 파일로, HTTP 요청만으로 서버에서 명령을 실행하게
+  해주는 끈질긴 발판이다 — 최초 침투 취약점(SQLi)을 패치해도 이미 심긴 파일은 그대로 남는다(지속성). 본 실습은
+  이 웹쉘 침해를 두 방향에서 끊는다. (1) 웹 로그 포렌식 — Apache access.log(무엇이 들어왔나)와 ModSecurity
+  audit(왜 막혔나)로 SQLi 침투 → 웹쉘 작성 → 웹쉘 사용(.php?c=) 경로를 복원한다. (2) 호스트 헌팅 — osquery의
+  file 테이블로 웹쉘 파일을, listening_ports 테이블로 콜백 채널을 잡는다. 그 뒤 W09의 IR 절차를 웹쉘에 적용해
+  Contain(출발지 격리) → Eradicate(웹쉘 rm + 콜백 kill) → Recover(서비스 정상 + 잔재 0)로 발판을 끊는다.
+  격리 룰/웹쉘 재현물은 self-clean(시연 후 스스로 정리, 공유 인프라 보존). 모든 명령은 el34 호스트
+  (`ssh ccc@192.168.0.151`, 비밀번호 1)에서 docker exec로 실행한다. 자세한 배경은 lecture_week10.md 참고.
 difficulty: hard
 duration_minutes: 200
 prerequisites:
-  - "W03(웹로그)·W09(IR) 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2(웹로그 포렌식) §3(헌팅) §4(IR) 숙지"
+  - "W03(웹 공격 분석: access.log/ModSec audit 교차 독법) 통과 — 포렌식의 기반"
+  - "W07(osquery 호스트 가시화)·W09(IR 절차) 통과 — 헌팅·대응의 기반"
+  - "el34 호스트 SSH(`ssh ccc@192.168.0.151`, pw 1) + docker exec 접근"
+  - "lecture §3(웹 로그 포렌식) §4(osquery 헌팅) §5(Contain·Eradicate·Recover) 숙지"
 objectives:
-  - "웹 로그로 웹쉘 침투 경로 복원"
-  - "osquery로 웹쉘 파일/콜백 리스너 헌팅"
-  - "IR 절차(격리/제거/복구)로 웹쉘 끊어내기"
+  - "웹쉘의 위험(지속성)과 SQLi·업로드 우회를 통한 설치 경로를 설명한다"
+  - "Apache access.log + ModSecurity audit를 교차로 읽어 침투 경로(SQLi 942 → 웹쉘 사용 .php?c=)를 복원한다"
+  - "osquery file 테이블로 웹쉘 파일을, listening_ports로 콜백 채널을 호스트에서 헌팅한다"
+  - "IR 절차(Contain 출발지 격리 → Eradicate 웹쉘·콜백 제거 → Recover 정상성·잔재 0)로 발판을 양쪽에서 끊는다"
+  - "공유 인프라에서 격리 룰·재현물을 self-clean하고, 근본 취약점(SQLi) 패치까지 재발 방지를 권고한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 웹 로그 + osquery
+      ## 🎯 목표 — 웹쉘 대응의 두 무기(웹 로그 + osquery)가 준비됐는지 점검
+      ## 📖 개념 한 줄
+      웹쉘은 흔적(웹 로그)과 실체(호스트 파일)의 두 얼굴을 가진다. 분석에 들어가기 전,
+      포렌식의 무대인 **웹 로그**(access.log·ModSec audit)와 헌팅의 무대인 **osquery**가
+      둘 다 가용한지부터 확인한다 — 도구가 없으면 그 단면은 못 본다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'sudo ls /var/log/apache2/dvwa_access.log'
       docker exec el34-web osqueryi --version
       ```
+      - `dvwa_access.log` = dvwa vhost 전용 Apache access 로그(요청 전체상). 같은 디렉터리의
+        `modsec_audit.log`는 WAF가 왜 막았는지(매치 룰·anomaly 점수)를 기록한다.
+      - `osqueryi --version` = 호스트 상태를 SQL로 조회하는 osquery의 대화형 쉘. 버전이 찍히면
+        헌팅(file·listening_ports 질의)이 가능하다는 뜻이다.
       ## ✅ 합격 기준
-      웹 로그 + osquery 준비.
+      웹 로그 파일이 존재하고 osquery 버전(예: 5.23)이 출력되면 포렌식·헌팅의 무대가 둘 다
+      살아 있는 것이다.
     hint: 'access.log + osquery'
     category: survey
     points: 8
     answer: |
       docker exec el34-web sh -c 'sudo ls /var/log/apache2/dvwa_access.log /var/log/apache2/modsec_audit.log'
       docker exec el34-web osqueryi --version
-    answer_detail: "웹쉘 대응 = 웹 로그(포렌식) + osquery(호스트 헌팅)."
+    answer_detail: "웹쉘 대응의 두 축을 점검한다 — 포렌식의 무대인 웹 로그(access.log: 무엇이 들어왔나 + modsec_audit.log: 왜 막혔나)와 헌팅의 무대인 osquery(호스트를 SQL로 조회). osqueryi 버전(5.23대)이 출력되면 헌팅 가능. 둘 중 하나라도 없으면 그 분석 축을 못 쓴다."
     verify:
       type: output_contains
       expect: '5.23'
@@ -49,15 +66,25 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 웹쉘 침해 재현 — SQLi + 웹쉘 + 콜백
+      ## 🎯 목표 — 분석 대상이 될 웹쉘 침해를 직접 재현
+      ## 📖 개념 한 줄
+      웹쉘 침해는 세 구성요소로 이뤄진다 — **SQLi 침투**(취약점으로 발 들이기) + **웹쉘 파일**
+      (디스크에 떨어진 .php) + **콜백 리스너**(외부 통신 채널). 이 셋을 통제된 환경에서 재현해,
+      이후 포렌식·헌팅이 읽어낼 흔적(로그)과 실체(파일·포트)를 만든다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw10%27%20UNION%20SELECT%20\\\"<?php system(\\\$_GET[c]);?>\\\"--%20-\""
       docker exec el34-web sh -c 'echo "<?php system(\$_GET[c]); ?>" > /tmp/socw10_shell.php; nohup python3 -m http.server 44410 >/dev/null 2>&1 & echo planted'
       echo "webshell incident done"
       ```
+      - 1행 = **SQLi 침투**. `-A sqlmap/1.7`은 sqlmap 도구의 User-Agent로, 스캐너 시그니처로도
+        탐지되는 단서다. `UNION SELECT "<?php ... ?>"`는 DB 결과로 PHP 웹쉘 문자열을 내보내려는
+        주입 구문을 모사한다 — ModSec이 942(SQLi)로 잡는다.
+      - 2행 = **웹쉘 파일 배치**(`/tmp/socw10_shell.php`, 한 줄짜리 `system($_GET[c])` 웹쉘)
+        + **콜백 리스너**(비표준 고포트 44410). `nohup ... &`로 백그라운드 상주시킨다.
       ## ✅ 합격 기준
-      SQLi + 웹쉘 파일 + 콜백 리스너가 재현된다.
+      세 요소(SQLi 요청·웹쉘 파일·44410 리스너)가 만들어지고 `webshell incident done`이 출력된다.
+      하나라도 빠지면 이후 분석에서 그 흔적이 안 보인다.
     hint: 'SQLi + 웹쉘 파일 + 콜백 리스너(44410)'
     category: recon
     points: 10
@@ -66,7 +93,7 @@ steps:
       docker exec el34-web sh -c 'echo "<?php system(\$_GET[c]); ?>" > /tmp/socw10_shell.php; nohup python3 -m http.server 44410 >/dev/null 2>&1 & echo planted'
       sleep 5
       echo "webshell incident done"
-    answer_detail: "웹쉘 침해 = SQLi(침투) + 웹쉘 파일(/tmp/socw10_shell.php) + 콜백 리스너(44410). 포렌식+헌팅 대상."
+    answer_detail: "웹쉘 침해의 세 구성요소를 재현한다 — SQLi 침투(sqlmap UA 요청, ModSec 942로 탐지) + 웹쉘 파일(/tmp/socw10_shell.php, system($_GET[c]) 한 줄) + 콜백 리스너(비표준 포트 44410). 이 셋이 각각 웹 로그·디스크·네트워크에 흔적을 남겨 이후 모든 포렌식·헌팅 미션의 원천 데이터가 된다. answer는 검증을 단순화하려 UNION SELECT 1로 침투만 재현하되 웹쉘 파일·리스너 배치는 동일하다."
     verify:
       type: output_contains
       expect: 'done'
@@ -79,14 +106,25 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 웹 로그 포렌식 — 침투 경로 복원
+      ## 🎯 목표 — 웹 로그로 "어떻게 들어와서 무엇을 했나"(침투 경로) 복원
+      ## 📖 개념 한 줄
+      호스트를 뒤지기 전에, 웹 로그로 침투 경로를 먼저 복원해 헌팅 표적을 좁힌다. 두 로그는 같은
+      요청을 **다른 관점**으로 본다 — **ModSec audit**는 "왜 막혔나"(매치 룰·anomaly), **access.log**
+      는 "무엇이 들어왔나"(요청 전체상 + 웹쉘 사용 패턴).
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
       docker exec el34-web sh -c 'sudo tail -20 /var/log/apache2/dvwa_access.log'
       ```
+      - 1행(ModSec) = 매치된 6자리 CRS 룰 ID 분포. **942**(SQLi 탐지)가 점수를 올리고 **949110**
+        (anomaly 누적)이 임계 초과로 403 차단하는 2단계가 보인다 — "942가 직접 막았다"가 아니라
+        "942가 점수를 올리고 949110이 누적으로 막았다"가 정확한 독법.
+      - 2행(access) = 같은 요청의 전체 모습(URL·응답코드). 여기서 웹쉘 사용 단서인
+        **스크립트 파일 + 명령 파라미터**(`.php?c=`/`?cmd=`) 패턴을 찾는다 — 정상 사용자는
+        .php 페이지를 명령을 바꿔가며 두드리지 않는다.
       ## ✅ 합격 기준
-      웹 로그로 침투(SQLi) 경로를 복원한다.
+      ModSec 분포에 942가 보이고 access 로그로 SQLi 요청·웹쉘 접근 흐름을 복원하면 침투 경로
+      (침투 → 웹쉘 작성 → 웹쉘 사용)가 드러난다.
     hint: 'modsec rule + access 요청'
     category: analysis
     points: 12
@@ -96,7 +134,7 @@ steps:
       echo "=== 요청 흐름 (access) ==="
       docker exec el34-web sh -c 'sudo tail -10 /var/log/apache2/dvwa_access.log'
       echo "→ SQLi(942) 침투 후 웹쉘 작성. 웹쉘 접근 패턴(.php?c=)이 핵심 단서"
-    answer_detail: "웹 로그 포렌식 = 침투(942 SQLi) + 웹쉘 사용(.php?c= 반복 GET) 복원. access는 전체 요청 흐름, audit는 WAF 판단."
+    answer_detail: "웹 로그 두 종을 교차로 읽어 침투 경로를 복원한다 — ModSec audit는 침투(942 SQLi 탐지 → 949110 anomaly 누적 → 403 차단)를, access.log는 같은 요청의 전체 흐름과 웹쉘 사용 패턴(.php?c= 반복 GET)을 보여준다. audit=WAF의 판단(왜 막혔나), access=요청 전체상(무엇이 들어왔나). 둘을 시간순으로 겹치면 침투 → 웹쉘 작성 → 웹쉘 사용 경로가 드러나고, 이것이 다음 호스트 헌팅의 표적이 된다."
     verify:
       type: output_contains
       expect: '942'
@@ -109,14 +147,24 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 웹쉘 헌팅 — osquery
+      ## 🎯 목표 — 포렌식이 가리킨 웹쉘의 실체를 호스트에서 확정
+      ## 📖 개념 한 줄
+      포렌식(미션 3)이 "공격자가 .php를 심고 ?c=로 썼다"를 알려줬다면, 이제 osquery로 그 **실체**를
+      확정한다 — 로그만으로는 파일을 지울 수 없기 때문이다. osquery는 OS 상태를 SQL 테이블로 조회하는
+      호스트 가시화 도구다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web osqueryi --json 'SELECT path,size,mtime FROM file WHERE path="/tmp/socw10_shell.php";'
       docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=44410;'
       ```
+      - 1행 = **`file` 테이블**로 웹쉘 파일 헌팅. 결과가 한 행 나오면 그 파일이 디스크에 실재한다는 뜻.
+        `mtime`(최종 수정 시각)이 방금 전이면 막 심긴 의심 파일이다. 실전에서는 경로를 모르므로
+        `WHERE path LIKE "/tmp/%shell%"`처럼 패턴으로 넓게 훑은 뒤 mtime·위치로 정상 파일과 구분한다.
+      - 2행 = **`listening_ports` 테이블**로 콜백 채널 헌팅. 비표준 고포트(44410)에 정체불명 리스너가
+        떠 있으면 콜백 채널 신호다. 이 `pid`가 미션 6에서 종료할 콜백 프로세스다.
       ## ✅ 합격 기준
-      웹쉘 파일 + 콜백 리스너를 헌팅한다.
+      file 질의에 socw10_shell.php가 한 행으로 나오고 44410 리스너가 잡히면, 흔적(로그)과 실체(파일·포트)가
+      한 사건으로 묶여 제거 표적이 확정된다.
     hint: 'osquery file(웹쉘) + listening_ports(콜백)'
     category: analysis
     points: 14
@@ -125,7 +173,7 @@ steps:
       docker exec el34-web osqueryi --json 'SELECT path,size,mtime FROM file WHERE path="/tmp/socw10_shell.php";'
       echo "=== 콜백 리스너 헌팅 ==="
       docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=44410;'
-    answer_detail: "웹 로그가 가리키는 웹쉘을 호스트에서 헌팅 — osquery file(파일 path/mtime) + listening_ports(콜백 채널). 최근 mtime의 .php가 의심."
+    answer_detail: "웹 로그가 가리킨 웹쉘의 실체를 osquery로 호스트에서 헌팅한다 — file 테이블(파일 path/size/mtime: 최근 mtime의 .php가 의심)로 웹쉘 파일을, listening_ports 테이블(pid/port)로 콜백 채널(비표준 포트 44410)을 잡는다. 포렌식(흔적)과 헌팅(실체)이 만나 제거 표적(그 파일·그 포트)이 확정된다. 실전에서는 LIKE '%shell%'·port>40000으로 넓게 훑어 후보를 모은다."
     verify:
       type: output_contains
       expect: 'socw10_shell'
@@ -138,7 +186,11 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 Contain — 출발지 격리 (sid 9510001)
+      ## 🎯 목표 — 제거에 앞서 공격 출발지를 격리해 확산 차단 (IDS sid 9510001)
+      ## 📖 개념 한 줄
+      "차단 우선, 분석 나중"(W09). 분석·제거 도중 추가 침투가 번지지 않게, 먼저 공격 출발지
+      (`10.20.30.202`)를 IDS로 플래그한다. **공유 인프라이므로 drop이 아니라 alert로 격리를 시연**
+      하고 직후 self-clean으로 룰을 되돌린다(운영은 firewall drop).
       ## 💻 실행 명령
       ```bash
       docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
@@ -149,8 +201,12 @@ steps:
       docker exec el34-ips sh -c 'sudo grep -c 9510001 /var/log/suricata/eve.json'
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9510001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
       ```
+      - 1행 = Suricata 사용자 룰 파일(`local.rules`)에 출발지 격리 룰 추가. `alert ip <출발지> ... sid:9510001`
+        은 그 IP의 모든 패킷을 플래그한다. `suricatasc -c reload-rules`는 재시작 없이 룰을 다시 로드.
+      - 그 출발지에서 요청을 한 번 보내 룰이 트리거되는지 `grep -c 9510001 eve.json`(매치 횟수)으로 확인.
+      - 마지막 행 = **self-clean**. `sed`로 추가한 룰을 삭제하고 reload해 인프라를 원상복구한다.
       ## ✅ 합격 기준
-      격리 룰(9510001)이 출발지를 플래그한다(정리 후 보존).
+      격리 룰(9510001)이 출발지 요청에 트리거되고, 직후 self-clean으로 깨끗이 정리(공유 인프라 보존)된다.
     hint: '출발지 alert 룰(9510001) → reload → 트리거 → 삭제'
     category: manipulation
     points: 12
@@ -163,7 +219,7 @@ steps:
       echo "=== 격리 룰 트리거 ==="
       docker exec el34-ips sh -c 'sudo grep -c 9510001 /var/log/suricata/eve.json'
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9510001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
-    answer_detail: "Contain = 공격 출발지 격리(IDS 9510001) + 웹쉘 콜백 포트 차단. 운영은 firewall drop, 공유 환경은 alert 시연 + 정리."
+    answer_detail: "Contain은 확산을 막는 단계 — 공격 출발지(10.20.30.202)를 IDS sid 9510001로 플래그하고 콜백 포트를 차단한다. 절차: local.rules에 출발지 alert 룰 추가 → reload-rules → 그 출처의 요청으로 트리거 확인(grep -c) → self-clean(룰 삭제 + reload). 공유 el34에서는 drop이 다른 학생 트래픽까지 끊으므로 alert로 격리 메커니즘을 시연하고 정리한다(운영은 firewall drop으로 영구 적용). 채점은 self-clean까지 완료(rule_removed)됨을 본다."
     verify:
       type: output_contains
       expect: 'rule_removed'
@@ -176,14 +232,22 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 Eradicate — 웹쉘 제거 + 콜백 종료
+      ## 🎯 목표 — 지속성 발판(웹쉘 파일 + 콜백 프로세스)을 완전히 제거
+      ## 📖 개념 한 줄
+      격리로 확산을 막은 뒤, 재침투의 뿌리인 지속성 발판을 뽑는다. **파일만 지우면 프로세스가
+      남고, 프로세스만 죽이면 다음에 다시 실행**되므로 둘을 함께 제거한다. 그리고 osquery로 다른
+      웹쉘이 더 없는지 재확인한다 — 하나라도 놓치면 재침투한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'rm -f /tmp/socw10_shell.php; pkill -f "http.server 44410"; echo eradicated'
       docker exec el34-web osqueryi --json 'SELECT path FROM file WHERE path="/tmp/socw10_shell.php";'
       ```
+      - 1행 = **웹쉘 파일 삭제(`rm -f`)** + **콜백 프로세스 종료(`pkill -f`로 44410 리스너 kill)**.
+        둘을 한 번에 처리한다.
+      - 2행 = **제거 재확인**. 같은 file 질의가 빈 결과(행 0개)면 그 웹쉘은 사라진 것이다. 실전에서는
+        `LIKE` 패턴으로 다시 넓게 훑어 잔존 웹쉘이 없음을 확인한다.
       ## ✅ 합격 기준
-      웹쉘/콜백을 제거한다.
+      `eradicated` 출력 후 재확인 file 질의가 빈 결과면 웹쉘·콜백 제거가 완결된다.
     hint: 'rm 웹쉘 + pkill 콜백'
     category: response
     points: 12
@@ -193,7 +257,7 @@ steps:
       echo "eradicated (웹쉘 rm + 콜백 kill)"
       echo "=== 제거 확인 (osquery file 빈 결과) ==="
       docker exec el34-web osqueryi --json 'SELECT path FROM file WHERE path="/tmp/socw10_shell.php";'
-    answer_detail: "Eradicate = 웹쉘 파일(rm) + 콜백 프로세스(kill). osquery로 다른 웹쉘 없는지 재확인 — 하나라도 남으면 재침투."
+    answer_detail: "Eradicate는 지속성 발판을 뿌리째 뽑는 단계 — 웹쉘 파일(rm -f)과 콜백 프로세스(pkill -f http.server 44410)를 함께 제거한다. 파일만 지우면 콜백이 살고 프로세스만 죽이면 파일이 다시 실행되므로 둘 다 필요. 제거 후 osquery file 질의가 빈 결과여야 하며, 실전에서는 LIKE 패턴으로 다른 웹쉘이 없는지 재확인한다 — 하나라도 남으면 그 발판으로 재침투한다. 채점은 eradicated 출력을 본다."
     verify:
       type: output_contains
       expect: 'eradicated'
@@ -206,14 +270,23 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 Recover — 정상성 + 잔재 0
+      ## 🎯 목표 — 서비스 정상 복귀 + 위협 잔재 0 을 객관적으로 검증
+      ## 📖 개념 한 줄
+      제거가 끝났다고 선언하기 전에 두 가지를 증거로 확인한다 — **서비스가 정상으로 돌아왔나**
+      (제거가 서비스를 망가뜨리지 않았나)와 **위협의 잔재가 0인가**(웹쉘 파일·콜백이 둘 다
+      사라졌나). 둘 다 충족돼야 복구 완료다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'curl -s -o /dev/null -w "web=%{http_code}\n" -H "Host: dvwa.el34.lab" http://localhost/'
       docker exec el34-web sh -c 'ls /tmp/socw10_shell.php 2>/dev/null && echo "잔재!" || echo clean; pgrep -f "http.server 44410" && echo "리스너 잔재!" || echo "listener clean"'
       ```
+      - 1행 = **웹 서비스 헬스체크**. `-w "web=%{http_code}"`로 응답코드만 뽑아 서비스가 정상
+        (200 등) 응답하는지 본다.
+      - 2행 = **잔재 점검**. 웹쉘 파일(`ls`)과 콜백 리스너(`pgrep`)가 둘 다 없으면 `clean` +
+        `listener clean`이 출력된다.
       ## ✅ 합격 기준
-      서비스 정상 + 웹쉘/콜백 잔재 0.
+      웹 응답코드가 정상이고 웹쉘 파일·콜백 리스너 잔재가 0(clean)이면 복구 완료다. 단, 근본
+      취약점(SQLi)을 패치하지 않으면 같은 길로 재침투하므로 패치 권고로 마무리한다.
     hint: '웹 헬스 + 웹쉘/콜백 잔재 0'
     category: response
     points: 12
@@ -222,7 +295,7 @@ steps:
       docker exec el34-web sh -c 'curl -s -o /dev/null -w "web=%{http_code}\n" -H "Host: dvwa.el34.lab" http://localhost/'
       docker exec el34-web sh -c 'ls /tmp/socw10_shell.php 2>/dev/null && echo "웹쉘 잔재!" || echo clean; pgrep -f "http.server 44410" && echo "리스너 잔재!" || echo "listener clean"'
       echo "→ 서비스 정상 + 잔재 0 = 복구 완료. 취약점 패치 권고"
-    answer_detail: "Recover = 웹 정상 + 웹쉘/콜백 잔재 0. 근본 취약점(SQLi) 패치 권고로 재발 방지."
+    answer_detail: "Recover는 복구 완료를 객관적으로 판정하는 단계 — 두 조건을 증거로 확인한다. (1) 웹 서비스 정상(curl 응답코드, 제거가 서비스를 건드리지 않았나) (2) 웹쉘 파일(ls)·콜백 리스너(pgrep) 잔재 0(clean + listener clean). 둘 다 충족돼야 종결. 단 복구가 끝은 아니다 — 근본 취약점(SQLi)을 패치하지 않으면 같은 길로 재침투하므로, 패치·업로드 검증·웹디렉터리 실행권한 제거·웹쉘 탐지룰까지 재발 방지를 권고한다. 채점은 clean 출력을 본다."
     verify:
       type: output_contains
       expect: 'clean'
@@ -235,7 +308,11 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 웹 침해 IR 보고서
+      ## 🎯 목표 — 미션 1–7을 한 사건의 대응 기록으로 종합(최종 산출물)
+      ## 📖 개념 한 줄
+      웹쉘 침해를 끝까지 끊어낸 과정을 문서로 입증한다. 핵심 결론은 "웹쉘은 웹 로그(포렌식)와
+      호스트(헌팅) **양쪽으로** 끊는다" — 그리고 그 주장을 **증거**(로그 줄·osquery 결과)와 함께
+      쓴다. 결과 선언이 아니라 증거 기반이어야 한다.
       ## 💻 보고서 양식
       ```markdown
       # SOC W10 웹쉘 침해 IR 보고서 (학번, 이름)
@@ -244,8 +321,12 @@ steps:
       ## 3. 대응 (격리/제거/복구)
       ## 4. 재발방지 (패치/탐지)
       ```
+      - 1. 포렌식 = ModSec 942(SQLi)→949110 차단 + access의 .php?c= 웹쉘 사용 패턴(미션 3).
+      - 2. 헌팅 = osquery file(socw10_shell.php, mtime) + listening_ports(콜백 44410)(미션 4).
+      - 3. 대응 = Contain(IDS 9510001+self-clean) → Eradicate(rm 웹쉘+kill 콜백) → Recover(정상+잔재0)(미션 5–7).
+      - 4. 재발방지 = SQLi 패치, 업로드 검증, 웹디렉터리 실행권한 제거, 웹쉘 탐지룰.
       ## ✅ 합격 기준
-      보고서에 포렌식+헌팅+대응이 포함된다.
+      보고서에 포렌식 + 헌팅 + 대응(+재발 방지)이 증거와 함께 모두 포함된다.
     hint: '포렌식+헌팅+대응'
     category: report
     points: 10
@@ -258,7 +339,7 @@ steps:
       ## 4. 재발방지: SQLi 패치, 업로드 검증, 웹디렉토리 실행권한 제거, 웹쉘 탐지룰
       ## 결론: 웹쉘은 웹로그(포렌식)+호스트(헌팅) 양쪽으로 끊는다
       EOF
-    answer_detail: "웹쉘 IR = 웹로그 포렌식 + 호스트 헌팅 + IR 절차. 침투 경로와 발판을 양쪽에서 끊어 재침투 차단."
+    answer_detail: "웹쉘 침해 IR 보고서는 미션 1–7을 한 사건으로 종합한다 — 포렌식(웹 로그로 침투 경로 SQLi 942→웹쉘 사용 .php?c= 복원) + 헌팅(osquery로 웹쉘 파일·콜백 44410 실체 확정) + 대응(Contain 9510001 → Eradicate rm+kill → Recover 정상+잔재0) + 재발 방지(SQLi 패치·업로드 검증·실행권한 제거·탐지룰). 핵심 결론은 '웹쉘은 흔적(웹 로그)과 실체(호스트 파일) 양쪽에서 끊어야 발판이 뿌리째 제거된다'이며, 결과 선언이 아니라 로그 줄·osquery 결과 증거를 제시해야 점수다. 채점은 '웹쉘' 키워드를 본다."
     verify:
       type: output_contains
       expect: '웹쉘'

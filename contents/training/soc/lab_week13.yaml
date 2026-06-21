@@ -4,9 +4,15 @@ version: standalone-soc
 course: soc
 week: 13
 description: |
-  위협 인텔로 트리아지를 가속한다. 같은 경보라도 "known-bad" 인텔이 붙으면 조사 전에 우선순위가 정해진다.
-  알려진 악성 도구 공격을 재현하고, 인텔 매칭 룰로 즉시 격상하고, OpenCTI/MISP 인텔 운영을 확인한다.
-  매칭 룰은 logtest로만 검증 + 삭제(공유 SIEM 보존). 명령은 el34 호스트에서.
+  위협 인텔(known-bad 여부)을 트리아지(경보 분류·우선순위 판단)의 1차 결정에 직접 써서 대응을 가속한다.
+  같은 경보라도 "이 출발지·이 도구는 이미 알려진 악성(known-bad)"이라는 인텔 한마디가 붙으면, 분석가는
+  "누구지? 위험한가?"를 조사하기도 전에 우선순위를 정할 수 있다. 본 실습은 (1) 인텔 스택(Wazuh 평결 엔진
+  + OpenCTI/MISP 인텔 소스)을 점검하고, (2) 알려진 악성 도구 sqlmap 으로 공격을 재현해 known-bad IOC 가
+  텔레메트리에 나타나게 한 뒤, (3) 인텔 없는 느린 트리아지(경보마다 조사)와 인텔 있는 빠른 트리아지
+  (즉시 격상)를 직접 대비하고, (4) 인텔 매칭 룰(id 101310, level 13)로 known-bad 를 즉시 격상하며,
+  (5) 그 가속이 SOC 처리량(throughput)을 어떻게 끌어올리는지(아는 건 빨리, 모르는 건 깊게)를 정리한다.
+  매칭 룰은 wazuh-logtest 로만 검증하고 끝나면 삭제한다(el34-siem 은 공유 자원이라 restart 금지 — 다른
+  학생 ingest 보존). 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec 로 실행한다.
 difficulty: medium
 duration_minutes: 180
 prerequisites:
@@ -14,20 +20,30 @@ prerequisites:
   - "el34 호스트 SSH + docker exec"
   - "lecture §2(enrichment) §3(가속) 숙지"
 objectives:
-  - "인텔 enrichment로 경보 맥락 부여"
-  - "인텔 매칭 룰로 즉시 격상"
-  - "인텔 주도 트리아지의 처리량 향상 이해"
+  - "인텔 enrichment(경보에 known-bad 맥락 한 줄)로 트리아지의 판단 재료를 바꾼다"
+  - "인텔 없는 느린 경로(경보마다 조사)와 인텔 있는 빠른 경로(즉시 격상)를 대비해 가속의 원천을 설명한다"
+  - "인텔 매칭 룰(id 101310, level 13)로 known-bad 를 즉시 격상하고 logtest 로 무중단 검증한다"
+  - "인텔 주도 트리아지의 처리량 향상과 시간 재배분(아는 건 빨리, 모르는 건 깊게)을 이해한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 인텔 스택
+      ## 🎯 점검 — 인텔 스택(적용 지점 Wazuh + 인텔 소스 OpenCTI/MISP)
+      ## 개념
+      인텔 주도 트리아지가 성립하려면 두 부품이 모두 살아 있어야 한다 — 격상이 실제로 일어날
+      **적용 지점**(Wazuh 의 평결 엔진 `analysisd`)과, known-bad 를 공급하는 **인텔 소스**
+      (OpenCTI/MISP). 소스와 적용 지점을 따로 보는 것이 인텔 운영 점검의 핵심이다(lecture §6.3).
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
       docker ps --format '{{.Names}}' | grep -ciE 'opencti|misp'
       ```
+      ## 🔧 명령 풀이
+      - `wazuh-control status` : Wazuh manager 의 데몬 상태를 보여준다. `analysisd`(평결·격상
+        엔진)가 running 이어야 격상이 일어난다.
+      - `docker ps --format '{{.Names}}'` : 가동 중 컨테이너 이름만 출력. `grep -ciE 'opencti|misp'`
+        는 그중 인텔 소스 컨테이너 수를 대소문자 무시(-i)로 센다(-c).
       ## ✅ 합격 기준
       Wazuh + OpenCTI/MISP 인텔 스택 가동.
     hint: 'analysisd + opencti/misp'
@@ -36,7 +52,7 @@ steps:
     answer: |
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
       docker ps --format '{{.Names}}' | grep -ciE 'opencti|misp'
-    answer_detail: "인텔 주도 트리아지의 토대 = Wazuh(매칭) + OpenCTI/MISP(인텔 소스)."
+    answer_detail: "인텔 주도 트리아지의 토대 = 적용 지점 Wazuh(analysisd 가 매칭·격상)와 인텔 소스 OpenCTI/MISP(known-bad 공급). analysisd 가 멈추면 격상 자체가 안 나므로 최우선 점검 대상이고, 소스(OpenCTI/MISP)와 적용 지점(Wazuh)을 따로 확인하는 습관이 핵심."
     verify:
       type: output_contains
       expect: 'analysisd'
@@ -49,12 +65,24 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 공격 재현 — 알려진 악성 도구
+      ## 🎯 공격 재현 — 알려진 악성 도구(sqlmap = known-bad IOC)
+      ## 개념
+      인텔 가속을 검증하려면 먼저 인텔이 "악성"으로 아는 도구의 흔적이 텔레메트리에 있어야 한다.
+      sqlmap 은 자동 SQL 인젝션 도구로, 기본 User-Agent 에 `sqlmap` 이름이 박혀 있어 **그 도구
+      시그니처 자체가 known-bad IOC** 다(lecture §2·§5). 여기서는 그 sqlmap UA + SQLi 공격을 흘려,
+      이후 미션들이 분석할 원천 데이터를 만든다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw13%27%20UNION%20SELECT%201--%20-\""
       echo "attack done"
       ```
+      ## 🔧 명령 풀이
+      - `el34-attacker` : 내부 발판 공격자(10.20.30.202). `10.20.30.1` 은 fw 게이트웨이로, 거기로
+        보낸 요청이 ips·web 을 거쳐 내부 dvwa 로 라우팅된다(출처 IP 는 SNAT 없이 보존).
+      - `-A sqlmap/1.7` : User-Agent 를 sqlmap 으로 위장 — 이 UA 가 곧 known-bad IOC 시그니처다.
+      - `-H 'Host: dvwa.el34.lab'` : Host 헤더로 web 의 dvwa vhost 를 지정(L7 라우팅).
+      - `%27%20UNION%20SELECT%201--%20-` : URL 인코딩된 `' UNION SELECT 1-- -` — 전형적 SQLi 페이로드.
+      - `-s -o /dev/null` : 진행률·본문 출력을 버리고 조용히 요청만 발생시킨다.
       ## ✅ 합격 기준
       알려진 악성 도구(sqlmap) 공격이 재현된다.
     hint: 'sqlmap 공격'
@@ -64,7 +92,7 @@ steps:
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw13%27%20UNION%20SELECT%201--%20-\""
       sleep 3
       echo "attack done"
-    answer_detail: "sqlmap = 이미 인텔에 등록된 악성 도구. 같은 경보지만 인텔이 붙으면 트리아지가 달라진다."
+    answer_detail: "sqlmap = UA 에 이름이 박힌, 이미 인텔에 등록된 악성 도구(known-bad IOC). 같은 SQLi 경보라도 출발지·도구가 known-bad 면 트리아지 결정이 달라진다(즉시 P1). sleep 3 은 공격 흔적이 파이프라인에 반영되기까지의 지연을 기다리는 것."
     verify:
       type: output_contains
       expect: 'done'
@@ -78,10 +106,20 @@ steps:
   - order: 3
     instruction: |
       ## 🎯 인텔 없는 트리아지 — 느린 경로
+      ## 개념
+      인텔이 주는 가속을 체감하려면, 먼저 인텔 없는 트리아지가 경보마다 얼마나 많은 조사를
+      반복하는지를 직접 정리해야 한다. 인텔이 없으면 분석가는 경보 하나하나를 **처음부터** 조사한다
+      — 출발지 IP 가 누구인지(whois·과거 이력), 도구/페이로드가 얼마나 위험한지, 그래서 우선순위가
+      무엇인지. 이 5단계가 경보마다 반복되니 처리량이 제한되고 alert fatigue(경보 피로)를 부른다
+      (lecture §1).
       ## 💻 실행 명령
       ```bash
       echo "인텔 없음: 경보 → 출발지 조사 → 도구 분석 → 위험도 판정 → 우선순위 (수 분)"
       ```
+      ## 🔧 명령 풀이
+      - 본 미션은 도구 실행이 아니라 **느린 경로의 단계를 분석가의 언어로 정리**하는 것이 목적이다.
+        `echo` 로 5단계(수신 → 출발지 조사 → 도구 분석 → 위험도 판정 → 우선순위)와 그 한계(조사
+        필요·처리량 제한)를 명시한다.
       ## ✅ 합격 기준
       인텔 없는 트리아지의 한계(조사 시간)를 정리한다.
     hint: '인텔 없으면 조사 필요(느림)'
@@ -91,7 +129,7 @@ steps:
       echo "=== 인텔 없는 트리아지 (느린 경로) ==="
       echo "경보 수신 → 출발지 IP 조사(누구?) → 도구/페이로드 분석(위험?) → 위험도 판정 → 우선순위"
       echo "→ 경보마다 조사 필요. 처리량 제한, alert fatigue 위험"
-    answer_detail: "인텔 없으면 경보마다 처음부터 조사 — 출발지/도구/위험도를 매번 판정. 느리고 처리량 제한."
+    answer_detail: "인텔 없으면 경보마다 처음부터 조사 — 출발지·도구·위험도를 매번 판정하는 5단계 경로다. 느리고 처리량이 제한되며, 큐가 쌓이면 alert fatigue 로 진짜 위협을 놓친다. 이 '느림'을 구체적 단계로 잡아야 다음 미션의 인텔 가속이 왜 큰지 설명할 수 있다."
     verify:
       type: output_contains
       expect: '조사'
@@ -104,7 +142,13 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 인텔 매칭 룰 — known-bad 즉시 격상 (id 101310)
+      ## 🎯 인텔 매칭 룰 — known-bad 즉시 격상 (id 101310, level 13)
+      ## 개념
+      인텔 주도 트리아지의 "빠른 경로"를 코드로 구현한 것이 인텔 매칭 룰이다(lecture §5). known-bad
+      IOC(여기서는 `tool=sqlmap`)가 보이면 경보를 즉시 level 13(고위험)으로 격상해, 사람이 5단계
+      조사를 거쳐 내릴 "P1" 판단을 룰이 대신한다. 검증은 라이브 manager 를 건드리지 않는
+      `wazuh-logtest`(모의재판)로만 하고, 끝나면 베이스를 원상복구한다 — el34-siem 은 모든 학생이
+      함께 쓰는 공유 자원이라 restart 가 금지되기 때문이다(다른 학생 ingest 보존).
       ## 💻 실행 명령
       ```bash
       sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw13_lr.bak
@@ -120,6 +164,17 @@ steps:
       echo '{"tool":"sqlmap","src_ip":"10.20.30.202"}' | sudo /var/ossec/bin/wazuh-logtest
       sudo cp /tmp/socw13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw13_lr.bak
       ```
+      ## 🔧 명령/룰 풀이
+      - `cp ... /tmp/socw13_lr.bak` : 베이스 룰셋을 먼저 백업(원복용). 1013xx 는 본 트랙 W13 의
+        id 네임스페이스다(100000 미만은 Wazuh 예약이라 금지).
+      - `<decoded_as>json</decoded_as>` : json decoder 가 파싱한 로그만 대상으로 좁힌다.
+      - `<field name="tool">sqlmap</field>` : 로그의 `tool` 필드가 known-bad `sqlmap` 일 때만 매치.
+        (운영에서는 이 한 줄을 W12 의 `<list lookup>` 으로 바꿔 CDB 의 수천 IOC 를 한 번에 본다 —
+        격상 논리는 동일.)
+      - `wazuh-logtest` : 표준입력의 로그 한 줄을 **별도 테스트 인스턴스**에서 평가한다. 라이브
+        analysisd 를 건드리지 않아 공유 SIEM 에서 안전하다. Phase 3 에 `id: 101310`/`level: 13`/
+        `Alert to be generated` 이 보이면 격상 발화 성공.
+      - 마지막 `cp` 복원 + `rm` : 베이스 룰셋을 원래대로 되돌리고 백업을 삭제(self-clean).
       ## ✅ 합격 기준
       인텔 매칭 룰(101310)이 known-bad를 즉시 격상한다(logtest).
     hint: '인텔 매칭 룰(101310) → logtest → cp 복원'
@@ -142,7 +197,7 @@ steps:
       echo "=== 인텔 매칭 격상 logtest ==="
       docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw13.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw13.json'
       docker exec el34-siem sh -c 'sudo cp /tmp/socw13_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw13_lr.bak; echo "복원 잔재=$(grep -c 101310 /var/ossec/etc/rules/local_rules.xml)"'
-    answer_detail: "인텔 매칭 룰(tool=sqlmap=known-bad)이 경보를 level 13으로 즉시 격상 — 조사 전에 우선순위 결정. CDB list로 수천 IOC를 한 번에 매칭(W12 secuops)."
+    answer_detail: "인텔 매칭 룰(tool=sqlmap=known-bad)이 경보를 level 13 으로 즉시 격상 — 분석가의 5단계 조사를 기다리지 않고 우선순위(P1)를 코드가 먼저 결정한다. 검증은 logtest Phase 3 의 id 101310/level 13 발화로 확인하고, cp 복원으로 잔재 0(grep -c 101310)이 되어야 한다. 운영에서는 `<field>` 를 `<list lookup>` 으로 바꿔 CDB list 의 수천 IOC 를 한 번에 매칭한다(W12, 격상 논리 동일)."
     verify:
       type: output_contains
       expect: '101310'
@@ -155,11 +210,19 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 인텔 주도 격상 — 즉시 P1
+      ## 🎯 인텔 주도 격상 — 즉시 P1 (빠른 경로)
+      ## 개념
+      매칭 룰(미션 4)이 발화시킨 격상이 트리아지 결정으로 어떻게 이어지는지를 분석가의 언어로
+      정리한다. 인텔 주도 트리아지의 핵심은 **순서의 변화**다 — 인텔 없는 경로는 "조사 → 판정 →
+      우선순위"지만, 인텔 있는 경로는 "우선순위(인텔이 즉답) → (필요시) 조사"다. known-bad 면
+      출발지 조사·도구 분석·위험도 판정을 건너뛰고 즉시 P1 으로 대응에 직행한다(lecture §3).
       ## 💻 실행 명령
       ```bash
       echo "인텔 있음: 경보 + known-bad → 즉시 P1 → 조사 생략, 대응 직행"
       ```
+      ## 🔧 명령 풀이
+      - 본 미션도 도구 실행이 아니라 빠른 경로의 결정을 정리하는 것이 목적이다. 핵심은 인텔이 §1.3
+        느린 경로의 **어느 단계(출발지 조사·도구 분석·위험도 판정)를 건너뛰게 했는지**를 짚는 것.
       ## ✅ 합격 기준
       인텔로 즉시 P1 격상 결정을 내린다.
     hint: 'known-bad → 즉시 P1'
@@ -169,7 +232,7 @@ steps:
       echo "=== 인텔 주도 트리아지 (빠른 경로) ==="
       echo "경보 + 인텔(sqlmap=known-bad) → 즉시 P1 격상 → 조사 생략 가능 → 대응 직행"
       echo "→ '이미 아는 답'을 인텔이 제공 → 조사 시간 절약"
-    answer_detail: "인텔 주도 = 조사를 건너뛰고 우선순위 직행. known-bad면 즉시 P1, 대응으로. 분석가의 시간을 모르는 위협에 집중."
+    answer_detail: "인텔 주도 = 조사를 건너뛰고 우선순위 직행. known-bad 면 즉시 P1 으로 대응에 직행한다(건너뛴 단계 = 출발지 조사·도구 분석·위험도 판정). 단, 조사 생략은 신뢰도가 받쳐 주는 known-bad 에 한해 안전하다(lecture §3.4). 절약한 시간을 인텔이 모르는 위협에 집중하는 것이 목적."
     verify:
       type: output_contains
       expect: 'P1'
@@ -182,11 +245,19 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 인텔 플랫폼 — OpenCTI/MISP
+      ## 🎯 인텔 플랫폼 — OpenCTI/MISP (known-bad 공급원)
+      ## 개념
+      인텔 가속의 출발점인 인텔 소스가 el34 에 실제 가동 중임을 확인한다. **OpenCTI** 는 STIX
+      위협 객체를 저장·시각화하고 ATT&CK 과 연동하는 플랫폼이고, **MISP** 는 IOC 를 수집·공유하는
+      플랫폼이다(lecture §0·§6). 이 소스가 known-bad 를 공급해야 매칭 룰(미션 4)이 의미를 갖는다 —
+      적용 지점 Wazuh 만으로는 인텔이 공급되지 않는다.
       ## 💻 실행 명령
       ```bash
       docker ps --format '{{.Names}}' | grep -iE 'opencti|misp' | head
       ```
+      ## 🔧 명령 풀이
+      - `grep -iE 'opencti|misp'` : 가동 컨테이너 중 인텔 소스(`el34-opencti-1`, `el34-misp-core-1`
+        등)를 대소문자 무시로 고른다. `head` 로 앞부분만 본다.
       ## ✅ 합격 기준
       인텔 소스(OpenCTI/MISP)가 가동 중이다.
     hint: 'docker ps opencti/misp'
@@ -196,7 +267,7 @@ steps:
       echo "=== 인텔 플랫폼 ==="
       docker ps --format '{{.Names}}' | grep -iE 'opencti|misp' | head
       echo "→ OpenCTI/MISP 인텔 → CDB list → Wazuh 매칭 룰 → 자동 격상 (인텔 운영 파이프라인)"
-    answer_detail: "인텔 소스(OpenCTI/MISP) → CDB list → Wazuh 매칭. 인텔이 들어오면 경보가 자동 격상되는 운영 파이프라인."
+    answer_detail: "인텔 소스(OpenCTI=STIX 저장·ATT&CK 연동, MISP=IOC 공유) → CDB list → Wazuh 매칭 룰 → 자동 격상. 인텔 팀이 새 known-bad 를 등록하면 경보가 사람 손 없이 자동 격상되는 운영 파이프라인이며, 이 소스가 가속의 출발점이다."
     verify:
       type: output_contains
       expect: 'opencti'
@@ -209,11 +280,21 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 가속 효과 — 처리량 향상
+      ## 🎯 가속 효과 — 처리량(throughput) 향상과 시간 재배분
+      ## 개념
+      인텔 주도 트리아지의 결과를 운영 지표로 정리한다. **처리량(throughput)** 은 단위 시간에
+      분석가가 처리하는 경보 건수다. known-bad 를 수 초에 쳐내면 같은 시간에 더 많은 경보를 처리하고
+      (처리량↑), 남는 시간을 인텔이 모르는 진짜 어려운 위협에 쓸 수 있다(시간 재배분). 정확한 초
+      측정이 아니라 "경보당 수 분 → 수 초"라는 **자릿수 차이가 곧 처리량 수배**라는 감각이 핵심이다
+      (lecture §7).
       ## 💻 실행 명령
       ```bash
       echo "인텔 없음: 경보당 조사 수 분 / 인텔 있음: 즉시 격상 수 초 → 처리량 수배"
       ```
+      ## 🔧 명령 풀이
+      - 본 미션은 측정이 아니라 정리다. "빨라진다"에서 멈추지 말고 **남는 시간을 어디에 쓰는가
+        (인텔이 모르는 위협)** 까지 짚어야 인텔의 진짜 가치를 잡은 것이다. 처리량만 좇아 격상을
+        남발하면 오탐 P1 이 쌓여 새 alert fatigue 가 되므로, 처리량과 정확성은 함께 간다(§7.4).
       ## ✅ 합격 기준
       인텔 주도 트리아지의 처리량 향상을 정리한다.
     hint: '처리량 향상'
@@ -224,7 +305,7 @@ steps:
       echo "인텔 없음: 경보당 조사 수 분, 처리량 제한"
       echo "인텔 있음: known-bad 즉시 격상 수 초 → 처리량 수배, 모르는 위협에 집중"
       echo "→ SOC 처리량은 인텔로 결정 — 아는 건 빨리, 모르는 건 깊게"
-    answer_detail: "인텔 주도의 효과 = 처리량 향상. 아는 위협을 빨리 쳐내 분석가가 모르는 위협(진짜 어려운 것)에 시간을 쓴다."
+    answer_detail: "인텔 주도의 효과 = 처리량 향상 + 시간 재배분. 아는 위협(known-bad)을 룰이 자동으로 빨리 쳐내, 분석가가 인텔이 답을 주지 못하는 위협(처음 보는 IP·행위 이상)에 시간을 몰아준다. 이것이 '아는 건 빨리, 모르는 건 깊게'의 운영적 의미."
     verify:
       type: output_contains
       expect: '처리량'
@@ -237,7 +318,12 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 인텔 트리아지 보고서
+      ## 🎯 인텔 주도 트리아지 종합 보고서
+      ## 개념
+      미션 1~7 을 "인텔 주도 트리아지"라는 한 관점으로 묶는다. 핵심 메시지는 "막았다"가 아니라
+      **"인텔이 트리아지의 어느 단계를 건너뛰게 했는가"** 다. 네 축 — (1) 인텔 없는↔있는 트리아지
+      대비, (2) 인텔 매칭 룰(101310) 격상, (3) 인텔 운영 파이프라인(OpenCTI/MISP→CDB→Wazuh),
+      (4) 가속 효과(처리량·시간 재배분) — 을 증거와 함께 한 장에 종합한다.
       ## 💻 보고서 양식
       ```markdown
       # SOC W13 인텔 주도 트리아지 보고서 (학번, 이름)
@@ -246,6 +332,10 @@ steps:
       ## 3. 인텔 플랫폼 (OpenCTI/MISP→CDB→Wazuh)
       ## 4. 가속 효과 (처리량)
       ```
+      ## 🔧 작성 풀이
+      - 각 절에 미션의 실제 결과(예: logtest 의 id 101310/level 13 발화, opencti/misp 가동 확인,
+        느린 5단계 vs 빠른 즉시 P1)를 근거로 적는다. 결과 선언이 아니라 "인과(인텔 → 가속 → 처리량)"를
+        단계로 배치하는 것이 좋은 보고서다.
       ## ✅ 합격 기준
       보고서에 인텔 매칭 + 가속 효과가 포함된다.
     hint: '인텔 매칭+가속'
@@ -260,7 +350,7 @@ steps:
       ## 4. 가속: 아는 위협 수 초 처리 → 처리량 수배, 모르는 위협에 집중
       ## 결론: '알려진 위협' 한마디(인텔)가 트리아지를 가속 — SOC 처리량의 핵심
       EOF
-    answer_detail: "인텔 주도 트리아지 = 인텔로 우선순위를 조사 전에 결정. 처리량 향상 + 시간 재배분. SOC 운영 효율의 핵심."
+    answer_detail: "인텔 주도 트리아지 = 인텔(known-bad 여부)로 우선순위를 조사 전에 결정한다. 보고서는 네 축(없음↔있음 대비, 매칭 룰 101310 격상, OpenCTI/MISP→CDB→Wazuh 파이프라인, 처리량·시간 재배분)을 인과로 엮어야 한다. 'known-bad 한마디가 트리아지를 가속한다 — SOC 처리량의 핵심'이 결론."
     verify:
       type: output_contains
       expect: '인텔'

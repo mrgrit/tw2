@@ -4,33 +4,61 @@ version: standalone-soc
 course: soc
 week: 11
 description: |
-  악성코드의 C2 비콘(주기적 외부 통신)을 IOC로 잡고 감염 호스트를 격리한다. 악성 프로세스+C2 리스너를
-  재현하고, osquery로 프로세스/연결 IOC를 추출하고, 감염 범위를 헌팅하고, C2 차단 룰로 격리하고,
-  제거+복구+IOC 공유한다. 악성코드/룰은 self-clean(공유 인프라 보존). 명령은 el34 호스트에서.
+  악성코드의 가장 큰 약점은 C2(Command & Control, 공격자의 원격 통제 서버)에 주기적으로 거는 외부 통신
+  — 비콘(beaconing)이다. 본 실습은 그 비콘을 IOC(Indicator of Compromise, 재사용 가능한 침해 지표)로
+  잡아 감염 호스트를 격리하는 악성코드 IR(사고 대응)을 끝까지 수행한다. 흐름은 W09의 IR 라이프사이클
+  (식별 → 격리 → 제거 → 복구)을 악성코드에 그대로 적용한 것이다 — (1) el34 web 호스트에 악성 프로세스
+  (cmdline 표식 c2_beacon)와 C2 채널(비표준 포트 45511)을 안전하게 재현하고, (2) osquery(OS를 SQL
+  테이블로 조회하는 스냅샷 도구)로 프로세스 cmdline(호스트 IOC)과 외부 연결(네트워크 IOC)을 추출하고,
+  (3) 같은 C2 채널을 키로 감염 범위를 헌팅하고, (4) Suricata 차단 룰(sid 9511001)로 C2 통신을 끊어
+  악성코드를 무력화하고, (5) 악성 프로세스를 제거(잔재 0 검증)한 뒤, 뽑은 IOC를 CDB list/MISP 공유
+  형식으로 정리해 조직 전체 자동 탐지(W12 인텔)로 잇는다.
+  탐지의 두 눈 — osquery(스냅샷: 지금 떠 있는 것)와 Sysmon for Linux(이벤트 스트림: 그 순간) — 가
+  보완 관계임을 점검에서 확인한다. Sysmon은 el34 호스트(192.168.0.151)에 eBPF 센서로 설치돼 컨테이너
+  내부까지 보므로, 점검의 systemctl is-active sysmon은 호스트에서 실행한다. 악성코드와 차단 룰은
+  self-clean — 실습이 만든 프로세스·룰을 끝에 스스로 지워 공유 인프라를 보존한다. 모든 명령은 el34
+  호스트(`ssh ccc@192.168.0.151`)에서 docker exec로 실행한다.
 difficulty: hard
 duration_minutes: 200
 prerequisites:
-  - "W07(osquery)·W09(IR) 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2(IOC) §3(헌팅) §4(격리) 숙지"
+  - "W07(osquery 스냅샷)·W09(IR 라이프사이클) 통과"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151) + docker exec"
+  - "lecture §1(C2·비콘) §2(IOC 추출) §3(헌팅) §4(격리) §5(제거·복구·IOC 공유) 숙지"
 objectives:
-  - "C2 비콘 악성코드의 프로세스/연결 IOC 추출"
-  - "감염 범위 헌팅"
-  - "C2 차단 룰로 호스트 격리"
-  - "제거+복구+IOC 공유"
+  - "C2 비콘의 개념(감염 호스트가 공격자 서버에 거는 주기적 외부 통신)을 설명하고, 비콘이 왜 악성코드의 약점이자 탐지 기회인지 근거를 댄다"
+  - "네트워크 IOC(C2 포트·비콘 주기)와 호스트 IOC(악성 프로세스 cmdline·해시)를 구분하고, osquery로 각각을 추출한다"
+  - "확보한 C2 채널(포트 45511)을 키로 감염 범위를 헌팅해 확산 여부를 판정한다"
+  - "W09의 IR 절차를 적용해 Suricata 차단 룰(sid 9511001)로 C2 비콘을 끊고, 악성 프로세스를 제거(잔재 0)한다"
+  - "추출한 IOC를 CDB list/MISP 공유 형식으로 정리해 조직 전체 자동 탐지(W12 인텔)로 잇고, 악성코드 IR 보고서로 종합한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — osquery + 네트워크 가시성
+      ## 🎯 목표 — 호스트를 볼 두 눈이 살아 있나
+      악성코드 탐지의 전제는 호스트 가시화 도구가 준비돼 있는 것이다 — ① osquery(OS를 SQL 테이블로
+      조회하는 스냅샷 도구, "지금 떠 있는 것"을 본다)와 ② Sysmon for Linux(eBPF 이벤트 스트림, "그
+      순간"을 본다)다. 분석 착수 전 30초 가용성 점검이다.
+
+      ## 📖 개념 한 줄
+      두 도구는 경쟁이 아니라 보완이다 — 떠 있는 악성 프로세스·열린 C2 포트는 osquery 스냅샷이, 잠깐
+      떴다 사라지는 인코딩 명령은 Sysmon 이벤트가 잡는다. 여기에 네트워크의 Suricata가 더해져 비콘이
+      또렷이 보인다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web osqueryi --version
       systemctl is-active sysmon
       ```
+      - `docker exec el34-web osqueryi --version` — el34-web 컨테이너 안에서 osquery가 동작하는지
+        버전으로 확인한다(osquery는 컨테이너 안에 설치돼 있다).
+      - `systemctl is-active sysmon` — **호스트에서** Sysmon 데몬이 active인지 본다. Sysmon은 eBPF
+        권한 문제로 컨테이너가 아니라 el34 호스트(192.168.0.151)에 설치돼, 컨테이너 내부 행위까지
+        포착한다(그래서 점검도 호스트에서 한다).
+
       ## ✅ 합격 기준
-      osquery + sysmon(네트워크 이벤트) 준비.
+      osquery 버전이 출력되고 sysmon이 `active` — 즉 스냅샷(osquery)과 이벤트 스트림(Sysmon) 두 눈이
+      모두 준비됐다. Sysmon이 멈춰 있으면 그 순간부터의 이벤트가 사라지므로 분석 전에 먼저 살린다.
     hint: 'osquery + sysmon'
     category: survey
     points: 8
@@ -38,7 +66,7 @@ steps:
       docker exec el34-web osqueryi --version
       systemctl is-active sysmon
       echo "악성코드 대응: osquery(프로세스/연결) + sysmon(NetworkConnect) + Suricata(C2 시그니처)"
-    answer_detail: "C2 비콘 탐지 = osquery(프로세스/소켓) + sysmon(연결 이벤트) + Suricata(네트워크)."
+    answer_detail: "C2 비콘 탐지의 세 시각 = osquery(프로세스/소켓 스냅샷) + Sysmon for Linux(NetworkConnect 등 이벤트 스트림) + Suricata(네트워크 시그니처). 점검은 두 호스트 가시화 도구의 가용성을 확인하는 것 — osquery는 컨테이너 안, Sysmon은 호스트에 산다."
     verify:
       type: output_contains
       expect: '5.23'
@@ -51,15 +79,31 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 감염 재현 — 악성 프로세스 + C2 비콘
+      ## 🎯 목표 — 악성코드의 최소 형태를 안전하게 재현
+      이후 모든 분석·대응 미션의 원천 데이터를 만든다 — 악성 프로세스(cmdline에 c2_beacon 표식)와
+      C2 채널(비표준 포트 45511 리스너)이라는 악성코드의 두 부품을 web 호스트에 재현한다. 진짜 외부
+      C2에 연결하면 공유 인프라·외부에 영향을 주므로, 비표준 포트로 C2 통신을 안전하게 모사한다.
+
+      ## 📖 개념 한 줄
+      악성코드 = "악성 프로세스 + C2 채널"이 최소 형태다. C2에 거는 주기적 외부 통신(비콘)이 악성코드의
+      생명선이자 IOC의 핵심 — 본 미션이 그 비콘을 만들어 둔다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'nohup python3 -c "import time; c2_beacon_45511=1; time.sleep(200)" >/dev/null 2>&1 & nohup python3 -m http.server 45511 >/dev/null 2>&1 & echo infected'
       sleep 1
       echo "malware done"
       ```
+      - `nohup … &` — 프로세스를 백그라운드로 띄워 셸이 끝나도 살아 있게 한다(악성코드가 상주하는 모습).
+      - `python3 -c "… c2_beacon_45511=1 …"` — cmdline에 **c2_beacon** 표식을 박은 악성 프로세스 모사
+        (이 cmdline이 곧 호스트 IOC가 된다).
+      - `python3 -m http.server 45511` — 비표준 포트 45511로 리스너를 열어 C2 채널을 모사(이 포트가
+        네트워크 IOC가 된다). 정상 서비스는 80/443 같은 잘 알려진 포트를 쓰므로 비표준 고포트 자체가
+        의심 신호다.
+
       ## ✅ 합격 기준
-      악성 프로세스 + C2 비콘(45511)이 재현된다.
+      재현이 실행되고 `malware done`이 출력된다 — 악성 프로세스(c2_beacon)와 C2 비콘 채널(45511)이
+      준비됐다. 프로세스/리스너가 안 뜨면 이후 IOC 추출·헌팅에서 흔적이 안 보인다.
     hint: '악성 프로세스(c2 cmdline) + C2 리스너 45511'
     category: recon
     points: 10
@@ -67,7 +111,7 @@ steps:
       docker exec el34-web sh -c 'nohup python3 -c "import time; c2_beacon_45511=1; time.sleep(200)" >/dev/null 2>&1 & nohup python3 -m http.server 45511 >/dev/null 2>&1 & echo infected'
       sleep 1
       echo "malware done"
-    answer_detail: "악성코드 = 악성 프로세스(c2_beacon cmdline) + C2 비콘 채널(포트 45511). 주기적 통신이 IOC의 핵심."
+    answer_detail: "악성코드의 최소 형태 = 악성 프로세스(cmdline c2_beacon) + C2 비콘 채널(비표준 포트 45511). 진짜 C2 대신 비표준 포트로 안전하게 모사하며, 주기적 외부 통신(비콘)이 IOC의 핵심이자 악성코드의 약점이다."
     verify:
       type: output_contains
       expect: 'done'
@@ -80,13 +124,27 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 Identify + IOC 추출
+      ## 🎯 목표 — 재사용 가능한 호스트 IOC를 뽑는다
+      식별을 "감염됐다"에서 멈추지 않고, **재사용 가능한 IOC**까지 뽑는다. osquery로 악성 프로세스의
+      cmdline을 추출해 호스트 IOC로 확보한다 — 이 IOC는 같은 악성코드가 다른 호스트·다른 시점에
+      나타날 때 즉시 식별하는 지문이 된다.
+
+      ## 📖 개념 한 줄
+      IOC(Indicator of Compromise) = 한 번 뽑으면 두고두고 재사용하는 침해 지표. 악성 프로세스 cmdline
+      (c2_beacon)은 호스트 IOC, C2 포트(45511)는 네트워크 IOC다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web osqueryi --json 'SELECT pid,name,cmdline FROM processes WHERE cmdline LIKE "%c2_beacon%";'
       ```
+      - `osqueryi --json 'SELECT … FROM processes …'` — osquery의 `processes` 테이블(실행 중 프로세스의
+        pid/name/cmdline)을 SQL로 조회해 JSON으로 출력한다.
+      - `WHERE cmdline LIKE "%c2_beacon%"` — cmdline에 c2_beacon 문자열을 **포함하는** 프로세스만
+        고른다(`%`는 "임의 문자열"). 추려진 cmdline이 곧 호스트 IOC다.
+
       ## ✅ 합격 기준
-      악성 프로세스 IOC(cmdline)를 추출한다.
+      출력에 c2_beacon cmdline을 가진 악성 프로세스가 보인다 — 호스트 IOC 추출 성공. 안 보이면 미션 2의
+      감염 재현이나 osquery 가동을 점검한다.
     hint: 'osquery processes cmdline %c2_beacon%'
     category: analysis
     points: 12
@@ -94,7 +152,7 @@ steps:
       echo "=== 악성 프로세스 IOC ==="
       docker exec el34-web osqueryi --json 'SELECT pid,name,cmdline FROM processes WHERE cmdline LIKE "%c2_beacon%";'
       echo "→ IOC: 프로세스 cmdline(c2_beacon), C2 포트 45511. CDB list/MISP로 재사용"
-    answer_detail: "IOC 추출 = 재사용 가능한 지표. 악성 프로세스 cmdline(c2_beacon) + C2 포트 45511. 이걸 CDB list로 만들면 재발 자동 탐지(W12)."
+    answer_detail: "IOC 추출 = 재사용 가능한 침해 지표 확보. 여기서 뽑는 호스트 IOC는 악성 프로세스 cmdline(c2_beacon), 짝이 되는 네트워크 IOC는 C2 포트 45511이다. 이 IOC를 CDB list/MISP로 등록하면 같은 악성코드의 재발이 사람 분석 전에 자동 탐지된다(W12 인텔)."
     verify:
       type: output_contains
       expect: 'c2_beacon'
@@ -107,13 +165,26 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 Hunt — 감염 범위
+      ## 🎯 목표 — "한 호스트만인가, 더 퍼졌나"를 판정
+      식별로 한 호스트의 감염을 확인했다면, 다음 질문은 반드시 감염 범위다. 확보한 C2 채널(포트
+      45511)을 키로 능동 헌팅해, 같은 C2를 쓰는 호스트가 또 있는지 — 즉 확산 여부 — 를 판정한다.
+
+      ## 📖 개념 한 줄
+      헌팅(threat hunting) = 경보를 기다리는 대신 확보한 IOC를 가설로 여러 호스트에서 같은 흔적을
+      능동적으로 찾는 것. 같은 C2 채널 + 같은 비콘 주기 = 같은 악성코드의 확산이다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web osqueryi --json 'SELECT pid,port,address FROM listening_ports WHERE port=45511;'
       ```
+      - `osqueryi … FROM listening_ports` — osquery의 `listening_ports` 테이블(열린 리스너의
+        port/address/pid)을 조회한다.
+      - `WHERE port=45511` — C2 채널 포트(45511)를 여는 프로세스만 고른다. 이 호스트에 결과가 보이면
+        감염 확인, 같은 질의를 다른 호스트로 돌려 결과가 나오면 확산이다(실무는 전 자산에 분산 실행).
+
       ## ✅ 합격 기준
-      C2 채널(45511)로 감염 범위를 헌팅한다.
+      C2 포트(45511)가 헌팅으로 잡힌다 — 감염 범위 확인. 안 잡히면 미션 2의 감염 재현이나 osquery를
+      점검한다.
     hint: 'listening_ports/process_open_sockets 45511'
     category: analysis
     points: 12
@@ -121,7 +192,7 @@ steps:
       echo "=== 감염 범위 헌팅 (C2 채널 45511) ==="
       docker exec el34-web osqueryi --json 'SELECT pid,port,address FROM listening_ports WHERE port=45511;'
       echo "→ 같은 C2 포트로 통신하는 호스트 = 확산. 비콘 주기 같으면 같은 악성코드"
-    answer_detail: "감염 범위 = 같은 IOC(C2 포트/연결)를 여러 호스트에서 헌팅. 확산 여부 + 같은 악성코드 식별."
+    answer_detail: "감염 범위 헌팅 = 같은 IOC(C2 포트 45511/연결)를 여러 호스트에서 능동적으로 찾는 것. 같은 C2 채널을 쓰는 다른 호스트는 확산 후보이고, 비콘 주기까지 같으면 같은 악성코드일 가능성이 매우 높다(우연히 같은 포트는 있어도 주기까지 일치하긴 어렵다)."
     verify:
       type: output_contains
       expect: '45511'
@@ -134,7 +205,15 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 Contain — C2 차단 (sid 9511001)
+      ## 🎯 목표 — C2 통신을 끊어 악성코드를 무력화
+      악성코드 격리의 핵심은 단 하나 — C2 비콘을 끊는 것이다. 비콘이 끊기면 악성코드는 지시도 보고도
+      못 해 고립된다. el34 ips(Suricata)에 C2 포트(45511)를 겨냥한 차단 룰(sid 9511001)을 작성 →
+      문법 검증 → 적용 → 정리(삭제)까지 한 흐름으로 다룬다.
+
+      ## 📖 개념 한 줄
+      "차단 먼저, 분석 나중"(W09). 비콘이 살아 있는 동안 공격자는 계속 명령을 내려 피해를 키우므로,
+      완벽한 분석을 기다리기보다 통신을 먼저 끊어 출혈을 멈춘다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
@@ -144,8 +223,18 @@ steps:
       docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9511001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
       ```
+      - `cat >> … local.rules <<EOF … EOF` — C2 차단 룰 한 줄을 Suricata 로컬 룰 파일에 추가한다.
+        룰 구조: `alert`(액션) `ip`(프로토콜) `any any`(출발지) `-> any 45511`(목적지 포트) +
+        `msg`/`sid`(룰 고유번호 9511001, SOC W11 네임스페이스)/`rev`(개정).
+      - `suricata -T -S … | tail -1` — 적용 전 룰 문법을 테스트(`-T`)한다. 깨진 룰을 라이브에 넣지
+        않기 위한 안전장치.
+      - `suricatasc -c reload-rules` — Suricata를 재시작하지 않고 룰만 무중단 재적용한다.
+      - 마지막 `sed -i "/sid:9511001/d" … reload-rules` — **self-clean**: 시연한 룰을 지우고 다시
+        reload해 공유 인프라를 원상복구한다(운영의 실제 차단은 액션을 `alert` 대신 `drop`으로).
+
       ## ✅ 합격 기준
-      C2 차단 룰(9511001)이 작성·검증·정리된다.
+      룰이 작성·검증·적용되고, 마지막에 삭제돼 잔재 0(rule_removed)이 확인된다. 문법 오류가 나면 룰
+      구문을, 잔재가 남으면 sed 삭제를 점검한다.
     hint: 'C2 포트 차단 룰(9511001) → syntax → reload → 삭제'
     category: manipulation
     points: 12
@@ -158,7 +247,7 @@ steps:
       docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules >/dev/null'
       echo "=== 정리 ==="
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9511001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "C2 차단룰 rule_removed (잔재=$(grep -c 9511001 /etc/suricata/rules/local.rules))"'
-    answer_detail: "Contain = C2 통신 차단(포트 45511 룰 9511001) + 감염 호스트 네트워크 격리. 비콘이 끊기면 악성코드 무력화. 운영은 drop+firewall, 공유 환경은 작성·검증 후 정리."
+    answer_detail: "Contain(격리) = C2 통신 차단(포트 45511 겨냥 룰 sid 9511001) + 감염 호스트 네트워크 격리. 비콘이 끊기면 악성코드는 고립돼 무력화된다. 운영은 drop 액션 + 방화벽으로 실제 차단하고, 공유 el34에선 작성→문법검증(suricata -T)→reload→삭제(self-clean)까지 시연해 인프라를 보존한다."
     verify:
       type: output_contains
       expect: 'rule_removed'
@@ -171,15 +260,29 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 Eradicate — 악성코드 제거
+      ## 🎯 목표 — 뿌리를 뽑는다(악성 프로세스 + C2 종료)
+      격리는 출혈을 멈출 뿐, 악성 프로세스는 여전히 떠 있어 차단을 풀면 다시 통신을 시도한다. 제거는
+      악성 프로세스와 C2 리스너를 완전히 종료(kill)하고, 종료됐는지 다시 확인하는 단계다.
+
+      ## 📖 개념 한 줄
+      제거(Eradicate)의 철칙은 "빠짐없이"(W09 §4) — 하나라도 남으면 재감염의 씨앗이 된다. 그래서 종료
+      후 반드시 가시화 도구로 "정말 사라졌는지" 재확인한다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'pkill -f "[c]2_beacon"; pkill -f "[h]ttp.server 45511"; true'
       echo eradicated
       docker exec el34-web osqueryi --json 'SELECT pid FROM processes WHERE cmdline LIKE "%c2_beacon%";'
       ```
+      - `pkill -f "[c]2_beacon"` — 명령줄 패턴으로 악성 프로세스를 종료한다. 첫 글자를 대괄호로 감싼
+        `[c]2_beacon`은 **pkill 자기 자신이 그 패턴에 매치돼 죽는 것을 막는 관용 기법**이다(정규식
+        `[c]2_beacon`은 실제 `c2_beacon`엔 매치되지만, 명령줄에 적힌 `[c]2_beacon` 문자열엔 안 맞는다).
+      - `pkill -f "[h]ttp.server 45511"` — 같은 방식으로 C2 리스너(포트 45511)를 종료한다.
+      - 끝의 osquery `processes` 재조회 — 종료 검증. 결과가 **비어 있어야** 제거 성공이다.
+
       ## ✅ 합격 기준
-      악성 프로세스/C2를 제거한다.
+      `eradicated` 출력 후 osquery 재조회 결과가 비어 있다 — 악성 프로세스/C2 제거 성공. 남아 있으면
+      패턴·권한을 점검해 다시 종료한다(하나라도 남으면 재감염).
     hint: 'pkill 악성 프로세스 + C2 리스너'
     category: response
     points: 12
@@ -189,7 +292,7 @@ steps:
       echo eradicated
       echo "=== 제거 확인 (빈 결과) ==="
       docker exec el34-web osqueryi --json 'SELECT pid FROM processes WHERE cmdline LIKE "%c2_beacon%";'
-    answer_detail: "Eradicate = 악성 프로세스(kill) + C2 채널 종료. [c]2/[h]ttp 브래킷 트릭으로 pkill 자기매치 방지. osquery로 제거 확인."
+    answer_detail: "Eradicate(제거) = 악성 프로세스 종료(kill) + C2 채널(리스너) 종료 + persistence 제거. [c]2_beacon/[h]ttp 대괄호 트릭으로 pkill이 자기 자신을 죽이는 자기매치를 방지한다. 종료 후 osquery 재조회로 빈 결과를 확인해 '빠짐없이' 제거됐음을 검증한다."
     verify:
       type: output_contains
       expect: 'eradicated'
@@ -202,14 +305,29 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 Recover + IOC 공유
+      ## 🎯 목표 — 잔재 0 검증 + IOC를 조직 자산으로
+      복구는 위협이 완전히 사라졌음을 검증하고 정상으로 되돌리는 단계다. 악성 잔재가 0인지 다시
+      확인하고, 이번에 뽑은 IOC를 CDB list/MISP 공유 형식으로 정리해 재발에 대비한다 — 한 곳의 분석을
+      조직 전체의 면역으로 바꾸는 마지막 한 걸음이다.
+
+      ## 📖 개념 한 줄
+      IOC 공유 = 내 IOC를 조직에 등록 → 같은 악성코드 재출현 시 사람 분석 전에 자동 탐지·차단. 이
+      흐름이 W12–W14 위협 인텔리전스로 이어진다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'pgrep -f "[c]2_beacon" && echo "잔재!" || echo clean'
       echo "IOC CDB: 45511:c2-beacon-port (CDB list/MISP로 공유 → 조직 전체 자동 탐지)"
       ```
+      - `pgrep -f "[c]2_beacon"` — 패턴에 맞는 프로세스가 남았는지 확인한다(대괄호 트릭은 미션 6과
+        동일한 자기매치 방지). 남으면 `잔재!`, 없으면 `clean`이 출력된다.
+      - `echo "IOC CDB: 45511:c2-beacon-port …"` — 추출한 IOC를 공유 형식(포트:라벨)으로 정리한다.
+        **CDB list**(Wazuh가 IP·해시 IOC를 빠르게 조회하는 키-값 목록) / **MISP**(조직 간 IOC 공유
+        플랫폼)에 등록하면 같은 IOC 재출현이 자동 탐지된다.
+
       ## ✅ 합격 기준
-      잔재 0 + IOC를 공유 형식으로 정리한다.
+      잔재 점검이 `clean`이고 IOC가 공유 형식으로 정리된다 — 복구 완결 + IOC 자산화. `잔재!`가 뜨면
+      미션 6의 제거로 돌아간다.
     hint: '잔재 0 + IOC 공유'
     category: response
     points: 12
@@ -219,7 +337,7 @@ steps:
       echo "=== IOC 공유 ==="
       echo "IOC: C2 포트 45511, 프로세스 c2_beacon → CDB list(45511:c2-beacon) / MISP 공유"
       echo "→ 조직 전체가 같은 악성코드를 자동 탐지(W12 인텔)"
-    answer_detail: "Recover = 잔재 0 검증. IOC 공유 = 추출한 IOC를 CDB list/MISP로 → 조직 전체 자동 탐지(W11→W12 연결)."
+    answer_detail: "Recover(복구) = 악성 잔재 0 검증(pgrep clean) + 재감염 감시. IOC 공유 = 추출한 IOC(C2 포트 45511, 프로세스 c2_beacon)를 CDB list/MISP 공유 형식으로 등록 → 같은 악성코드 재출현 시 사람 분석 전에 조직 전체가 자동 탐지(W11→W12 위협 인텔 연결)."
     verify:
       type: output_contains
       expect: 'clean'
@@ -232,7 +350,14 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 악성코드 IR 보고서
+      ## 🎯 목표 — 악성코드 IR 전 과정을 한 서사로 종합
+      미션 1–7을 한 악성코드 IR 서사로 묶어, 식별·격리·제거·복구·공유의 전 과정을 증거와 함께 문서로
+      입증한다 — 본 주차의 최종 산출물이다.
+
+      ## 📖 개념 한 줄
+      좋은 IR 보고서는 결과 선언("감염됐다")이 아니라, 각 단계가 증거(IOC·헌팅·룰·잔재 점검)로 뒷받침된
+      서사다. 결론은 "C2 비콘이 악성코드의 약점 — IOC로 잡고 통신을 끊어 무력화, IOC 공유로 조직 방어".
+
       ## 💻 보고서 양식
       ```markdown
       # SOC W11 악성코드 IR 보고서 (학번, 이름)
@@ -241,8 +366,14 @@ steps:
       ## 3. 격리 (C2 차단)
       ## 4. 제거+복구+IOC 공유
       ```
+      - **1. 식별 + IOC** — 악성 프로세스(c2_beacon), C2 비콘 포트(45511)를 호스트/네트워크 IOC로 정리.
+      - **2. 감염 범위** — C2 채널(45511) 헌팅 결과로 확산 여부 판정.
+      - **3. 격리** — C2 차단 룰(sid 9511001) + 호스트 네트워크 격리로 비콘 끊기.
+      - **4. 제거+복구+IOC 공유** — 악성 프로세스 kill(잔재 0), IOC를 CDB/MISP로 공유.
+
       ## ✅ 합격 기준
-      보고서에 IOC + 격리 + 공유가 포함된다.
+      보고서에 IOC + 감염 범위 + 격리 + 제거·복구·공유가 모두 담긴다. 한 축이라도 빠지면 해당 미션으로
+      돌아가 증거로 보강한다.
     hint: 'IOC+범위+격리+공유'
     category: report
     points: 10
@@ -255,7 +386,7 @@ steps:
       ## 4. 제거+복구: 악성 프로세스 kill, 잔재 0. IOC를 CDB/MISP 공유
       ## 결론: C2 비콘이 악성코드의 약점 — IOC로 잡고 통신을 끊어 무력화, IOC 공유로 조직 방어
       EOF
-    answer_detail: "악성코드 IR = IOC 추출 → 범위 헌팅 → C2 격리 → 제거 → IOC 공유. C2 통신 차단이 핵심, IOC 공유로 조직 전체 방어."
+    answer_detail: "악성코드 IR = 식별+IOC 추출 → 감염 범위 헌팅 → C2 격리(통신 끊기) → 제거(잔재 0) → 복구 → IOC 공유. 핵심은 'C2 통신 차단으로 악성코드를 무력화'하고, IOC를 CDB/MISP로 공유해 조직 전체를 방어하는 것. 각 단계가 증거로 뒷받침돼야 한다."
     verify:
       type: output_contains
       expect: 'IOC'
