@@ -4,9 +4,16 @@ version: standalone-attack
 course: attack
 week: 2
 description: |
-  심화 정찰로 숨은 자산을 찾는다 — nmap NSE 스크립트, nikto 웹 취약점 스캐너, gobuster 디렉토리 brute.
-  더 깊은 정찰은 더 많은 기회를 주지만 더 시끄럽다(IDS/WAF 탐지 trade-off). 공격은 el34-attacker(도구
-  완비), 방어 가시성은 Suricata/ModSec. 인가된 실습만. 명령은 el34 호스트에서.
+  열거(enumeration) 심화 — 포트 너머의 "숨은 콘텐츠"를 캔다. W01 이 "어디가 열렸나(포트)"였다면,
+  W02 는 그 열린 웹 서버 안에 링크로 노출되지 않은 경로(/admin·/backup·/config)와 취약 파일을 찾는다.
+  세 도구를 쓴다 — nmap NSE 스크립트(핑거프린팅 자동화), nikto(알려진 취약 파일/헤더 누락 자동 점검),
+  ffuf(디렉토리 브루트포싱: 워드리스트의 각 단어를 경로로 요청해 응답 상태코드로 존재 경로를 판별).
+  핵심 기술은 상태코드 읽기 — 200=접근 가능, 301/302=존재(이동), 403=존재하나 권한 차단, 404=없음.
+  특히 403 은 "실패"가 아니라 "발견"이다. 더 깊은 열거는 더 많은 익스플로잇 기회를 주지만 더 시끄럽다
+  (깊이 vs 은밀의 trade-off). 공격은 el34-attacker(도구 완비, 단 gobuster 는 인자 버그 → ffuf 사용),
+  방어 가시성은 ips 의 Suricata eve.json·web 의 ModSecurity audit log(913 scanner 룰). el34 는 출처
+  IP(10.20.30.202)를 fw→ips→web 전 계층에 보존하므로 공격하며 그 흔적을 동시에 본다. 인가된 실습만.
+  명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec el34-attacker 로.
 difficulty: medium
 duration_minutes: 160
 prerequisites:
@@ -14,29 +21,45 @@ prerequisites:
   - "el34 호스트 SSH + docker exec"
   - "lecture §2-§4(NSE/nikto/dir brute) §5(trade-off) 숙지"
 objectives:
-  - "nmap NSE 스크립트로 자동 정보 수집"
-  - "nikto로 웹 취약점 스캔"
-  - "gobuster로 숨은 경로 발견"
-  - "심화 정찰의 탐지 trade-off 이해"
+  - "정찰(recon, 포트·서비스)과 열거(enumeration, 경로·파일)의 차이를 PTES 안에서 구분한다"
+  - "nmap NSE 스크립트(http-headers·http-title)로 수동 curl 핑거프린팅을 자동화한다"
+  - "nikto 로 알려진 취약 파일·설정·보안 헤더 누락을 자동 점검하고, UA 노출로 인한 시끄러움을 이해한다"
+  - "ffuf 디렉토리 브루트포싱으로 숨은 경로를 발견하고, 상태코드(200/301/403 vs 404)로 존재 경로를 판별한다"
+  - "열거 흔적이 ModSec 913 scanner 룰·Suricata eve.json 에 출처 IP·시그니처로 남는 것을 추적한다"
+  - "깊이(정보량) vs 은밀(탐지 위험)의 trade-off 와 완화 기법(UA 변조·느린 스캔·작은 워드리스트)을 정리한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 심화 도구
+      ## 🎯 목표 — 심화 열거 도구 점검
+      본격 열거에 앞서 도구 상자를 확인한다. 침투 현장의 첫 단계는 늘 "내 도구에 무엇이
+      있는가"를 점검하는 것이다 — 도구 부재를 모르고 진행하면 이후 미션이 줄줄이 실패한다.
+
+      ## 🧩 개념 한 줄
+      `command -v <도구>` 는 그 명령의 실행 파일 경로를 출력한다(없으면 아무것도 안 나옴) —
+      설치 여부를 확인하는 표준 방법이다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'command -v nikto; command -v gobuster; command -v ffuf'
       ```
+
+      ## 🔧 도구 풀이
+      - **nikto** — 알려진 취약 파일·설정·보안 헤더 누락을 자동 점검하는 웹 스캐너.
+      - **ffuf** (Fuzz Faster U Fool) — 초고속 웹 퍼저. 디렉토리 브루트포싱의 본 주차 표준 도구.
+      - **gobuster** — 디렉토리 브루트포서. 단 el34-attacker 의 gobuster 는 인자 버그가 있어
+        못 쓰므로, 본 주차는 ffuf 로 대체한다(설치 여부만 확인).
+
       ## ✅ 합격 기준
-      nikto/gobuster/ffuf 사용 가능.
+      nikto/gobuster/ffuf 각각의 경로가 출력되면(=설치됨) 합격. 실제 브루트포싱은 ffuf 로 한다.
     hint: 'command -v nikto gobuster ffuf'
     category: survey
     points: 10
     answer: |
       echo "=== 심화 정찰 도구 ==="
       docker exec el34-attacker sh -c 'command -v nikto; command -v gobuster; command -v ffuf'
-    answer_detail: "심화 정찰 도구 — nikto(웹 취약점), gobuster/ffuf(디렉토리 brute), nmap NSE. el34-attacker에 완비."
+    answer_detail: "심화 열거 도구 점검 — nikto(웹 취약점 자동 점검), ffuf(디렉토리 브루트포싱: gobuster 는 el34-attacker 인자 버그로 대체), nmap NSE(핑거프린팅 자동화). command -v 가 실행 파일 경로를 출력하면 설치됨. 세 도구 모두 el34-attacker 에 완비. 합격 판정은 출력에 'nikto' 가 보이는지로 한다."
     verify:
       type: output_contains
       expect: 'nikto'
@@ -49,20 +72,34 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 nmap NSE — 스크립트 스캔
+      ## 🎯 목표 — nmap NSE 로 핑거프린팅 자동화
+      W01 에서 `curl -I` 로 한 vhost 씩 손으로 보던 HTTP 헤더·타이틀을, NSE 스크립트로 한 번에
+      자동 수집한다. 같은 정보를 더 빠르고 일관되게 얻는다.
+
+      ## 🧩 개념 한 줄
+      NSE(Nmap Scripting Engine)는 nmap 내장 스크립트 엔진으로, 단순 포트 스캔을 넘어 서비스
+      상세 정보 수집·취약점 점검까지 자동화한다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker nmap -sV --script=http-headers,http-title -p 80 10.20.30.1 -T4 --max-retries 1
       ```
+
+      ## 🔧 옵션 풀이
+      - `-sV` — 서비스/버전 식별. `--script=http-headers,http-title` — 실행할 NSE 스크립트 지정.
+        - `http-headers` = 응답 헤더(예: `Server: Apache/2.4`) 수집, `http-title` = 페이지 `<title>` 수집.
+      - `-p 80` HTTP 포트. `10.20.30.1` = fw 게이트웨이(→ ips → web 으로 forward).
+      - `-T4` = timing 4(빠름; T0 은밀 ~ T5 시끄러움). `--max-retries 1` = 재시도 1회로 빠르게 종료.
+
       ## ✅ 합격 기준
-      NSE 스크립트로 HTTP 정보(헤더/타이틀)를 수집한다.
+      출력에 HTTP 정보(`Server` 헤더·title·http 관련 줄)가 보이면 NSE 수집 성공.
     hint: 'nmap --script http-headers,http-title'
     category: recon
     points: 12
     answer: |
       echo "=== nmap NSE 스크립트 스캔 ==="
       docker exec el34-attacker nmap -sV --script=http-headers,http-title -p 80 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -iE "http|Server|title|open" | head
-    answer_detail: "NSE 스크립트가 HTTP 헤더/타이틀을 자동 수집 — 수동 curl을 자동화. vuln 카테고리 스크립트로 알려진 취약점도 점검(고급)."
+    answer_detail: "NSE(Nmap Scripting Engine) 스크립트 http-headers/http-title 가 HTTP 응답 헤더(Server 등)와 페이지 타이틀을 자동 수집 — W01 의 수동 curl 핑거프린팅을 자동화한 것. title/Server 로 대상 웹의 기술 스택·정체를 식별한다. vuln 카테고리 스크립트로 알려진 취약점까지 능동 점검 가능하나 매우 시끄러움(고급). 깊은 스캔일수록 요청이 늘어 Suricata 탐지 가능성↑. 합격은 출력에 'http' 정보가 보이는지로 판정."
     verify:
       type: output_contains
       expect: 'http'
@@ -75,13 +112,30 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 nikto — 웹 취약점 스캔
+      ## 🎯 목표 — nikto 로 알려진 취약점 자동 점검
+      알려진 취약 파일·위험 설정·누락된 보안 헤더 수천 항목을 자동 점검한다. 사람이 손으로
+      `/admin.php`·`/.git/`·`/server-status` 를 일일이 확인하던 일을 수 분에 끝낸다.
+
+      ## 🧩 개념 한 줄
+      nikto 는 점검 항목 DB 를 들고 웹 서버를 자동으로 훑는 스캐너 — 표준 체크리스트를 든 점검원.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'nikto -h http://10.20.30.1 -maxtime 30s 2>&1 | head -15'
       ```
+
+      ## 🔧 옵션 풀이
+      - `-h http://10.20.30.1` — 점검 대상 호스트(fw 게이트웨이 → 내부 web).
+      - `-maxtime 30s` — 최대 실행 30초 제한(전체 점검은 수십 분 → 실습에서 시간을 끊음).
+      - `2>&1 | head -15` — 표준에러 합쳐 앞 15줄만(결과가 길다).
+
+      ## ⚠️ 시끄러움 주의
+      nikto 는 요청 UA(User-Agent: 클라이언트 식별 헤더)에 기본으로 `Nikto` 를 박는다 →
+      WAF(ModSecurity)의 913 스캐너 룰에 즉시·명확히 걸린다. "정보는 많지만 스캔 중임을
+      대놓고 광고하는" 도구다(실습 5 에서 그 흔적을 확인).
+
       ## ✅ 합격 기준
-      nikto 스캔이 실행돼 결과를 낸다.
+      출력에 `Nikto` 배너와 발견 항목이 보이면 스캔 성공. 각 발견 항목이 추가 조사 대상이다.
     hint: 'nikto -h (웹 취약점 스캔)'
     category: recon
     points: 12
@@ -89,7 +143,7 @@ steps:
       echo "=== nikto 웹 취약점 스캔 ==="
       docker exec el34-attacker sh -c 'nikto -h http://10.20.30.1 -maxtime 30s 2>&1 | head -15'
       echo "→ nikto는 알려진 취약 파일/헤더 누락을 자동 점검. UA에 Nikto 노출 → WAF에 잡힘"
-    answer_detail: "nikto = 웹 취약점 자동 스캐너. 알려진 취약 경로/설정/헤더 누락 점검. 빠르지만 UA(Nikto)가 노출돼 WAF scanner(913)에 명확히 잡힌다."
+    answer_detail: "nikto = 웹 취약점 자동 스캐너. 알려진 취약 파일/위험 설정/보안 헤더 누락 수천 항목을 점검 DB 로 자동 확인. 출력 각 줄이 발견 항목(추가 조사 대상). 빠르지만 요청 UA(User-Agent)에 'Nikto' 가 박혀 WAF 의 913 scanner 룰(CRS 스캐너 탐지 룰군)에 즉시·명확히 잡히고, 단시간 다량 요청으로 IDS 에도 남는다 — 정보량은 높으나 은밀성은 최저. 합격은 출력에 'Nikto' 가 보이는지로 판정."
     verify:
       type: output_contains
       expect: 'Nikto'
@@ -102,15 +156,38 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 디렉토리 brute — 숨은 경로
+      ## 🎯 목표 — ffuf 디렉토리 브루트포싱으로 숨은 경로 발견
+      메인 페이지 링크에 없는 숨은 경로(/admin·/login·/backup 등)를 끌어낸다 — 본 주차의
+      핵심 기술. 워드리스트의 각 단어를 경로로 요청해(=모든 방 노크) 응답 상태코드로 존재
+      경로를 가려낸다.
+
+      ## 🧩 개념 한 줄
+      디렉토리 브루트포싱 = 후보 경로 단어를 대량 요청해 실제 존재하는 경로를 찾는 기법.
+      ffuf 는 URL 의 `FUZZ` 자리에 워드리스트 단어를 하나씩 대입(퍼징)하며 요청을 보낸다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'printf "admin\nlogin\nindex.php\nrobots.txt\nconfig\nbackup\napi\n" > /tmp/aw2.txt'
       docker exec el34-attacker ffuf -u http://10.20.30.1/FUZZ -w /tmp/aw2.txt -H 'Host: dvwa.el34.lab' -mc 200,301,302,403 -s
       docker exec el34-attacker rm -f /tmp/aw2.txt
       ```
+
+      ## 🔧 옵션 풀이
+      - `-u .../FUZZ` — 경로 자리에 `FUZZ` 키워드 → 워드리스트 단어가 이 자리에 대입됨.
+      - `-w /tmp/aw2.txt` — 워드리스트(시도할 경로 후보, 한 줄에 하나). 여기선 그 자리에서 생성.
+      - `-H 'Host: dvwa.el34.lab'` — el34 는 Host 헤더로 vhost 를 구분 → 이 헤더가 있어야 DVWA 로 라우팅.
+      - `-mc 200,301,302,403` — match-code: 이 상태코드만 "발견"으로 출력(404 는 자동 제외).
+      - `-s` — silent: 진행 막대 등 잡음 끄고 발견 경로만 출력.
+
+      ## 📟 상태코드 읽기 (핵심)
+      200=접근 가능, 301/302=존재(이동), 403=존재하나 권한 차단, 404=없음. **403 은 실패가
+      아니라 "발견"** — 경로는 있는데 권한이 없다는 뜻이라 오히려 흥미로운 표적이다.
+
+      ## ⚠️ 도구 주의
+      el34-attacker 의 gobuster 는 인자 버그로 못 쓴다 → 반드시 ffuf 를 사용한다.
+
       ## ✅ 합격 기준
-      ffuf가 존재하는 경로(login/admin 등)를 발견한다.
+      ffuf 가 존재하는 경로(login/admin 등)를 발견하면 합격. 상태코드를 함께 읽어 우선순위를 매긴다.
     hint: 'ffuf -u .../FUZZ -w wordlist -mc 200,301,403'
     category: recon
     points: 14
@@ -120,7 +197,7 @@ steps:
       docker exec el34-attacker ffuf -u http://10.20.30.1/FUZZ -w /tmp/aw2.txt -H 'Host: dvwa.el34.lab' -mc 200,301,302,403 -s 2>&1 | head -10
       docker exec el34-attacker rm -f /tmp/aw2.txt
       echo "→ ffuf -mc로 매칭된 상태코드(200/301/403)=있는 경로(숨은 표면). 대량 요청이라 access.log/IDS에 폭주"
-    answer_detail: "디렉토리 brute = 워드리스트로 숨은 경로(/admin,/login...) 발견. ffuf -mc로 존재 경로(200/301/403) 필터. 노출 안 된 익스플로잇 표면. 대량 요청이라 시끄럽다. (el34-attacker gobuster는 인자 버그 → ffuf 사용)."
+    answer_detail: "디렉토리 브루트포싱 = 워드리스트의 각 단어를 URL 의 FUZZ 자리에 대입(퍼징)해 요청, 응답 상태코드로 숨은 경로(/admin,/login...)를 판별. ffuf -mc 200,301,302,403 으로 존재 경로만 필터(200=접근가능, 301/302=이동, 403=존재하나 권한차단; 404 는 제외). 403 은 실패가 아니라 '발견'이다. Host 헤더로 vhost(dvwa) 라우팅. 링크에 노출 안 된 익스플로잇 표면을 끌어낸다. 대량 요청이라 access.log/IDS 에 폭주로 남아 시끄럽다. (el34-attacker gobuster 는 인자 버그 → ffuf 사용.) 합격은 출력에 'login' 등 발견 경로가 보이는지로 판정."
     verify:
       type: output_contains
       expect: 'login'
@@ -133,13 +210,27 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 방어 탐지 — 심화 정찰의 흔적
+      ## 🎯 목표 — 내 열거의 방어 흔적 확인 (깊이의 대가 = 탐지)
+      방금 일으킨 nikto·ffuf 열거가 방어 스택에 어떻게 잡혔는지 본인 눈으로 확인한다.
+      공격자가 자기 행동의 탐지 흔적을 아는 것이 회피의 출발점이다.
+
+      ## 🧩 개념 한 줄
+      ModSecurity(web 의 WAF)는 nikto UA 를 913 스캐너 룰로, Suricata(ips 의 IDS)는 출처
+      IP 의 폭주를 alert 로 잡는다. el34 는 출처 IP(10.20.30.202)를 보존하므로 흔적의 src 가
+      실제 공격자 그대로다.
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oiE "nikto|913[0-9]{3}" | sort | uniq -c'
       ```
+
+      ## 🔧 무엇을 보나
+      - `modsec_audit.log` — web 의 ModSecurity audit 로그. `nikto`(노출된 UA)와 `913xxx`
+        (CRS 스캐너 탐지 룰군) 매치를 집계한다.
+      - (정답 스크립트는 이어서 ips 의 eve.json 에서 공격자 출처 IP(10.20.30.202)별 alert 도 집계.)
+
       ## ✅ 합격 기준
-      nikto/스캔이 WAF/IDS에 탐지됨을 확인한다.
+      modsec_audit.log 에 `nikto` 또는 `913xxx` 가 다수 보이면 정상 탐지(=내가 시끄러웠다는 증거).
     hint: 'modsec 의 nikto/913 scanner'
     category: analysis
     points: 14
@@ -149,7 +240,7 @@ steps:
       echo "=== IDS 출발지 탐지 ==="
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.src_ip" | sort | uniq -c' || true
       echo "→ 심화 정찰은 매우 시끄럽다 — nikto UA(913)/대량 요청이 WAF/IDS에 명확히 남는다"
-    answer_detail: "심화 정찰의 대가 = 탐지. nikto UA가 WAF 913(scanner)에 명확히(다수), 대량 요청이 IDS에 남는다. 깊이와 은밀은 trade-off."
+    answer_detail: "심화 열거의 대가 = 탐지. nikto 의 노출된 UA 가 web ModSecurity 의 913 scanner 룰(CRS 스캐너 탐지)에 명확히(다수) 매치되고, ffuf 의 대량 요청이 ips Suricata eve.json 에 출처 IP(10.20.30.202)별 alert 로 남는다. el34 는 출처 IP 를 fw→ips→web 보존하므로 흔적의 src 가 실제 공격자 그대로다. Blue Team 은 이 흔적으로 스캐닝을 탐지·차단한다 — 깊이와 은밀은 trade-off. 합격은 출력에 'nikto'(또는 913) 탐지가 보이는지로 판정."
     verify:
       type: output_contains
       expect: 'nikto'
@@ -162,13 +253,25 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 숨은 표면 매핑
+      ## 🎯 목표 — 확장된 공격 표면으로 정리
+      흩어진 발견을 하나의 표적 목록으로 종합한다. W01 의 기본 표면(포트·서비스)에 W02 의
+      숨은 표면(경로·취약점·스택)을 더해 "익스플로잇 후보 전체"를 만든다.
+
+      ## 🧩 개념 한 줄
+      공격 표면(attack surface) = 공격자가 건드릴 수 있는 모든 진입점. 열거로 이 표면을 넓힌다.
+
       ## 💻 실행 명령
       ```bash
       echo "발견: 숨은 경로(/admin,/api...), 웹 취약점(nikto findings), 기술 스택(NSE) = 확장된 공격 표면"
       ```
+
+      ## 🗂️ 정리할 3요소
+      - 숨은 경로 — ffuf 발견(/admin·/api·/backup 등, 상태코드별 우선순위).
+      - 웹 취약점 — nikto findings(취약 파일·보안 헤더 누락).
+      - 기술 스택 — NSE(http-headers/title)로 식별한 서버·앱 정체.
+
       ## ✅ 합격 기준
-      심화 정찰로 확장된 공격 표면을 정리한다.
+      세 요소를 묶어 "확장된 공격 표면"으로 정리하면 합격(단순 명령이 아닌 종합 산출물).
     hint: '숨은 경로+취약점 표면'
     category: analysis
     points: 8
@@ -178,7 +281,7 @@ steps:
       echo "웹 취약점: nikto findings(취약 파일/헤더 누락)"
       echo "기술 스택: NSE(http-headers/title)"
       echo "→ W01 기본 표면 + W02 숨은 표면 = 익스플로잇 후보 확대"
-    answer_detail: "심화 정찰로 표면 확장 — 숨은 경로 + 웹 취약점 + 상세 스택. 익스플로잇(W04+)의 표적 목록."
+    answer_detail: "심화 열거로 공격 표면 확장 — 숨은 경로(ffuf) + 웹 취약점(nikto) + 상세 기술 스택(NSE)을 하나로 종합. W01 기본 표면 + W02 숨은 표면 = 익스플로잇(W04+)의 표적 목록. 단순 명령 실행이 아니라 발견을 묶는 관리적 산출물. 합격은 출력에 '표면' 정리가 보이는지로 판정."
     verify:
       type: output_contains
       expect: '표면'
@@ -191,13 +294,26 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 탐지 trade-off — 깊이 vs 은밀
+      ## 🎯 목표 — 깊이 vs 은밀 trade-off 내재화
+      공격자의 모든 의사결정은 "얼마나 알아낼까(정보량)"와 "얼마나 들킬까(탐지 위험)"의
+      저울질이다. 이 기준을 본인 말로 정리해 실전 판단력을 기른다.
+
+      ## 🧩 개념 한 줄
+      심화 열거는 정보를 많이 주지만 흔적도 많이 남긴다. 회피는 공짜가 아니라 정보 포기를
+      동반한다.
+
       ## 💻 실행 명령
       ```bash
       echo "nikto: 정보多 탐지多(UA노출) / dir brute: 정보多 탐지多(폭주) / 완화: UA변조·느린스캔·작은 wordlist"
       ```
+
+      ## ⚖️ 기법별 대응
+      - nikto — 정보 높음 / 탐지 매우 높음(UA `Nikto` 노출 → WAF 913). 완화: UA 변조·느린 스캔.
+      - 디렉토리 브루트 — 정보 높음 / 탐지 높음(요청 폭주). 완화: rate-limit·작은 워드리스트·분산.
+      - nmap NSE — 정보 중간 / 탐지 중간. 완화: 필요한 스크립트만 선별.
+
       ## ✅ 합격 기준
-      깊이와 은밀의 trade-off를 정리한다.
+      깊이와 은밀의 trade-off + 완화 기법을 정리하면 합격.
     hint: '깊이 vs 은밀 trade-off'
     category: analysis
     points: 10
@@ -207,7 +323,7 @@ steps:
       echo "dir brute: 정보 높음 / 탐지 높음(요청 폭주)   → 완화: rate-limit, 작은 wordlist"
       echo "nmap NSE:  정보 중간 / 탐지 중간             → 완화: 스크립트 선별"
       echo "→ 공격자는 '얼마나 알아낼까'와 '얼마나 들킬까'를 저울질"
-    answer_detail: "심화 정찰은 깊이와 은밀의 trade-off. 시끄러운 도구일수록 정보가 많지만 탐지된다. 회피(UA변조/느린스캔)는 정보를 일부 포기."
+    answer_detail: "심화 열거는 깊이(정보량)와 은밀(탐지 위험)의 trade-off. 시끄러운 도구일수록 정보가 많지만 탐지된다 — nikto(UA 노출→913), dir brute(폭주), NSE(능동 요청). 회피(UA 변조·느린 스캔·작은 워드리스트·분산)는 탐지를 줄이지만 정보 수집 속도·범위를 일부 포기한다(회피는 공짜가 아님). 실전 공격자는 대상 방어 수준에 맞춰 조절. 합격은 출력에 'trade-off'와 완화 기법이 보이는지로 판정."
     verify:
       type: output_contains
       expect: 'trade-off'
@@ -220,7 +336,13 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 심화 정찰 보고서
+      ## 🎯 목표 — 심화 열거 종합 보고서
+      정찰/열거 단계의 산출물을 하나의 보고서로 종합한다 — PTES 마지막 단계(보고)의 축소판.
+      실제 침투 테스트의 정찰 보고서가 이 양식을 따른다.
+
+      ## 🧩 개념 한 줄
+      도구 결과·표면·탐지·trade-off 4요소를 한 문서로 엮어 다음 단계(익스플로잇)로 넘긴다.
+
       ## 💻 보고서 양식
       ```markdown
       # 공격 W02 심화 정찰 보고서 (학번, 이름)
@@ -229,8 +351,9 @@ steps:
       ## 3. 방어 탐지 (시끄러움)
       ## 4. trade-off (깊이 vs 은밀)
       ```
+
       ## ✅ 합격 기준
-      보고서에 심화 정찰 결과 + 탐지 trade-off가 포함된다.
+      보고서에 4요소(도구 결과 + 확장된 표면 + 방어 탐지 + trade-off)가 모두 포함되면 합격.
     hint: '결과+표면+탐지+trade-off'
     category: report
     points: 10
@@ -243,7 +366,7 @@ steps:
       ## 4. trade-off: 깊이↑ = 정보↑ + 탐지↑. 은밀하려면 UA변조/느린스캔(정보 일부 포기)
       ## 결론: 심화 정찰로 표면 확장, 단 탐지 trade-off 인지
       EOF
-    answer_detail: "심화 정찰 = 깊은 정보 + 시끄러움. 표면을 넓히되 탐지 trade-off를 안다. 다음은 표면별 익스플로잇."
+    answer_detail: "심화 열거 종합 보고 = 깊은 정보 + 시끄러움의 기록. NSE/nikto/ffuf 결과, 확장된 공격 표면(기본+숨은), 방어 탐지(913/IDS), 깊이 vs 은밀 trade-off 4요소를 한 문서로 엮는다 — PTES 보고 단계의 축소판. 표면을 넓히되 탐지 trade-off 를 인지하는 것이 결론. 다음은 표면별 익스플로잇(W04+). 합격은 보고서에 '정찰' 종합(4요소)이 보이는지로 판정."
     verify:
       type: output_contains
       expect: '정찰'

