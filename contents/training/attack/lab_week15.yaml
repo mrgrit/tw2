@@ -1,0 +1,284 @@
+lab_id: standalone-attack-week15
+title: "캡스톤 — PTES 7단계 침투 완주 vs 킬체인 재구성 방어"
+version: standalone-attack
+course: attack
+week: 15
+description: |
+  공격기법 수료 캡스톤. PTES 방법론으로 정찰→취약점분석→익스플로잇/셸→권한상승→persistence→유출의
+  한 침투를 완주하고, 방어자가 전체 킬체인을 로그로 재구성한다. W01–W14 전 기법 종합. 전 흔적 self-clean.
+  인가된 실습만. 명령은 el34 호스트에서.
+difficulty: hard
+duration_minutes: 280
+prerequisites:
+  - "W01–W14 전부 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §1(PTES) §2(킬체인) §3(방어 재구성) 숙지"
+objectives:
+  - "PTES 단계로 정찰→침투→privesc→persistence→유출 완주"
+  - "방어자 관점 킬체인 재구성"
+  - "전 흔적 self-clean (공유 인프라 보존)"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 전 도구
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'command -v nmap ffuf sqlmap; echo tools-ok'
+      ```
+      ## ✅ 합격 기준
+      공격 도구 준비.
+    hint: 'nmap/ffuf/sqlmap'
+    category: survey
+    points: 8
+    answer: |
+      docker exec el34-attacker sh -c 'command -v nmap; command -v ffuf; command -v sqlmap; echo tools-ok'
+    answer_detail: "캡스톤 = 전 기법 종합. 정찰(nmap/ffuf)·익스플로잇(sqlmap) 등 전 도구."
+    verify:
+      type: output_contains
+      expect: 'tools-ok'
+      field: stdout
+      semantic:
+        intent: "전 도구 점검"
+        success_criteria: ["도구 준비"]
+        acceptable_methods: ["**[OSS] command -v (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 ② 정찰 (PTES)
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker nmap -p 80,443 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -E "open|PORT"
+      docker exec el34-attacker sh -c 'printf "admin\nlogin\nftp\n" > /tmp/pt15.txt; ffuf -u http://10.20.30.1/FUZZ -w /tmp/pt15.txt -H "Host: juice.el34.lab" -mc 200,301,403 -s 2>&1 | head -5; rm -f /tmp/pt15.txt'
+      ```
+      ## ✅ 합격 기준
+      정찰(포트+경로)을 수행한다.
+    hint: 'nmap + ffuf'
+    category: recon
+    points: 10
+    answer: |
+      echo "=== 정찰 (nmap + ffuf) ==="
+      docker exec el34-attacker nmap -p 80,443,8001 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -E "open|PORT"
+      docker exec el34-attacker sh -c 'printf "admin\nlogin\nftp\n" > /tmp/pt15.txt; ffuf -u http://10.20.30.1/FUZZ -w /tmp/pt15.txt -H "Host: juice.el34.lab" -mc 200,301,403 -s 2>&1 | head -5; rm -f /tmp/pt15.txt'
+    answer_detail: "PTES 정보수집 — 포트(nmap)+경로(ffuf). 공격 표면 매핑."
+    verify:
+      type: output_contains
+      expect: 'open'
+      field: stdout
+      semantic:
+        intent: "PTES 정찰"
+        success_criteria: ["포트+경로"]
+        acceptable_methods: ["**[OSS] nmap+ffuf (권장)**"]
+    target_vm: ips
+
+  - order: 3
+    instruction: |
+      ## 🎯 ④ 취약점 분석 — 웹 익스플로잇
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code} ' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=pt15%27%20UNION%20SELECT%201--\""
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      ```
+      ## ✅ 합격 기준
+      웹 취약점(SQLi/강제 브라우징)을 식별한다.
+    hint: 'SQLi + /ftp'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 취약점 분석/익스플로잇 ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code} ' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=pt15%27%20UNION%20SELECT%201--\""
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      echo "→ SQLi(dvwa 403 탐지) + 강제 브라우징(/ftp 200). 익스플로잇 표면"
+    answer_detail: "취약점 분석 — SQLi(W04)+강제 브라우징(W06). 침투 경로 선택."
+    verify:
+      type: output_contains
+      expect: 'ftp=200'
+      field: stdout
+      semantic:
+        intent: "웹 취약점 익스플로잇"
+        success_criteria: ["SQLi+강제브라우징"]
+        acceptable_methods: ["**[OSS] SQLi+/ftp (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 ⑤ 익스플로잇 — 셸 캡처
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'nohup python3 -m http.server 51515 >/dev/null 2>&1 & echo shell'
+      sleep 1
+      docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=51515;'
+      docker exec el34-web sh -c 'pkill -f "[h]ttp.server 51515"; true'
+      ```
+      ## ✅ 합격 기준
+      셸(포트 51515) 캡처를 확인한다.
+    hint: '리스너 51515'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 익스플로잇: 셸 캡처(51515) ==="
+      docker exec el34-web sh -c 'nohup python3 -m http.server 51515 >/dev/null 2>&1 & echo shell'
+      sleep 1
+      docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=51515;'
+      docker exec el34-web sh -c 'pkill -f "[h]ttp.server 51515" 2>/dev/null; true'
+      echo "shell captured 51515"
+    answer_detail: "익스플로잇 = 코드 실행 거점(셸 51515) 확보. W08 CTF 패턴."
+    verify:
+      type: output_contains
+      expect: '51515'
+      field: stdout
+      semantic:
+        intent: "셸 캡처"
+        success_criteria: ["리스너 51515"]
+        acceptable_methods: ["**[OSS] 리스너+osquery (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 ⑤ 권한 상승 — 열거
+      ## 💻 실행 명령
+      ```bash
+      docker exec -u ccc el34-web sh -c 'find / -perm -4000 -type f 2>/dev/null | head -5; id'
+      ```
+      ## ✅ 합격 기준
+      privesc 열거(SUID/sudo)를 수행한다.
+    hint: 'SUID 열거'
+    category: recon
+    points: 12
+    answer: |
+      echo "=== 권한 상승 열거 ==="
+      docker exec -u ccc el34-web sh -c 'echo "[SUID]"; find / -perm -4000 -type f 2>/dev/null | head -5; echo "[그룹]"; id'
+      echo "→ SUID/sudo 열거 → GTFObins 매핑(W11). root 경로 탐색"
+    answer_detail: "권한 상승 — SUID/sudo 열거(W11) → GTFObins로 root. 캡스톤은 열거까지(실제 상승은 읽기전용)."
+    verify:
+      type: output_contains
+      expect: 'SUID'
+      field: stdout
+      semantic:
+        intent: "privesc 열거"
+        success_criteria: ["SUID/sudo 열거"]
+        acceptable_methods: ["**[OSS] find -perm -4000 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 ⑥ persistence + 유출
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'userdel -r pt15ghost 2>/dev/null; useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz /etc/passwd 2>/dev/null; echo "persist+exfil"'
+      docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="pt15ghost";'
+      ```
+      ## ✅ 합격 기준
+      persistence(계정) + 유출(staging)을 수행한다.
+    hint: 'useradd + tar staging'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 포스트 익스플로잇: persistence + 유출 ==="
+      docker exec el34-web sh -c 'userdel -r pt15ghost 2>/dev/null; useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz /etc/passwd /etc/hostname 2>/dev/null; echo "persist+exfil"'
+      docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="pt15ghost";'
+      echo "→ 백도어 계정(pt15ghost, W12) + 데이터 staging(exfil, W12 UEBA)"
+    answer_detail: "포스트 익스플로잇 = persistence(계정)+유출(staging). W12 기법. 장악 유지+데이터 탈취."
+    verify:
+      type: output_contains
+      expect: 'pt15ghost'
+      field: stdout
+      semantic:
+        intent: "persistence + 유출"
+        success_criteria: ["계정 + staging"]
+        acceptable_methods: ["**[OSS] useradd+tar (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 킬체인 재구성
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head'
+      docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="pt15ghost";'
+      ```
+      ## ✅ 합격 기준
+      방어 흔적으로 킬체인을 재구성한다.
+    hint: 'WAF + osquery 흔적'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 방어 킬체인 재구성 ==="
+      echo "[정찰/침투 → WAF]"; docker exec el34-web sh -c 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head'
+      echo "[발판 → osquery]"; docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="pt15ghost";'
+      echo "→ 정찰(913)→침투(942)→발판(pt15ghost)→유출(staging) 킬체인. 어느 단계서든 끊기"
+    answer_detail: "방어자 킬체인 재구성 = WAF(913/942)+osquery(계정)+FIM(staging) 흔적을 한 침투로. defense in depth로 어느 단계서든 차단."
+    verify:
+      type: output_contains
+      expect: 'pt15ghost'
+      field: stdout
+      semantic:
+        intent: "킬체인 재구성"
+        success_criteria: ["WAF+osquery 흔적 종합"]
+        acceptable_methods: ["**[OSS] 흔적 종합 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 PTES 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격 W15 PTES 캡스톤 보고서 (학번, 이름)
+      ## 1. 정찰 → 취약점 → 익스플로잇/셸
+      ## 2. 권한상승 → persistence → 유출
+      ## 3. 방어 킬체인 재구성
+      ## 4. 권고(방어 우선순위)
+      ```
+      ## ✅ 합격 기준
+      PTES 전 단계가 보고서에 포함된다.
+    hint: 'PTES 단계 종합'
+    category: report
+    points: 5
+    answer: |
+      cat <<'EOF'
+      # 공격 W15 PTES 캡스톤 보고서
+      ## 1. 정찰(nmap/ffuf)→취약점(SQLi/강제브라우징)→익스플로잇(셸 51515)
+      ## 2. 권한상승(SUID/sudo 열거)→persistence(pt15ghost)→유출(staging)
+      ## 3. 방어 킬체인: 정찰(913)→침투(942)→발판(osquery)→유출(FIM). 다층 방어로 끊기
+      ## 4. 권고: WAF 강화, 최소권한, FIM, 전수 헌팅. 어느 단계든 1곳 차단=킬체인 붕괴
+      ## 결론: PTES로 완주한 침투를 방어가 킬체인 재구성으로 끊는다. 공방 통합의 완성
+      EOF
+    answer_detail: "PTES 캡스톤 = 전 기법을 한 침투로 + 방어 킬체인 재구성. 공격기법 트랙의 종합 = 수료."
+    verify:
+      type: output_contains
+      expect: 'PTES'
+      field: stdout
+      semantic:
+        intent: "PTES 종합 보고"
+        success_criteria: ["전 단계 종합"]
+        acceptable_methods: ["**[관리적] PTES 보고서 (권장)**"]
+    target_vm: web
+
+  - order: 9
+    instruction: |
+      ## 🎯 정리 — 전 흔적 self-clean
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-web sh -c 'userdel -r pt15ghost 2>/dev/null; rm -f /tmp/pt15_exfil.tar.gz; id pt15ghost 2>/dev/null && echo "잔재!" || echo "user ok"; pgrep -f "[h]ttp.server 51515" && echo "셸 잔재!" || echo "shell ok"'
+      echo "---check done---"
+      ```
+      ## ✅ 합격 기준
+      계정/staging/셸 잔재 0 + `check done`.
+    hint: 'pt15ghost/exfil/51515 잔재 0'
+    category: cleanup
+    points: 5
+    answer: |
+      docker exec el34-web sh -c 'userdel -r pt15ghost 2>/dev/null; rm -f /tmp/pt15_exfil.tar.gz; id pt15ghost 2>/dev/null && echo "계정 잔재!" || echo "user ok"; pgrep -f "[h]ttp.server 51515" && echo "셸 잔재!" || echo "shell ok"; ls /tmp/pt15_exfil.tar.gz 2>/dev/null && echo "staging 잔재!" || echo "staging ok"'
+      echo "---check done---"
+    answer_detail: "캡스톤 마무리 = 전 흔적(계정/staging/셸) self-clean. 공유 인프라 베이스 복원."
+    verify:
+      type: output_contains
+      expect: 'check done'
+      field: stdout
+      semantic:
+        intent: "전 흔적 정리"
+        success_criteria: ["계정/staging/셸 잔재 0"]
+        acceptable_methods: ["**[OSS] 잔재 점검 (권장)**"]
+    target_vm: web
