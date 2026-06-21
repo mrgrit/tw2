@@ -250,7 +250,7 @@ outputs:
 ### 3.1 컨테이너 + 두 NIC
 
 ```mermaid
-graph LR
+graph TD
     PIPE[pipe 10.20.31.0/24]
     DMZ[dmz 10.20.32.0/24]
     IPS["el34-ips<br/>Suricata 6.0.4<br/>uptime 31737s ≈ 9시간"]
@@ -643,7 +643,7 @@ docker exec el34-ips sh -c 'grep "9004001" /var/log/suricata/eve.json | tail -1 
 ### 8.1 시나리오
 
 ```mermaid
-graph LR
+graph TD
     R["Red — attacker sqlmap UA × 5"] -->|HTTP| FW[fw]
     FW --> IPS[ips Suricata]
     IPS -->|alert × 10 (양 NIC)| B["Blue — eve.json 의 9004001 카운트"]

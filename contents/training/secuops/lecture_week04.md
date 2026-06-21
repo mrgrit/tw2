@@ -253,7 +253,7 @@ content 를 fast_pattern 으로 등록** → hyperscan 의 multi-pattern matcher
 fast_pattern 을 동시 검색 → 매치된 룰만 정밀 평가.
 
 ```mermaid
-graph LR
+graph TD
     PKT[packet payload]
     HS["hyperscan matcher<br/>모든 룰의 fast_pattern<br/>동시 검색"]
     M1{"match?"}
@@ -1117,7 +1117,7 @@ R/B/P 의 3 관점 에서 통합 검증.
 ### 통합 도식
 
 ```mermaid
-graph LR
+graph TD
     R["🔴 Red Team<br/>attacker (10.20.30.202)<br/>3 시나리오<br/>① 다단계 admin 시도<br/>② PII 누출 응답<br/>③ SSH brute"]
 
     NET["🌐 ips 의 af-packet<br/>모든 트래픽 sniff<br/>flow 추적"]

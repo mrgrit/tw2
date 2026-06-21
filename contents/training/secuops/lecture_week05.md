@@ -370,7 +370,7 @@ SecAuditLogParts ABCFHZ
 ### 5.3 11 vhost reverse proxy 흐름
 
 ```mermaid
-graph LR
+graph TD
     EXT[외부 client]
     HAP[web Apache 80/443]
     APACHE["Apache 80/443<br/>vhost = Host header"]
@@ -558,7 +558,7 @@ SecRuleUpdateTargetById 941100 "!ARGS:rich_text_field"
 ModSec 의 audit log 가 Wazuh agent → manager → dashboard 로 ship. W10 에서 본격 통합:
 
 ```mermaid
-graph LR
+graph TD
     MODSEC[ModSec audit log<br/>JSON 형식]
     WA[Wazuh agent<br/>localfile read]
     MGR[Wazuh manager<br/>decoder]
@@ -712,7 +712,7 @@ src 를 프록시 IP 로 가리는 환경에선 REMOTE_ADDR 가 프록시 IP 로
 ### 통합 도식
 
 ```mermaid
-graph LR
+graph TD
     R["🔴 Red Team<br/>attacker (10.20.30.202)<br/>3 시나리오<br/>① XSS payload<br/>② SQLi UNION<br/>③ scanner UA"]
 
     FE["🌐 web Apache<br/>(L7 reverse proxy + WAF)<br/>vhost 라우팅"]

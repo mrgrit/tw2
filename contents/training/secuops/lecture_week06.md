@@ -415,7 +415,7 @@ SELECT name, version, identifier FROM chrome_extensions;
 osquery 의 FIM 은 Linux **inotify** 기반. 다음 흐름:
 
 ```mermaid
-graph LR
+graph TD
     KERN[kernel inotify]
     FE[osqueryd 의 file_events table]
     SCHED[scheduled query]
@@ -788,7 +788,7 @@ bastion 의 `/root` + web 의 `/etc/apache2/sites-enabled/` + fw 의 `/etc/nftab
 ## 16. **R/B/P** 통합 — Red 가 호스트 침해 시뮬 → Blue 헌팅 → Purple 자동화
 
 ```mermaid
-graph LR
+graph TD
     R["Red — 호스트 침해 시뮬<br/>새 user / cron / key 추가"] --> B
     B["Blue — osquery 헌팅<br/>5 쿼리 매치"] --> P
     P["Purple — scheduled query<br/>자동화 + baseline"]
@@ -1240,7 +1240,7 @@ sudo rm -f /tmp/.hidden_nc
 ### 통합 도식
 
 ```mermaid
-graph LR
+graph TD
     R["🔴 Red Team<br/>attacker → web (10.20.32.80)<br/>3 침해 패턴<br/>① 신규 user + ssh key<br/>② backdoor cron<br/>③ 의심 process"]
 
     HOST["🌐 web 호스트<br/>OS state<br/>processes/users/files<br/>cron/listening_ports"]
