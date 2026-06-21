@@ -4,34 +4,47 @@ version: standalone-soc
 course: soc
 week: 5
 description: |
-  SOC의 진짜 적 = 경보 폭주(alert fatigue). 수만 건을 level/groups/빈도로 분류하고, 오탐을 판정하고,
-  억제(suppression)해 진짜 위협만 남긴다. 분석은 Wazuh alerts.json, 억제는 level 0 룰(logtest 검증).
-  관측·분석 중심. 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+  SOC의 진짜 적은 공격이 아니라 경보 폭주(alert fatigue)다 — 하루 수만 건 중 진짜 위협은 몇 건이라,
+  분석가가 전부 보면 정작 중요한 한 건을 놓친다(양치기 소년 효과). 본 lab은 폭주를 다스리는 전 과정을
+  손으로 밟는다: ① 폭주를 재현하고 ② level(심각도)·groups(종류)·빈도(top talker) 세 축으로 분류하고
+  ③ 오탐(false positive) 3기준으로 판정하고 ④ 오탐 노이즈를 level 0 억제 룰로 좁게 끄고 ⑤ 경보 관리
+  보고서로 종합한다. 분석 대상은 el34-siem 의 Wazuh alerts.json, 억제는 local_rules.xml 의 level 0 룰을
+  wazuh-logtest 로 무중단 검증(공유 SIEM 이라 라이브 적용 대신 검증 후 원복). 관측·분석 중심이라 인프라를
+  바꾸지 않는다. 명령은 모두 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-<컨테이너>` 로.
 difficulty: medium
 duration_minutes: 180
 prerequisites:
-  - "W01–W04 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2-§4(분류 3축) §5(오탐) §6(억제) 숙지"
+  - "W01–W04 통과 (triage·level·false positive·local_rules.xml·wazuh-logtest 이해)"
+  - "el34 호스트 SSH(ssh ccc@192.168.0.151, pw 1) + docker exec 숙달"
+  - "lecture §2~§4(분류 3축) §5(오탐 판정 3기준) §6(level 0 억제) 숙지"
 objectives:
-  - "alerts.json을 level/groups/빈도로 분류"
-  - "폭주의 원인(top rule/출발지) 식별"
-  - "오탐 판정 기준 적용"
-  - "level 0 억제 룰 작성 + logtest 검증 + 보존"
+  - "alerts.json을 level(심각도)/groups(종류)/빈도(top talker) 세 축으로 분류한다"
+  - "폭주의 구체적 원인(top rule ID·top 출발지 IP)을 지목한다"
+  - "오탐 판정 3기준(정상 업무·양성 맥락·규칙적 빈도)을 적용해 노이즈와 진짜를 가른다"
+  - "level 0 억제 룰(100450)을 좁은 조건으로 작성 + wazuh-logtest 검증 + 원복(공유 SIEM 보존)"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 경보량
+      ## 🎯 점검 — 경보량(폭주의 척도)
+
+      ## 📖 개념 (왜 이걸 하나)
+      폭주를 분석하려면 먼저 두 가지를 확인한다 — (1) 경보를 만드는 manager 의 채점 엔진
+      `analysisd` 가 살아 있는가, (2) 경보가 실제로 얼마나 쌓여 있는가(=폭주의 척도). 엔진이
+      죽었으면 분석할 폭주 자체가 없다. SIEM 운영자가 하루를 여는 첫 명령이다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c "\"rule\""'
       ```
+      - `wazuh-control status` — manager 데몬들의 가동 상태 표. 그중 `analysisd`(decoder→rule
+        채점 엔진)만 grep 한다.
+      - `tail -2000 … | grep -c '"rule"'` — 최근 2,000줄 중 `"rule"` 키가 든 줄 수 = 최근 경보 건수.
+
       ## ✅ 합격 기준
-      analysisd running + 경보가 다수 수집돼 있다.
+      `analysisd is running` + 경보가 다수(>0) 수집돼 있다.
     hint: 'analysisd + alerts.json 건수'
     category: survey
     points: 10
@@ -40,7 +53,7 @@ steps:
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
       echo "=== 최근 경보량(2000줄 중 rule 건수) ==="
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c "\"rule\""'
-    answer_detail: "경보량이 곧 폭주의 척도. 다수 경보를 그대로 보면 alert fatigue — 분류·억제로 줄인다."
+    answer_detail: "경보량이 곧 폭주의 척도다. analysisd 가 running 이어야 경보가 생성되고, 그 다수 경보를 분류 없이 그대로 보면 alert fatigue(둔감)에 빠진다 — 이번 주 내내 이 더미를 level/groups/빈도로 분류하고 오탐을 억제해 진짜만 남긴다. 채점은 analysisd 가동을 확인."
     verify:
       type: output_contains
       expect: 'analysisd'
@@ -53,7 +66,14 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 경보 폭주 재현 — 반복 공격
+      ## 🎯 경보 폭주 재현 — 반복 공격으로 다발 생성
+
+      ## 📖 개념 (왜 이걸 하나)
+      분석할 폭주를 직접 만든다. el34 의 내부 공격자 컨테이너(`el34-attacker`, 출발지
+      10.20.30.202)에서 포트 스캔과 웹 SQLi 를 반복해, Suricata(그룹 `ids`)와 ModSec(그룹
+      `web`) 경보를 다발로 일으킨다. 한 공격자의 반복 행위가 어떻게 여러 경보의 더미가 되는지
+      — 실제 SOC 가 마주하는 폭주의 축소판이다. el34 는 fw 가 SNAT 하지 않아 출처 IP(.202)가
+      모든 경보에 보존되므로, 뒤(미션 5)에서 이 IP 를 top talker 로 짚을 수 있다.
 
       ## 💻 실행 명령
       ```bash
@@ -61,8 +81,13 @@ steps:
       for i in 1 2 3 4 5; do docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw5-$i%27%20UNION%20SELECT%201--%20-'"; done
       echo "flood done"
       ```
+      - `nmap -sS -p 20-120 -T4` — 20~120번 포트로 SYN 스캔(`-sS`)을 빠르게(`-T4`) → Suricata `ids` 경보.
+      - `curl … -A sqlmap/1.7 … UNION SELECT …` — sqlmap UA + SQLi 페이로드를 차단형 vhost
+        `dvwa.el34.lab` 로 5회 반복 → ModSec `web`/`attacks` 경보. (`juice` 는 DetectionOnly 라
+        차단 검증에는 `dvwa` 를 쓴다.)
+
       ## ✅ 합격 기준
-      반복 공격으로 경보 다발이 생성된다.
+      반복 공격으로 경보 다발이 생성된다(`flood done` 출력, 잠시 뒤 미션 3~5 집계에서 증가).
     hint: 'nmap + 웹 SQLi 반복 → 경보 다발'
     category: recon
     points: 10
@@ -72,7 +97,7 @@ steps:
       for i in 1 2 3 4 5; do docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw5-$i%27%20UNION%20SELECT%201--%20-'"; done
       sleep 6
       echo "flood done"
-    answer_detail: "반복 공격이 Suricata/ModSec 경보 다발을 만든다 — 실제 SOC의 폭주 상황 재현."
+    answer_detail: "반복 공격이 Suricata(ids)·ModSec(web) 경보 다발을 만든다 — 실제 SOC의 폭주 상황을 통제된 형태로 재현(Purple Team 의 공격 주입 기법). 출처 IP 10.20.30.202 가 보존돼 뒤에서 top talker 로 묶인다. 채점은 flood done 출력으로 재현 완료를 확인."
     verify:
       type: output_contains
       expect: 'done'
@@ -85,14 +110,23 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 level 분포 분석 — 심각도별
+      ## 🎯 분류 축 1 — level(심각도) 분포
+
+      ## 📖 개념 (왜 이걸 하나)
+      폭주를 줄이는 첫 칼질. Wazuh level 은 0~16 정수 심각도다(0~4 정보성 / 5~7 주목 /
+      8~11 경고 / 12~16 고위험). 폭주의 압도적 다수는 낮은 level 이라, 낮은 것을 걷어내고
+      높은 것부터 보면 봐야 할 양이 급감한다. 분석가의 매일 첫 화면이다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "\"level=\"+(.rule.level|tostring)" | sort | uniq -c | sort -rn'
       ```
+      - `jq -rc "\"level=\"+(.rule.level|tostring)"` — 각 경보에서 `.rule.level` 만 꺼내 `level=3`
+        문자열로(`-r` 따옴표 없이, `-c` 한 줄).
+      - `sort | uniq -c | sort -rn` — 같은 값끼리 모아 개수를 세고 많은 순 정렬(집계의 단골 관용구).
+
       ## ✅ 합격 기준
-      level별 분포로 고위험부터 거른다.
+      level별 건수 분포가 나오고, 고위험(12+)부터 볼 순서를 잡는다.
     hint: 'jq .rule.level 분포'
     category: analysis
     points: 12
@@ -113,14 +147,22 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 groups 분포 분석 — 폭주 원인 종류
+      ## 🎯 분류 축 2 — groups(종류) 분포
+
+      ## 📖 개념 (왜 이걸 하나)
+      level 이 "얼마나 위험한가" 라면 groups 는 "무슨 종류인가" 다. 각 룰은 분류 태그를 단다 —
+      `ids`(Suricata 네트워크), `web`/`attacks`(ModSec 웹 공격), `authentication_failed`(sshd 인증),
+      `syscheck`(FIM 파일변경), `sca`(설정점검). 한 그룹이 압도적이면 그 소스에 노이즈 또는
+      진행형 공격이 있다는 신호 — 폭주의 **원인 위치** 를 좁힌다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc .rule.groups | sort | uniq -c | sort -rn | head'
       ```
+      - `.rule.groups` 는 배열(예: `["ids","suricata"]`)이라 `-c` 로 한 줄 출력 후 같은 조합끼리 센다.
+
       ## ✅ 합격 기준
-      어떤 그룹(ids 등)이 폭주하는지 식별한다.
+      어떤 그룹(ids/syscheck/web 등)이 폭주하는지 식별한다.
     hint: 'jq .rule.groups 분포'
     category: analysis
     points: 12
@@ -141,14 +183,24 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 빈도 분석 — top rule/출발지
+      ## 🎯 분류 축 3 — 빈도(top talker)
+
+      ## 📖 개념 (왜 이걸 하나)
+      level·groups 가 "위험도" 와 "계열" 을 줬다면 빈도는 "범인" 을 지목한다. **어떤 룰** 이 /
+      **어떤 출발지** 가 경보를 가장 많이 쏟아내나(top talker). 한 룰이 폭주의 대부분이면 그
+      룰이 오탐 후보이거나 진행형 공격의 증거이고, 한 출발지가 폭주를 일으키면 집중 공격자이거나
+      노이즈 소스다. 다음 미션(오탐 판정)의 대상을 정하는 단계다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "\"id=\"+(.rule.id|tostring)" | sort | uniq -c | sort -rn | head'
       ```
+      위는 top 룰 ID 집계다. answer 에는 top 출발지(`docker exec … jq -rc ".data.src_ip // empty" …`)
+      집계도 함께 본다. `// empty` 는 출발지 필드가 없는 경보(호스트 내부 SCA/FIM)는 건너뛰라는
+      jq 문법이라, 네트워크/웹 경보만 센다.
+
       ## ✅ 합격 기준
-      폭주의 top rule을 식별한다.
+      폭주의 top rule(과 top 출발지)을 식별한다.
     hint: 'jq .rule.id 빈도 top'
     category: analysis
     points: 12
@@ -171,7 +223,17 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 오탐 판정 — 노이즈 vs 진짜
+      ## 🎯 오탐(false positive) 판정 — 노이즈 vs 진짜
+
+      ## 📖 개념 (왜 이걸 하나)
+      빈도로 지목한 경보가 노이즈(오탐)인지 진짜 위협(정탐)인지 결론 낸다. 세 기준을 차례로
+      묻는다 — ① **정상 업무인가?**(헬스체크 봇·정기 스캐너·로그 회전이면 오탐) ② **맥락이
+      양성인가?**(내부 신뢰 자산의 정상 동작이면 오탐) ③ **빈도가 규칙적인가?**(자동화=규칙적
+      간격이면 오탐 쪽, 공격=불규칙 버스트면 진짜 쪽). 셋을 통과하면 억제(미션 7), 진짜 신호가
+      하나라도 있으면 격상(W04 커스텀 룰)한다.
+
+      > ⚠️ 애매하면 억제하지 말고 진짜로 둔다 — 과도 억제는 미탐(진짜 놓침)을 부른다.
+      > SOC 에선 "헛수고 한 번" 보다 "놓친 침해 한 번" 이 훨씬 비싸다.
 
       ## 💻 실행 명령
       ```bash
@@ -179,7 +241,7 @@ steps:
       echo "① 정상 업무? (모니터링 봇/정기 스캔) ② 맥락 양성? (내부 자산 정상동작) ③ 빈도 규칙적? (자동화=규칙적, 공격=버스트)"
       ```
       ## ✅ 합격 기준
-      오탐 판정 기준을 적용해 노이즈/진짜를 가른다.
+      오탐 판정 3기준을 적용해 노이즈/진짜를 가르고, 억제 vs 격상을 결정한다.
     hint: '정상업무/맥락/빈도패턴으로 오탐 판정'
     category: analysis
     points: 10
@@ -202,9 +264,18 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 억제 룰 — level 0 suppression
+      ## 🎯 억제(suppression) 룰 — level 0 으로 노이즈 끄기
 
-      오탐으로 판정한 노이즈를 level 0으로 억제한다(정상 패턴만 좁게). logtest 검증 → 정리.
+      ## 📖 개념 (왜 이걸 하나)
+      오탐으로 판정한 노이즈를 W04 에서 쓴 그 파일 `/var/ossec/etc/rules/local_rules.xml` 에
+      **level 0** 룰로 추가해 화면에서 치운다(Wazuh 에서 level 0 = alert 미생성 = 억제). 핵심은
+      **정상 패턴만 좁게** 매치하는 것 — `noise` 필드가 정확히 `healthcheck` 인 것만 끈다. 넓게
+      끄면("404 전부" 같이) 노이즈와 함께 진짜 공격까지 꺼져 미탐(false negative)이 된다.
+
+      > ⚠️ **공유 el34 보존 수칙.** SIEM 은 여러 학생이 공유하므로 라이브 적용(`wazuh-control
+      > restart`)은 하지 않는다. ① `cp` 로 백업 → ② 룰 추가 후 `wazuh-logtest` 로 발화만 검증 →
+      > ③ `cp` 로 원복(잔재 0 확인). `wazuh-logtest` 는 라이브 analysisd 를 멈추지 않고, 입력
+      > 한 줄이 어느 decoder→rule 로 흐르는지 단계별로 보여주는 점검 도구다.
 
       ## 💻 실행 명령
       ```bash
@@ -221,8 +292,14 @@ steps:
       echo '{"noise":"healthcheck","src_ip":"10.0.0.5"}' | sudo /var/ossec/bin/wazuh-logtest
       sudo cp /tmp/socw5_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw5_lr.bak
       ```
+      - `id="100450" level="0"` — SOC 트랙 W05 네임스페이스(W04=1004xx). level 0 이 억제의 핵심.
+      - `<decoded_as>json</decoded_as>` + `<field name="noise">healthcheck</field>` — 억제 조건.
+        JSON 디코딩된 로그 중 `noise=healthcheck` 만 좁게 매치(정상 패턴 한정).
+      - 마지막 `cp` 복원 줄 — 검증이 끝나면 백업으로 되돌려 공유 SIEM 을 원상 보존.
+
       ## ✅ 합격 기준
-      억제 룰 `100450`(level 0)이 매치된다(level 0 = alert 미생성 = 억제).
+      `wazuh-logtest` 에서 억제 룰 `100450` 이 **level 0** 으로 매치된다(level 0 = alert 미생성 =
+      억제). 복원 후 잔재 0.
     hint: 'level 0 억제 룰(100450) → logtest → cp 복원'
     category: manipulation
     points: 16
@@ -258,7 +335,12 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 경보 관리 보고서
+      ## 🎯 경보 관리 보고서 (종합)
+
+      ## 📖 개념 (왜 이걸 하나)
+      미션 1~7 의 분류·판정·억제 과정을 한 장으로 정리해, 교대 인수인계(shift handover)가 가능한
+      산출물로 만든다. SOC 의 교대 보고서가 정확히 이 형식이다 — "오늘 폭주는 무엇이 주범이었고,
+      무엇을 오탐으로 판정해 억제했으며, 무엇을 진짜로 보고 올렸는가".
 
       ## 💻 보고서 양식
       ```markdown
@@ -268,8 +350,11 @@ steps:
       ## 3. 오탐 판정 (노이즈 vs 진짜)
       ## 4. 억제 조치 (level 0, 좁은 조건)
       ```
+      각 절에 미션 3~7 의 실제 출력 근거를 넣는다. 4절에는 "왜 좁은 조건으로 억제했는가(과도
+      억제 시 미탐 위험)" 를 한 줄 덧붙이면 완결성이 높아진다.
+
       ## ✅ 합격 기준
-      보고서에 분류 + 오탐 판정 + 억제가 포함된다.
+      보고서에 분류 3축 + 오탐 판정 + 억제 조치가 모두 포함된다.
     hint: '분포+원인+오탐+억제'
     category: report
     points: 12

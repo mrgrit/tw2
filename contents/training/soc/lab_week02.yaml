@@ -4,21 +4,25 @@ version: standalone-soc
 course: soc
 week: 2
 description: |
-  sshd 인증 로그(호스트 /var/log/auth.log)를 깊게 분석한다 — 실패 빈도, 노린 계정, 정상(Accepted)과
-  공격(다발 Failed/Invalid) 구분, 정찰(스캔) 상관, 사건 타임라인, 침투 성공 여부 추적. 인증 분석의
-  원천은 호스트 auth.log(ccc=adm 그룹 sudo 불필요). 관측·분석 중심, 인프라 변경 없음.
-  명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+  공격의 두 단계 "정찰(포트 스캔) → 침투 시도(SSH 무차별 대입)"를 두 로그로 읽어 한 사건으로 엮는다.
+  정찰 단계는 el34-ips 의 Suricata eve.json(event_type=alert 의 스캔 시그니처)을 jq 로 분석하고,
+  침투 단계는 호스트 /var/log/auth.log 를 깊게 분석한다 — 실패 빈도(임계 기반), 노린 계정 분포(사전
+  공격 식별), 정상(Accepted)과 공격(다발 Failed/Invalid) 구분, 스캔↔인증 출발지 상관, 사건 타임라인,
+  침투 성공 여부 추적. 인증 분석의 원천은 호스트 auth.log(ccc=adm 그룹이라 sudo 불필요), 스캔 분석은
+  ips 의 Suricata eve.json. 관측·분석 중심이라 인프라는 변경하지 않는다. 모든 명령은 el34 호스트
+  (`ssh ccc@192.168.0.151`)에서 실행한다.
 difficulty: medium
 duration_minutes: 180
 prerequisites:
-  - "W01(L1 트리아지) 통과"
-  - "el34 호스트 SSH(ssh ccc@192.168.0.151)"
-  - "lecture §2(sshd 메시지) §3(구분법) §5(타임라인) 숙지"
+  - "W01(L1 트리아지) 통과 — 경보 4요소(출발지/시그니처/시각/심각도) 숙지"
+  - "el34 호스트 SSH 접근 가능(ssh ccc@192.168.0.151, ccc=adm 그룹)"
+  - "lecture §0.5(스캔·임계·상관 개념) §2(스캔/eve.json) §3(sshd 메시지·구분법) §4(상관·타임라인) 숙지"
 objectives:
-  - "sshd 인증 로그에서 실패 패턴/빈도 분석"
-  - "노린 계정 분포로 사전(wordlist) 공격 식별"
-  - "Accepted(정상)와 Failed/Invalid(공격) 구분"
-  - "스캔 출발지와 인증 공격 상관 + 사건 타임라인"
+  - "Suricata eve.json 에서 jq 로 스캔 시그니처·출발지(src_ip) 추출"
+  - "sshd 인증 로그에서 실패 패턴/빈도(임계 기반)로 자동화 공격 식별"
+  - "노린 계정 분포로 사전(wordlist) 공격과 특정 계정 표적을 구분"
+  - "Accepted(정상)와 Failed/Invalid(공격)를 구분해 침투 성공 여부 판정"
+  - "스캔 출발지와 인증 공격 출발지를 상관 + 사건 타임라인 재구성"
 pass_threshold: 0.7
 steps:
 
@@ -26,15 +30,21 @@ steps:
     instruction: |
       ## 🎯 점검 — 호스트 인증 로그 접근
 
-      인증 분석의 원천 = 호스트 auth.log. 접근과 sshd 이벤트 존재를 확인한다.
+      **왜 이걸 먼저 하나**: 어떤 분석이든 첫걸음은 "원천 데이터가 살아 있는가"의 확인이다.
+      이번 주 침투 단계 분석의 원천은 호스트의 `/var/log/auth.log`(sshd 가 인증 시도를 남기는
+      시스템 로그)다. 이 파일에 접근되는지, sshd 인증 이벤트가 실제로 쌓여 있는지 먼저 본다.
 
       ## 💻 실행 명령
       ```bash
       ls -la /var/log/auth.log
       grep -ac sshd /var/log/auth.log
       ```
+      - `ls -la` — 파일 존재·크기·권한 확인.
+      - `grep -ac sshd` — sshd 가 남긴 줄의 **개수**를 센다(`-a` 로그를 텍스트로 처리, `-c` 일치 줄 수).
+
       ## ✅ 합격 기준
-      auth.log를 읽을 수 있고 sshd 이벤트가 있다.
+      auth.log 를 읽을 수 있고(권한 오류 없음) sshd 이벤트 건수가 1 이상이다. 권한 오류가 나면
+      계정의 `adm` 그룹 소속을 확인한다(ccc 는 sudo 없이 읽혀야 한다).
     hint: 'ls auth.log + grep -ac sshd'
     category: survey
     points: 10
@@ -45,7 +55,7 @@ steps:
       grep -ac sshd /var/log/auth.log
       echo "=== 최근 sshd 1건 ==="
       grep -a sshd /var/log/auth.log | tail -1
-    answer_detail: "호스트 /var/log/auth.log가 sshd 인증 분석의 원천(ccc=adm 그룹이라 sudo 불필요). 컨테이너(el34-web)엔 auth.log가 없어 호스트에서 분석한다."
+    answer_detail: "호스트 /var/log/auth.log 가 sshd 인증 분석의 원천이다. 계정 ccc 는 adm 그룹이라 sudo 없이 이 파일을 읽는다. 컨테이너(el34-web 등) 안에는 auth.log 가 없으므로, 인증 분석은 컨테이너가 아니라 반드시 호스트에서 한다. grep -ac 가 0보다 큰 값을 내면 sshd 이벤트가 쌓여 있다는 뜻이다."
     verify:
       type: output_contains
       expect: 'sshd'
@@ -59,9 +69,12 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 무차별 대입 재현 — 여러 계정 실패 다발
+      ## 🎯 정찰+무차별 대입 재현 — 스캔 + 여러 계정 실패 다발
 
-      사전(wordlist) 기반 무차별 대입을 재현한다 — 여러 계정으로 실패 다발 + 스캔.
+      **왜 이걸 하나**: 분석할 데이터를 직접 만든다(탐지 규칙 검증의 표준 절차 — 통제된 공격을
+      의도적으로 일으켜 로그에 제대로 잡히는지 본다). 공격의 두 단계를 모두 재현한다 — ① 호스트에
+      여러 계정으로 SSH 로그인을 실패시켜 auth.log 에 무차별 대입 흔적을 만들고, ② attacker
+      컨테이너에서 포트 스캔(nmap)을 일으켜 Suricata eve.json 에 스캔 시그니처를 만든다.
 
       ## 💻 실행 명령
       ```bash
@@ -71,8 +84,14 @@ steps:
       docker exec el34-attacker sh -c 'nmap -sS -p 20-30 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
       echo "brute+scan done"
       ```
+      - `for u in root admin oracle test …` — 흔한 계정 목록(wordlist)을 차례로 ssh 로 시도한다.
+        `BatchMode=yes` 는 비번 프롬프트 없이 즉시 실패시켜 자동화한다(존재 계정은 Failed, 없는
+        계정은 Invalid user 로 남는다).
+      - `nmap -sS -p 20-30 … -T4` — fw 게이트(10.20.30.1)의 20~30 포트를 SYN 스캔(`-sS`, 연결을
+        절반만 맺어 빠름)한다. `-T4` 는 빠른 타이밍. Suricata 가 이 SYN 폭주를 스캔으로 탐지한다.
+
       ## ✅ 합격 기준
-      여러 계정 실패 + 스캔이 재현된다.
+      `done`/`scanned` 가 출력되며, 여러 계정 SSH 실패 + 포트 스캔이 재현된다(이 흔적을 STEP 3~6 에서 읽는다).
     hint: 'ssh 실패(root/admin/oracle...) + nmap'
     category: recon
     points: 10
@@ -84,7 +103,7 @@ steps:
       echo "=== 대입 전 포트 정찰 ==="
       docker exec el34-attacker sh -c 'nmap -sS -p 20-30 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
       echo "brute+scan done"
-    answer_detail: "wordlist 공격은 여러 계정(root/admin/oracle…)을 차례로 시도 → auth.log에 Invalid user/Failed 다발. 보통 직전에 포트 스캔(정찰)이 선행한다."
+    answer_detail: "wordlist 공격은 여러 계정(root/admin/oracle…)을 차례로 시도하므로 auth.log 에 Invalid user(없는 계정)·Failed(존재 계정) 다발로 남는다. 그리고 실전에서 대입 직전에는 보통 포트 스캔(정찰)이 선행한다 — 공격자가 SSH 포트(22)가 열렸는지 먼저 확인하기 때문. 이 step 은 그 두 단계(스캔+대입)를 통제된 환경에서 함께 생성해, 이후 분석 step 들이 읽을 흔적을 만든다."
     verify:
       type: output_contains
       expect: 'done'
@@ -98,17 +117,23 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 실패 패턴 분석 — 빈도
+      ## 🎯 실패 패턴 분석 — 빈도(임계 기반)
 
-      auth.log에서 인증 실패의 빈도를 본다(짧은 시간 다발 = 자동화 공격).
+      **왜 이걸 하나**: 무차별 대입을 가르는 1차이자 가장 빠른 신호는 **빈도**다. "짧은 시간에
+      실패가 몇 번 쌓였나"로 자동화 공격을 판별한다 — 이것이 임계 기반 탐지("N초에 M회 이상이면
+      비정상")의 사고방식이다. 1분에 수십 건이면 자동화 공격, 하루 2~3건 산발이면 정상 오타다.
 
       ## 💻 실행 명령
       ```bash
       grep -aE "Failed password|Invalid user" /var/log/auth.log | tail -15
       echo "총 실패:"; grep -acE "Failed password|Invalid user" /var/log/auth.log
       ```
+      - `grep -aE "Failed password|Invalid user"` — 두 종류의 실패 메시지를 한 번에 본다(`-E`
+        확장 정규식, `|` 는 OR, `-a` 로그를 텍스트로 처리).
+      - `tail -15` — 최근 15줄만 본다. `grep -ac …` — 일치한 줄 **수**를 세어 총 실패 빈도를 가늠한다.
+
       ## ✅ 합격 기준
-      실패 다발(`Invalid user`)을 빈도로 식별한다.
+      `Invalid user`/`Failed` 실패가 다발로 보이고, 총 실패 건수로 자동화 여부를 빈도로 판단한다.
     hint: 'Failed password/Invalid user 빈도'
     category: analysis
     points: 14
@@ -118,7 +143,7 @@ steps:
       echo "=== 총 실패 건수 ==="
       grep -acE "Failed password|Invalid user" /var/log/auth.log
       echo "→ 짧은 시간 다발 = 자동화 무차별 대입(정상 오타는 하루 2~3건)"
-    answer_detail: "실패 빈도가 핵심 신호 — 1분에 수십 건이면 자동화 공격. 정상 사용자 오타는 드물고 산발적. 빈도로 공격/정상을 1차 가른다."
+    answer_detail: "실패 빈도가 핵심 1차 신호다 — 1분에 수십 건이면 자동화 공격(임계 기반 판단). 정상 사용자의 오타는 드물고 산발적(하루 2~3건). 빈도만으로 공격/정상을 1차로 가른다. 다만 공격자가 시도 간격을 늘려(low-and-slow) 임계 아래로 깔면 빈도만으로는 놓치므로, 다음 step 의 계정 분포·성공 여부와 함께 봐야 한다."
     verify:
       type: output_contains
       expect: 'Invalid user'
@@ -132,16 +157,22 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 표적 계정 분석 — 무엇을 노렸나
+      ## 🎯 표적 계정 분석 — 무엇을 노렸나(분포)
 
-      어떤 계정을 노렸는지 분포를 본다(여러 계정 = 사전 공격).
+      **왜 이걸 하나**: 빈도(STEP 3) 다음 신호는 "어떤 계정을 노렸나"의 분포다. 한 사람이
+      root/admin/oracle/test 같은 여러 계정을 동시에 시도한다면 사람의 오타가 아니라 자동화된
+      사전(wordlist) 공격이다. 계정 분포는 공격의 성격을 드러낸다.
 
       ## 💻 실행 명령
       ```bash
       grep -aoE "Invalid user [a-z0-9]+" /var/log/auth.log | sort | uniq -c | sort -rn | head -10
       ```
+      - `grep -aoE "Invalid user [a-z0-9]+"` — `-o` 로 "Invalid user <계정>" 부분만 뽑는다.
+      - `sort | uniq -c` — 같은 계정끼리 모아 횟수를 센다. `sort -rn` — 많이 나온 순으로 정렬,
+        `head -10` — 상위 10개만 본다.
+
       ## ✅ 합격 기준
-      노린 계정(`root` 등 여러 개)을 식별한다.
+      노린 계정 목록(`root` 등 여러 개)과 각 횟수를 식별하고, 여러 계정이면 wordlist 로 판정한다.
     hint: 'Invalid user <계정> 분포 (root/admin/oracle...)'
     category: analysis
     points: 14
@@ -151,7 +182,7 @@ steps:
       echo "=== root 대상 Failed (존재 계정) ==="
       grep -acE "Failed password for root|Invalid user root" /var/log/auth.log
       echo "→ root/admin/oracle 등 여러 계정 = 사전(wordlist) 기반 무차별 대입"
-    answer_detail: "노린 계정 분포가 공격 성격을 드러낸다. 여러 계정(root/admin/oracle/test…)을 차례로 = wordlist 공격. 한 계정만 반복 = 특정 계정 표적(다른 성격)."
+    answer_detail: "노린 계정 분포가 공격 성격을 드러낸다. 여러 계정(root/admin/oracle/test…)을 차례로 시도 = 사전(wordlist) 기반 무차별 대입. 반대로 한 계정만 집요하게 반복 = 특정 계정 표적(성격이 다른 공격). Invalid user(없는 계정) 다수는 '아무 계정이나 찔러보는' 강한 자동화 신호다."
     verify:
       type: output_contains
       expect: 'root'
@@ -167,15 +198,21 @@ steps:
     instruction: |
       ## 🎯 Accepted vs 공격 — 침투 성공 여부 추적
 
-      가장 중요한 질문: 공격이 성공했나? `Accepted`(로그인 성공)와 공격 실패를 구분한다.
+      **왜 이걸 하나**: 사건 심각도의 분기점 — 가장 중요한 질문 "공격이 성공해 들어왔나?"에
+      답한다. `Accepted`(로그인 성공)와 공격 실패(다발 Failed/Invalid)를 구분하고, 성공이 정상
+      계정인지 공격 출발지인지로 침투 여부를 판정한다.
 
       ## 💻 실행 명령
       ```bash
       echo "성공(Accepted):"; grep -a "Accepted" /var/log/auth.log | tail -5
       echo "실패(공격):"; grep -acE "Failed password|Invalid user" /var/log/auth.log
       ```
+      - `grep -a "Accepted"` — 로그인 **성공** 줄을 찾는다(예: `Accepted password for ccc`).
+      - `grep -acE "Failed|Invalid"` — 공격 실패 총 건수와 대비한다.
+
       ## ✅ 합격 기준
-      `Accepted`(정상 로그인)와 공격 실패를 구분한다.
+      `Accepted`(로그인 성공)를 식별하고, 그것이 정상 계정인지 공격 출발지인지로 침투 여부를
+      구분한다. 공격 출발지의 Accepted 면 침투 성공 → 즉시 P1(최우선).
     hint: 'Accepted(성공) vs Failed/Invalid(공격) 구분'
     category: analysis
     points: 16
@@ -185,7 +222,7 @@ steps:
       echo "=== 공격 실패 건수 ==="
       grep -acE "Failed password|Invalid user" /var/log/auth.log
       echo "→ Accepted는 정상 계정(예: ccc) 로그인. 공격 출발지에서 Accepted가 나오면 침투 성공(P1!)"
-    answer_detail: "사건 심각도의 분기점 — 공격(다발 Failed/Invalid)과 별개로 Accepted가 공격 출발지에서 나오면 침투 성공 → 즉시 P1. 정상 계정(ccc 등)의 Accepted는 합법. 출발지+계정으로 성공이 공격인지 정상인지 판별."
+    answer_detail: "사건 심각도의 분기점 — 공격(다발 Failed/Invalid)과 별개로, Accepted 가 공격 출발지에서 나오면 침투 성공이므로 즉시 P1(최우선)로 격상한다. 반대로 정상 계정(ccc 등)의 Accepted 는 합법적 로그인이다. 따라서 'Accepted 가 있다'만으로 판단하지 말고, 그 출발지 IP 와 계정을 공격 흔적과 대조해 성공이 공격인지 정상인지 판별해야 한다. 이것이 IR 의 핵심 질문 '들어왔나?'에 답하는 단계다."
     verify:
       type: output_contains
       expect: 'Accepted'
@@ -200,16 +237,24 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 정찰 상관 — 스캔 ↔ 인증 출발지
+      ## 🎯 정찰 상관 — 스캔(Suricata eve.json) ↔ 인증 출발지
 
-      대입 전 정찰(스캔)이 있었는지, 같은 출발지인지 확인한다.
+      **왜 이걸 하나**: 흩어진 두 단계를 하나의 사건으로 엮는 핵심 단계다. 무차별 대입 직전에는
+      보통 포트 스캔(정찰)이 선행한다. el34-ips 의 Suricata 가 스캔을 eve.json 에 남기므로, 그
+      스캔 출발지를 뽑아 인증 공격 출발지와 같은지 본다 — 같으면 "정찰 → 대입"의 한 공격자다.
 
       ## 💻 실행 명령
       ```bash
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and (.alert.signature|test(\"scan\";\"i\")))|.src_ip" | sort | uniq -c | tail -3'
       ```
+      - `eve.json` 은 Suricata 가 분석 결과를 한 줄 한 JSON 으로 적는 로그다(`event_type` 으로
+        종류 구분 — alert/http/dns/flow…). 그래서 텍스트 grep 이 아니라 JSON 도구 `jq` 로 다룬다.
+      - `select(.event_type=="alert" and (.alert.signature|test("scan";"i")))` — event_type 이
+        **alert** 이고 시그니처에 "scan"(`"i"`=대소문자 무시)이 든 줄만 통과시킨다.
+      - `|.src_ip` 로 출발지만 뽑고 `sort | uniq -c` 로 출발지별 횟수를 센다.
+
       ## ✅ 합격 기준
-      스캔 경보 출발지를 확인하고 인증 공격과 상관한다.
+      스캔 경보의 출발지(src_ip)를 확인하고, 인증 공격 출발지와 비교(상관)해 같은 공격자인지 판정한다.
     hint: 'eve.json scan 출발지 ↔ 인증 출발지 상관'
     category: analysis
     points: 12
@@ -218,7 +263,7 @@ steps:
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and (.alert.signature|test(\"scan\";\"i\")))|.src_ip" | sort | uniq -c | tail -3'
       echo "→ 분석가는 스캔 출발지와 인증 공격 출발지를 매칭해 '정찰→대입'이 같은 공격자인지 판정"
       echo "  (이 데모는 인증이 127.0.0.1 localhost, 스캔이 10.20.30.202 — 실전은 같은 외부 IP로 상관)"
-    answer_detail: "무차별 대입 전엔 보통 SSH 포트를 찾는 스캔이 선행. 스캔 출발지 = 인증 공격 출발지면 한 공격자의 '정찰→대입' 단계. el34 출처 보존이 상관의 전제."
+    answer_detail: "무차별 대입 전엔 보통 SSH 포트(22)를 찾는 스캔이 선행한다. Suricata 가 그 스캔을 eve.json 에 event_type=alert 의 스캔 시그니처로 남기므로, jq 로 그 출발지(src_ip)를 뽑는다. 스캔 출발지 = 인증 공격 출발지면 한 공격자의 '정찰→대입' 단계로 판정한다. 이 상관이 성립하려면 인프라가 공격의 출처 IP 를 보존해야 하는데(el34 는 외부 출처 IP 를 Suricata·ModSec·Wazuh 에 보존), 이 데모는 스캔이 attacker(10.20.30.202)·대입이 호스트 localhost(127.0.0.1)라 출발지가 다르게 보일 뿐 기법은 동일하다."
     verify:
       type: output_contains
       expect: '10.20.30.202'
@@ -234,14 +279,20 @@ steps:
     instruction: |
       ## 🎯 사건 타임라인 — 시간순 재구성
 
-      정찰→대입→(성공?)을 시간순으로 재구성한다.
+      **왜 이걸 하나**: 추적의 마무리는 사건을 시간축에 올리는 것이다. "정찰(스캔) → 무차별 대입
+      다발 → (성공?) Accepted"를 시간순으로 늘어놓으면 사건의 시작·전개·결과가 한눈에 들어온다.
+      보고서·법적 증거의 기본 형식이 바로 타임라인이다.
 
       ## 💻 실행 명령
       ```bash
       echo "[인증 시도 시각]"; grep -aE "Invalid user|Failed password|Accepted" /var/log/auth.log | tail -8 | awk '{print $1,$2,$3,$6,$7,$8}'
       ```
+      - `grep -aE "Invalid user|Failed password|Accepted"` — 세 종류 이벤트를 한 번에 모은다.
+      - `awk '{print $1,$2,$3,$6,$7,$8}'` — 각 줄에서 시각(앞 3필드)과 핵심 정보(계정·출발지)만 추려
+        타임라인을 읽기 좋게 만든다.
+
       ## ✅ 합격 기준
-      인증 사건을 시간순으로 재구성한다.
+      인증 사건을 시간순으로 재구성하고, `Accepted`가 공격 구간에 있는지(=침투 성공 시점)를 확인한다.
     hint: 'auth.log 시각순 (Invalid/Failed/Accepted)'
     category: analysis
     points: 12
@@ -249,7 +300,7 @@ steps:
       echo "=== 사건 타임라인 (인증 시도 시각순) ==="
       grep -aE "Invalid user|Failed password|Accepted|preauth" /var/log/auth.log | tail -10
       echo "→ T0 스캔(정찰) → T1 무차별 대입 다발 → T2 Accepted 여부(침투!) 순으로 재구성"
-    answer_detail: "사건 추적의 마무리 = 시간순 재구성. preauth(인증 전 끊김)는 스크립트성 시도. Accepted가 공격 구간에 있으면 침투 성공 시점. 타임라인으로 사건의 시작·전개·결과를 한눈에."
+    answer_detail: "사건 추적의 마무리 = 시간순 재구성. T0 스캔(정찰) → T1 무차별 대입 다발 → T2 Accepted 여부(침투!) → T3 로그인 후 행위(후속 IR) 순으로 늘어놓는다. preauth(인증 전 연결 끊김) 줄이 많으면 사람이 아니라 스크립트가 자동으로 두드린 정황이다. Accepted 가 공격 구간 안에 있으면 그 시각이 침투 성공 시점이다. 타임라인으로 사건의 시작·전개·결과를 한눈에 본다."
     verify:
       type: output_contains
       expect: 'preauth'
@@ -265,7 +316,8 @@ steps:
     instruction: |
       ## 🎯 분석 보고서 — 무차별 대입 판정 + 침투 여부
 
-      STEP 1–7을 sshd 인증 분석 보고서로 종합한다.
+      **왜 이걸 하나**: 분석의 가치는 보고로 완성된다. STEP 1–7 의 근거(빈도·계정 분포·성공
+      여부·스캔 상관·타임라인)를 하나의 결론으로 종합해, 판정과 후속 조치를 1페이지로 전달한다.
 
       ## 💻 보고서 양식
       ```markdown
@@ -276,8 +328,13 @@ steps:
       ## 4. 정찰 상관 + 타임라인
       ## 5. 판정: 무차별 대입 (성공/차단)
       ```
+      - 각 절은 앞 step 의 결과(STEP 3 빈도, STEP 4 계정 분포, STEP 5 Accepted, STEP 6 스캔 상관,
+        STEP 7 타임라인)를 근거로 채운다.
+      - 판정은 **성공 흔적 유무**로 가른다 — 없으면 "시도(차단)", 있으면 "침해". 무차별 대입은
+        MITRE ATT&CK 의 T1110(공격 기법을 표준 코드로 분류한 지식 베이스)에 해당한다.
+
       ## ✅ 합격 기준
-      보고서에 무차별 대입 판정 + 침투 여부가 포함된다.
+      보고서에 무차별 대입 판정 + 침투 여부(성공/차단)가 근거와 함께 포함된다.
     hint: '실패패턴+표적계정+성공여부+타임라인'
     category: report
     points: 12
@@ -291,7 +348,7 @@ steps:
       ## 5. 판정: SSH 무차별 대입(T1110), 성공 흔적 없음 → "시도(차단)". (Accepted 발견 시 "침해"로 격상)
       ## 결론: 인증 로그는 빈도+계정+성공여부로 공격/정상을 판별하는 1차 증거
       EOF
-    answer_detail: "sshd 분석 종합 = 빈도(자동화) + 계정 분포(wordlist) + Accepted(침투 여부) + 타임라인. 성공 흔적 유무가 '시도'와 '침해'를 가른다."
+    answer_detail: "sshd 분석 종합 = 빈도(자동화) + 계정 분포(wordlist) + Accepted(침투 여부) + 스캔 출발지 상관 + 타임라인. 성공 흔적 유무가 사건을 '시도(차단)'와 '침해(침투 성공)'로 가른다. 무차별 대입은 MITRE ATT&CK T1110 으로 분류한다. 보고서는 판정뿐 아니라 그 근거(어느 step 의 무엇)와 후속 조치까지 담아야 분석으로서 가치가 있다."
     verify:
       type: output_contains
       expect: '무차별'

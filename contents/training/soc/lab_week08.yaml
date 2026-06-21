@@ -4,33 +4,49 @@ version: standalone-soc
 course: soc
 week: 8
 description: |
-  SOC W01–W07 종합 실기. 다단계 공격(스캔→웹→SSH 무차별 대입)을 재현하고, 네 소스(Suricata eve·
-  ModSec/access·auth.log·alerts.json)를 교차 분석해 한 공격자의 서사로 종합하고, ATT&CK 매핑·우선순위·
-  에스컬레이션을 판정한다. 관측·분석 종합. 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+  SOC W01–W07 의 분석 역량을 한 사건 위에서 통합하는 중간고사 종합 실기. 한 공격자의 다단계 공격
+  (포트 스캔 → SQLi → SSH 무차별 대입)을 재현한 뒤, SOC 분석의 네 소스 — 네트워크(Suricata
+  eve.json) · 웹(ModSec audit + access.log) · 인증(auth.log) · 통합(Wazuh alerts.json) — 을 교차
+  분석한다. el34 가 출처 IP 를 보존(fw 가 SNAT 안 함)하는 성질을 이용해 흩어진 흔적을 같은 출발지
+  IP(10.20.30.202) + 시각으로 묶어 "한 공격자의 단계적 체인"으로 상관하고, 각 단계를 MITRE
+  ATT&CK(T1046 정찰 → T1190 웹 침투 → T1110 자격증명)으로 매핑해 하나의 공격 서사로 종합한다.
+  마지막으로 auth.log 의 Accepted 유무로 침투 성공 여부를 판정하고 우선순위(P1~P4)·에스컬레이션을
+  결정한 뒤 종합 보고서로 정리한다. 본 실기는 관측·분석 종합이며 인프라를 변경하지 않는다(룰 작성·계정
+  생성 없음). 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에서 실행한다.
 difficulty: hard
 duration_minutes: 220
 prerequisites:
-  - "W01–W07 통과"
-  - "el34 호스트 SSH + docker exec"
-  - "lecture §2(분석 순서) §3(서사) 숙지"
+  - "W01–W07 통과 (트리아지·인증로그·웹로그·Wazuh룰·경보관리·ATT&CK·SIGMA)"
+  - "el34 호스트 SSH 접속 + docker exec 사용 가능"
+  - "lecture §2(종합 분석 5단계) · §3(출처 IP 보존) · §6(상관과 서사) 숙지"
 objectives:
-  - "네 소스 교차 분석"
-  - "출처/시간으로 한 공격자 상관"
-  - "ATT&CK 서사 구성"
-  - "우선순위/에스컬레이션 + 침투 여부 판정"
+  - "네 소스(인증·웹·네트워크·SIEM)를 교차 분석해 각 소스가 보여주는 공격 단면을 식별한다"
+  - "출처 IP 보존을 이용해 흩어진 흔적을 같은 출발지 IP + 시각으로 한 공격자로 상관한다"
+  - "각 단계를 MITRE ATT&CK(T1046→T1190→T1110)으로 매핑해 시간순 공격 서사를 구성한다"
+  - "Accepted 유무로 침투 성공 여부를 판정하고 우선순위(P1~P4)·에스컬레이션을 결정한다"
+  - "네 소스 분석 → 상관 → 서사 → 판정을 증거와 함께 한 종합 보고서로 정리한다"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 네 분석 소스
+      ## 🎯 점검 — 네 분석 소스가 모두 준비됐나
+      종합 분석의 전제는 읽을 소스가 모두 살아 있어야 한다는 것이다. SOC 분석가는 사건을 파기 전에
+      항상 데이터 소스의 가용성부터 확인한다(lecture §2.1 수집). 여기서는 교차 분석의 네 기둥 —
+      통합(SIEM `analysisd`) · 인증(`auth.log`) · 네트워크(Suricata `eve.json`) — 이 존재·동작하는지
+      확인한다(웹 ModSec 은 미션 4 에서 본다).
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
       ls /var/log/auth.log; docker exec el34-ips sh -c 'ls /var/log/suricata/eve.json'
       ```
+      - `wazuh-control status | grep analysisd` — Wazuh 의 경보 분석 데몬(`analysisd`)이 running 인지.
+        이 데몬이 죽으면 alerts.json 이 생성되지 않는다.
+      - `ls /var/log/auth.log` — 호스트의 SSH 인증 로그가 존재하는지(인증 소스).
+      - `ls .../eve.json` — Suricata 의 네트워크 이벤트 로그가 존재하는지(네트워크 소스).
       ## ✅ 합격 기준
-      SIEM + auth.log + eve 등 분석 소스가 준비됐다.
+      `analysisd` 가 running 이고 `auth.log`·`eve.json` 이 존재한다(네 소스 준비 완료). 어느 하나라도
+      없으면 그 단면은 분석 불가이므로 먼저 원인을 파악한다.
     hint: 'analysisd + auth.log + eve'
     category: survey
     points: 8
@@ -39,7 +55,7 @@ steps:
       ls /var/log/auth.log
       docker exec el34-ips sh -c 'ls /var/log/suricata/eve.json'
       echo "4소스 준비: auth.log(인증)/eve(네트워크)/modsec(웹)/alerts.json(SIEM)"
-    answer_detail: "교차 분석의 네 소스 — 인증(auth.log), 웹(ModSec/access), 네트워크(eve), 통합(alerts.json)."
+    answer_detail: "교차 분석의 네 소스 점검 — 인증(auth.log)·웹(ModSec/access)·네트워크(eve)·통합(alerts.json). 채점은 SIEM 분석 데몬(analysisd)이 running 이고 인증·네트워크 로그가 존재함을 확인한다. 이 가용성 점검이 통과해야 이후 단면 분석이 의미가 있다."
     verify:
       type: output_contains
       expect: 'analysisd'
@@ -52,7 +68,10 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 다단계 공격 재현 — 스캔→웹→인증
+      ## 🎯 다단계 공격 재현 — 스캔 → 웹 → 인증
+      종합 분석의 대상이 될 다단계 공격을 한 공격자(`10.20.30.202`) 관점에서 직접 재현한다. 이 한 번의
+      재현이 이후 모든 분석 미션(미션 3~9)의 원천 데이터다 — 세 단계가 네트워크·웹·인증 소스에 각각
+      흔적을 남긴다(lecture §1.1 사슬).
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
@@ -60,8 +79,15 @@ steps:
       for u in root admin oracle test; do ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 $u@127.0.0.1 exit 2>/dev/null; done
       echo "multi-stage done"
       ```
+      - **① 정찰** — `nmap -sS`(SYN 스캔, 포트 20–120, `-T4` 빠른 타이밍)로 어떤 포트가 열렸나 탐색
+        → Suricata eve 에 스캔 흔적(T1046).
+      - **② 웹 침투** — `curl -A sqlmap/1.7`(스캐너 UA)로 `dvwa.el34.lab` 에 `UNION SELECT` SQLi
+        주입 → ModSec 942/949110 차단(T1190).
+      - **③ 인증** — 네 계정(root/admin/oracle/test)에 SSH 무차별 대입(키 없이 BatchMode 실패) →
+        auth.log 에 `Invalid user` 다발(T1110).
+      - 재현 후 로그가 SIEM 으로 수렴할 시간을 잠시 둔다(answer 의 `sleep`).
       ## ✅ 합격 기준
-      스캔/웹/인증 3단계가 재현된다.
+      세 단계가 순서대로 실행되고 `multi-stage done` 이 출력된다(이후 네 소스에 흔적이 남는다).
     hint: 'nmap + 웹 + ssh 브루트'
     category: recon
     points: 10
@@ -71,7 +97,7 @@ steps:
       for u in root admin oracle test; do ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 $u@127.0.0.1 exit 2>/dev/null; done
       sleep 6
       echo "multi-stage done"
-    answer_detail: "정찰(스캔)→침투(SQLi)→자격증명(SSH 대입) 다단계 — 네 소스에 흩어진 흔적을 남긴다."
+    answer_detail: "한 공격자의 다단계 공격 — 정찰(nmap 스캔)→웹 침투(sqlmap UA + UNION SELECT SQLi)→자격증명(SSH 무차별 대입) — 을 재현해 네 소스(eve/ModSec/auth.log/alerts.json)에 흩어진 흔적을 만든다. 채점은 세 단계가 모두 실행되고 done 이 출력됨을 확인한다. 이 흔적들이 이후 교차 분석·상관·서사의 원천이다."
     verify:
       type: output_contains
       expect: 'done'
@@ -84,13 +110,20 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 네트워크 분석 — Suricata eve
+      ## 🎯 네트워크 분석 — Suricata eve (사슬의 첫 단면)
+      한 공격자의 네트워크 관점을 읽는다. Suricata 는 패킷을 시그니처로 검사하는 IDS 이고(W03 복습),
+      그 결과가 `eve.json` 에 한 줄당 하나의 JSON 이벤트로 남는다. 정찰(스캔)과 sqlmap UA 의 흔적이
+      여기서 보인다(lecture §4.1).
       ## 💻 실행 명령
       ```bash
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.alert.signature" | sort | uniq -c | tail -5'
       ```
+      - `tail -3000 eve.json` — 최근 이벤트를 넉넉히 본다(alert 는 flow 보다 드물어 깊게 봐야 잡힘).
+      - `jq select(.event_type=="alert" and .src_ip=="10.20.30.202")` — `event_type` 으로 룰 매치
+        이벤트만, `src_ip` 로 **이 공격자 하나만** 골라낸다.
+      - `.alert.signature | sort | uniq -c` — 어떤 시그니처가 몇 번 잡혔나 분포로 집계한다.
       ## ✅ 합격 기준
-      네트워크 단계(스캔/sqlmap)를 식별한다.
+      출발지 `10.20.30.202` 의 alert 가 잡히고 스캔/SQLi 시그니처가 보인다(네트워크 관점의 공격 증거).
     hint: 'eve alert signature for .202'
     category: analysis
     points: 10
@@ -99,7 +132,7 @@ steps:
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.src_ip" | sort | uniq -c'
       echo "=== 시그니처 종류 ==="
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.alert.signature" | sort | uniq -c | tail -5'
-    answer_detail: "네트워크 단계 — 출발지 10.20.30.202의 alert(스캔/SQLi 시그니처)가 eve에 다수. 네트워크 관점의 공격 증거."
+    answer_detail: "네트워크 단면 — 출발지 10.20.30.202 의 alert(스캔/SQLi 시그니처)가 eve.json 에 다수 남는다. event_type=='alert' + src_ip 로 한 공격자만 골라낸 것이 핵심이다. 채점은 출력에 출발지 10.20.30.202 가 보임을 확인한다. 이 시그니처들이 이후 ATT&CK 매핑에서 T1046(정찰)/T1190(침투)의 네트워크 측 증거가 된다."
     verify:
       type: output_contains
       expect: '10.20.30.202'
@@ -112,13 +145,20 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 웹 분석 — ModSec + access
+      ## 🎯 웹 분석 — ModSec + access (사슬의 둘째 단면)
+      한 공격자의 웹 관점을 읽는다. ModSecurity(+OWASP CRS)는 HTTP 페이로드를 검사하는 WAF 이고(W03
+      복습), SQLi 가 어떻게 차단됐는지 audit 로그의 룰 ID 분포로 증명한다. 핵심은 차단이 단일 룰이
+      아니라 anomaly score 누적의 결과라는 것이다(lecture §4.2).
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
       ```
+      - `tail -80 modsec_audit.log` — 최근 audit 항목을 본다(JSON 라인 형식).
+      - `grep -oE "9[0-9]{5}"` — 6자리 CRS 룰 ID(9 로 시작)만 뽑는다.
+      - `sort | uniq -c` — 어떤 룰이 몇 번 매치됐나 분포. **942**(SQLi 탐지)가 점수를 올리고
+        **949110**(Inbound Anomaly Score Exceeded)이 누적 임계 초과로 403 차단하는 2단계가 보인다.
       ## ✅ 합격 기준
-      웹 침투 단계(942/949110)를 식별한다.
+      `942`(SQLi)와 `949110`(anomaly 누적 차단)이 함께 보인다(웹 침투가 막힌 증거와 그 메커니즘).
     hint: 'modsec rule 분포'
     category: analysis
     points: 10
@@ -127,7 +167,7 @@ steps:
       docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
       echo "=== 웹(access 응답코드) ==="
       docker exec el34-web sh -c 'sudo tail -30 /var/log/apache2/dvwa_access.log | grep -oE "\" [0-9]{3} " | sort | uniq -c'
-    answer_detail: "웹 단계 — 942(SQLi)→949110 차단(403). access로 요청 전체상."
+    answer_detail: "웹 단면 — 942(SQLi)가 anomaly score 를 올리고 949110(누적 임계 초과)이 403 으로 차단한다. 즉 '942 가 직접 막은' 것이 아니라 누적의 결과라는 2단계 메커니즘이 핵심이다. access 로그(응답코드)로 요청 전체상을 보강한다. 채점은 출력에 942 가 보임을 확인한다. 이 룰들이 ATT&CK T1190(웹 침투)의 증거다."
     verify:
       type: output_contains
       expect: '942'
@@ -140,13 +180,22 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 인증 분석 — auth.log
+      ## 🎯 인증 분석 — auth.log (사슬의 셋째 단면)
+      한 공격자의 인증 관점을 읽는다. `auth.log` 는 호스트의 SSH 로그인 시도가 한 줄씩 남는 인증
+      로그다(W02 복습). 무차별 대입의 패턴과 침투 성공 여부의 핵심 증거가 모두 여기에 있다(lecture
+      §4.3). 명령은 호스트에서 직접 실행한다(컨테이너 아님).
       ## 💻 실행 명령
       ```bash
       grep -aoE "Invalid user [a-z]+" /var/log/auth.log | sort | uniq -c | sort -rn | head
       ```
+      - `grep -a` — 바이너리로 오인된 줄도 텍스트로 본다, `-oE "Invalid user [a-z]+"` — 시도된
+        계정 이름만 뽑는다.
+      - `sort | uniq -c | sort -rn` — 어떤 계정이 몇 번 찍혔나 빈도순. **여러 계정에 걸쳐 다수**면
+        무차별 대입(T1110), 단발이면 정상 오타다.
+      - 이어서 `Accepted` 유무로 침투 성공 여부를 가른다(answer 참고) — 이것이 미션 9 판정의 근거다.
       ## ✅ 합격 기준
-      인증 단계(Invalid user 다발)를 식별한다.
+      `Invalid user` 가 여러 계정에 다수로 보인다(무차별 대입의 증거). `Accepted` 가 없으면 인증 침투는
+      시도에 그친 것이다.
     hint: 'auth.log Invalid user 분포'
     category: analysis
     points: 10
@@ -155,7 +204,7 @@ steps:
       grep -aoE "Invalid user [a-z]+" /var/log/auth.log | sort | uniq -c | sort -rn | head
       echo "=== 성공 여부 ==="; grep -ac Accepted /var/log/auth.log
       echo "→ Invalid user 다발 = 무차별 대입(T1110), Accepted로 침투 여부 판정"
-    answer_detail: "인증 단계 — Invalid user 다발(여러 계정)=무차별 대입. Accepted 유무로 침투 여부."
+    answer_detail: "인증 단면 — Invalid user 가 여러 계정(root/admin/oracle/test)에 다수면 무차별 대입(T1110)이고, Accepted 줄의 유무가 침투 성공 여부를 가른다. 두 가지(무차별 대입 패턴 + 성공 여부)를 인증 로그 한 곳에서 동시에 읽는 것이 핵심이다. 채점은 출력에 'Invalid user' 가 보임을 확인한다. Accepted 판정은 미션 9 로 이어진다."
     verify:
       type: output_contains
       expect: 'Invalid user'
@@ -169,19 +218,26 @@ steps:
   - order: 6
     instruction: |
       ## 🎯 SIEM 종합 — alerts.json 수렴
+      개별 소스가 아니라 흩어진 흔적이 **SIEM 한 곳으로 수렴**하는지 확인한다 — 통합 관제의 전제다.
+      Wazuh manager 는 흩어진 소스(agent)를 한 곳으로 모으는 SIEM 의 두뇌이고(W04 복습), el34 의 활성
+      agent 는 ips(003)·web(004) 둘이다(lecture §4.4).
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|.rule.groups" | sort | uniq -c | head'
       ```
+      - `tail -500 alerts.json` — Wazuh 가 만든 최근 통합 경보를 본다.
+      - `jq select(.data.src_ip=="10.20.30.202")` — 이 공격자의 경보만 골라낸다.
+      - `.rule.groups | sort | uniq -c` — 어떤 룰 그룹(예: `ids`, `web` 등 다소스)이 모였나 분포.
+        여러 소스 그룹이 한 manager 에 보이면 수렴이 성립한 것이다.
       ## ✅ 합격 기준
-      SIEM에 다소스 경보가 수렴해 있다.
+      출발지 `10.20.30.202` 의 경보 그룹 분포에 `ids` 등 다소스가 보인다(네 소스가 한 곳으로 수렴).
     hint: 'alerts.json src .202 그룹 분포'
     category: detect
     points: 10
     answer: |
       echo "=== SIEM 수렴 (출발지 10.20.30.202 그룹) ==="
       docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|.rule.groups" | sort | uniq -c | head'
-    answer_detail: "네 소스가 Wazuh로 수렴 — 출발지로 묶으면 다단계 경보가 한 곳에."
+    answer_detail: "네 소스가 Wazuh 한 manager 로 수렴 — 출발지 10.20.30.202 로 묶으면 다단계 경보가 한 곳에 모인다. rule.groups 분포에 ids 등 다소스가 보이는 것이 수렴의 증거다. 채점은 출력에 'ids' 그룹이 보임을 확인한다. 수렴이 성립해야 한 화면에서 교차 분석이 가능하다."
     verify:
       type: output_contains
       expect: 'ids'
@@ -194,13 +250,20 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 교차 상관 — 출처/시간으로 묶기
+      ## 🎯 교차 상관 — 출처/시간으로 묶기 (종합 분석의 정점)
+      흩어진 흔적을 출발지 IP 하나와 시각으로 묶어 "한 공격자의 단계적 체인"임을 입증한다. el34 가
+      출처 IP 를 보존(fw 가 SNAT 안 함)하므로 네트워크·웹·인증의 흔적이 같은 `10.20.30.202` 로 묶이는
+      것 — 이것이 "한 공격자"임을 증명하는 키다(lecture §3, §6).
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -8'
       ```
+      - `jq select(.data.src_ip=="10.20.30.202")` — 같은 출발지 IP 로 한 공격자만 묶는다(상관의 키 1).
+      - `[.timestamp,.rule.description]|@tsv` — 시각과 경보 설명을 한 줄로 뽑는다(상관의 키 2: 시간).
+      - `tail -8` — 가장 최근 8건을 **시간순**으로 본다. 이 출력이 사실상 공격 서사의 뼈대다 —
+        시각 + 무슨 경보가 시간순으로 늘어선다.
       ## ✅ 합격 기준
-      같은 출처(10.20.30.202)의 경보를 시간순 체인으로 묶는다.
+      출발지 `10.20.30.202` 의 경보가 시각순으로 나열되어 정찰→침투의 진행이 한 타임라인으로 보인다.
     hint: 'src .202 시간순 체인'
     category: analysis
     points: 12
@@ -208,7 +271,7 @@ steps:
       echo "=== 교차 상관 (출처 10.20.30.202 시간순) ==="
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -8'
       echo "→ 같은 출처 + 시간순 = 한 공격자의 단계적 체인"
-    answer_detail: "교차 상관 — 네 소스를 출발지+시간으로 묶으면 단편이 한 서사가 된다."
+    answer_detail: "교차 상관 — 네 소스를 두 키(출발지 IP 10.20.30.202 + 시각)로 묶으면 흩어진 단편이 한 공격자의 시간순 체인이 된다. 출처 보존(SNAT 없음) 덕에 같은 IP 로 묶이는 것이 전제다. 채점은 출력에 출발지 10.20.30.202 가 시간순으로 보임을 확인한다. 이 타임라인이 미션 8 ATT&CK 서사의 뼈대다."
     verify:
       type: output_contains
       expect: '10.20.30.202'
@@ -222,12 +285,18 @@ steps:
   - order: 8
     instruction: |
       ## 🎯 ATT&CK 서사 — 단계별 매핑
+      묶인 체인에 MITRE ATT&CK 표준 번호로 이름표를 붙여, 분석 결과를 누구나 같은 언어로 읽는 공격
+      서사로 만든다(W06 복습). 전술(TA…, 목적)과 기술(T…, 수법)로 각 단계를 매핑한다(lecture §2.3).
       ## 💻 실행 명령
       ```bash
       echo "T0 스캔 → T1046 정찰 / T1 SQLi → T1190 침투 / T2 SSH대입 → T1110 자격증명"
       ```
+      - **T0 포트 스캔** → TA0043 정찰 / **T1046**(Network Service Discovery) — 네트워크 eve 증거.
+      - **T1 SQLi** → TA0001 초기 침투 / **T1190**(Exploit Public-Facing Application) — 웹 ModSec 증거.
+      - **T2 SSH 무차별 대입** → TA0006 자격증명 / **T1110**(Brute Force) — 인증 auth.log 증거.
+      - 좋은 서사의 네 조건 — 출처 일관(같은 IP) · 시간순 · ATT&CK 일관 · 단계마다 증거 첨부.
       ## ✅ 합격 기준
-      공격을 ATT&CK 서사(시간순+기술)로 종합한다.
+      T1046 → T1190 → T1110 이 시간순으로 일관되게 연결된 공격 서사가 만들어진다.
     hint: 'T1046→T1190→T1110 서사'
     category: analysis
     points: 10
@@ -238,7 +307,7 @@ steps:
       echo "T2 SSH 무차별 대입(다발)     → TA0006 자격증명 / T1110"
       echo "T3 Accepted 유무            → 침투 성공 판정"
       echo "→ 한 공격자가 정찰→웹침투→인증공격. ATT&CK 단계 일관"
-    answer_detail: "공격 서사 = 시간순 + ATT&CK 단계 + 출처 일관 + 증거. '한 공격자가 무엇을 했나'를 한 문장씩."
+    answer_detail: "공격 서사 = 시간순 + ATT&CK 단계 + 출처 일관 + 증거. T1046(정찰)→T1190(웹 침투)→T1110(자격증명)을 '한 공격자가 무엇을 했나'로 한 문장씩 잇는다. 전술(목적)과 기술(수법)을 표준 번호로 붙이면 보고·소통이 일관된다. 채점은 출력에 T1190 이 보임을 확인한다."
     verify:
       type: output_contains
       expect: 'T1190'
@@ -251,14 +320,23 @@ steps:
 
   - order: 9
     instruction: |
-      ## 🎯 우선순위/에스컬레이션 — 침투 여부
+      ## 🎯 우선순위/에스컬레이션 — 침투 여부 (분석의 결론)
+      서사를 근거로 이 사건이 얼마나 급한지·누구에게 올릴지·실제로 뚫렸는지를 판정한다. 판정의 핵심은
+      "시도였나 침해였나"이며, 이를 가르는 단 하나의 증거가 **공격 출처에서 나온 `Accepted`(로그인
+      성공)** 다(lecture §5).
       ## 💻 실행 명령
       ```bash
-      echo "공격 출처 Accepted:"; grep -aE "Accepted .* from 10.20.30.202|Accepted .* from 192.168.0.202" /var/log/auth.log | wc -l
+      echo "공격 출처 Accepted:"; grep -aE "Accepted .* from 10\.20\.30\.202|Accepted .* from 192\.168\.0\.202" /var/log/auth.log | wc -l
       echo "정찰→침투 체인 진행 = P2 에스컬레이션. 공격 출처 Accepted 있으면 P1(침해)"
       ```
+      - `grep -aE "Accepted .* from <공격IP>"` — **공격 출처**(내부 .202 또는 외부 192.168.0.202)에서
+        성공한 로그인이 있는지 본다. 출처 한정이 중요하다 — 정상 사용자의 Accepted 와 구분.
+      - `wc -l` — 그 수가 **0 이면 시도(차단)**, **1 이상이면 침해**다.
+      - 판정 규칙 — 체인이 진행형인데 성공 흔적이 없으면 **P2** 로 L2/IR 에 에스컬레이션, 공격 출처
+        `Accepted` 가 있으면 **P1** 침해로 즉시 IR.
       ## ✅ 합격 기준
-      체인+침투여부로 P1~P4 + 에스컬레이션을 판정한다.
+      체인 진행 + 침투 여부를 근거로 P1~P4 와 에스컬레이션을 증거 기반으로 판정한다(여기서는 성공 흔적
+      없음 → P2).
     hint: '체인 진행=P2, 공격출처 Accepted=P1'
     category: analysis
     points: 10
@@ -268,7 +346,7 @@ steps:
       echo "=== 판정 ==="
       echo "정찰→침투 체인 진행(성공 흔적 없음) = P2 에스컬레이션(L2/IR로)"
       echo "공격 출처에서 Accepted 발견 시 = P1 침해(즉시 IR)"
-    answer_detail: "판정 = 체인 깊이 + 침투 여부. 공격 출처의 Accepted(성공)가 없으면 '시도(P2)', 있으면 '침해(P1)'. 체인 진행형이라 L2/IR로 에스컬레이션."
+    answer_detail: "판정 = 체인 깊이 + 침투 여부, 모두 증거 기반. 공격 출처(10.20.30.202/192.168.0.202)의 Accepted 수가 0 이면 '시도(P2)', 1 이상이면 '침해(P1)'. 본 시나리오는 웹 403 차단 + Invalid user 다발만 있고 성공 흔적이 없어 시도(P2)이며, 진행형이라 L2/IR 로 에스컬레이션한다. 채점은 출력에 P2 가 보임을 확인한다. '위험해 보인다'가 아니라 Accepted 수로 판정하는 것이 핵심이다."
     verify:
       type: output_contains
       expect: 'P2'
@@ -282,16 +360,24 @@ steps:
   - order: 10
     instruction: |
       ## 🎯 중간고사 종합 보고서
+      미션 1–9 를 한 공격 서사로 묶어 종합 분석 능력을 문서로 입증한다 — 중간고사의 최종 산출물이다.
+      이것은 사고 대응 후 경영진·감사에 제출하는 보고서의 표준 구조(소스 분석 → 상관 타임라인 →
+      ATT&CK 서사 → 판정·권고)와 같다. 각 단계에 **증거(로그 줄)** 를 붙이는 것을 잊지 말 것.
       ## 💻 보고서 양식
       ```markdown
       # SOC W08 중간고사 보고서 (학번, 이름)
       ## 1. 네 소스 분석 (네트워크/웹/인증/SIEM)
-      ## 2. 교차 상관 (출처/시간)
-      ## 3. ATT&CK 서사 (T1046→T1190→T1110)
-      ## 4. 우선순위/에스컬레이션 + 침투 여부
+      #    - 네트워크(eve): 출발지 10.20.30.202 스캔/sqlmap 시그니처
+      #    - 웹(ModSec): 942(SQLi)→949110 차단(403)
+      #    - 인증(auth.log): Invalid user 다발(여러 계정), Accepted 유무
+      #    - SIEM(alerts.json): 위 전부가 한 manager 로 수렴
+      ## 2. 교차 상관 (출처/시간)  — 같은 출발지 10.20.30.202 + 시간순 체인
+      ## 3. ATT&CK 서사 (T1046 정찰 → T1190 웹침투 → T1110 자격증명)
+      ## 4. 우선순위/에스컬레이션 + 침투 여부  — Accepted 0 → 시도(P2) 에스컬레이션
+      ## 결론: 한 로그는 단편, 교차로 봐야 한 공격자의 서사가 보인다
       ```
       ## ✅ 합격 기준
-      보고서에 교차 분석 + 서사 + 판정이 포함된다.
+      보고서에 네 소스 분석 + 출처/시간 상관 + ATT&CK 서사(T1046→T1190→T1110) + 판정이 모두 포함된다.
     hint: '4소스+상관+서사+판정'
     category: report
     points: 10
@@ -304,7 +390,7 @@ steps:
       ## 4. 판정: 정찰→침투 체인 진행, 공격출처 Accepted 없음 → P2 에스컬레이션(시도/차단)
       ## 결론: 한 로그는 단편, 교차로 봐야 한 공격자의 서사가 보인다
       EOF
-    answer_detail: "중간고사 = 네 소스 교차 → 상관 → ATT&CK 서사 → 판정. SOC 분석가의 종합 능력 = 흩어진 단편을 한 서사로."
+    answer_detail: "중간고사의 최종 산출물 = 네 소스 교차 분석 → 출처/시간 상관 → ATT&CK 서사(T1046→T1190→T1110) → 우선순위/침투 판정, 모두 증거 첨부. SOC 분석가의 종합 능력 = 흩어진 단편을 한 공격자의 한 서사로 엮는 능력이다. 채점은 보고서에 '서사' 가 포함됨을 확인한다. '한 로그는 단편, 교차로 봐야 서사' 라는 결론이 본 시험의 핵심 메시지다."
     verify:
       type: output_contains
       expect: '서사'

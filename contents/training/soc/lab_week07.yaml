@@ -4,10 +4,17 @@ version: standalone-soc
 course: soc
 week: 7
 description: |
-  탐지를 벤더 표준(SIGMA YAML)으로 한 번 쓰고 여러 백엔드로 이식한다. SIGMA 룰 구조를 읽고,
-  sigma2wazuh.py로 Wazuh 룰로 변환하고, logtest로 검증하며, Suricata 이식 개념과 실제 탐지를 확인한다.
-  el34엔 ~/el34/sigma(룰+컨버터) + Wazuh sigma_rules.xml(id 200001-3)이 가동 중. 컨버터는 stdout 출력
-  (라이브 미변경). 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서.
+  탐지 규칙을 벤더 중립 표준(SIGMA YAML)으로 한 번 작성해 여러 보안 제품(백엔드)으로 이식하는
+  법을 익힌다. 핵심 흐름은 "SIGMA 한 벌 → 컨버터 → N 백엔드"다. 학생은 (1) SIGMA 룰의 세 기둥
+  (logsource=어떤 로그에 / detection·condition=무엇을 어떻게 / tags=ATT&CK 매핑)을 읽고,
+  (2) sigma2wazuh.py로 SIGMA YAML을 Wazuh 룰(XML)로 변환하며(keywords→<regex>, level/tags→
+  level/group), (3) wazuh-logtest로 변환 룰(id 200002)이 실제 발화하는지 라이브 무중단으로 검증하고,
+  (4) 같은 SIGMA가 Suricata 백엔드로도 이식됨을 이해한 뒤, (5) 실제 SQLi 공격이 alerts.json의 sigma
+  그룹 경보로 잡힘을 데이터로 확인한다.
+  el34엔 ~/el34/sigma(룰 rules/ + 컨버터 sigma2wazuh.py)와, 그것을 변환해 적용한 Wazuh
+  sigma_rules.xml(id 200001-3)이 이미 가동 중이다. 컨버터는 결과를 stdout으로만 출력하므로 라이브
+  sigma_rules.xml은 바뀌지 않는다(공유 인프라 보존). 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)
+  에서 docker exec로 실행한다.
 difficulty: medium
 duration_minutes: 180
 prerequisites:
@@ -15,23 +22,36 @@ prerequisites:
   - "el34 호스트 SSH + docker exec"
   - "lecture §2(SIGMA 구조) §3(변환) §5(Suricata 이식) 숙지"
 objectives:
-  - "SIGMA YAML 룰 구조(logsource/detection/tags) 이해"
-  - "sigma2wazuh.py로 Wazuh 룰 변환"
-  - "변환 룰 logtest 검증 + 실제 탐지 확인"
-  - "다중 백엔드 이식(Wazuh/Suricata)의 가치 이해"
+  - "SIGMA YAML 룰의 세 기둥(logsource=대상 로그 / detection·condition=탐지 로직 / tags=ATT&CK) 읽기"
+  - "sigma2wazuh.py로 SIGMA→Wazuh 룰 변환 — keywords→<regex pcre2>, level/tags→level/group 대응 확인"
+  - "변환 룰(id 200002)을 wazuh-logtest로 라이브 무중단 발화 검증 + 실제 SQLi 공격으로 sigma 그룹 경보 확인"
+  - "같은 SIGMA가 Suricata 백엔드로도 이식됨을 이해하고 '한 번 쓰고 N 백엔드' 다중 플랫폼 가치 설명"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — SIGMA 설정
+      ## 🎯 목표 — SIGMA 파이프라인 3부품 점검
+      모든 SIGMA 작업의 전제는 세 부품이 갖춰져 있는 것이다 — ① SIGMA 룰(`~/el34/sigma/rules/`의
+      YAML), ② 변환 컨버터(`sigma2wazuh.py`), ③ 그 변환 결과가 적용된 Wazuh 룰 파일
+      (`/var/ossec/etc/rules/sigma_rules.xml`, id 200001-3). 작업 전 30초 인벤토리 점검이다.
+
+      ## 🧩 개념 한 줄
+      SIGMA(표준 레시피) → 컨버터(번역기) → Wazuh 룰(주방용 레시피)의 세 부품이 SIGMA "한 번 쓰고
+      어디서나"의 토대다. 하나라도 없으면 변환·탐지가 성립하지 않는다.
+
       ## 💻 실행 명령
       ```bash
       ls ~/el34/sigma/rules/ ~/el34/sigma/sigma2wazuh.py
       docker exec el34-siem sh -c 'grep -c "<rule " /var/ossec/etc/rules/sigma_rules.xml'
       ```
+      - `ls` — 룰 디렉터리와 컨버터 스크립트의 존재를 확인한다.
+      - `docker exec el34-siem ...` — SIEM 컨테이너 안에서 명령을 실행한다. `grep -c "<rule "`는
+        룰 파일에 정의된 룰 개수를 센다(SIGMA에서 변환돼 적용된 룰 수).
+
       ## ✅ 합격 기준
-      SIGMA 룰/컨버터 + Wazuh sigma_rules.xml이 존재한다.
+      `rules/`와 `sigma2wazuh.py`가 보이고, `sigma_rules.xml`의 `<rule` 개수가 3(또는 그 이상)으로
+      나온다 — 즉 룰·컨버터·적용 룰 세 부품이 모두 존재한다.
     hint: 'sigma rules/ + sigma2wazuh.py + sigma_rules.xml'
     category: survey
     points: 10
@@ -53,13 +73,25 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 SIGMA 룰 읽기 — web-sqli.yml
+      ## 🎯 목표 — web-sqli SIGMA 룰의 세 기둥 읽기
+      실제 SIGMA 룰 파일(`0002-web-sqli.yml`)을 열어 세 기둥을 눈으로 확인한다 — **logsource**(어떤
+      로그에), **detection + condition**(무엇을 어떤 조합으로), **tags**(어떤 ATT&CK 기법).
+
+      ## 🧩 개념 한 줄
+      SIGMA 룰은 들여쓰기로 구조를 표현하는 YAML 한 장이다. 이 세 기둥 구조를 읽을 줄 알아야 다음
+      단계(변환)의 출력과 1:1로 대응시킬 수 있다. 특히 `detection.selection.keywords`는 "로그 어디든
+      이 문자열이 있으면 매치", `tags`의 `attack.t1190`은 MITRE ATT&CK T1190(공개 앱 취약점 악용)을
+      뜻한다.
+
       ## 💻 실행 명령
       ```bash
       cat ~/el34/sigma/rules/0002-web-sqli.yml
       ```
+      - `cat` — 파일 내용을 화면에 그대로 출력한다. SIGMA는 평문 YAML이라 `cat`만으로 전체 구조가 보인다.
+
       ## ✅ 합격 기준
-      logsource/detection/tags 구조를 읽는다.
+      출력에 `logsource`(apache/webserver) · `detection`(union select 등 keywords + condition) ·
+      `tags`(attack.t1190) 세 블록이 모두 보인다 — 이 셋이 SIGMA 룰의 골격이다.
     hint: 'web-sqli.yml 의 detection/tags'
     category: analysis
     points: 12
@@ -80,13 +112,26 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 변환 — sigma2wazuh.py
+      ## 🎯 목표 — SIGMA YAML 을 Wazuh 룰(XML)로 자동 변환
+      컨버터 `sigma2wazuh.py`로 SIGMA 룰을 Wazuh 룰로 번역한다. "한 번 쓰고 어디서나"의 "어디서나"가
+      실제로 일어나는 핵심 단계다.
+
+      ## 🧩 개념 한 줄
+      컨버터가 하는 일은 "껍데기 갈아끼우기"다 — SIGMA의 `keywords` 목록 → Wazuh `<regex type="pcre2">`
+      (괄호와 `|`로 "이 중 아무거나"), SIGMA의 `level`/`tags` → Wazuh `level`/`<group>`(group에 `sigma`
+      표식이 붙는다). web-sqli SIGMA는 id 200002 룰로 변환된다.
+
       ## 💻 실행 명령
       ```bash
       cd ~/el34/sigma && python3 sigma2wazuh.py rules/ 2>/dev/null | grep -A4 'id="200002"'
       ```
+      - `sigma2wazuh.py rules/` — `rules/`의 SIGMA 룰들을 Wazuh XML로 변환해 **화면(stdout)으로만** 출력
+        한다(라이브 sigma_rules.xml은 안 바뀐다 → 공유 인프라 안전).
+      - `2>/dev/null` — 경고 등 표준에러를 버려 출력을 깔끔히 한다.
+      - `grep -A4 'id="200002"'` — 변환 결과 중 200002 룰과 그 아래 4줄(regex/description/group)만 추린다.
+
       ## ✅ 합격 기준
-      SIGMA가 Wazuh 룰(id 200002, regex)로 변환된다.
+      출력에 `id="200002"`와 그 아래 `<regex ...>`가 보인다 — SIGMA keywords가 Wazuh 정규식 룰로 변환됨.
     hint: 'sigma2wazuh.py rules/ → Wazuh XML(200002)'
     category: manipulation
     points: 14
@@ -107,14 +152,27 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 logtest 검증 — 변환 룰 발화
+      ## 🎯 목표 — 변환 룰(200002)이 실제로 발화하는지 라이브 무중단 검증
+      "변환됐다 ≠ 잡힌다." union select가 든 웹 접근 로그 한 줄을 넣어, 변환 룰 200002가 정말 매치돼
+      경보가 되는지 확인한다.
+
+      ## 🧩 개념 한 줄
+      `wazuh-logtest`는 로그 한 줄을 넣으면 현재 룰셋을 새로 읽어 **별도 테스트 인스턴스**에서 어떤
+      룰이 매치되는지 보여 주는 "시식(맛보기)" 도구다. 라이브 manager의 판결 엔진을 건드리지 않으므로
+      여러 학생이 함께 쓰는 el34-siem에서도 안전하다. el34엔 sigma_rules.xml(200001-3)이 이미 적용돼
+      있어 그대로 검증된다.
+
       ## 💻 실행 명령
       ```bash
       echo '1.2.3.4 - - [x] "GET /?id=1 union select 1,2 HTTP/1.1" 403' \
         | docker exec -i el34-siem /var/ossec/bin/wazuh-logtest
       ```
+      - `echo '...' | docker exec -i ...` — 아파치 접근 로그 한 줄을 만들어 파이프로 logtest의 표준입력
+        (`-i`)에 흘려 넣는다. 그 로그엔 web-sqli 정규식에 걸릴 `union select`가 들어 있다.
+
       ## ✅ 합격 기준
-      변환 룰 `200002`가 logtest에서 발화한다.
+      출력에 `id: 200002`, `level: 10`, `groups`에 `sigma`, 그리고 `Alert to be generated.`가 보인다 —
+      SIGMA→변환→실제 Wazuh 경보의 사슬이 끊김 없이 이어졌다는 증거다.
     hint: 'union select 라인 → wazuh-logtest → 200002'
     category: analysis
     points: 14
@@ -137,14 +195,28 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 Suricata 이식 — 같은 탐지 다른 백엔드
+      ## 🎯 목표 — 같은 SIGMA 가 Suricata 백엔드로도 이식됨을 이해(개념)
+      지금까지는 SIGMA→Wazuh 한 방향만 봤다. SIGMA의 진짜 가치는 같은 한 벌이 다른 제품으로도
+      변환된다는 점이다. el34의 IDS인 Suricata도 SIGMA의 변환 대상(백엔드)이다.
+
+      ## 🧩 개념 한 줄
+      Wazuh와 Suricata는 보는 위치가 다르다 — Wazuh는 서버에 남은 로그 속 SQLi(호스트/사후), Suricata는
+      네트워크를 흐르는 패킷 속 SQLi(네트워크/실시간)를 본다. 같은 web-sqli SIGMA 한 벌을 두 백엔드로
+      변환하면 하나의 탐지 의도가 네트워크와 로그 양쪽에서 동시에 작동한다. Suricata 변환은 공식
+      `sigma-cli`의 `sigma convert -t suricata`가 담당한다(본 단계는 개념 이해가 목표 — 라이브 실습은
+      Wazuh 백엔드에 집중).
+
       ## 💻 실행 명령
       ```bash
       echo "SIGMA web-sqli.yml →(sigma2wazuh.py)→ Wazuh <regex> 룰 (로그 탐지)"
       echo "SIGMA web-sqli.yml →(sigma -t suricata)→ Suricata content 룰 (네트워크 탐지)"
       ```
+      - `echo` — 같은 SIGMA가 두 백엔드로 갈라지는 구조를 화면에 정리해 본다(`sigma -t suricata`는
+        Suricata content 룰을, sigma2wazuh.py는 Wazuh 정규식 룰을 만든다).
+
       ## ✅ 합격 기준
-      같은 SIGMA가 Wazuh/Suricata 두 백엔드로 이식됨을 이해한다.
+      한 SIGMA가 Wazuh(로그)와 Suricata(네트워크) 두 백엔드로 이식돼 같은 탐지를 양쪽에서 한다는 구조를
+      설명할 수 있다.
     hint: 'SIGMA → Wazuh + Suricata 두 백엔드'
     category: analysis
     points: 10
@@ -166,15 +238,30 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 실제 탐지 — SQLi 공격 → Wazuh sigma 경보
+      ## 🎯 목표 — 실제 SQLi 공격이 alerts.json 의 sigma 그룹 경보로 잡히는지 확인
+      합성 로그(실습 4)가 아니라 **진짜 공격**으로 파이프라인이 도는지 증명한다. SIGMA 표준 한 줄이
+      라이브 탐지가 되는 전 과정의 마무리다.
+
+      ## 🧩 개념 한 줄
+      흐름: 외부 SQLi(union select) → 웹·네트워크 로그 → ips/web agent 수집 → manager의 변환 룰 매치
+      → `alerts.json`의 **sigma 그룹** 경보. group에 `sigma`가 붙는 것은 이 경보가 SIGMA에서 유래했다는
+      표식이다(§3 변환에서 group에 sigma가 들어갔음을 기억).
+
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw7%20union%20select%201,2--%20-\""
       sleep 8
       docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.rule.groups|index(\"sigma\"))|{r:.rule.id,d:.rule.description}" | tail -3'
       ```
+      - `el34-attacker`의 `curl` — `Host: dvwa.el34.lab`로 dvwa 대상에 `union select` SQLi를 보낸다
+        (`%20`=공백, `-o /dev/null`=응답 본문 버림).
+      - `sleep 8` — 공격이 로그→수집→manager→alerts.json까지 흐르는 파이프라인 지연을 기다린다.
+      - `jq ... select(.rule.groups|index("sigma"))` — alerts.json 최근 줄에서 **sigma 그룹** 경보만
+        골라 룰 id/설명을 뽑는다.
+
       ## ✅ 합격 기준
-      실제 SQLi가 Wazuh sigma 룰 경보로 잡힌다(또는 sigma 룰 존재 확인).
+      alerts.json의 sigma 그룹에 최근 경보가 적재된다(또는 sigma 룰 적용이 확인된다) — 변환된 SIGMA
+      룰이 실제 공격까지 잡음을 데이터로 증명.
     hint: 'union select 공격 → alerts.json sigma 그룹'
     category: detect
     points: 14
@@ -198,13 +285,24 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 다중 플랫폼 가치 — 한 번 쓰고 어디서나
+      ## 🎯 목표 — SIGMA 의 다중 플랫폼 가치를 본인 언어로 정리
+      본 주차의 핵심 메시지 — 탐지 1개를 SIGMA로 써서 N 플랫폼에 이식 — 를 비용·일관성·재사용 관점에서
+      정리한다.
+
+      ## 🧩 개념 한 줄
+      탐지를 제품 문법마다 따로 쓰면 N배 비용 + 한 곳 수정 시 나머지 누락 위험이 있다(벤더 종속). SIGMA로
+      한 벌만 관리하면 컨버터가 Wazuh·Suricata·Splunk·Elastic 등으로 변환해 주고, 커뮤니티에 공개된 수천
+      개 SIGMA 룰도 즉시 재사용할 수 있다.
+
       ## 💻 실행 명령
       ```bash
       echo "SIGMA 1개 → Wazuh + Suricata + (Splunk/Elastic...) = 탐지 자산 1벌로 N 플랫폼"
       ```
+      - `echo` — SIGMA 한 벌이 여러 백엔드로 펼쳐지는 "위는 하나, 아래는 여럿" 구조를 정리한다.
+
       ## ✅ 합격 기준
-      SIGMA의 다중 플랫폼 가치를 정리한다.
+      "한 번 쓰고 어디서나"의 가치(작성 비용 절감 + 룰 일관성 + 커뮤니티 자산 재사용 + 벤더 종속 탈피)를
+      설명할 수 있다.
     hint: '한 SIGMA → N 백엔드'
     category: analysis
     points: 12
@@ -225,7 +323,14 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 SIGMA 보고서
+      ## 🎯 목표 — 실습 1~7 을 "SIGMA 자산 관리" 관점으로 한 장에 종합
+      개별 단계를 흩어 두지 말고, 구조→변환→검증→이식의 흐름으로 엮어 운영 보고서로 정리한다.
+
+      ## 🧩 개념 한 줄
+      탐지 자산 운영의 핵심은 "어느 단계에서 무엇을 확인했나"를 증거로 남기는 것이다 — SIGMA 구조를
+      읽었고(§2), Wazuh 룰 200002로 변환했고(§3), logtest와 실제 공격으로 발화를 검증했고(§4·실습 6),
+      Suricata로도 이식됨을 이해했다(§5). 이 네 단계가 보고서의 뼈대다.
+
       ## 💻 보고서 양식
       ```markdown
       # SOC W07 SIGMA 보고서 (학번, 이름)
@@ -234,8 +339,10 @@ steps:
       ## 3. 검증 (logtest 발화 + 실제 탐지)
       ## 4. 다중 백엔드 (Wazuh/Suricata) 가치
       ```
+
       ## ✅ 합격 기준
-      보고서에 SIGMA 변환·검증·이식이 포함된다.
+      보고서에 SIGMA 구조·변환(200002)·검증(logtest + 실제 sigma 그룹 경보)·다중 백엔드 이식이 모두
+      담긴다.
     hint: 'SIGMA 구조+변환+검증+이식'
     category: report
     points: 12
