@@ -1,0 +1,247 @@
+lab_id: standalone-attack-adv-week11
+title: "안티포렌식 — 흔적 삭제와 그래도 남는 것"
+version: standalone-attack-adv
+course: attack-adv
+week: 11
+description: |
+  공격 고급 W11 — 안티포렌식. 침해 후 흔적을 지워 포렌식(soc-adv W07/W08)을 방해한다. 로그/히스토리 삭제·
+  타임스탬프 조작(timestomp)·안전 삭제(shred)·파일리스/은닉을 다루고, 그래도 남는 흔적(네트워크·메모리)을
+  학습한다. el34-attacker에서 임시 파일로 자체완결 데모(self-clean). ⚠️ 인가된 실습만. 외부 시스템 금지.
+difficulty: hard
+duration_minutes: 175
+prerequisites:
+  - "attack-adv W06(권한상승)~W10 + soc-adv W07/W08(포렌식) 통과"
+  - "el34 호스트 SSH + docker exec, el34-attacker"
+  - "lecture §2(로그/타임스탬프) §3(삭제/은닉) §4(한계) 숙지"
+objectives:
+  - "로그/히스토리 삭제·타임스탬프 조작 수행"
+  - "안전 삭제·파일리스/은닉 기법 이해"
+  - "안티포렌식의 한계(네트워크/메모리 포렌식)와 방어 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 안티포렌식 시나리오·작업 공간
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "mkdir -p /tmp/af11 && command -v shred touch stat >/dev/null && echo af_tools_ok"; echo af_ready
+      ```
+      ## ✅ 합격 기준
+      도구·작업 공간이 준비되면(af_ready) 통과.
+      ## ⚠️ 윤리
+      흔적 삭제 기법은 방어자가 '무엇이 지워질 수 있나'를 알기 위해 학습. 임시 파일로만 시연.
+    hint: '시나리오'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 안티포렌식 시나리오·작업 공간 ==="
+      docker exec el34-attacker sh -c "mkdir -p /tmp/af11 && command -v shred touch stat >/dev/null && echo af_tools_ok"; echo af_ready
+      echo "→ 안티포렌식 = 침해 후 흔적 삭제로 포렌식 방해. 방어자는 '무엇이 지워지나'를 알아야 보존책 마련"
+    answer_detail: "안티포렌식 = 흔적 삭제로 포렌식 방해. 학습 목적은 방어(보존책 마련). 임시 파일 시연·self-clean."
+    verify:
+      type: output_contains
+      expect: 'af_ready'
+      field: stdout
+      semantic: {intent: "시나리오", success_criteria: ["도구/공간"], acceptable_methods: ["**[OSS] 작업공간 (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 로그·히스토리 삭제
+      ## 📖 개념 한 줄
+      공격자는 셸 히스토리·로그를 지워 활동 흔적을 없앤다(가장 흔한 안티포렌식).
+      ## 💻 실행 명령 (임시 로그로 시연)
+      ```bash
+      docker exec el34-attacker sh -c "printf 'attack cmd 1\nattack cmd 2\n' > /tmp/af11/fake.log; echo before=\$(wc -l </tmp/af11/fake.log); : > /tmp/af11/fake.log; echo after=\$(wc -l </tmp/af11/fake.log)"; echo logclear_done
+      ```
+      ## ✅ 합격 기준
+      로그 삭제(절단)가 시연되면(logclear_done) 통과.
+      ## 🔧 도구 풀이
+      - `: > file`(절단)·history -c·rm. 실무 표적: ~/.bash_history·/var/log/auth.log·웹 access.log.
+    hint: '로그 삭제'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 로그·히스토리 삭제 ==="
+      docker exec el34-attacker sh -c "printf 'attack cmd 1\nattack cmd 2\n' > /tmp/af11/fake.log; echo before=\$(wc -l </tmp/af11/fake.log); : > /tmp/af11/fake.log; echo after=\$(wc -l </tmp/af11/fake.log)"; echo logclear_done
+      echo "→ 로그 절단(before>after). 실무 표적: .bash_history·auth.log·access.log. history -c·unset HISTFILE도"
+    answer_detail: "로그 삭제 = 히스토리/로그 절단·삭제(가장 흔함). 표적: bash_history·auth.log·access.log. (임시파일 시연)"
+    verify:
+      type: output_contains
+      expect: 'logclear_done'
+      field: stdout
+      semantic: {intent: "로그 삭제", success_criteria: ["절단/삭제"], acceptable_methods: ["**[OSS] 로그 절단 (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 타임스탬프 조작 (timestomp)
+      ## 📖 개념 한 줄
+      파일 시각(mtime/atime)을 바꿔 포렌식 타임라인(soc-adv W07/W08)을 교란한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "touch /tmp/af11/payload; echo before:; stat -c '%y' /tmp/af11/payload; touch -t 202001010000 /tmp/af11/payload; echo after:; stat -c '%y' /tmp/af11/payload"; echo timestomp_done
+      ```
+      ## ✅ 합격 기준
+      타임스탬프 조작이 시연되면(timestomp_done) 통과.
+      ## 🔧 도구 풀이
+      - touch -t로 mtime/atime 위조 → 정상 파일처럼 위장. 단 ctime(inode 변경)은 touch로 못 바꿈(단서).
+    hint: 'timestomp'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 타임스탬프 조작(timestomp) ==="
+      docker exec el34-attacker sh -c "touch /tmp/af11/payload; echo before:; stat -c '%y' /tmp/af11/payload; touch -t 202001010000 /tmp/af11/payload; echo after:; stat -c '%y' /tmp/af11/payload"; echo timestomp_done
+      echo "→ mtime을 2020년으로 위조 → 오래된 정상 파일처럼 위장. 단 ctime은 touch로 못 바꿈 → 포렌식 단서"
+    answer_detail: "timestomp = touch -t로 mtime/atime 위조해 타임라인 교란. 단 ctime은 못 바꿔 단서로 남음."
+    verify:
+      type: output_contains
+      expect: 'timestomp_done'
+      field: stdout
+      semantic: {intent: "timestomp", success_criteria: ["시각 위조"], acceptable_methods: ["**[OSS] touch (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 안전 삭제 (secure deletion)
+      ## 📖 개념 한 줄
+      rm은 메타데이터만 지운다 — 복구 가능. shred는 덮어써 복구를 막는다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo 'secret loot' > /tmp/af11/secret; shred -u -n 3 /tmp/af11/secret 2>/dev/null; test ! -f /tmp/af11/secret && echo shredded_gone"; echo shred_done
+      ```
+      ## ✅ 합격 기준
+      안전 삭제가 시연되면(shred_done) 통과.
+      ## 🔧 도구 풀이
+      - shred -u -n 3: 3회 덮어쓰고 삭제 → 디스크 복구 방해. 단 SSD/저널링FS에선 불완전(카피온라이트).
+    hint: '안전 삭제'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 안전 삭제(secure deletion) ==="
+      docker exec el34-attacker sh -c "echo 'secret loot' > /tmp/af11/secret; shred -u -n 3 /tmp/af11/secret 2>/dev/null; test ! -f /tmp/af11/secret && echo shredded_gone"; echo shred_done
+      echo "→ rm=메타만 삭제(복구 가능). shred=덮어쓰기 삭제(복구 방해). 단 SSD/저널링FS에선 불완전"
+    answer_detail: "안전 삭제 = shred로 덮어써 복구 방해(rm은 복구 가능). SSD/저널링FS에선 불완전(카피온라이트)."
+    verify:
+      type: output_contains
+      expect: 'shred_done'
+      field: stdout
+      semantic: {intent: "안전 삭제", success_criteria: ["덮어쓰기 삭제"], acceptable_methods: ["**[OSS] shred (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 파일리스·은닉
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo 'fileless payload' > /dev/shm/.hidden 2>/dev/null && echo 'memory-fs(/dev/shm)에 은닉(디스크 미경유)'; ls -la /dev/shm/.hidden 2>/dev/null | awk '{print \$NF}'; rm -f /dev/shm/.hidden"; echo fileless_done
+      ```
+      ## ✅ 합격 기준
+      파일리스·은닉 기법이 시연되면(fileless_done) 통과.
+      ## 🔧 도구 풀이
+      - /dev/shm·memfd(메모리 파일시스템)=디스크 미경유→디스크 포렌식 회피. 숨김파일(.)·정상명 위장.
+    hint: '파일리스/은닉'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 파일리스·은닉 ==="
+      docker exec el34-attacker sh -c "echo 'fileless payload' > /dev/shm/.hidden 2>/dev/null && echo 'memory-fs(/dev/shm)에 은닉(디스크 미경유)'; ls -la /dev/shm/.hidden 2>/dev/null | awk '{print \$NF}'; rm -f /dev/shm/.hidden"; echo fileless_done
+      echo "→ /dev/shm·memfd_create=메모리에만 존재(디스크 포렌식 회피). 숨김파일(.)·정상 프로세스명 위장도"
+    answer_detail: "파일리스/은닉 = /dev/shm·memfd로 디스크 미경유(디스크 포렌식 회피)·숨김파일·위장. 단 메모리엔 남음(soc-adv W08)."
+    verify:
+      type: output_contains
+      expect: 'fileless_done'
+      field: stdout
+      semantic: {intent: "파일리스/은닉", success_criteria: ["메모리/은닉"], acceptable_methods: ["**[OSS] /dev/shm (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 안티포렌식의 한계 + 정리
+      ## 💻 실행 명령 (정리 포함)
+      ```bash
+      echo "한계: 호스트 흔적은 지워도 네트워크(eve.json)·메모리(/proc)·원격로그는 남음(soc-adv W07/W08)"
+      docker exec el34-attacker sh -c "rm -rf /tmp/af11 && echo cleaned"; echo limits_done
+      ```
+      ## ✅ 합격 기준
+      안티포렌식 한계 + 정리(limits_done)되면 통과.
+    hint: '한계'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 안티포렌식의 한계 ==="
+      echo "지워도 남는 것:"
+      echo "  - 네트워크: IPS eve.json(soc-adv W07)은 공격자 손 밖 → 스캔·C2·유출 흔적 보존"
+      echo "  - 메모리: 실행 중 프로세스는 /proc(soc-adv W08)에 — 파일리스도 메모리엔 평문"
+      echo "  - 원격 로그: 중앙 SIEM(Wazuh)으로 즉시 전송된 로그는 호스트에서 지워도 SIEM에 남음"
+      echo "  - ctime: timestomp(touch)로 못 바꾸는 inode 변경 시각 → 조작 단서"
+      echo "→ 완벽한 안티포렌식은 없다. 다계층·원격·휘발 증거가 호스트 삭제를 무력화"
+      docker exec el34-attacker sh -c "rm -rf /tmp/af11 && echo cleaned"; echo limits_done
+    answer_detail: "안티포렌식 한계 = 네트워크(eve)·메모리(/proc)·원격로그·ctime은 못 지움. 다계층/원격 증거가 천적. self-clean."
+    verify:
+      type: output_contains
+      expect: 'limits_done'
+      field: stdout
+      semantic: {intent: "한계", success_criteria: ["네트워크/메모리/원격"], acceptable_methods: ["**[설명] 한계 (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 증거 보존
+      ## 💻 실행 명령
+      ```bash
+      echo "방어: 원격/중앙 로깅(즉시 전송)·불변(append-only/WORM) 로그·FIM·네트워크 기록·메모리 포렌식"
+      ```
+      ## ✅ 합격 기준
+      안티포렌식 방어가 정리되면 통과.
+    hint: '방어'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 방어: 증거 보존 ==="
+      echo "① 원격/중앙 로깅: 로그를 생성 즉시 SIEM으로 → 호스트 삭제해도 SIEM에 보존"
+      echo "② 불변 로그: append-only(chattr +a)·WORM 스토리지 → 삭제·변조 차단"
+      echo "③ FIM(파일 무결성 모니터링): 로그/시스템 파일 변경 즉시 알림(Wazuh syscheck)"
+      echo "④ 네트워크 기록: eve.json/flow는 공격자 손 밖(soc-adv W07)"
+      echo "⑤ 메모리 포렌식: 재부팅 전 /proc 확보(soc-adv W08)"
+      echo "→ 핵심: 증거를 '공격자가 못 닿는 곳'에 즉시 복제. 안티포렌식의 천적은 원격·불변 보존"
+      echo "defense_done"
+    answer_detail: "안티포렌식 방어 = 원격/중앙 로깅·불변 로그(append-only)·FIM·네트워크/메모리 증거. 증거를 공격자 손 밖에 즉시 복제."
+    verify:
+      type: output_contains
+      expect: 'defense_done'
+      field: stdout
+      semantic: {intent: "방어", success_criteria: ["원격/불변 로깅"], acceptable_methods: ["**[관리적] 방어 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 안티포렌식 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격고급 W11 안티포렌식 보고서 (학번, 이름)
+      ## 1. 로그삭제·타임스탬프 조작
+      ## 2. 안전삭제·파일리스/은닉
+      ## 3. 한계(네트워크/메모리)·방어(원격/불변 로깅)
+      ```
+      ## ✅ 합격 기준
+      삭제기법 + 한계 + 방어 포함.
+    hint: '삭제+한계+방어'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # 공격고급 W11 안티포렌식 보고서
+      ## 1. 로그/히스토리 삭제(절단)·타임스탬프 조작(touch -t, 단 ctime 못 바꿈)
+      ## 2. 안전 삭제(shred 덮어쓰기, SSD선 불완전)·파일리스(/dev/shm·memfd)·은닉(숨김파일/위장)
+      ## 3. 한계: 네트워크(eve)·메모리(/proc)·원격로그·ctime은 못 지움. 방어: 원격/중앙 로깅·불변 로그·FIM
+      ## 결론: 완벽한 안티포렌식은 없다. 호스트는 지워도 다계층·원격·휘발 증거가 남음 — 방어는 '공격자 손 밖 보존'
+      EOF
+    answer_detail: "안티포렌식 보고 = 로그삭제/timestomp+안전삭제/파일리스+한계/방어. 완벽한 삭제 없음, 원격/불변 보존이 천적."
+    verify:
+      type: output_contains
+      expect: '안티포렌식'
+      field: stdout
+      semantic: {intent: "안티포렌식 보고", success_criteria: ["삭제/한계/방어"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
