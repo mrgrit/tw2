@@ -1,0 +1,248 @@
+lab_id: standalone-web-vuln-week10
+title: "전송 보안(TLS) — 약한 프로토콜/cipher/인증서 점검 vs 전송 강화"
+version: standalone-web-vuln
+course: web-vuln
+week: 10
+description: |
+  A02 Cryptographic Failures — 프로토콜/cipher 점검(openssl, nmap ssl-enum), 자체서명 인증서 탐지,
+  폐기 프로토콜 거부 확인, 전송 강화(HSTS/CA인증서). el34 web 443. 공격은 el34-attacker.
+  인가된 실습만. 명령은 el34 호스트에서. 신규 설치 없음(openssl/nmap 기본).
+difficulty: hard
+duration_minutes: 160
+prerequisites:
+  - "W01–W09 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(프로토콜) §3(cipher) §4(인증서) 숙지"
+objectives:
+  - "프로토콜/cipher 강도 점검"
+  - "자체서명 인증서 탐지"
+  - "전송 강화(TLS1.2+/HSTS/CA) 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — HTTPS 도달
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'https=%{http_code}\n' -H 'Host: dvwa.el34.lab' https://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      HTTPS(443) 도달.
+    hint: 'https 도달'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'https=%{http_code}\n' -H 'Host: dvwa.el34.lab' https://10.20.30.1/"
+    answer_detail: "전송 보안 점검 대상 = el34 web 443(HTTPS)."
+    verify:
+      type: output_contains
+      expect: 'https='
+      field: stdout
+      semantic:
+        intent: "HTTPS 점검"
+        success_criteria: ["443 도달"]
+        acceptable_methods: ["**[OSS] curl -k (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 프로토콜/cipher — openssl s_client
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | grep -iE 'Protocol|Cipher' | head -3"
+      ```
+      ## ✅ 합격 기준
+      협상된 TLS 프로토콜/cipher를 확인한다(TLSv1.3 기대).
+    hint: 's_client Protocol/Cipher'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 프로토콜/cipher ==="
+      docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | grep -iE 'Protocol|Cipher' | head -3"
+      echo "→ TLSv1.3 + AEAD(GCM) cipher = 강력. 약한 협상이면 결함"
+    answer_detail: "openssl s_client = 협상된 프로토콜/cipher. el34는 TLSv1.3/AES_256_GCM(강력)."
+    verify:
+      type: output_contains
+      expect: 'TLSv1'
+      field: stdout
+      semantic:
+        intent: "프로토콜/cipher 점검"
+        success_criteria: ["TLS 버전/cipher"]
+        acceptable_methods: ["**[OSS] openssl s_client (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 cipher 강도 — nmap ssl-enum-ciphers
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "timeout 50 nmap --script ssl-enum-ciphers -p 443 10.20.30.1 2>/dev/null | grep -iE 'TLSv|least strength'"
+      ```
+      ## ✅ 합격 기준
+      cipher 등급/least strength를 확인한다(A=강함).
+    hint: 'ssl-enum-ciphers least strength'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== cipher 강도 ==="
+      docker exec el34-attacker sh -c "timeout 55 nmap --script ssl-enum-ciphers -p 443 10.20.30.1 2>/dev/null | grep -iE 'TLSv|least strength'"
+      echo "→ least strength A = 약한 cipher 없음. C~F면 RC4/3DES/EXPORT 잔존 의심"
+    answer_detail: "nmap ssl-enum = cipher별 등급(A~F). least strength가 전체 약점. el34=A(강함)."
+    verify:
+      type: output_contains
+      expect: 'least strength'
+      field: stdout
+      semantic:
+        intent: "cipher 강도"
+        success_criteria: ["least strength 등급"]
+        acceptable_methods: ["**[OSS] nmap ssl-enum (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 인증서 — 자체서명 탐지
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'echo | openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null > /tmp/cert.txt; S=$(openssl x509 -noout -subject -in /tmp/cert.txt 2>/dev/null | sed "s/subject=//"); I=$(openssl x509 -noout -issuer -in /tmp/cert.txt 2>/dev/null | sed "s/issuer=//"); echo "subject:$S"; echo "issuer:$I"; [ "$S" = "$I" ] && echo "cert=selfsigned" || echo "cert=ca-signed"'
+      ```
+      ## ✅ 합격 기준
+      subject==issuer면 자체서명(cert=selfsigned)으로 식별한다.
+    hint: 'subject == issuer'
+    category: manipulation
+    points: 16
+    answer: |
+      echo "=== 인증서 자체서명 탐지 ==="
+      docker exec el34-attacker sh -c 'echo | openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null > /tmp/cert.txt; S=$(openssl x509 -noout -subject -in /tmp/cert.txt 2>/dev/null | sed "s/subject=//"); I=$(openssl x509 -noout -issuer -in /tmp/cert.txt 2>/dev/null | sed "s/issuer=//"); echo "subject:$S"; echo "issuer:$I"; [ "$S" = "$I" ] && echo "cert=selfsigned" || echo "cert=ca-signed"'
+      echo "→ subject==issuer = 자체서명. 브라우저 경고, MITM 인증서 위조 식별 불가. CN(*.6v6.lab)이 호스트(el34.lab)와 불일치도 결함"
+    answer_detail: "자체서명 = subject==issuer. 신뢰 체인 없어 MITM 식별 불가. el34는 자체서명(*.6v6.lab)."
+    verify:
+      type: output_contains
+      expect: 'cert=selfsigned'
+      field: stdout
+      semantic:
+        intent: "자체서명 탐지"
+        success_criteria: ["subject==issuer"]
+        acceptable_methods: ["**[OSS] openssl x509 (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 폐기 프로토콜 — TLS1.1 거부 확인
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c 'if echo | openssl s_client -connect 10.20.30.1:443 -tls1_1 2>&1 | grep -qiE "no protocols|alert|handshake fail|no peer cert"; then echo "tls11=refused"; else echo "tls11=accepted"; fi'
+      ```
+      ## ✅ 합격 기준
+      폐기 프로토콜(TLS1.1)이 협상 불가(tls11=refused)임을 확인한다.
+    hint: 'tls1_1 거부'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 폐기 프로토콜 거부 ==="
+      docker exec el34-attacker sh -c 'if echo | openssl s_client -connect 10.20.30.1:443 -tls1_1 2>&1 | grep -qiE "no protocols|alert|handshake fail|no peer cert"; then echo "tls11=refused"; else echo "tls11=accepted"; fi'
+      echo "→ TLS1.0/1.1은 폐기(PCI-DSS 금지). 협상 불가가 정상. accepted면 즉시 비활성 필요"
+    answer_detail: "폐기 프로토콜 = TLS1.0/1.1. 협상 불가(refused)가 정상. openssl3/서버 모두 거부."
+    verify:
+      type: output_contains
+      expect: 'tls11=refused'
+      field: stdout
+      semantic:
+        intent: "폐기 프로토콜 거부"
+        success_criteria: ["TLS1.1 협상 불가"]
+        acceptable_methods: ["**[OSS] openssl -tls1_1 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 영향
+      ## 💻 실행 명령
+      ```bash
+      echo "자체서명→MITM 식별불가, 약한 프로토콜/cipher→복호화/세션탈취, 인증서만료→가용성"
+      ```
+      ## ✅ 합격 기준
+      전송 보안 약점의 영향을 정리한다.
+    hint: 'MITM/세션탈취'
+    category: analysis
+    points: 10
+    answer: |
+      echo "=== 영향 ==="
+      echo "자체서명 인증서: 신뢰체인 없음 → MITM 위조 인증서 식별 불가"
+      echo "약한 프로토콜/cipher: 트래픽 복호화 → 세션/자격 탈취"
+      echo "인증서 만료: 접속 차단 → 가용성 사고"
+      echo "→ 전송 약점은 앱 코드와 무관하게 전 데이터 노출(A02)"
+    answer_detail: "영향 = MITM(자체서명/약한 TLS), 세션탈취, 가용성(만료). 전송 약점은 전 데이터 위협."
+    verify:
+      type: output_contains
+      expect: 'MITM'
+      field: stdout
+      semantic:
+        intent: "영향 정리"
+        success_criteria: ["MITM/세션탈취"]
+        acceptable_methods: ["**[관리적] 영향 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 전송 강화
+      ## 💻 실행 명령
+      ```bash
+      echo "TLS1.2/1.3만, 약한cipher 비활성, AEAD선호, CA인증서(자체서명금지), HSTS, 자동갱신"
+      ```
+      ## ✅ 합격 기준
+      전송 강화 방어를 정리한다.
+    hint: 'TLS1.2+/HSTS/CA'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 전송 강화 방어 ==="
+      echo "1) 프로토콜: TLS1.2/1.3만, TLS1.0/1.1 비활성"
+      echo "2) cipher: 약한(RC4/3DES/NULL/EXPORT) 배제, AEAD(GCM) 선호"
+      echo "3) 인증서: 유효 CA 서명(자체서명 금지), 호스트명 일치, 자동갱신(ACME)"
+      echo "4) HSTS(Strict-Transport-Security) + HTTP→HTTPS 리다이렉트"
+      echo "→ 핵심: 최신 TLS + 신뢰 인증서 + HSTS"
+    answer_detail: "방어 = TLS1.2+/AEAD + CA 인증서 + HSTS. 전송 강화로 MITM 차단."
+    verify:
+      type: output_contains
+      expect: 'HSTS'
+      field: stdout
+      semantic:
+        intent: "전송 강화 방어"
+        success_criteria: ["TLS1.2+/CA/HSTS"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 전송 보안 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹취약점 W10 전송 보안(TLS) 보고서 (학번, 이름)
+      ## 1. 프로토콜/cipher(TLSv1.3/strength A)
+      ## 2. 인증서(자체서명 *.6v6.lab)
+      ## 3. 방어(TLS1.2+/CA/HSTS)
+      ```
+      ## ✅ 합격 기준
+      보고서에 인증서 결함 + 전송 강화 방어가 포함된다.
+    hint: '자체서명+HSTS'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 웹취약점 W10 전송 보안(TLS) 보고서
+      ## 1. 프로토콜/cipher: TLSv1.3, least strength A(강력 AEAD) — 양호
+      ## 2. 인증서: 자체서명(subject==issuer, CN=*.6v6.lab), 호스트명 불일치 → 결함
+      ## 3. 폐기 프로토콜: TLS1.1 협상 불가(양호)
+      ## 4. 방어: 유효 CA 인증서 교체 + HSTS + 자동갱신
+      ## 결론: 프로토콜/cipher는 견고하나 자체서명 인증서가 A02 결함. CA 인증서+HSTS가 우선
+      EOF
+    answer_detail: "전송 보고 = 프로토콜/cipher(양호) + 자체서명 인증서(결함) + CA/HSTS 방어."
+    verify:
+      type: output_contains
+      expect: 'HSTS'
+      field: stdout
+      semantic:
+        intent: "전송 보안 종합 보고"
+        success_criteria: ["인증서 결함/전송 강화"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
