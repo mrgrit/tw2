@@ -1,0 +1,250 @@
+lab_id: standalone-attack-adv-week06
+title: "권한 상승 — 일반 사용자에서 root로"
+version: standalone-attack-adv
+course: attack-adv
+week: 6
+description: |
+  공격 고급 W06 — 권한 상승(Privilege Escalation). 발판(W01)을 잡은 뒤 일반 사용자→root로 올라간다.
+  SUID 바이너리·sudo 오설정·쓰기 가능 파일/cron·자격 수집·커널 취약점·GTFOBins를 체계적으로 열거한다.
+  el34-attacker에서 privesc 열거(읽기 전용, 실제 상승 미수행). ⚠️ 인가된 실습만. 외부 시스템 금지.
+difficulty: hard
+duration_minutes: 180
+prerequisites:
+  - "attack-adv W01~W05 + 리눅스 권한 모델 이해"
+  - "el34 호스트 SSH + docker exec, el34-attacker"
+  - "lecture §2(SUID/sudo) §3(자격/커널) §4(GTFOBins) 숙지"
+objectives:
+  - "권한 상승 벡터(SUID·sudo·쓰기파일·cron)를 체계적으로 열거"
+  - "자격 수집·커널 취약점·GTFOBins 활용 이해"
+  - "최소 권한 방어와 SUID 감사 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — 현재 권한 파악
+      ## 📖 개념 한 줄
+      권한 상승의 시작 = 내가 누구인가. 현재 사용자·그룹·권한을 파악한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "id; echo ---; whoami"; echo privesc_ready
+      ```
+      ## ✅ 합격 기준
+      현재 권한이 파악되면(privesc_ready) 통과.
+    hint: '현재 권한'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== 현재 권한 파악 ==="
+      docker exec el34-attacker sh -c "id; echo ---; whoami"; echo privesc_ready
+      echo "→ 출발점: 현재 uid/gid/그룹. 목표: root(uid=0). 그 사이를 잇는 벡터를 찾는다"
+    answer_detail: "현재 권한 = id/whoami. 권한 상승은 현재 위치(일반 사용자)에서 root(uid=0)로 가는 경로 찾기."
+    verify:
+      type: output_contains
+      expect: 'privesc_ready'
+      field: stdout
+      semantic: {intent: "현재 권한", success_criteria: ["id"], acceptable_methods: ["**[OSS] id (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 SUID 바이너리 열거
+      ## 📖 개념 한 줄
+      SUID 비트가 붙은 실행 파일은 소유자(주로 root) 권한으로 실행된다 — 악용 시 권한 상승.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "find / -perm -4000 -type f 2>/dev/null | head -20; echo ---count---; find / -perm -4000 -type f 2>/dev/null | wc -l"; echo suid_done
+      ```
+      ## ✅ 합격 기준
+      SUID 바이너리가 열거되면(suid_done) 통과.
+      ## 🔧 도구 풀이
+      - find -perm -4000: SUID 파일. 비표준 SUID(예: find/vim/nmap)는 GTFOBins로 root 셸 가능.
+    hint: 'SUID'
+    category: manipulation
+    points: 14
+    answer: |
+      echo "=== SUID 바이너리 열거 ==="
+      docker exec el34-attacker sh -c "find / -perm -4000 -type f 2>/dev/null | head -20; echo ---count---; find / -perm -4000 -type f 2>/dev/null | wc -l"; echo suid_done
+      echo "→ SUID=소유자 권한으로 실행. 표준(passwd/sudo)은 정상, 비표준(find/vim/python)은 GTFOBins로 악용"
+    answer_detail: "SUID 열거 = find -perm -4000. 비표준 SUID는 GTFOBins로 root 셸 획득. 1순위 privesc 벡터."
+    verify:
+      type: output_contains
+      expect: 'suid_done'
+      field: stdout
+      semantic: {intent: "SUID", success_criteria: ["SUID 파일"], acceptable_methods: ["**[OSS] find (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 sudo 권한 점검
+      ## 📖 개념 한 줄
+      sudo -l은 내가 sudo로 실행 가능한 명령을 보여준다 — 오설정 시 root 직행.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "sudo -n -l 2>/dev/null || echo '(sudo 비번 필요 또는 권한 없음 — 실무선 sudo -l)'; echo '확인 대상: NOPASSWD·ALL·악용가능 바이너리(vi/less/awk)'"; echo sudo_done
+      ```
+      ## ✅ 합격 기준
+      sudo 권한 점검이 수행되면(sudo_done) 통과.
+      ## 🔧 도구 풀이
+      - sudo -l: 허용 명령 목록. NOPASSWD나 (ALL)·GTFOBins 바이너리(less·vi·awk)면 root 셸 가능.
+    hint: 'sudo'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== sudo 권한 점검 ==="
+      docker exec el34-attacker sh -c "sudo -n -l 2>/dev/null || echo '(sudo 비번 필요/권한 없음 — 실무선 sudo -l로 확인)'"; echo sudo_done
+      echo "→ sudo -l이 보여주는 허용 명령. (ALL) NOPASSWD나 less/vi/awk 등 GTFOBins 바이너리면 root 직행"
+      echo "예: sudo less /x → !/bin/sh, sudo awk 'BEGIN{system(\"/bin/sh\")}'"
+    answer_detail: "sudo 점검 = sudo -l. NOPASSWD·GTFOBins 바이너리(less/vi/awk)면 root 셸. 흔한 오설정 벡터."
+    verify:
+      type: output_contains
+      expect: 'sudo_done'
+      field: stdout
+      semantic: {intent: "sudo", success_criteria: ["sudo -l"], acceptable_methods: ["**[OSS] sudo -l (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 쓰기 가능 파일·cron 점검
+      ## 📖 개념 한 줄
+      root가 실행하는 스크립트/cron이 내게 쓰기 가능하면, 그 내용을 바꿔 root 권한을 얻는다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo '== world-writable (일부) =='; find /etc /usr/local -writable -type f 2>/dev/null | head; echo '== cron =='; ls -la /etc/cron* 2>/dev/null | head; cat /etc/crontab 2>/dev/null | grep -v '^#' | head"; echo writable_done
+      ```
+      ## ✅ 합격 기준
+      쓰기 가능 파일·cron이 점검되면(writable_done) 통과.
+      ## 🔧 도구 풀이
+      - 쓰기 가능한 root cron/PATH 스크립트·service 파일 → 내용 교체로 권한 상승. PATH 하이재킹도.
+    hint: '쓰기 파일/cron'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 쓰기 가능 파일·cron 점검 ==="
+      docker exec el34-attacker sh -c "echo '== writable files =='; find /etc /usr/local -writable -type f 2>/dev/null | head; echo '== cron =='; ls -la /etc/cron* 2>/dev/null | head; cat /etc/crontab 2>/dev/null | grep -v '^#' | head"; echo writable_done
+      echo "→ root가 실행하는 쓰기가능 스크립트/cron → 내용 교체로 root. PATH 하이재킹(상대경로)도 벡터"
+    answer_detail: "쓰기파일/cron = root 실행 파일이 내게 쓰기가능하면 내용 교체로 권한 상승. PATH 하이재킹 포함."
+    verify:
+      type: output_contains
+      expect: 'writable_done'
+      field: stdout
+      semantic: {intent: "쓰기파일/cron", success_criteria: ["writable/cron"], acceptable_methods: ["**[OSS] find (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 자격 수집 (credential harvesting)
+      ## 📖 개념 한 줄
+      시스템 곳곳의 평문 비밀(설정·히스토리·키)을 수집해 다른 계정/호스트로 확장한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "echo '== history =='; ls -la ~/.bash_history 2>/dev/null; echo '== ssh keys =='; ls -la ~/.ssh 2>/dev/null | head; echo '== config grep =='; grep -rIl -iE 'password|secret|api_key' /etc 2>/dev/null | head -3"; echo creds_done
+      ```
+      ## ✅ 합격 기준
+      자격 수집 위치가 점검되면(creds_done) 통과.
+      ## 🔧 도구 풀이
+      - .bash_history·.ssh 키·설정파일 평문 비밀·env. 수집한 자격은 측면 이동(W08)의 연료.
+    hint: '자격 수집'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 자격 수집(credential harvesting) ==="
+      docker exec el34-attacker sh -c "echo '== history =='; ls -la ~/.bash_history 2>/dev/null; echo '== ssh keys =='; ls -la ~/.ssh 2>/dev/null | head; echo '== config secrets =='; grep -rIl -iE 'password|secret|api_key' /etc 2>/dev/null | head -3"; echo creds_done
+      echo "→ history·SSH키·설정 평문 비밀·env 변수. 수집 자격 = 다른 계정/호스트로 가는 측면 이동(W08) 연료"
+    answer_detail: "자격 수집 = history/.ssh/설정 평문 비밀. 권한 상승+측면 이동(W08)의 연료. 메모리(soc-adv W08)도 소스."
+    verify:
+      type: output_contains
+      expect: 'creds_done'
+      field: stdout
+      semantic: {intent: "자격 수집", success_criteria: ["history/키/비밀"], acceptable_methods: ["**[OSS] grep (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 커널·GTFOBins
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "uname -r; echo '→ 커널 버전으로 알려진 LPE 익스플로잇(예: DirtyPipe/DirtyCow) 매핑'"; echo kernel_done
+      ```
+      ## ✅ 합격 기준
+      커널 버전·GTFOBins 개념이 정리되면(kernel_done) 통과.
+      ## 🔧 도구 풀이
+      - 커널 버전 → 알려진 LPE(DirtyCow/DirtyPipe/PwnKit). GTFOBins=SUID/sudo 바이너리 악용 백과.
+    hint: '커널/GTFOBins'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== 커널·GTFOBins ==="
+      docker exec el34-attacker sh -c "uname -r"; echo "→ 커널 버전으로 알려진 LPE 매핑"
+      echo "커널 LPE 예: DirtyCow(CVE-2016-5195)·DirtyPipe(2022-0847)·PwnKit(pkexec 2021-4034)"
+      echo "GTFOBins: SUID/sudo로 실행 가능한 바이너리의 권한 상승 백과(find/vim/awk/less/python...)"
+      echo "  예: SUID find → find . -exec /bin/sh -p \\; / sudo vim → :!/bin/sh"
+      echo "→ 자동화: linpeas.sh가 위 모든 벡터를 한 번에 열거"
+      echo kernel_done
+    answer_detail: "커널/GTFOBins = 커널 버전→알려진 LPE(DirtyPipe/PwnKit). GTFOBins=바이너리 악용 백과. linpeas 자동화."
+    verify:
+      type: output_contains
+      expect: 'kernel_done'
+      field: stdout
+      semantic: {intent: "커널/GTFOBins", success_criteria: ["커널/LPE"], acceptable_methods: ["**[OSS] uname/GTFOBins (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 권한 상승 차단
+      ## 💻 실행 명령
+      ```bash
+      echo "방어: 최소권한·SUID 감사/제거·sudo 엄격·커널 패치·자격 평문 금지·파일 권한 강화"
+      ```
+      ## ✅ 합격 기준
+      권한 상승 방어가 정리되면 통과.
+    hint: '방어'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 방어: 권한 상승 차단 ==="
+      echo "① 최소 권한: 불필요한 SUID 제거·감사(find -perm -4000 주기 점검)"
+      echo "② sudo 엄격: NOPASSWD 최소화·GTFOBins 바이너리 sudo 금지·명령 제한"
+      echo "③ 커널 패치: 알려진 LPE(DirtyPipe/PwnKit) 신속 패치"
+      echo "④ 자격 보호: 평문 비밀 금지·.ssh 권한·env 비밀 제거"
+      echo "⑤ 파일 권한: root 실행 파일·cron 비쓰기·PATH 절대경로"
+      echo "→ 탐지: SUID 실행·sudo 이상·새 계정(soc-adv W06 헌팅)"
+      echo "defense_done"
+    answer_detail: "방어 = 최소권한/SUID감사/sudo엄격/커널패치/자격보호. 헌팅(soc-adv W06)으로 탐지 병행."
+    verify:
+      type: output_contains
+      expect: 'defense_done'
+      field: stdout
+      semantic: {intent: "방어", success_criteria: ["최소권한/SUID감사"], acceptable_methods: ["**[관리적] 방어 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 권한 상승 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 공격고급 W06 권한 상승 보고서 (학번, 이름)
+      ## 1. 열거(SUID·sudo·쓰기파일/cron)
+      ## 2. 자격 수집·커널/GTFOBins
+      ## 3. 방어(최소권한·감사·패치)
+      ```
+      ## ✅ 합격 기준
+      열거 + 자격/커널 + 방어 포함.
+    hint: '열거+자격/커널+방어'
+    category: report
+    points: 12
+    answer: |
+      cat <<'EOF'
+      # 공격고급 W06 권한 상승 보고서
+      ## 1. 열거: SUID(find -perm -4000)·sudo -l(NOPASSWD/GTFOBins)·쓰기가능 root 파일/cron·PATH 하이재킹
+      ## 2. 자격 수집(history/.ssh/설정 평문)·커널 버전→LPE(DirtyPipe/PwnKit)·GTFOBins 바이너리 악용. 자동화 linpeas
+      ## 3. 방어: 최소권한·SUID 감사/제거·sudo 엄격·커널 패치·자격 평문 금지·파일권한 강화. 헌팅 탐지
+      ## 결론: 권한 상승은 '체계적 열거'가 9할. 작은 오설정(SUID/sudo) 하나가 root로. 방어는 최소권한+감사
+      EOF
+    answer_detail: "권한 상승 보고 = 열거(SUID/sudo/cron)+자격/커널/GTFOBins+방어. 체계적 열거가 핵심, 오설정이 root로."
+    verify:
+      type: output_contains
+      expect: '권한 상승'
+      field: stdout
+      semantic: {intent: "권한 상승 보고", success_criteria: ["열거/자격/방어"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
