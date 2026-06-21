@@ -1,0 +1,243 @@
+lab_id: standalone-web-vuln-week06
+title: "XSS/CSRF — 스크립트 주입 vs XSS 탐지·CSP 방어"
+version: standalone-web-vuln
+course: web-vuln
+week: 6
+description: |
+  XSS(Reflected/변형)와 CSRF 점검 — 스크립트 주입의 ModSec 941 탐지, CSRF 토큰/CSP 점검, 출력 인코딩 방어.
+  dvwa/juice 대상. 공격은 el34-attacker(XSS payload 공백 %20). 인가된 실습만. 명령은 el34 호스트에서.
+difficulty: medium
+duration_minutes: 160
+prerequisites:
+  - "W01–W05 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(XSS) §3(CSRF) §4(방어) 숙지"
+objectives:
+  - "Reflected XSS + 변형 주입"
+  - "CSRF 토큰/CSP 헤더 점검"
+  - "ModSec 941 탐지 + 출력인코딩/CSP 방어"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 점검 — 대상
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      ```
+      ## ✅ 합격 기준
+      대상 도달.
+    hint: '도달성'
+    category: survey
+    points: 10
+    answer: |
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+    answer_detail: "XSS/CSRF 점검 대상 = web vhost."
+    verify:
+      type: output_contains
+      expect: 'dvwa'
+      field: stdout
+      semantic:
+        intent: "대상 점검"
+        success_criteria: ["도달"]
+        acceptable_methods: ["**[OSS] curl (권장)**"]
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 Reflected XSS
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<script>alert(1)</script>'"
+      ```
+      ## ✅ 합격 기준
+      script 주입이 403(941)에 차단된다.
+    hint: '<script> → 403'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== Reflected XSS ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<script>alert(1)</script>'"
+      echo "→ <script> 주입 → 941 탐지 → 403"
+    answer_detail: "Reflected XSS = 파라미터가 응답에 반사. <script>가 941→403."
+    verify:
+      type: output_contains
+      expect: '403'
+      field: stdout
+      semantic:
+        intent: "Reflected XSS"
+        success_criteria: ["<script> 403"]
+        acceptable_methods: ["**[OSS] XSS → 403 (권장)**"]
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 XSS 변형
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'img=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<img%20src=x%20onerror=alert(1)>'"
+      ```
+      ## ✅ 합격 기준
+      이벤트 핸들러 XSS 변형이 탐지된다.
+    hint: 'img onerror (%20)'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== XSS 변형 (img onerror) ==="
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'img=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<img%20src=x%20onerror=alert(1)>'"
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'svg=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<svg%20onload=alert(1)>'"
+      echo "→ 이벤트 핸들러(onerror/onload)도 941이 탐지"
+    answer_detail: "XSS 변형 = script 외 img onerror/svg onload 등 이벤트 핸들러. 941이 커버. (공백 %20 인코딩 필수)"
+    verify:
+      type: output_contains
+      expect: '403'
+      field: stdout
+      semantic:
+        intent: "XSS 변형"
+        success_criteria: ["이벤트 핸들러 탐지"]
+        acceptable_methods: ["**[OSS] img/svg XSS (권장)**"]
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 CSRF 점검 — 토큰 유무
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -s -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -ioE 'csrf|token|user_token' | head -3 || echo 'CSRF 토큰 미발견'"
+      ```
+      ## ✅ 합격 기준
+      CSRF 토큰 유무를 점검한다.
+    hint: 'csrf/token grep'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== CSRF 토큰 점검 ==="
+      docker exec el34-attacker sh -c "curl -s -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -ioE 'csrf|user_token|anti.?csrf' | head -3 || echo 'CSRF 토큰 미발견 → 위조 가능'"
+      echo "→ 상태 변경 요청에 예측 불가 CSRF 토큰 없으면 위조 가능(피해자 세션 악용)"
+    answer_detail: "CSRF 점검 = 상태 변경 폼/요청에 CSRF 토큰 유무. 없으면 공격자 페이지가 피해자 세션으로 위조 요청 전송 가능."
+    verify:
+      type: output_contains
+      expect: 'CSRF'
+      field: stdout
+      semantic:
+        intent: "CSRF 토큰 점검"
+        success_criteria: ["토큰 유무"]
+        acceptable_methods: ["**[OSS] csrf token grep (권장)**"]
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 탐지 — ModSec 941
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "941[0-9]{3}" | sort | uniq -c'
+      ```
+      ## ✅ 합격 기준
+      XSS가 941에 탐지됨을 확인한다.
+    hint: 'modsec 941'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== XSS 탐지 (ModSec 941) ==="
+      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "941[0-9]{3}" | sort | uniq -c'
+      echo "→ 941100(script)/941160(이벤트핸들러) 등 XSS 룰군"
+    answer_detail: "XSS 탐지 = ModSec 941 룰군(script/이벤트/속성). 변형 다수 커버."
+    verify:
+      type: output_contains
+      expect: '941'
+      field: stdout
+      semantic:
+        intent: "XSS ModSec 탐지"
+        success_criteria: ["941 룰"]
+        acceptable_methods: ["**[OSS] modsec 941 (권장)**"]
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 CSP 헤더 점검
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -iE 'content-security|x-frame' || echo 'CSP 미설정'"
+      ```
+      ## ✅ 합격 기준
+      CSP 헤더 유무를 점검한다.
+    hint: 'content-security-policy 헤더'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== CSP 헤더 점검 ==="
+      docker exec el34-attacker sh -c "curl -sI -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -iE 'content-security|x-frame' || echo 'CSP/X-Frame 미설정 → XSS 2차 방어선 부재'"
+      echo "→ CSP는 인라인 스크립트/외부 출처를 제한해 XSS를 완화하는 2차 방어선"
+    answer_detail: "CSP 점검 = Content-Security-Policy 헤더 유무. CSP는 XSS의 2차 방어(인라인 스크립트 차단). 없으면 출력 인코딩에만 의존."
+    verify:
+      type: output_contains
+      expect: 'CSP'
+      field: stdout
+      semantic:
+        intent: "CSP 헤더 점검"
+        success_criteria: ["CSP 유무"]
+        acceptable_methods: ["**[OSS] CSP 헤더 (권장)**"]
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 방어 — 인코딩+CSP+CSRF토큰
+      ## 💻 실행 명령
+      ```bash
+      echo "XSS: 출력 인코딩(근본)+CSP+HttpOnly. CSRF: CSRF 토큰+SameSite+재인증"
+      ```
+      ## ✅ 합격 기준
+      XSS/CSRF 방어를 정리한다.
+    hint: '인코딩+CSP+CSRF토큰'
+    category: report
+    points: 10
+    answer: |
+      echo "=== XSS/CSRF 방어 ==="
+      echo "XSS: ① 출력 인코딩(context-aware, 근본) ② CSP(2차) ③ HttpOnly 쿠키(탈취 차단)"
+      echo "CSRF: ① CSRF 토큰(동기화) ② SameSite 쿠키 ③ 민감 작업 재인증"
+      echo "→ XSS는 인코딩+CSP, CSRF는 토큰+SameSite"
+    answer_detail: "XSS 방어=출력 인코딩+CSP+HttpOnly. CSRF 방어=CSRF 토큰+SameSite+재인증."
+    verify:
+      type: output_contains
+      expect: 'CSP'
+      field: stdout
+      semantic:
+        intent: "XSS/CSRF 방어"
+        success_criteria: ["인코딩/CSP/CSRF토큰"]
+        acceptable_methods: ["**[설명] 방어 (권장)**"]
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 XSS/CSRF 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # 웹취약점 W06 XSS/CSRF 보고서 (학번, 이름)
+      ## 1. XSS(유형/변형) + 941 탐지
+      ## 2. CSRF 토큰/CSP 점검
+      ## 3. 방어(인코딩/CSP/토큰)
+      ```
+      ## ✅ 합격 기준
+      보고서에 XSS/CSRF + 방어가 포함된다.
+    hint: 'XSS+CSRF+방어'
+    category: report
+    points: 10
+    answer: |
+      cat <<'EOF'
+      # 웹취약점 W06 XSS/CSRF 보고서
+      ## 1. XSS: Reflected/변형(img/svg) → 941 탐지, dvwa 403
+      ## 2. CSRF: 토큰 유무 점검. CSP 헤더 점검(2차 방어선)
+      ## 3. 방어: XSS=출력 인코딩+CSP+HttpOnly, CSRF=토큰+SameSite
+      ## 결론: 둘 다 브라우저 악용. XSS는 인코딩/CSP, CSRF는 토큰으로 방어
+      EOF
+    answer_detail: "XSS/CSRF = 브라우저 악용. XSS(941/인코딩/CSP), CSRF(토큰/SameSite). WSTG-CLNT."
+    verify:
+      type: output_contains
+      expect: 'CSRF'
+      field: stdout
+      semantic:
+        intent: "XSS/CSRF 종합 보고"
+        success_criteria: ["XSS/CSRF/방어"]
+        acceptable_methods: ["**[관리적] 보고서 (권장)**"]
+    target_vm: web
