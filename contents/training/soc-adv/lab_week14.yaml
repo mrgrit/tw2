@@ -1,0 +1,246 @@
+lab_id: standalone-soc-adv-week14
+title: "SOC + AI — 이상탐지·AI 분류·LLM 보조와 그 한계"
+version: standalone-soc-adv
+course: soc-adv
+week: 14
+description: |
+  SOC 고급 W14 — SOC에 AI/ML 접목. 통계적 이상탐지(빈도 베이스라인·이상치), AI 분류(정밀도/재현율),
+  LLM 보조 분석, 그리고 한계(오탐·설명가능성·적대적 회피)를 다룬다. el34 로그로 출처별 빈도를 계산해
+  이상치(공격자)를 잡는 통계 이상탐지를 직접 수행. el34-ips/siem 사용(읽기 전용). 인가된 실습만.
+difficulty: hard
+duration_minutes: 175
+prerequisites:
+  - "soc-adv W03(SIGMA)·W05(CTI)·W12(로그) 통과"
+  - "el34 호스트 SSH + docker exec"
+  - "lecture §2(AI 적용 지점) §3(이상탐지) §4(한계) 숙지"
+objectives:
+  - "SOC에서 AI/ML이 적합한 지점과 부적합한 지점 구분"
+  - "통계적 이상탐지(베이스라인·이상치) 수행"
+  - "AI의 한계(오탐·설명가능성·적대적 회피)와 사람 감독 이해"
+pass_threshold: 0.7
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 목표 — AI 적용 지점 식별
+      ## 📖 개념 한 줄
+      AI는 만능이 아니다 — 대량·반복·패턴(이상탐지·분류·요약)에 강하고, 판단·책임엔 사람이 필요.
+      ## 💻 실행 명령
+      ```bash
+      echo "AI 강점: 이상탐지(통계)·분류(악성/정상)·보강/요약(LLM). 사람 영역: 판단·책임·맥락"
+      docker exec el34-ips sh -c "test -f /var/log/suricata/eve.json && echo data_available"; echo ai_scope_done
+      ```
+      ## ✅ 합격 기준
+      AI 적용 지점과 데이터 가용성이 확인되면(ai_scope_done) 통과.
+    hint: 'AI 적용 지점'
+    category: survey
+    points: 10
+    answer: |
+      echo "=== AI 적용 지점 식별 ==="
+      echo "AI 강점: ① 이상탐지(통계 베이스라인) ② 분류(악성/정상) ③ 보강·요약(LLM 트리아지)"
+      echo "사람 영역: 최종 판단·책임·맥락·윤리"
+      docker exec el34-ips sh -c "test -f /var/log/suricata/eve.json && echo data_available"; echo ai_scope_done
+      echo "→ AI는 분석가를 증폭(반복 자동화)하지, 대체하지 않는다"
+    answer_detail: "AI 적용 = 이상탐지·분류·요약(강점) vs 판단·책임(사람). AI는 증폭 도구이지 대체가 아님."
+    verify:
+      type: output_contains
+      expect: 'ai_scope_done'
+      field: stdout
+      semantic: {intent: "AI 적용 지점", success_criteria: ["강점/한계"], acceptable_methods: ["**[설명] AI 범위 (권장)**"]}
+    target_vm: web
+
+  - order: 2
+    instruction: |
+      ## 🎯 베이스라인 — 정상 패턴 학습
+      ## 📖 개념 한 줄
+      이상탐지의 전제 = 정상이 무엇인지 안다. 출처별 이벤트 빈도로 '정상 분포'를 만든다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -oE '\"src_ip\":\"[0-9.]+\"' | sort | uniq -c | sort -rn | head"; echo baseline_built
+      ```
+      ## ✅ 합격 기준
+      출처별 빈도 베이스라인이 만들어지면(baseline_built) 통과.
+      ## 🔧 도구 풀이
+      - 베이스라인: 출처별 이벤트 수 분포. 대부분 낮고 소수가 높음 → 높은 쪽이 이상치 후보.
+    hint: '베이스라인'
+    category: manipulation
+    points: 12
+    answer: |
+      echo "=== 베이스라인(정상 패턴) ==="
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -oE '\"src_ip\":\"[0-9.]+\"' | sort | uniq -c | sort -rn | head"; echo baseline_built
+      echo "→ 출처별 빈도 분포 = 정상 베이스라인. 대부분 소량, 소수가 폭주 → 폭주가 이상치 후보"
+    answer_detail: "베이스라인 = 출처별 이벤트 빈도 분포. '정상'을 알아야 '이상'을 안다. 이상탐지의 전제."
+    verify:
+      type: output_contains
+      expect: 'baseline_built'
+      field: stdout
+      semantic: {intent: "베이스라인", success_criteria: ["빈도 분포"], acceptable_methods: ["**[OSS] 빈도 분석 (권장)**"]}
+    target_vm: web
+
+  - order: 3
+    instruction: |
+      ## 🎯 이상치 탐지 (statistical outlier)
+      ## 📖 개념 한 줄
+      베이스라인에서 크게 벗어난 출처(빈도 폭주)를 이상치로 자동 식별한다.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -oE '\"src_ip\":\"[0-9.]+\"' | sort | uniq -c | sort -rn | awk 'NR==1{print \"top talker(이상치 후보):\", \$0}'"; echo outlier_found
+      ```
+      ## ✅ 합격 기준
+      이상치(top talker)가 식별되면(outlier_found) 통과.
+    hint: '이상치'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== 이상치 탐지(statistical outlier) ==="
+      docker exec el34-ips sh -c "tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -oE '\"src_ip\":\"[0-9.]+\"' | sort | uniq -c | sort -rn | awk 'NR==1{print \"top talker(이상치 후보):\", \$0}'"; echo outlier_found
+      echo "→ 빈도 최상위 = 베이스라인 대비 이상치. 룰 없이도 '평소와 다름'으로 공격자 후보 발견"
+    answer_detail: "이상치 탐지 = 베이스라인 대비 폭주 출처 식별. 룰 없이 '평소와 다름'으로 미지 위협 후보 발견."
+    verify:
+      type: output_contains
+      expect: 'outlier_found'
+      field: stdout
+      semantic: {intent: "이상치", success_criteria: ["outlier"], acceptable_methods: ["**[OSS] outlier (권장)**"]}
+    target_vm: web
+
+  - order: 4
+    instruction: |
+      ## 🎯 AI 분류 평가 (정밀도/재현율)
+      ## 💻 실행 명령
+      ```bash
+      echo "분류기 평가: 정밀도(P)=잡은 것 중 진짜 비율, 재현율(R)=진짜 중 잡은 비율. 둘의 균형(F1)"
+      ```
+      ## ✅ 합격 기준
+      정밀도/재현율 트레이드오프가 정리되면 통과.
+      ## 🔧 도구 풀이
+      - 오탐(FP)↑→정밀도↓(분석가 피로). 미탐(FN)↑→재현율↓(놓침). SOC는 보통 재현율 우선+보강.
+    hint: '정밀도/재현율'
+    category: analysis
+    points: 14
+    answer: |
+      echo "=== AI 분류 평가(정밀도/재현율) ==="
+      echo "정밀도(Precision) = 경보 중 진짜 공격 비율 (낮으면 오탐 폭주→분석가 피로)"
+      echo "재현율(Recall)    = 진짜 공격 중 잡은 비율 (낮으면 놓침→침해)"
+      echo "트레이드오프: 민감하게→재현율↑ 정밀도↓ / 보수적→정밀도↑ 재현율↓. 균형=F1"
+      echo "→ SOC는 보통 '놓치지 않기(재현율)' 우선 + CTI/상관으로 오탐 줄이기"
+      echo "classifier_evaluated"
+    answer_detail: "AI 분류 평가 = 정밀도(오탐)/재현율(미탐) 트레이드오프. SOC는 재현율 우선+보강으로 오탐 관리."
+    verify:
+      type: output_contains
+      expect: 'classifier_evaluated'
+      field: stdout
+      semantic: {intent: "분류 평가", success_criteria: ["정밀도/재현율"], acceptable_methods: ["**[설명] P/R (권장)**"]}
+    target_vm: web
+
+  - order: 5
+    instruction: |
+      ## 🎯 LLM 보조 분석 (트리아지·요약)
+      ## 💻 실행 명령
+      ```bash
+      echo "LLM: 알림 요약·로그 설명·플레이북 초안·자연어 질의. 단 환각(hallucination) 검증 필수"
+      ```
+      ## ✅ 합격 기준
+      LLM의 SOC 활용과 주의점이 정리되면 통과.
+    hint: 'LLM 보조'
+    category: analysis
+    points: 12
+    answer: |
+      echo "=== LLM 보조 분석(트리아지·요약) ==="
+      echo "활용: ① 알림 더미를 자연어 요약 ② 낯선 로그/명령 설명 ③ 플레이북 초안 ④ 자연어→쿼리"
+      echo "주의: ① 환각(없는 사실 생성)→반드시 원본 검증 ② 민감 로그 외부 유출 금지 ③ 결정은 사람"
+      echo "→ tw2 플랫폼도 채점/피드백에 LLM 사용 — 보조는 강력하나 검증·책임은 사람"
+      echo "llm_assist_done"
+    answer_detail: "LLM 보조 = 요약/설명/초안/질의. 환각 검증·민감정보 보호·최종 책임은 사람. 강력한 증폭 도구."
+    verify:
+      type: output_contains
+      expect: 'llm_assist_done'
+      field: stdout
+      semantic: {intent: "LLM 보조", success_criteria: ["활용/주의"], acceptable_methods: ["**[설명] LLM (권장)**"]}
+    target_vm: web
+
+  - order: 6
+    instruction: |
+      ## 🎯 AI의 한계 (적대적 회피·설명가능성)
+      ## 💻 실행 명령
+      ```bash
+      echo "한계: ①적대적 회피(공격자가 AI 속임) ②설명가능성 부족(왜?) ③데이터 편향 ④드리프트"
+      ```
+      ## ✅ 합격 기준
+      AI 한계 유형이 정리되면 통과.
+    hint: 'AI 한계'
+    category: report
+    points: 12
+    answer: |
+      echo "=== AI의 한계 ==="
+      echo "1) 적대적 회피(adversarial): 공격자가 입력을 조작해 AI를 오분류시킴(난독화·페이로드 변형)"
+      echo "2) 설명가능성(explainability): '왜 악성인가'를 못 대면 분석가가 신뢰/검증 불가"
+      echo "3) 데이터 편향: 학습 데이터에 없는 신종 공격엔 약함"
+      echo "4) 드리프트: 환경 변화로 모델 정확도 저하 → 재학습 필요"
+      echo "→ 그래서 AI는 룰·CTI·사람과 '겹겹이' 써야지 단독 의존은 위험"
+      echo "limits_done"
+    answer_detail: "AI 한계 = 적대적 회피·설명가능성·편향·드리프트. 단독 의존 위험 → 룰/CTI/사람과 다층 방어."
+    verify:
+      type: output_contains
+      expect: 'limits_done'
+      field: stdout
+      semantic: {intent: "AI 한계", success_criteria: ["회피/설명가능성"], acceptable_methods: ["**[설명] 한계 (권장)**"]}
+    target_vm: web
+
+  - order: 7
+    instruction: |
+      ## 🎯 사람 감독 (human oversight)
+      ## 💻 실행 명령
+      ```bash
+      echo "AI 출력은 '제안'이지 '결정'이 아니다. 고위험 결정엔 사람 검토. AI+룰+사람 다층"
+      ```
+      ## ✅ 합격 기준
+      사람 감독 원칙이 정리되면 통과.
+    hint: '사람 감독'
+    category: report
+    points: 12
+    answer: |
+      echo "=== 사람 감독(human oversight) ==="
+      echo "원칙: AI 출력=제안(suggestion), 사람=결정(decision)"
+      echo "  - 저위험: AI 자동(태그·우선순위)"
+      echo "  - 고위험: AI 제안 + 사람 검토(차단·법적 보고)"
+      echo "다층: AI(이상탐지)+룰(SIGMA)+CTI(인텔)+사람(판단) — 한 층 뚫려도 다른 층이 잡음"
+      echo "→ W10 SOAR의 HITL과 동일 원칙 — 자동화·AI는 사람을 증폭, 책임은 사람"
+      echo "oversight_done"
+    answer_detail: "사람 감독 = AI는 제안, 사람은 결정. 고위험엔 사람 검토. AI+룰+CTI+사람 다층 방어."
+    verify:
+      type: output_contains
+      expect: 'oversight_done'
+      field: stdout
+      semantic: {intent: "사람 감독", success_criteria: ["제안 vs 결정"], acceptable_methods: ["**[관리적] 감독 (권장)**"]}
+    target_vm: web
+
+  - order: 8
+    instruction: |
+      ## 🎯 SOC+AI 보고서
+      ## 💻 보고서 양식
+      ```markdown
+      # SOC고급 W14 SOC+AI 보고서 (학번, 이름)
+      ## 1. AI 적용 지점·이상탐지(베이스라인/이상치)
+      ## 2. 분류 평가(정밀도/재현율)·LLM 보조
+      ## 3. AI 한계·사람 감독
+      ```
+      ## ✅ 합격 기준
+      이상탐지 + 분류평가 + 한계/감독 포함.
+    hint: '이상탐지+분류+한계'
+    category: report
+    points: 14
+    answer: |
+      cat <<'EOF'
+      # SOC고급 W14 SOC+AI 보고서
+      ## 1. AI 적용: 이상탐지·분류·요약. 통계 이상탐지로 출처별 베이스라인→top talker(이상치=공격자 후보)
+      ## 2. 분류 평가: 정밀도(오탐)/재현율(미탐) 트레이드오프, SOC는 재현율 우선+보강. LLM=요약/초안(환각 검증)
+      ## 3. 한계: 적대적 회피·설명가능성·편향·드리프트. 사람 감독: AI는 제안, 사람은 결정. AI+룰+CTI+사람 다층
+      ## 결론: AI는 분석가를 증폭(대량/반복). 단독 의존 금물 — 다층 방어와 사람 책임이 핵심
+      EOF
+    answer_detail: "SOC+AI 보고 = 이상탐지+분류평가/LLM+한계/사람감독. AI는 증폭 도구, 다층 방어와 사람 책임이 핵심."
+    verify:
+      type: output_contains
+      expect: 'SOC+AI'
+      field: stdout
+      semantic: {intent: "SOC+AI 보고", success_criteria: ["이상탐지/분류/한계"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+    target_vm: web
