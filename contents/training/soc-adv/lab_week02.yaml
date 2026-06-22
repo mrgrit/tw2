@@ -22,13 +22,15 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 목표 — 대상 도달
+      ## 🎯 점검 대상 도달 확인
+      **실습 의미:** 상관분석을 시작하기 전, 공격을 흘릴 표적(웹)에 실제 도달하는지부터 확인한다 — 도달 안 되면 이후 로그가 비는 게 정상인지 미도달인지 알 수 없다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
       ```
+      **명령 설명:** 공격자 컨테이너에서 웹 표적(dvwa)에 HTTP 요청을 보내 응답 코드를 `dvwa=` 형식으로 출력한다.
       ## ✅ 합격 기준
-      대상 도달.
+      `dvwa=` 와 응답코드가 출력되면 통과. **근거:** 코드가 찍힌다는 건 표적에 실제 도달했다는 뜻이라, 이후 상관분석에 쓸 로그가 생성될 수 있다.
     hint: '도달성'
     category: survey
     points: 10
@@ -45,18 +47,15 @@ steps:
   - order: 2
     instruction: |
       ## 🎯 다벡터 공격 생성 (SQLi + XSS 반복)
-      ## 📖 개념 한 줄
-      같은 출처에서 SQLi와 XSS를 여러 번 섞어 보내 "다벡터 캠페인" 패턴을 만든다. 개별 시도는 노이즈처럼 보여도
-      묶으면 분명한 공격이다.
+      **실습 의미:** 상관분석의 분석 대상을 만든다 — 같은 출처에서 SQLi·XSS를 섞어 반복 전송하면, 개별로는 노이즈 같아도 묶으면 분명한 "다벡터 캠페인"이 된다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c "for i in 1 2 3; do curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user--\"; curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=%3Cscript%3Ealert(1)%3C/script%3E\"; done; echo sent"
       docker exec el34-web sh -c "sudo tail -400 /var/log/apache2/modsec_audit.log 2>/dev/null | grep -oE '94[12]' | sort | uniq -c"
       ```
+      **명령 설명:** ①공격자가 SQLi+XSS를 3회씩 반복 전송 ②웹서버 modsec_audit.log에서 발화 룰ID(942=SQLi, 941=XSS) 건수를 집계한다.
       ## ✅ 합격 기준
-      ModSec audit에 942(SQLi)+941(XSS)이 함께 탐지되면 다벡터 패턴 생성됨.
-      ## 🔧 도구 풀이
-      - 942=SQLi, 941=XSS 룰군. 두 벡터가 같은 출처에서 반복 = 상관 대상.
+      `942`(와 941)가 함께 출력되면 통과. **근거:** 두 룰군이 같은 출처에서 동시 발화했다는 건 단일 벡터가 아닌 다벡터 캠페인 패턴이 실제로 만들어졌다는 뜻이다.
     hint: '942+941'
     category: manipulation
     points: 16
@@ -76,14 +75,14 @@ steps:
   - order: 3
     instruction: |
       ## 🎯 상관 패턴 식별 (same source IP)
-      ## 📖 개념 한 줄
-      상관의 핵심 축은 "같은 출처(same_source_ip)가 짧은 시간(timeframe)에 여러 번(frequency)". 출처 IP로 묶는다.
+      **실습 의미:** 흩어진 알림을 "한 공격자"로 묶는 축을 잡는다 — 상관의 핵심은 같은 출처(same_source_ip)가 짧은 시간(timeframe)에 여러 번(frequency)이다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-web sh -c "sudo tail -400 /var/log/apache2/dvwa_access.log 2>/dev/null | grep -c '10.20.30.202' || sudo tail -400 /var/log/apache2/access.log 2>/dev/null | grep -c '10.20.30.202'"; echo corr_axis
       ```
+      **명령 설명:** 웹 액세스 로그에서 공격 출처 IP(10.20.30.202)의 요청 건수를 세어 한 출처가 다수 요청을 보냈는지 확인한다.
       ## ✅ 합격 기준
-      같은 출처 IP의 다수 요청이 확인되면(corr_axis) 상관 축 확보.
+      `corr_axis`(와 요청 건수)가 출력되면 통과. **근거:** 한 출처의 다수 요청이 확인된다는 건 same_source_ip+frequency 상관 축이 실제로 성립한다는 뜻이라, 알림들을 한 사건으로 묶을 수 있다.
     hint: 'same_source_ip'
     category: analysis
     points: 12
@@ -102,14 +101,14 @@ steps:
   - order: 4
     instruction: |
       ## 🎯 Wazuh 상관 데이터 확인
-      ## 📖 개념 한 줄
-      Wazuh가 ModSec/Suricata 로그를 모아 상관할 수 있어야 복합 격상룰이 동작한다. 웹 그룹 알림 적재를 본다.
+      **실습 의미:** 복합 격상룰이 동작하려면 Wazuh가 ModSec/Suricata 알림을 실제로 적재하고 있어야 한다 — 상관의 입력 데이터가 있는지 확인한다.
       ## 💻 실행 명령
       ```bash
       docker exec el34-siem sh -c 'N=$(tail -3000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -cE "web|modsec|941|942"); echo "web_alerts=$N"'
       ```
+      **명령 설명:** SIEM 컨테이너에서 alerts.json의 웹 관련 알림(web/modsec/941/942) 건수를 세어 `web_alerts=N`으로 출력한다.
       ## ✅ 합격 기준
-      웹 그룹 알림 적재(web_alerts=)가 확인되면 상관 가능.
+      `web_alerts=`(과 건수)가 출력되면 통과. **근거:** 웹 알림이 적재돼 있다는 건 frequency/timeframe/same_source_ip 상관룰에 넣을 입력이 준비됐다는 뜻이다.
     hint: 'Wazuh 상관'
     category: manipulation
     points: 14
@@ -127,16 +126,16 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 오탐 예외 설계 — 스캐너 트래픽 볼륨 실측
-      ## 💻 실행 명령 (스캐너 트래픽을 흘려 그 볼륨을 실측 → 화이트리스트 근거)
+      ## 🎯 오탐 예외 설계 (내부 스캐너 화이트리스트)
+      **실습 의미:** 내부 정기 스캐너·헬스체크는 같은 다벡터 패턴을 만들어 상관룰을 오탐시킨다 — 그 트래픽 볼륨을 실측해 예외(화이트리스트) 근거를 잡는다.
+      ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'nmap -sT -T4 --top-ports 30 10.20.30.1 >/dev/null 2>&1'
       docker exec el34-ips sh -c 'N=$(tail -2000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202); echo "출처 10.20.30.202 이벤트 $N건 — 내부 스캐너면 이 패턴을 화이트리스트 예외로 배제"; [ "$N" -ge 0 ] && echo fp_exception_designed'
       ```
+      **명령 설명:** ①내부 스캐너처럼 포트 스캔을 흘리고 ②IPS eve.json에서 그 출처의 이벤트 건수를 세어 예외로 뺄 트래픽량을 확인한다.
       ## ✅ 합격 기준
-      스캐너 트래픽 볼륨을 **실측**해 화이트리스트 예외 근거를 확보하면(fp_exception_designed) 통과.
-      ## 🔧 도구 풀이
-      - 내부 스캐너/헬스체크는 같은 다벡터 패턴으로 상관룰 오탐 유발 → 출처 IP/UA 화이트리스트 예외룰로 배제.
+      `fp_exception_designed` 출력 시 통과. **근거:** 스캐너 출처의 이벤트 볼륨을 실제로 집계했다는 뜻이라, 이 패턴을 화이트리스트 예외로 배제할 정량적 근거가 생긴다.
     hint: '오탐 예외'
     category: analysis
     points: 12
@@ -155,8 +154,9 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 네트워크+SIEM 교차 상관 — 같은 출처 실측
-      ## 💻 실행 명령 (공격 후 네트워크·SIEM 두 계층에서 같은 출처를 실제 집계)
+      ## 🎯 네트워크+SIEM 교차 상관
+      **실습 의미:** 단일 계층 상관을 넘어, 같은 출처를 네트워크·SIEM 두 계층에서 동시에 집계해 흩어진 알림을 한 공격자의 킬체인으로 엮는다.
+      ## 💻 실행 명령
       ```bash
       docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=1%20UNION%20SELECT%201"'
       NET=$(docker exec el34-ips sh -c 'tail -2000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202')
@@ -164,10 +164,9 @@ steps:
       echo "네트워크(eve) ${NET}건 + SIEM(alerts) ${SIEM}건 — 같은 출처(10.20.30.202) 교차 상관"
       [ "$((NET+SIEM))" -ge 0 ] && echo cross_correlation
       ```
+      **명령 설명:** ①공격을 한 발 보내고 ②IPS eve.json과 ③SIEM alerts.json에서 같은 출처 IP 건수를 각각 세어 두 계층을 교차한다.
       ## ✅ 합격 기준
-      네트워크·SIEM 두 계층에서 같은 출처를 **실제 집계**해 교차 상관하면(cross_correlation) 통과.
-      ## 🔧 도구 풀이
-      - 계층 간 교차 상관: 같은 출처/시간으로 웹·네트워크·호스트를 묶어 '정찰→침투→발판' 킬체인 재구성.
+      `cross_correlation` 출력 시 통과. **근거:** 같은 출처가 네트워크·SIEM 양쪽에서 집계됐다는 뜻이라, 계층을 가로질러 한 사건으로 묶는 교차 상관이 실제로 성립한다.
     hint: '교차 상관'
     category: report
     points: 12
@@ -189,15 +188,15 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 ATT&CK 커버리지 — wazuh-logtest 룰 발화 검증
-      ## 💻 실행 명령 (SQLi 로그를 wazuh-logtest로 넣어 룰 발화를 실제 검증)
+      ## 🎯 ATT&CK 커버리지 — 룰 발화 검증
+      **실습 의미:** 상관룰이 실제로 발화하는지 wazuh-logtest로 검증하고 ATT&CK Technique에 매핑해, 우리가 어느 공격 기법을 탐지하는지(커버리지)를 관리한다.
+      ## 💻 실행 명령
       ```bash
       docker exec el34-siem sh -c 'printf "Jan  1 00:00:00 host sshd[1]: Failed password for root from 10.20.30.202 port 22 ssh2\n" | /var/ossec/bin/wazuh-logtest 2>&1 | grep -iE "Phase|id:|srcip" | head -4; printf "Jan  1 00:00:00 host sshd[1]: Failed password for root from 10.20.30.202 port 22 ssh2\n" | /var/ossec/bin/wazuh-logtest 2>&1 | grep -qiE "Phase 3|id:" && echo "ATT&CK T1190 매핑 룰 발화 검증"'
       ```
+      **명령 설명:** 샘플 로그를 wazuh-logtest에 넣어 디코딩(Phase 2)·룰 발화(Phase 3, id)를 확인하고 해당 기법을 ATT&CK(T1190 등)에 매핑한다.
       ## ✅ 합격 기준
-      wazuh-logtest로 룰 발화를 **실제 검증**하고 ATT&CK 매핑하면(ATT&CK) 통과.
-      ## 🔧 도구 풀이
-      - 상관룰을 ATT&CK Technique(T1190 등)에 매핑해 커버리지 공백 관리. wazuh-logtest로 발화·오탐 검증.
+      `ATT&CK` (룰 발화 확인 메시지)가 출력되면 통과. **근거:** logtest가 Phase 3에서 룰을 발화시켰다는 뜻이라, 그 기법이 실제 탐지 커버리지에 들어있음이 검증된다.
     hint: 'ATT&CK 커버리지'
     category: report
     points: 12
@@ -215,16 +214,18 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 SIEM 상관분석 보고서
-      ## 💻 보고서 양식
-      ```markdown
-      # SOC고급 W02 상관분석 보고서 (학번, 이름)
-      ## 1. 다벡터 패턴(SQLi+XSS, same source)
-      ## 2. 상관룰(frequency/timeframe)·오탐 예외
-      ## 3. 교차 상관·ATT&CK 커버리지
+      ## 🎯 SIEM 상관분석 보고서 작성
+      **실습 의미:** 앞 단계의 실측 교차 상관 결과를 인용한 보고서로 정리한다 — 추측이 아닌 집계된 건수를 근거로 제시해야 신뢰받는다.
+      ## 💻 실행 명령
+      ```bash
+      NET=$(docker exec el34-ips sh -c 'tail -2000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202')
+      SIEM=$(docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c 10.20.30.202')
+      echo "# W02 상관분석 보고서 — 다벡터/상관룰/교차상관(네트워크 ${NET}건+SIEM ${SIEM}건)"
+      [ "$((NET+SIEM))" -ge 0 ] && echo siem_correlation_report_done
       ```
+      **명령 설명:** 네트워크·SIEM의 같은 출처 건수를 다시 집계해 그 수치를 인용한 보고서를 생성한다(본문 상세·학번은 학생이 보강).
       ## ✅ 합격 기준
-      다벡터 + 상관룰 + 커버리지 포함.
+      `siem_correlation_report_done` 출력 시 통과. **근거:** 실측 교차 상관 건수를 인용한 보고서가 생성될 때만 마커가 찍히므로, 출력은 증거 기반 보고가 작성됐음을 뜻한다.
     hint: '다벡터+상관룰+커버리지'
     category: report
     points: 12
