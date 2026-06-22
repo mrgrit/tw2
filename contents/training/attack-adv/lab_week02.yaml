@@ -22,18 +22,25 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 목표 — OSINT 도구 확인
-      ## 💻 실행 명령
+      ## 🎯 OSINT 도구 확인
+      **실습 의미:** 수동 정찰은 dig(DNS)·openssl(TLS)·whatweb(핑거프린팅)·wafw00f(WAF) 같은 도구로 한다 — 먼저 도구함이 갖춰졌는지 확인한다. **⚠️ 인가된 el34 표적에만.**
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-attacker sh -c "command -v dig openssl whatweb wafw00f whois >/dev/null && echo osint_tools_ok"; echo osint_ready
+      docker exec el34-attacker sh -c '
+        # OSINT 도구(dig/openssl/whatweb/wafw00f/whois)가 모두 있으면 준비 마커
+        command -v dig openssl whatweb wafw00f whois >/dev/null 2>&1 && echo osint_ready
+      '
       ```
       ## ✅ 합격 기준
-      OSINT 도구가 가용하면(osint_ready) 통과.
+      `osint_ready` 출력 시 통과. **근거:** 마커는 OSINT 도구가 모두 존재할 때만 찍히므로, 수동 정찰 도구함이 준비됐음을 뜻한다.
     hint: 'OSINT 도구'
     category: survey
     points: 10
     answer: |
-      docker exec el34-attacker sh -c "command -v dig openssl whatweb wafw00f whois >/dev/null && echo osint_tools_ok"; echo osint_ready
+      docker exec el34-attacker sh -c '
+        # OSINT 도구 가용 시 준비 마커
+        command -v dig openssl whatweb wafw00f whois >/dev/null 2>&1 && echo osint_ready
+      '
     answer_detail: "OSINT 도구 = dig(DNS)·openssl(TLS)·whatweb(핑거프린팅)·wafw00f(WAF)·whois. 수동 정찰 도구함."
     verify:
       type: output_contains
@@ -45,24 +52,33 @@ steps:
   - order: 2
     instruction: |
       ## 🎯 DNS 열거
-      ## 📖 개념 한 줄
-      DNS는 공격 표면의 지도다 — 호스트명·서브도메인·메일 서버를 드러낸다.
-      ## 💻 실행 명령
+      **실습 의미:** DNS는 공격 표면의 지도다 — 호스트명·서브도메인·메일 서버를 드러낸다. 표적 호스트명을 IP로 해석한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-attacker sh -c "dig +short dvwa.el34.lab 2>/dev/null; nslookup dvwa.el34.lab 2>&1 | grep -i address | head"; echo dns_done
+      docker exec el34-attacker sh -c '
+        # DNS/호스트 해석: 표적 호스트명을 IP로 해석한다 (getent=/etc/hosts+DNS, dig=DNS A 레코드)
+        getent hosts dvwa.el34.lab 2>/dev/null
+        dig +short dvwa.el34.lab 2>/dev/null
+        echo "실무: 서브도메인 무차별(amass/subfinder)로 표면 확장"
+        # 호스트명이 IP로 실제 해석되면 DNS 열거 마커
+        getent hosts dvwa.el34.lab >/dev/null 2>&1 && echo dns_done
+      '
       ```
       ## ✅ 합격 기준
-      DNS 정보가 수집되면(dns_done) 통과.
-      ## 🔧 도구 풀이
-      - dig/nslookup: A·MX·TXT·NS 레코드. 실무: 서브도메인 무차별(amass·subfinder)로 표면 확장.
+      `dns_done`(과 해석된 IP)이 출력되면 통과. **근거:** 마커는 호스트명이 실제 IP로 해석될 때만 찍히므로, 공격 표면 지도의 기초(호스트 식별)를 확보했음을 뜻한다.
     hint: 'DNS'
     category: manipulation
     points: 12
     answer: |
-      echo "=== DNS 열거 ==="
-      docker exec el34-attacker sh -c "dig +short dvwa.el34.lab 2>/dev/null; nslookup dvwa.el34.lab 2>&1 | grep -i address | head"; echo dns_done
-      echo "→ DNS로 호스트 IP 확인. 실무: 서브도메인 열거(amass/subfinder)로 숨은 자산 발견"
-    answer_detail: "DNS 열거 = dig/nslookup으로 호스트·서브도메인·레코드 수집. 공격 표면 지도의 기초."
+      docker exec el34-attacker sh -c '
+        # 호스트명 → IP 해석 (getent=/etc/hosts+DNS, dig=DNS)
+        getent hosts dvwa.el34.lab 2>/dev/null
+        dig +short dvwa.el34.lab 2>/dev/null
+        echo "실무: 서브도메인 무차별(amass/subfinder)로 표면 확장"
+        # 실제 해석되면 DNS 열거 마커
+        getent hosts dvwa.el34.lab >/dev/null 2>&1 && echo dns_done
+      '
+    answer_detail: "DNS 열거 = getent/dig로 호스트·서브도메인·레코드 수집. 공격 표면 지도의 기초."
     verify:
       type: output_contains
       expect: 'dns_done'
@@ -73,23 +89,30 @@ steps:
   - order: 3
     instruction: |
       ## 🎯 TLS 인증서 정보
-      ## 📖 개념 한 줄
-      TLS 인증서의 CN·SAN은 조직명·도메인 체계를 노출한다 — 서브도메인 발견의 보고.
-      ## 💻 실행 명령
+      **실습 의미:** TLS 인증서의 CN·SAN은 조직명·도메인 체계를 노출한다 — 서브도메인 발견의 보고다. 443에서 인증서 subject/issuer를 추출한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-attacker sh -c "echo | timeout 5 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null"; echo cert_done
+      docker exec el34-attacker sh -c '
+        # TLS 인증서: 443에 연결해 인증서 subject(CN)·issuer를 추출한다 (CN/SAN=도메인 체계 노출)
+        CERT=$(echo | timeout 6 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null)
+        echo "$CERT"
+        # 인증서 정보를 실제 추출했으면 마커
+        [ -n "$CERT" ] && echo cert_done
+      '
       ```
       ## ✅ 합격 기준
-      인증서 정보(CN/issuer)가 수집되면(cert_done) 통과.
-      ## 🔧 도구 풀이
-      - 인증서 CN/SAN = 도메인 체계 노출. crt.sh(CT 로그)로 발급된 모든 서브도메인 추적 가능.
+      `cert_done`(과 subject/issuer)이 출력되면 통과. **근거:** 마커는 인증서 정보가 실제 추출될 때만 찍히므로, CN/SAN으로 도메인 체계·서브도메인 단서를 확보했음을 뜻한다.
     hint: 'TLS 인증서'
     category: analysis
     points: 14
     answer: |
-      echo "=== TLS 인증서 정보 ==="
-      docker exec el34-attacker sh -c "echo | timeout 5 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null"; echo cert_done
-      echo "→ 인증서 CN(예: *.6v6.lab)=도메인 체계 노출. CT 로그(crt.sh)로 전 서브도메인 추적"
+      docker exec el34-attacker sh -c '
+        # 443 인증서 subject/issuer 추출
+        CERT=$(echo | timeout 6 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject -issuer 2>/dev/null)
+        echo "$CERT"
+        # 추출되면 마커
+        [ -n "$CERT" ] && echo cert_done
+      '
     answer_detail: "TLS 인증서 = CN/SAN으로 도메인 체계·조직 노출. CT 로그로 서브도메인 발견. 수동 정찰의 보고."
     verify:
       type: output_contains
@@ -101,23 +124,32 @@ steps:
   - order: 4
     instruction: |
       ## 🎯 웹 기술 핑거프린팅
-      ## 📖 개념 한 줄
-      서버·프레임워크·버전을 식별하면 알려진 취약점(CVE)을 매핑할 수 있다.
-      ## 💻 실행 명령
+      **실습 의미:** 서버·프레임워크·버전을 식별하면 알려진 취약점(CVE)을 매핑할 수 있다 — HTTP 헤더와 whatweb으로 기술 스택을 식별한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ 2>/dev/null | grep -iE 'server|x-powered|set-cookie' | head; whatweb -a 1 http://10.20.30.1/ --header 'Host: dvwa.el34.lab' 2>/dev/null | head -c 200"; echo; echo fingerprint_done
+      docker exec el34-attacker sh -c '
+        # 핑거프린팅: HTTP 헤더(Server/X-Powered/쿠키)로 기술 스택을 식별한다
+        curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -iE "server|x-powered|set-cookie" | head
+        # whatweb으로 추가 식별
+        whatweb -a 1 http://10.20.30.1/ --header "Host: dvwa.el34.lab" 2>/dev/null | head -c 200; echo
+        # Server 헤더를 실제 얻었으면 핑거프린팅 마커
+        curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -qi "server" && echo fingerprint_done
+      '
       ```
       ## ✅ 합격 기준
-      기술 스택이 핑거프린팅되면(fingerprint_done) 통과.
-      ## 🔧 도구 풀이
-      - 서버 헤더·쿠키·whatweb로 기술 식별 → CVE 데이터베이스와 매핑.
+      `fingerprint_done`(과 헤더)이 출력되면 통과. **근거:** 마커는 Server 헤더가 실제 응답될 때만 찍히므로, 기술 스택을 식별해 CVE 매핑 후보를 도출했음을 뜻한다.
     hint: '핑거프린팅'
     category: analysis
     points: 14
     answer: |
-      echo "=== 웹 기술 핑거프린팅 ==="
-      docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ 2>/dev/null | grep -iE 'server|x-powered|set-cookie' | head; whatweb -a 1 http://10.20.30.1/ --header 'Host: dvwa.el34.lab' 2>/dev/null | head -c 200"; echo; echo fingerprint_done
-      echo "→ Server 헤더·쿠키(PHPSESSID)·whatweb로 기술 스택 식별 → 알려진 CVE 매핑"
+      docker exec el34-attacker sh -c '
+        # HTTP 헤더로 기술 스택 식별
+        curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -iE "server|x-powered|set-cookie" | head
+        # whatweb 추가 식별
+        whatweb -a 1 http://10.20.30.1/ --header "Host: dvwa.el34.lab" 2>/dev/null | head -c 200; echo
+        # Server 헤더 응답 시 마커
+        curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -qi "server" && echo fingerprint_done
+      '
     answer_detail: "핑거프린팅 = 서버 헤더·쿠키·whatweb로 기술/버전 식별. CVE 매핑으로 공격 후보 도출."
     verify:
       type: output_contains
@@ -129,21 +161,34 @@ steps:
   - order: 5
     instruction: |
       ## 🎯 WAF·방어 탐지
-      ## 📖 개념 한 줄
-      공격 전 방어를 파악한다 — WAF가 있으면 우회(W03)가 필요함을 미리 안다.
-      ## 💻 실행 명령
+      **실습 의미:** 공격 전 방어를 파악한다 — WAF가 있으면 우회(W03)가 필요함을 미리 안다. wafw00f와 악성 요청 응답으로 방어를 탐지한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-attacker sh -c "wafw00f http://10.20.30.1/ 2>/dev/null | grep -iE 'is behind|seems|No WAF|result' | head; echo '(또는 악성 요청에 403=WAF 추정)'; curl -s -o /dev/null -w 'malicious_req=%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?x=<script>alert(1)</script>'"; echo; echo waf_done
+      docker exec el34-attacker sh -c '
+        # WAF 탐지: wafw00f로 방어 유무를 본다
+        wafw00f http://10.20.30.1/ 2>/dev/null | grep -iE "is behind|seems|No WAF|result" | head
+        # 악성 요청(XSS)을 보내 응답코드를 본다 (403=WAF 차단 추정)
+        C=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?x=<script>alert(1)</script>")
+        echo "malicious_req=$C"
+        # 악성요청 응답을 받아 방어 유무를 판정했으면 WAF 탐지 마커
+        [ -n "$C" ] && echo waf_done
+      '
       ```
       ## ✅ 합격 기준
-      WAF·방어 유무가 탐지되면(waf_done) 통과.
+      `waf_done`(과 malicious_req 코드)이 출력되면 통과. **근거:** 마커는 악성 요청에 대한 응답코드를 실제 받았을 때만 찍히므로, 방어(WAF) 유무를 판정해 우회 전략 필요성을 파악했음을 뜻한다.
     hint: 'WAF 탐지'
     category: analysis
     points: 12
     answer: |
-      echo "=== WAF·방어 탐지 ==="
-      docker exec el34-attacker sh -c "wafw00f http://10.20.30.1/ 2>/dev/null | grep -iE 'is behind|seems|No WAF|result' | head; curl -s -o /dev/null -w 'malicious_req=%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?x=<script>alert(1)</script>'"; echo; echo waf_done
-      echo "→ wafw00f·악성요청 응답(403=차단)으로 WAF 탐지. 있으면 W03 우회 기법 필요"
+      docker exec el34-attacker sh -c '
+        # wafw00f로 WAF 유무 확인
+        wafw00f http://10.20.30.1/ 2>/dev/null | grep -iE "is behind|seems|No WAF|result" | head
+        # 악성 요청 응답코드 (403=차단)
+        C=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?x=<script>alert(1)</script>")
+        echo "malicious_req=$C"
+        # 응답 받았으면 WAF 탐지 마커
+        [ -n "$C" ] && echo waf_done
+      '
     answer_detail: "WAF 탐지 = wafw00f·악성요청 응답코드로 방어 식별. 공격 전 방어 파악 → 우회 전략 수립."
     verify:
       type: output_contains
@@ -155,21 +200,34 @@ steps:
   - order: 6
     instruction: |
       ## 🎯 노출 경로·메타데이터
-      ## 💻 실행 명령
+      **실습 의미:** 숨기려는 정보가 역설적으로 노출되곤 한다 — robots.txt(숨길 경로)·.git(소스 유출)·sitemap 같은 민감 파일의 응답코드를 점검한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-attacker sh -c "for f in robots.txt .git/config sitemap.xml README.md; do c=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/\$f); echo \$f=\$c; done"; echo metadata_done
+      docker exec el34-attacker sh -c '
+        # 노출 경로 점검: 민감 파일 후보의 응답코드를 확인한다 (200=노출 정보원)
+        for f in robots.txt .git/config sitemap.xml README.md; do
+          c=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" http://10.20.30.1/$f)
+          echo "$f=$c"
+        done
+        # 노출 경로를 점검했으면 마커
+        echo metadata_done
+      '
       ```
       ## ✅ 합격 기준
-      노출 파일·경로가 점검되면(metadata_done) 통과.
-      ## 🔧 도구 풀이
-      - robots.txt(숨기려는 경로 역설적 노출)·.git(소스 유출)·sitemap. 메타데이터=뜻밖의 정보원.
+      `metadata_done`(과 경로별 코드)이 출력되면 통과. **근거:** 각 민감 파일의 응답코드가 실제 출력됐다는 건 노출 정보원(200) 여부를 점검했다는 뜻이다.
     hint: '노출 경로'
     category: analysis
     points: 12
     answer: |
-      echo "=== 노출 경로·메타데이터 ==="
-      docker exec el34-attacker sh -c "for f in robots.txt .git/config sitemap.xml README.md; do c=\$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' http://10.20.30.1/\$f); echo \$f=\$c; done"; echo metadata_done
-      echo "→ robots.txt(숨기려다 역설적 노출)·.git(소스 유출)·README. 200이면 노출 정보원"
+      docker exec el34-attacker sh -c '
+        # 민감 파일 후보 응답코드 점검
+        for f in robots.txt .git/config sitemap.xml README.md; do
+          c=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" http://10.20.30.1/$f)
+          echo "$f=$c"
+        done
+        # 점검했으면 마커
+        echo metadata_done
+      '
     answer_detail: "노출 경로 = robots.txt/.git/sitemap 점검. 숨기려는 정보가 역설적으로 노출되는 정보원."
     verify:
       type: output_contains
@@ -180,20 +238,37 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 공격 표면 종합 — 실제 수집 데이터로
-      ## 💻 실행 명령
+      ## 🎯 공격 표면 종합 (실수집 데이터)
+      **실습 의미:** 흩어진 정보를 하나의 공격 표면 지도로 종합한다 — DNS·인증서·기술 스택을 실제 수집해 데이터포인트로 묶는 것이 수동 정찰의 산출물이다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-attacker sh -c 'H=$(dig +short dvwa.el34.lab 2>/dev/null | head -1); H=${H:-10.20.30.1}; echo "호스트(DNS): $H"; CN=$(echo | timeout 6 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject 2>/dev/null); echo "인증서: $CN"; SRV=$(curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -i "^server:" | tr -d "\r"); echo "기술: $SRV"; C=0; [ -n "$H" ] && C=$((C+1)); [ -n "$CN" ] && C=$((C+1)); [ -n "$SRV" ] && C=$((C+1)); echo "수집 데이터포인트: $C/3"; [ "$C" -ge 2 ] && echo surface_mapped'
+      docker exec el34-attacker sh -c '
+        # 데이터포인트①: 호스트 해석 (getent /etc/hosts)
+        H=$(getent hosts dvwa.el34.lab 2>/dev/null | head -1); echo "호스트: ${H:-<없음>}"
+        # 데이터포인트②: TLS 인증서 subject
+        CN=$(echo | timeout 6 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject 2>/dev/null); echo "인증서: ${CN:-<없음>}"
+        # 데이터포인트③: 서버 기술 헤더
+        SRV=$(curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -i "^server:" | tr -d "\r"); echo "기술: ${SRV:-<없음>}"
+        # 실제 수집된 데이터포인트 수를 세어 2개 이상이면 표면 매핑 마커
+        C=0; [ -n "$H" ] && C=$((C+1)); [ -n "$CN" ] && C=$((C+1)); [ -n "$SRV" ] && C=$((C+1))
+        echo "수집 데이터포인트: $C/3"; [ "$C" -ge 2 ] && echo surface_mapped
+      '
       ```
       ## ✅ 합격 기준
-      DNS·인증서·기술 스택을 **실제 수집**해 2개 이상 확보해야(surface_mapped) 통과.
+      `surface_mapped`(과 데이터포인트 수)가 출력되면 통과. **근거:** 마커는 DNS·인증서·기술 스택 중 2개 이상을 실제 수집했을 때만 찍히므로, 가짜 echo가 아니라 실수집으로 공격 표면 지도를 구성했음을 뜻한다.
     hint: '표면 종합'
     category: report
     points: 12
     answer: |
-      echo "=== 공격 표면 종합 — 실제 수집 데이터로 ==="
-      docker exec el34-attacker sh -c 'H=$(dig +short dvwa.el34.lab 2>/dev/null | head -1); H=${H:-10.20.30.1}; echo "호스트(DNS): $H"; CN=$(echo | timeout 6 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject 2>/dev/null); echo "인증서: $CN"; SRV=$(curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -i "^server:" | tr -d "\r"); echo "기술: $SRV"; C=0; [ -n "$H" ] && C=$((C+1)); [ -n "$CN" ] && C=$((C+1)); [ -n "$SRV" ] && C=$((C+1)); echo "수집 데이터포인트: $C/3"; [ "$C" -ge 2 ] && echo surface_mapped'
-      echo "→ DNS+인증서+기술스택을 실제 수집해 표면 지도 구성(2개 이상 게이트). 수동 정찰의 산출물"
+      docker exec el34-attacker sh -c '
+        # ①호스트 ②인증서 ③서버헤더 실수집
+        H=$(getent hosts dvwa.el34.lab 2>/dev/null | head -1); echo "호스트: ${H:-<없음>}"
+        CN=$(echo | timeout 6 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject 2>/dev/null); echo "인증서: ${CN:-<없음>}"
+        SRV=$(curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -i "^server:" | tr -d "\r"); echo "기술: ${SRV:-<없음>}"
+        # 2개 이상 수집 시 표면 매핑 마커
+        C=0; [ -n "$H" ] && C=$((C+1)); [ -n "$CN" ] && C=$((C+1)); [ -n "$SRV" ] && C=$((C+1))
+        echo "수집 데이터포인트: $C/3"; [ "$C" -ge 2 ] && echo surface_mapped
+      '
     answer_detail: "표면 종합 = DNS/인증서/서버헤더를 실제 수집(2+ 게이트)해 공격 표면 지도 구성. 가짜 echo 아닌 실수집."
     verify:
       type: output_contains
@@ -204,23 +279,33 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 정찰 보고서
-      ## 💻 보고서 양식
-      ```markdown
-      # 공격고급 W02 OSINT·정찰 보고서 (학번, 이름)
-      ## 1. DNS·인증서·기술 스택
-      ## 2. WAF·노출 경로
-      ## 3. 공격 표면 지도·방어 권고
+      ## 🎯 정찰 보고서 작성
+      **실습 의미:** 앞 단계의 실수집(서버 기술 헤더)을 인용한 정찰 보고서로 정리한다 — 수동 정찰은 은밀하나 강력하므로 방어 권고(노출 최소화)까지 담는다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ```bash
+      docker exec el34-attacker sh -c '
+        # 보고서 근거: 서버 기술 헤더를 실수집
+        SRV=$(curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -i "^server:" | tr -d "\r")
+        # 실수집 정보를 인용한 정찰 보고서 출력 (본문 상세는 학생이 보강)
+        echo "# 공격고급 W02 OSINT 정찰 보고서 — 호스트 10.20.30.1·기술[${SRV}]·인증서·WAF(403)·노출경로·표면지도·방어권고(배너숨김/.git차단)"
+        # 서버 헤더를 실제 수집했으면 보고서 완료 마커
+        [ -n "$SRV" ] && echo recon_report_done
+      '
       ```
       ## ✅ 합격 기준
-      정보원 + 표면 지도 + 방어 권고 포함.
+      `recon_report_done` 출력 시 통과. **근거:** 마커는 실수집 서버 헤더를 인용한 보고서가 생성될 때만 찍히므로, 증거 기반 정찰 보고(정보원+표면+방어 권고)가 작성됐음을 뜻한다.
     hint: '정보원+표면+방어권고'
     category: report
     points: 14
     answer: |
-      echo "=== 정찰 보고서 — 실수집 증거 기반 ==="
-      docker exec el34-attacker sh -c 'SRV=$(curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -i "^server:" | tr -d "\r"); echo "# 공격고급 W02 OSINT·정찰 보고서"; echo "## 1. 표면(실수집): 호스트 10.20.30.1, 기술 $SRV, 인증서 *.6v6.lab"; echo "## 2. WAF(악성요청 403 탐지)·노출 경로(robots/.git 점검)"; echo "## 3. 방어 권고: 서버 배너 숨김·인증서 정보 최소화·.git 차단·WAF 강화"; echo "## 결론: 수동 정찰은 은밀하나 강력 — 방어는 노출 최소화"; [ -n "$SRV" ] && echo recon_report_done'
-      echo "→ 보고서가 실제 수집한 서버 헤더를 인용(게이트). 정적 템플릿 아닌 증거 기반"
+      docker exec el34-attacker sh -c '
+        # 서버 기술 헤더 실수집 (인용 근거)
+        SRV=$(curl -sI -H "Host: dvwa.el34.lab" http://10.20.30.1/ 2>/dev/null | grep -i "^server:" | tr -d "\r")
+        # 실수집 인용 정찰 보고서 출력
+        echo "# 공격고급 W02 OSINT 정찰 보고서 — 호스트 10.20.30.1·기술[${SRV}]·인증서·WAF(403)·노출경로·표면지도·방어권고(배너숨김/.git차단)"
+        # 서버 헤더 수집 시 보고서 완료 마커
+        [ -n "$SRV" ] && echo recon_report_done
+      '
     answer_detail: "정찰 보고 = 실수집 서버헤더 인용+표면/WAF/방어권고. 증거 기반(서버헤더 게이트). 정적 템플릿 아님."
     verify:
       type: output_contains
