@@ -101,55 +101,55 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 MISSION — audit log 정확한 JSON 구조 + messages[] embedded metadata 파싱
+      ## 🎯 MISSION — el34 audit log 실제 형식 + error.log에서 룰 메타 추출
 
-      lecture §5.5 — `audit_data.messages[]` 가 JSON object 가 아니라 **단일 string** 에
-      `[key "value"]` 형식이 embedded. 단순 `.messages[].id` 추출 안 됨.
+      ⚠️ el34의 `modsec_audit.log`는 **멀티라인(pretty) JSON**이라 `tail -1 | jq`가 깨진다(한 줄이
+      JSON 조각). 룰 ID·익명점수 요약 같은 메타는 **per-vhost `error.log`의 ModSec 경고 라인**에
+      `[id "..."] [msg "... SQLI=..,XSS=.. ..."]` 형식으로 임베드된다(W01과 동일한 신뢰 소스).
 
       ## 💻 실행 명령
 
       ```bash
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "keys"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq ".transaction"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{line:.request.request_line, host:.request.headers.host, remote:.transaction.remote_address}"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{status:.response.status}"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{msgs:(.audit_data.messages | length), errs:(.audit_data.error_messages | length)}"'
-      # ⚠️ messages 의 정확한 형식 — jq + regex
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]" | sort -u'
+      # 1) 공격을 한 발 보내 ModSec 기록을 만든다
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      sleep 1
+      # 2) error.log의 ModSec 경고 레코드(구조)를 본다 — [client]에 출처(remote_address) 보존
+      docker exec el34-web sh -c 'sudo tail -8 /var/log/apache2/dvwa_error.log | grep -oE "ModSecurity: [^[]+" | head -3'
+      # 3) 한 레코드에 임베드된 메타(룰 id + 익명점수 요약 SQLI=,XSS=)를 추출한다
+      docker exec el34-web sh -c 'sudo tail -8 /var/log/apache2/dvwa_error.log | grep -oE "id .[0-9]+.|SQLI=[0-9]+,XSS=[0-9]+[^]]*" | head'
       ```
 
       ## 📋 확인 사항
 
-      - **keys**: `["audit_data", "request", "response", "transaction"]` 4 sub-section
-      - **transaction**: `remote_address: 10.20.30.202` (실제 attacker, el34 출처 보존) / `local_address: 10.20.32.80` (web)
-      - **request**: `host: <공격 vhost>`, `remote_address: 10.20.30.202` (실제 attacker)
-      - **response**: status 200 또는 403
-      - **audit_data**: messages count / error_messages count
-      - **매치 룰**: `[id "941100"]` `[id "941110"]` ... (embedded format)
+      - **2)**: `ModSecurity: Warning ...` / `ModSecurity: Access denied ...` 경고 라인 출력
+      - **3)**: `id "941100"` 등 룰 ID + `SQLI=0,XSS=15,...` 익명점수 요약
+      - **출처 보존**: error.log 라인의 `[client 10.20.30.202]` = 실제 attacker(el34 SNAT 없음)
+      - audit_data.messages(jq) 방식은 el34 멀티라인 JSON에서 동작하지 않음 → error.log가 표준
 
       ## 💡 왜 이걸 하는가?
 
-      audit log 분석 자동화 시 messages[] 의 정확한 형식 인지 필수. 많은 운영자가
-      `.messages[].id` 로 parse 시도 → silent fail.
+      audit log 분석 자동화 시 환경별 실제 포맷 인지가 필수. el34는 audit JSON이 멀티라인이라
+      줄 단위 jq가 silent fail → per-vhost error.log의 임베드 메타가 신뢰 소스(W10 Wazuh decoder도 동일 라인 파싱).
 
       ## 🔍 결과 해석
 
-      - **정상**: 4 sub-section + jq + regex 결합 추출
-      - **운영 권장**: jq + grep / Python regex 결합. Wazuh decoder (W10) 가 manager 측 parse
+      - **정상**: ModSecurity 경고 라인 + 룰 id + 익명점수 요약 추출
+      - **운영 권장**: error.log grep(즉시) + Wazuh decoder(manager 측 정규화). audit log는 전체 슬러프(`jq -s`) 필요
     hint: 'jq + grep -oE — messages 의 [id "X"] embedded format'
     category: analysis
     points: 15
     answer: |
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "keys"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq ".transaction"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{line:.request.request_line, host:.request.headers.host, remote:.transaction.remote_address}"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{msgs:(.audit_data.messages | length)}"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]" | sort -u'
-    answer_detail: '4 sub-section + jq + regex 결합. remote_address = 실제 attacker (el34 출처 보존).'
+      # el34 modsec_audit.log는 멀티라인 JSON이라 tail|jq 불가 → 룰 상세는 per-vhost error.log에서 읽는다
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      sleep 1
+      echo "=== error.log의 ModSec 경고 레코드(구조) ==="
+      docker exec el34-web sh -c 'sudo tail -8 /var/log/apache2/dvwa_error.log | grep -oE "ModSecurity: [^[]+" | head -3'
+      echo "=== 한 레코드의 임베드 메타(id + 익명점수 요약) ==="
+      docker exec el34-web sh -c 'sudo tail -8 /var/log/apache2/dvwa_error.log | grep -oE "id .[0-9]+.|SQLI=[0-9]+,XSS=[0-9]+[^]]*" | head'
+    answer_detail: 'el34 audit log=멀티라인 JSON(tail|jq 불가). 룰 ID·익명점수 요약은 per-vhost error.log의 ModSec 경고 라인에 임베드(id/msg/SQLI=,XSS=). remote_address(출처)도 [client]에 보존.'
     verify:
       type: output_contains
-      expect: transaction
+      expect: ModSecurity
       field: stdout
       semantic:
         intent: "audit log JSON 구조 + messages 정규식 추출"
@@ -175,21 +175,23 @@ steps:
       ## 💻 실행 명령
 
       ```bash
+      # 공격 직전 error.log 라인 수 기록(이번 요청만 격리)
+      B=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
+      # XSS 페이로드 전송
       docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]" | sort -u'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "paranoia-level/[0-9]+" | head -1'
+      sleep 1
+      # 이번 요청이 새로 남긴 라인에서 매치 룰 ID만 추출
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"9[0-9]{5}\"' | sort -u"
+      # 익명점수 요약(Total Inbound Score + SQLI=,XSS=)
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'Total Inbound Score: [0-9]+|SQLI=[0-9]+,XSS=[0-9]+[^]]*' | head -2"
       ```
 
-      ## 📋 확인 사항 (실측 2026-05-12)
+      ## 📋 확인 사항
 
       - **응답: 403** (block)
-      - **매치 룰**: `[id "941100"]` `[id "941110"]` `[id "941160"]` + `[id "949110"]` + `[id "980130"]`
-      - **anomaly score**: `Total Score: 15`
-      - **summary**: `SQLI=0,XSS=15,RFI=0,LFI=0,RCE=0,PHPI=0`
-      - **paranoia-level/1**
+      - **매치 룰**: `id "941100"` `id "941110"` `id "941160"` + `id "949110"`(block) + `id "980130"`(correlation)
+      - **익명점수**: `Total Inbound Score: 15` (XSS critical 3 × 5)
+      - **summary**: `SQLI=0,XSS=15,...`
 
       ## 💡 왜 이걸 하는가?
 
@@ -205,17 +207,15 @@ steps:
     category: redblue
     points: 20
     answer: |
+      # 공격 직전 error.log 라인 수 기록(이번 요청만 격리)
+      B=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
       docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
-      sleep 2
-      echo "매치 룰:"
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"[0-9]+\"\]" | sort -u'
-      echo "score:"
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+"'
-      echo "summary:"
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+"'
-      echo "paranoia:"
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "paranoia-level/[0-9]+" | head -1'
-    answer_detail: 'XSS → 403 + 941100/110/160 + score 15 + XSS=15 SQLI=0 + paranoia-level/1'
+      sleep 1
+      echo "매치 룰(이번 요청 신규 라인만):"
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"9[0-9]{5}\"' | sort -u"
+      echo "익명점수 요약:"
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'Total Inbound Score: [0-9]+|SQLI=[0-9]+,XSS=[0-9]+[^]]*' | head -2"
+    answer_detail: 'XSS → 403 + 941100/110/160 (libinjection+regex) + 949110 block + 980130. error.log 라인수 격리로 이번 요청만. 익명점수 XSS 누적.'
     verify:
       type: output_contains
       expect: '941100'
@@ -244,25 +244,23 @@ steps:
       ## 💻 실행 명령
 
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '응답: %{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=1' OR '1'='1\""
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"94[0-9]+\"\]" | sort -u'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+|SQLI=[0-9]+"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "fingerprint .[a-zA-Z0-9_\\&]+." | head -1'
-
-      # encoding bypass 시뮬
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '응답: %{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=1%27%20UNION%20SELECT\""
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"94[0-9]+\"\]" | sort -u'
+      # SQLi 페이로드 직전 error.log 라인 수 기록(이번 요청만 격리)
+      B=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
+      # SQLi: ' OR '1'='1 (URL 인코딩)
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=1%27%20OR%20%271%27=%271"'
+      sleep 1
+      # 이번 요청 신규 라인에서 942xxx(SQLi) 매치 룰만
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"942[0-9]+\"' | sort -u"
+      # SQLI 익명점수
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'SQLI=[0-9]+' | head -1"
       ```
 
       ## 📋 확인 사항
 
       - **응답: 403** (block)
-      - **942xxx 매치**: `[id "942100"]` (libinjection) + `[id "942130"]`/`[id "942140"]`
-      - **anomaly score**: 5+ (libinjection critical → score 5)
-      - **fingerprint**: `'1&1'` 또는 비슷 (libinjection 표현)
-      - **encoding bypass**: 동일 942xxx 매치 (CRS normalize 효과)
+      - **942xxx 매치**: `id "942100"` (libinjection) + `id "942190"`/`id "942360"`
+      - **SQLI 점수**: `SQLI=5` 이상 (libinjection critical → score 누적)
+      - **격리**: error.log 라인수 차이로 이번 요청만 추출(직전 공격과 안 섞임)
 
       ## 💡 왜 이걸 하는가?
 
@@ -278,15 +276,15 @@ steps:
     category: redblue
     points: 18
     answer: |
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '응답: %{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=1' OR '1'='1\""
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"94[0-9]+\"\]" | sort -u'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+|SQLI=[0-9]+"'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "fingerprint .[a-zA-Z0-9_\\&]+." | head -1'
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '응답: %{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=1%27%20UNION%20SELECT\""
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"94[0-9]+\"\]" | sort -u'
-    answer_detail: 'SQLi → 403 + 942xxx + libinjection fingerprint. encoding bypass 도 매치.'
+      # SQLi 페이로드 직전 error.log 라인 수 기록(이번 요청만 격리)
+      B=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=1%27%20OR%20%271%27=%271"'
+      sleep 1
+      echo "942xxx 매치(이번 요청 신규 라인):"
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"942[0-9]+\"' | sort -u"
+      echo "SQLI 점수:"
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'SQLI=[0-9]+' | head -1"
+    answer_detail: 'SQLi → 403 + 942xxx(942100 libinjection 등) + SQLI 점수. error.log 라인수 격리로 이번 요청만. encoding 변형도 CRS normalize로 동일 매치.'
     verify:
       type: output_contains
       expect: '942'
@@ -315,31 +313,31 @@ steps:
       ## 💻 실행 명령
 
       ```bash
-      # LFI
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=../../etc/passwd"'
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"93[0-9]+\"\]" | sort -u'
+      # LFI → 930xxx (각 공격마다 error.log 라인수로 이번 요청만 격리)
+      B=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?p=../../../../etc/passwd"'
+      sleep 1
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"930[0-9]+\"' | sort -u"
 
-      # RCE
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=;cat%20/etc/passwd"'
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"932[0-9]+\"\]" | sort -u'
+      # RCE → 932xxx
+      B2=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?cmd=;cat%20/etc/passwd"'
+      sleep 1
+      docker exec el34-web sh -c "sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"932[0-9]+\"' | sort -u"
 
-      # PHP
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"'
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"933[0-9]+\"\]" | sort -u'
-
-      # 카테고리 분포 (최근 50 transaction)
-      docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "\[id \"[0-9]+\"\]" | sort | uniq -c | sort -rn | head -10'
+      # PHP → 933xxx
+      B3=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?x=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"'
+      sleep 1
+      docker exec el34-web sh -c "sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"933[0-9]+\"' | sort -u"
       ```
 
       ## 📋 확인 사항
 
-      - **LFI 응답: 403** + `[id "930100"]`/`[id "930110"]`/`[id "930120"]` (path traversal)
-      - **RCE 응답: 403** + `[id "932100"]`/`[id "932160"]` (unix command)
-      - **PHP 응답: 403** + `[id "933100"]`/`[id "933170"]` (PHP tag injection)
-      - **카테고리 분포 top 10**: 941+942+930+932+933 + 949+980
+      - **LFI 응답: 403** + `id "930100"`/`id "930110"`/`id "930120"` (path traversal)
+      - **RCE 응답: 403** + `id "932xxx"` (unix command)
+      - **PHP 응답: 403** + `id "933xxx"` (PHP tag injection)
+      - **격리**: 각 공격 직전 라인수 기록 → 신규 라인만 → 공격별 카테고리 정확 분리
 
       ## 💡 왜 이걸 하는가?
 
@@ -354,21 +352,22 @@ steps:
     category: redblue
     points: 20
     answer: |
-      echo "=== LFI ==="
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=../../etc/passwd"'
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"93[0-9]+\"\]" | sort -u'
-      echo "=== RCE ==="
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=;cat%20/etc/passwd"'
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"932[0-9]+\"\]" | sort -u'
-      echo "=== PHP ==="
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"'
-      sleep 2
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\[id \"933[0-9]+\"\]" | sort -u'
-      echo "=== 카테고리 분포 ==="
-      docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "\[id \"[0-9]+\"\]" | sort | uniq -c | sort -rn | head -10'
-    answer_detail: 'LFI 930 + RCE 932 + PHP 933 모두 403. 카테고리 top 10 가시화.'
+      echo "=== LFI → 930xxx (이번 요청만 격리) ==="
+      B=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?p=../../../../etc/passwd"'
+      sleep 1
+      docker exec el34-web sh -c "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"930[0-9]+\"' | sort -u"
+      echo "=== RCE → 932xxx ==="
+      B2=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?cmd=;cat%20/etc/passwd"'
+      sleep 1
+      docker exec el34-web sh -c "sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"932[0-9]+\"' | sort -u"
+      echo "=== PHP → 933xxx ==="
+      B3=$(docker exec el34-web sh -c 'sudo wc -l < /var/log/apache2/dvwa_error.log')
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?x=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"'
+      sleep 1
+      docker exec el34-web sh -c "sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"933[0-9]+\"' | sort -u"
+    answer_detail: 'LFI 930xxx + RCE 932xxx + PHP 933xxx 매치(각 요청 error.log 라인수 격리). OWASP A03 sub-type별 CRS 카테고리.'
     verify:
       type: output_contains
       expect: '930'
