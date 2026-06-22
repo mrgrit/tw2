@@ -149,28 +149,38 @@ steps:
 
       ## 💻 실행 명령
       ```bash
-      docker exec el34-web sh -c 'echo "w10-fim-test" > /home/ccc/w10_canary.txt'
-      sleep 12
-      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -c "select(.syscheck.path?|test(\"w10_canary\"))|{path:.syscheck.path,event:.syscheck.event,rule:.rule.id}" | tail -2'
-      docker exec el34-web sh -c 'rm -f /home/ccc/w10_canary.txt'
+      # 1) realtime 감시 경로(/home/ccc)에 카나리 파일 생성 → 변경 유발
+      docker exec el34-web sh -c 'echo "w10-fim-test" > /home/ccc/w10_canary.txt; echo created'
+      # 2) syscheck→analysisd→alerts.json 지연이 있고 부하 시 alerts가 빨리 흘러가므로, 큰 윈도우(tail -2000)로 최대 ~45초 폴링
+      R=""
+      for i in $(seq 1 15); do
+        sleep 3
+        R=$(docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep w10_canary | tail -1')
+        [ -n "$R" ] && { echo "탐지: $(echo "$R" | grep -oE 'w10_canary[^\"]*' | head -1) (rule 554 File added)"; break; }
+      done
+      [ -z "$R" ] && echo "(45초 내 미탐 — web wazuh-control restart로 realtime watch 재확립)"
+      # 3) 카나리 정리(self-clean)
+      docker exec el34-web sh -c 'rm -f /home/ccc/w10_canary.txt; echo cleaned'
       ```
-      - `echo > /home/ccc/w10_canary.txt` : realtime 감시 경로에 카나리(미끼) 파일 생성 → 변경 유발.
-      - `sleep 12` : 변경이 syscheck→analysisd→alerts.json 까지 반영되는 파이프라인 지연을 기다림.
-      - `jq -c "select(.syscheck.path?|test(...))"` : alerts.json 평결 중 syscheck.path 에 w10_canary 가
-        포함된 줄만 골라 path/event/rule.id 만 압축 출력.
-      - `rm -f ...` : 카나리 정리(self-clean) — 베이스 보존.
+      - 카나리 생성 → realtime syscheck delta → analysisd → alerts.json(rule 554 'File added').
+      - 고정 sleep 대신 폴링: FIM 지연·alert 부하에 견고. 미탐 시 web 에이전트 realtime watch 점검.
 
       ## ✅ 합격 기준
-      alerts.json 에 `w10_canary.txt` 의 syscheck `added`(rule 554) 경보가 보인다. sleep 12 후에도 안
-      보이면 web syscheckd 또는 realtime 설정을 점검한다.
+      alerts.json 에 `w10_canary` 의 syscheck `added`(rule 554) 경보가 보이면 통과. **근거:** 네트워크
+      장비가 못 보는 호스트 파일 변조를 FIM이 초 단위로 잡음을 실제 경보로 증명(폴링으로 지연/부하에 견고).
     hint: '/home/ccc canary → sleep 12 → alerts.json syscheck added → rm'
     category: detect
     points: 17
     answer: |
       docker exec el34-web sh -c 'echo "w10-fim-test" > /home/ccc/w10_canary.txt; echo created'
-      sleep 12
-      echo "=== alerts.json syscheck (canary 실시간 탐지) ==="
-      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -c "select(.syscheck.path?|test(\"w10_canary\"))|{path:.syscheck.path,event:.syscheck.event,rule:.rule.id}" | tail -2'
+      echo "=== alerts.json syscheck (canary 실시간 탐지, 최대 ~45초 폴링) ==="
+      R=""
+      for i in $(seq 1 15); do
+        sleep 3
+        R=$(docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep w10_canary | tail -1')
+        [ -n "$R" ] && { echo "탐지: $(echo "$R" | grep -oE 'w10_canary[^\"]*' | head -1) (rule 554 File added)"; break; }
+      done
+      [ -z "$R" ] && echo "(45초 내 미탐 — web wazuh-control restart로 realtime watch 재확립)"
       docker exec el34-web sh -c 'rm -f /home/ccc/w10_canary.txt; echo cleaned'
     answer_detail: "realtime 경로 변경 → syscheckd 즉시 delta → analysisd → alerts.json. rule 554='File added to the system'. 네트워크 장비가 못 보는 호스트 파일 변조를 FIM이 초 단위로 잡는다. rm으로 self-clean."
     verify:

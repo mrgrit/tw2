@@ -349,20 +349,31 @@ steps:
 
       ## 💻 실행 명령
       ```bash
-      docker exec el34-siem sh -c 'tail -1500 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck|pam|sca" | sort | uniq -c'
+      # 1) 호스트 계층(FIM) 이벤트를 보장: /home/ccc(realtime 감시)에 canary 생성 → syscheck 유발
+      docker exec el34-web sh -c 'echo w09 > /home/ccc/w09_canary.txt; echo canary_created'
+      # 2) FIM은 syscheck→analysisd→alerts.json 지연이 있어 최대 ~45초 폴링(부하 시 alerts가 빨리 흘러 큰 윈도우 사용)
+      for i in $(seq 1 15); do sleep 3; docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -q w09_canary' && break; done
+      docker exec el34-web sh -c 'rm -f /home/ccc/w09_canary.txt'
+      # 3) 소스(그룹)별 집계 — 네트워크(ids)+호스트(syscheck)+인증(pam)+설정(sca)이 한 스트림에 공존
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck|pam|sca" | sort | uniq -c'
       ```
-      - `jq -r "(.rule.groups|join(\",\"))"` : 각 평결의 그룹 배열을 한 문자열로 펼친다.
-      - `grep -oE "ids|syscheck|pam|sca"` : 관심 소스 키워드만 추출 → `sort | uniq -c` 로 소스별 건수 집계.
+      - 1): canary로 FIM 이벤트를 확실히 만들어 `syscheck` 그룹이 집계에 포함되도록 한다(데이터 의존성 제거).
+      - 3) `grep -oE "ids|syscheck|pam|sca"` : 관심 소스 키워드만 추출 → `sort | uniq -c` 로 소스별 건수 집계.
 
       ## ✅ 합격 기준
-      ids 외에 `syscheck`(FIM) 등 다른 소스도 함께 집계된다. ids 만 보이면 호스트 계층(FIM 등)의 수집이
-      끊겼을 수 있다.
+      `syscheck`(FIM)가 ids 등과 함께 집계되면 통과. **근거:** canary로 호스트 변경(FIM)을 유발했으므로
+      syscheck가 ids·pam·sca와 한 alerts.json 스트림에 공존함을 실제로 보인다(통합 관제의 핵심).
     hint: 'alerts.json 그룹에서 ids/syscheck/pam 동시 집계'
     category: analysis
     points: 8
     answer: |
-      echo "=== 다소스 수렴 집계 ==="
-      docker exec el34-siem sh -c 'tail -1500 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck|pam|sca" | sort | uniq -c'
+      echo "=== 호스트(FIM) 이벤트 보장: canary로 syscheck 유발 ==="
+      docker exec el34-web sh -c 'echo w09 > /home/ccc/w09_canary.txt; echo canary_created'
+      # FIM(syscheck→analysisd→alerts.json)은 지연이 있어 최대 ~45초 폴링
+      for i in $(seq 1 15); do sleep 3; docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -q w09_canary' && break; done
+      docker exec el34-web sh -c 'rm -f /home/ccc/w09_canary.txt'
+      echo "=== 다소스 수렴 집계: 네트워크(ids)+호스트(syscheck)+인증(pam)+설정(sca) ==="
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck|pam|sca" | sort | uniq -c'
     answer_detail: "ids(네트워크)+syscheck(FIM/호스트)+pam(인증)+sca(보안설정) 등이 한 alerts.json 에 공존. 종합 관제의 핵심은 개별 도구가 아니라 통합 평결 스트림 — 네트워크와 호스트가 한 스트림에 있어야 측면이동 같은 복합 공격을 한 타임라인으로 잇는다. W08 의 5계층 수렴이 여기서 SIEM 데이터로 재확인된다. 판정은 syscheck 가 ids 와 함께 집계되는지로 한다."
     verify:
       type: output_contains
