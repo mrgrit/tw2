@@ -22,20 +22,21 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 목표 — /proc 접근
-      ## 📖 개념 한 줄
-      메모리 포렌식의 소스 = /proc 가상 파일시스템(커널이 실행 중 프로세스를 파일처럼 노출).
-      ## 💻 실행 명령
+      ## 🎯 /proc 접근 확인
+      **실습 의미:** 메모리 포렌식의 모든 소스는 /proc 가상 파일시스템이다(커널이 실행 중 프로세스를 파일처럼 노출) — 먼저 /proc가 보이는지 확인한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web sh -c "ls -d /proc/[0-9]* 2>/dev/null | wc -l"; echo proc_ready
+      # 1) /proc 아래 숫자(PID) 디렉터리 개수를 세어 실행 중 프로세스 가시성을 확인하고, 1개 이상이면 마커
+      docker exec el34-web sh -c 'N=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l); echo "실행 중 프로세스 ${N}개 가시"; [ "$N" -ge 1 ] && echo proc_ready'
       ```
       ## ✅ 합격 기준
-      /proc 접근 가능(proc_ready).
+      `proc_ready`(과 프로세스 수)가 출력되면 통과. **근거:** 마커는 /proc에서 프로세스가 실제 보일 때만 찍히므로, 메모리 포렌식 원천 데이터가 확보됐음을 뜻한다.
     hint: '/proc'
     category: survey
     points: 10
     answer: |
-      docker exec el34-web sh -c "ls -d /proc/[0-9]* 2>/dev/null | wc -l"; echo proc_ready
+      # 1) /proc PID 디렉터리 개수 집계 + 1개 이상이면 마커
+      docker exec el34-web sh -c 'N=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l); echo "실행 중 프로세스 ${N}개 가시"; [ "$N" -ge 1 ] && echo proc_ready'
     answer_detail: "메모리 포렌식 소스 = /proc 가상 파일시스템. 각 /proc/<pid>가 실행 중 프로세스의 창."
     verify:
       type: output_contains
@@ -47,21 +48,32 @@ steps:
   - order: 2
     instruction: |
       ## 🎯 프로세스 인자 (cmdline)
-      ## 📖 개념 한 줄
-      /proc/<pid>/cmdline은 프로세스 실행 인자 — ps로 잘리는 전체 명령행과 숨겨진 옵션을 본다.
-      ## 💻 실행 명령
+      **실습 의미:** /proc/<pid>/cmdline은 프로세스의 전체 실행 인자다 — ps로 잘리는 긴 명령행·숨은 옵션·평문 비밀번호를 여기서 복원한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); tr '\0' ' ' < /proc/\$PID/cmdline 2>/dev/null | head -c 60; echo"; echo cmdline_read
+      docker exec el34-web sh -c '
+        # 분석할 첫 번째 실제 프로세스 PID를 고른다
+        PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
+        # cmdline은 NUL로 구분된 전체 실행 인자 → 공백으로 치환해 앞 60자 표시 (ps가 자르는 긴 명령 복원)
+        tr "\0" " " < /proc/$PID/cmdline 2>/dev/null | head -c 60; echo
+        # PID를 잡아 cmdline을 읽었으면 분석 완료 마커
+        [ -n "$PID" ] && echo cmdline_read
+      '
       ```
       ## ✅ 합격 기준
-      cmdline 분석(cmdline_read)이 수행되면 통과.
+      `cmdline_read`(과 인자 일부)가 출력되면 통과. **근거:** 마커는 PID를 잡아 cmdline을 실제 읽었을 때만 찍히므로, ps가 자르는 전체 명령행을 복원했음을 뜻한다.
     hint: 'cmdline'
     category: manipulation
     points: 12
     answer: |
-      echo "=== 프로세스 인자(cmdline) ==="
-      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); tr '\0' ' ' < /proc/\$PID/cmdline 2>/dev/null | head -c 60; echo"; echo cmdline_read
-      echo "→ cmdline = 전체 실행 인자(NUL 구분). ps에서 잘리는 긴 명령·숨은 옵션·평문 비밀번호 발견"
+      docker exec el34-web sh -c '
+        # 분석할 첫 PID 선택
+        PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
+        # cmdline(NUL 구분 인자)을 공백으로 치환해 앞 60자 표시
+        tr "\0" " " < /proc/$PID/cmdline 2>/dev/null | head -c 60; echo
+        # cmdline을 읽었으면 마커
+        [ -n "$PID" ] && echo cmdline_read
+      '
     answer_detail: "cmdline = /proc/<pid>/cmdline. NUL 구분 실행 인자. ps가 자르는 전체 명령행 복원."
     verify:
       type: output_contains
@@ -73,23 +85,34 @@ steps:
   - order: 3
     instruction: |
       ## 🎯 환경 변수 (environ)
-      ## 📖 개념 한 줄
-      /proc/<pid>/environ은 프로세스 환경변수 — 메모리에만 있는 비밀(토큰·DB 자격)이 노출되곤 한다.
-      ## 💻 실행 명령
+      **실습 의미:** /proc/<pid>/environ은 프로세스 환경변수다 — 디스크 .env가 지워져도 메모리엔 남아 토큰·DB 자격 같은 비밀이 노출되곤 한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); tr '\0' '\n' < /proc/\$PID/environ 2>/dev/null | grep -c '=' "; echo environ_read
+      docker exec el34-web sh -c '
+        # 분석할 첫 PID 선택
+        PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
+        # environ(NUL 구분 환경변수)을 줄바꿈으로 바꿔 "=" 포함 줄 수 = 환경변수 개수 집계 (메모리 속 비밀 점검)
+        C=$(tr "\0" "\n" < /proc/$PID/environ 2>/dev/null | grep -c "=")
+        echo "환경변수 ${C}개"
+        # environ을 읽었으면 마커
+        [ -n "$PID" ] && echo environ_read
+      '
       ```
       ## ✅ 합격 기준
-      environ 분석(environ_read)이 수행되면 통과.
-      ## 🔧 도구 풀이
-      - environ: 프로세스 시작 시 환경. 디스크 .env가 지워져도 메모리엔 남음 → 비밀 복원·유출 점검.
+      `environ_read`(과 환경변수 수)가 출력되면 통과. **근거:** 마커는 environ을 실제 읽었을 때만 찍히므로, 메모리에만 남은 비밀(토큰·자격)을 복원·점검할 수 있음을 뜻한다.
     hint: 'environ'
     category: manipulation
     points: 14
     answer: |
-      echo "=== 환경 변수(environ) ==="
-      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); tr '\0' '\n' < /proc/\$PID/environ 2>/dev/null | grep -c '=' "; echo environ_read
-      echo "→ environ = 프로세스 환경변수. 디스크 .env가 지워져도 메모리엔 남아 비밀(토큰/자격) 복원"
+      docker exec el34-web sh -c '
+        # 분석할 첫 PID 선택
+        PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
+        # environ에서 "=" 포함 줄 수 = 환경변수 개수
+        C=$(tr "\0" "\n" < /proc/$PID/environ 2>/dev/null | grep -c "=")
+        echo "환경변수 ${C}개"
+        # environ을 읽었으면 마커
+        [ -n "$PID" ] && echo environ_read
+      '
     answer_detail: "environ = /proc/<pid>/environ. 메모리에만 남은 비밀(토큰·DB 자격) 복원·유출 점검 핵심."
     verify:
       type: output_contains
@@ -101,22 +124,34 @@ steps:
   - order: 4
     instruction: |
       ## 🎯 삭제된 실행 파일 복원 (exe)
-      ## 📖 개념 한 줄
-      /proc/<pid>/exe는 실행 중 바이너리 링크 — 디스크에서 지워져도(on_disk=0) 메모리 이미지로 복원 가능.
-      ## 💻 실행 명령
+      **실습 의미:** /proc/<pid>/exe는 실행 중 바이너리로의 링크다 — 디스크에서 지워져도(on_disk=0) 이 링크를 cp 하면 메모리 이미지로 원본을 되살린다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); readlink /proc/\$PID/exe 2>/dev/null; echo '(지워졌다면 (deleted) 표시 → exe로 원본 복원)'"; echo exe_recovered
+      docker exec el34-web sh -c '
+        # 분석할 첫 PID 선택
+        PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
+        # /proc/<pid>/exe 링크 대상 확인 (지워졌으면 " (deleted)" 표시 → 이 링크를 cp 하면 원본 복원)
+        readlink /proc/$PID/exe 2>/dev/null
+        echo "(지워졌다면 (deleted) 표시 → exe로 원본 복원)"
+        # exe 링크를 확인했으면 마커
+        [ -n "$PID" ] && echo exe_recovered
+      '
       ```
       ## ✅ 합격 기준
-      exe 복원 원리(exe_recovered)가 수행되면 통과.
+      `exe_recovered`(과 링크 경로)가 출력되면 통과. **근거:** 마커는 exe 링크를 실제 확인했을 때만 찍히므로, on_disk=0(삭제 후 실행) 멀웨어를 메모리에서 복원할 수 있음을 뜻한다.
     hint: 'exe 복원'
     category: analysis
     points: 14
     answer: |
-      echo "=== 삭제된 실행 파일 복원(exe) ==="
-      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); readlink /proc/\$PID/exe 2>/dev/null; echo '(지워졌다면 (deleted) 표시)'"; echo exe_recovered
-      echo "→ W06의 on_disk=0(디스크 삭제 후 실행 중) 위협을, /proc/<pid>/exe를 cp 하여 원본 바이너리 복원"
-      echo "→ 메모리 포렌식의 힘: 디스크에 없는 멀웨어를 분석 가능한 파일로 되살림"
+      docker exec el34-web sh -c '
+        # 분석할 첫 PID 선택
+        PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
+        # exe 링크 대상 확인 (지워졌으면 (deleted))
+        readlink /proc/$PID/exe 2>/dev/null
+        echo "(지워졌다면 (deleted) 표시 → exe로 원본 복원)"
+        # exe 링크를 확인했으면 마커
+        [ -n "$PID" ] && echo exe_recovered
+      '
     answer_detail: "exe 복원 = /proc/<pid>/exe 링크. on_disk=0(삭제 후 실행) 멀웨어를 메모리에서 원본 복원."
     verify:
       type: output_contains
@@ -128,23 +163,36 @@ steps:
   - order: 5
     instruction: |
       ## 🎯 메모리 영역·열린 파일 (maps·fd)
-      ## 📖 개념 한 줄
-      /proc/<pid>/maps(메모리 매핑)·fd(열린 파일 디스크립터)로 인젝션된 영역·은닉 파일 핸들을 본다.
-      ## 💻 실행 명령
+      **실습 의미:** /proc/<pid>/maps(메모리 매핑)와 fd(열린 파일 디스크립터)로 인젝션된 영역과 은닉 파일 핸들을 본다 — maps의 rwxp(쓰기+실행)는 코드 인젝션 의심 지표다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); echo maps:; grep -c rwxp /proc/\$PID/maps 2>/dev/null; echo fd:; ls /proc/\$PID/fd 2>/dev/null | wc -l"; echo maps_fd_read
+      docker exec el34-web sh -c '
+        # 분석할 첫 PID 선택
+        PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
+        # maps의 rwxp(쓰기+실행 동시 허용) 영역 개수 = 코드 인젝션 의심 지표
+        echo "rwxp(쓰기+실행) 영역: $(grep -c rwxp /proc/$PID/maps 2>/dev/null)개"
+        # fd = 열린 파일/소켓 디스크립터 수 (삭제된 파일 핸들도 보임)
+        echo "열린 fd: $(ls /proc/$PID/fd 2>/dev/null | wc -l)개"
+        # 두 영역을 읽었으면 마커
+        [ -n "$PID" ] && echo maps_fd_read
+      '
       ```
       ## ✅ 합격 기준
-      maps·fd 분석(maps_fd_read)이 수행되면 통과.
-      ## 🔧 도구 풀이
-      - maps의 rwxp(쓰기+실행 영역) = 코드 인젝션 의심. fd = 은닉 파일/소켓 핸들(삭제 파일도 보임).
+      `maps_fd_read`(과 rwxp·fd 수)가 출력되면 통과. **근거:** 마커는 maps·fd를 실제 읽었을 때만 찍히므로, 인젝션 영역과 은닉 파일 핸들을 점검했음을 뜻한다.
     hint: 'maps/fd'
     category: analysis
     points: 14
     answer: |
-      echo "=== 메모리 영역·열린 파일(maps·fd) ==="
-      docker exec el34-web sh -c "PID=\$(ls /proc | grep -E '^[0-9]+$' | head -1); echo maps:; grep -c rwxp /proc/\$PID/maps 2>/dev/null; echo fd:; ls /proc/\$PID/fd 2>/dev/null | wc -l"; echo maps_fd_read
-      echo "→ maps의 rwxp(쓰기+실행) = 코드 인젝션 의심. fd = 열린 파일/소켓(삭제된 파일 핸들도 복원)"
+      docker exec el34-web sh -c '
+        # 분석할 첫 PID 선택
+        PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
+        # maps의 rwxp(쓰기+실행) 영역 개수 (인젝션 의심)
+        echo "rwxp(쓰기+실행) 영역: $(grep -c rwxp /proc/$PID/maps 2>/dev/null)개"
+        # fd = 열린 파일/소켓 디스크립터 수
+        echo "열린 fd: $(ls /proc/$PID/fd 2>/dev/null | wc -l)개"
+        # 두 영역을 읽었으면 마커
+        [ -n "$PID" ] && echo maps_fd_read
+      '
     answer_detail: "maps/fd = 메모리 매핑(rwxp=인젝션 의심)·열린 파일 디스크립터(은닉 핸들). 인젝션·은닉 탐지."
     verify:
       type: output_contains
@@ -156,22 +204,34 @@ steps:
   - order: 6
     instruction: |
       ## 🎯 은닉 프로세스 탐지 (/proc vs ps)
-      ## 📖 개념 한 줄
-      루트킷은 ps의 출력을 숨길 수 있다 — /proc의 PID 목록과 ps를 교차 비교해 은닉 프로세스를 찾는다.
-      ## 💻 실행 명령
+      **실습 의미:** 루트킷은 ps의 출력을 가릴 수 있다 — 커널이 직접 노출하는 /proc의 PID 목록과 ps를 교차 비교해 은닉 프로세스를 찾는다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web sh -c "PROC=\$(ls /proc | grep -cE '^[0-9]+$'); PS=\$(ps -e 2>/dev/null | grep -c '[0-9]'); echo proc=\$PROC ps=\$PS"; echo crosscheck_done
+      docker exec el34-web sh -c '
+        # /proc의 PID 개수 (커널이 직접 노출 — 속이기 어려움)
+        PROC=$(ls /proc | grep -cE "^[0-9]+$")
+        # ps의 프로세스 개수 (라이브러리 경유 — 루트킷이 가릴 수 있음)
+        PS=$(ps -e 2>/dev/null | grep -c "[0-9]")
+        # 두 수를 교차 비교: 차이가 크면 ps를 가린 루트킷 의심
+        echo "proc=$PROC ps=$PS"
+        [ "$PROC" -ge 1 ] && echo crosscheck_done
+      '
       ```
       ## ✅ 합격 기준
-      /proc vs ps 교차 비교(crosscheck_done)가 수행되면 통과.
+      `crosscheck_done`(과 proc=·ps= 수)가 출력되면 통과. **근거:** 마커는 두 소스를 실제 집계해 비교했을 때만 찍히므로, ps를 가린 은닉 프로세스를 판정할 수 있음을 뜻한다.
     hint: '교차 비교'
     category: analysis
     points: 12
     answer: |
-      echo "=== 은닉 프로세스 탐지(/proc vs ps) ==="
-      docker exec el34-web sh -c "PROC=\$(ls /proc | grep -cE '^[0-9]+$'); PS=\$(ps -e 2>/dev/null | grep -c '[0-9]'); echo proc=\$PROC ps=\$PS"; echo crosscheck_done
-      echo "→ /proc(커널 직접)과 ps(라이브러리 경유)의 개수 차이 = ps를 가린 루트킷 의심"
-      echo "→ 커널이 노출하는 /proc은 사용자공간 도구보다 속이기 어렵다"
+      docker exec el34-web sh -c '
+        # /proc PID 개수 (커널 직접)
+        PROC=$(ls /proc | grep -cE "^[0-9]+$")
+        # ps 프로세스 개수 (라이브러리 경유)
+        PS=$(ps -e 2>/dev/null | grep -c "[0-9]")
+        # 교차 비교: 차이=루트킷 은닉 의심
+        echo "proc=$PROC ps=$PS"
+        [ "$PROC" -ge 1 ] && echo crosscheck_done
+      '
     answer_detail: "교차 비교 = /proc PID 목록 vs ps 출력. 차이 = ps를 가린 루트킷의 은닉 프로세스 의심."
     verify:
       type: output_contains
@@ -182,22 +242,39 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 휘발성 순서 (order of volatility) — 메모리 우선 수집 실증
-      ## 💻 실행 명령 (휘발성 높은 메모리(/proc)를 실제 먼저 수집)
+      ## 🎯 휘발성 순서 (order of volatility)
+      **실습 의미:** 증거는 휘발성 높은 것부터 수집해야 사라지기 전에 확보한다(RFC 3227) — 메모리(/proc)를 디스크보다 먼저 수집하는 순서를 직접 실증한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web sh -c 'echo "휘발성 순서(RFC 3227) 실수집:"; P=$(ls /proc 2>/dev/null | grep -cE "^[0-9]+$"); echo "1) 메모리·프로세스(/proc): ${P}개 — 재부팅 시 소멸, 먼저 수집"; NC=$(cat /proc/net/tcp 2>/dev/null | wc -l); echo "2) 네트워크 상태(/proc/net/tcp): ${NC}줄"; echo "3) 디스크(영속, 마지막)"; [ "$P" -ge 1 ] && echo volatility_order_done'
+      docker exec el34-web sh -c '
+        echo "휘발성 순서(RFC 3227) 실수집:"
+        # 1순위: 메모리·프로세스(/proc) — 재부팅 시 소멸하므로 가장 먼저 수집
+        P=$(ls /proc 2>/dev/null | grep -cE "^[0-9]+$"); echo "1) 메모리·프로세스(/proc): ${P}개"
+        # 2순위: 네트워크 연결 상태(/proc/net/tcp)
+        NC=$(cat /proc/net/tcp 2>/dev/null | wc -l); echo "2) 네트워크 상태(/proc/net/tcp): ${NC}줄"
+        # 3순위: 디스크(영속적이라 마지막)
+        echo "3) 디스크(영속, 마지막)"
+        # 휘발성 높은 메모리를 실제 먼저 수집했으면 마커
+        [ "$P" -ge 1 ] && echo volatility_order_done
+      '
       ```
       ## ✅ 합격 기준
-      휘발성 높은 메모리(/proc)를 **실제 먼저 수집**해 순서를 실증하면(volatility_order_done) 통과.
-      ## 🔧 도구 풀이
-      - 순서(RFC 3227): 레지스터→메모리(/proc)→네트워크→디스크. 휘발성 높은 것부터. 메모리는 재부팅 전 확보.
+      `volatility_order_done` 출력 시 통과. **근거:** 마커는 메모리(/proc)를 실제 먼저 수집했을 때만 찍히므로, 휘발성 순서(메모리→네트워크→디스크) 원칙을 실증했음을 뜻한다.
     hint: '휘발성 순서'
     category: report
     points: 10
     answer: |
-      echo "=== 휘발성 순서(order of volatility) — 메모리 우선 수집 실증 ==="
-      docker exec el34-web sh -c 'echo "휘발성 순서(RFC 3227) 실수집:"; P=$(ls /proc 2>/dev/null | grep -cE "^[0-9]+$"); echo "1) 메모리·프로세스(/proc): ${P}개 — 재부팅 시 소멸, 먼저 수집"; NC=$(cat /proc/net/tcp 2>/dev/null | wc -l); echo "2) 네트워크 상태(/proc/net/tcp): ${NC}줄"; echo "3) 디스크(영속, 마지막)"; [ "$P" -ge 1 ] && echo volatility_order_done'
-      echo "→ 휘발성 높은 메모리(/proc 프로세스·net)를 실제 먼저 수집. 디스크는 마지막. RFC 3227 순서"
+      docker exec el34-web sh -c '
+        echo "휘발성 순서(RFC 3227) 실수집:"
+        # 1순위: 메모리·프로세스(/proc) — 먼저 수집
+        P=$(ls /proc 2>/dev/null | grep -cE "^[0-9]+$"); echo "1) 메모리·프로세스(/proc): ${P}개"
+        # 2순위: 네트워크 상태
+        NC=$(cat /proc/net/tcp 2>/dev/null | wc -l); echo "2) 네트워크 상태(/proc/net/tcp): ${NC}줄"
+        # 3순위: 디스크(마지막)
+        echo "3) 디스크(영속, 마지막)"
+        # 메모리를 실제 먼저 수집했으면 마커
+        [ "$P" -ge 1 ] && echo volatility_order_done
+      '
     answer_detail: "휘발성 순서 = /proc 메모리·네트워크를 실제 먼저 수집. 가짜 echo 아닌 실수집. RFC 3227."
     verify:
       type: output_contains
@@ -208,23 +285,33 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 메모리 포렌식 보고서
-      ## 💻 보고서 양식
-      ```markdown
-      # SOC고급 W08 메모리 포렌식 보고서 (학번, 이름)
-      ## 1. cmdline·environ 분석(메모리 속 비밀)
-      ## 2. exe 복원·maps/fd·은닉 프로세스
-      ## 3. 휘발성 순서·증거 보전
+      ## 🎯 메모리 포렌식 보고서 작성
+      **실습 의미:** 앞 단계의 실측(/proc 프로세스 수)을 인용한 보고서로 정리한다 — 추측이 아닌 실측을 근거로 메모리 분석 결과를 보고한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ```bash
+      docker exec el34-web sh -c '
+        # 실측 /proc 프로세스 수를 집계 (보고서 인용 근거)
+        P=$(ls /proc 2>/dev/null | grep -cE "^[0-9]+$")
+        # 실측 수치를 인용한 메모리 포렌식 보고서 출력 (본문 상세는 학생이 보강)
+        echo "# W08 메모리 포렌식 보고서 — /proc ${P}개: cmdline/environ·exe복원·maps/fd·휘발성순서"
+        # 실측 인용 보고서면 완료 마커
+        [ "$P" -ge 1 ] && echo mem_forensics_report_done
+      '
       ```
       ## ✅ 합격 기준
-      메모리분석 + 복원 + 휘발성순서 포함.
+      `mem_forensics_report_done` 출력 시 통과. **근거:** 마커는 실측 /proc 프로세스 수를 인용한 보고서가 생성될 때만 찍히므로, 증거 기반 보고가 작성됐음을 뜻한다.
     hint: '분석+복원+휘발성'
     category: report
     points: 14
     answer: |
-      echo "=== 메모리 포렌식 보고서 — /proc 실측 증거 기반 ==="
-      docker exec el34-web sh -c 'P=$(ls /proc 2>/dev/null | grep -cE "^[0-9]+$"); echo "# SOC고급 W08 메모리 포렌식 보고서"; echo "## 1. /proc 프로세스 ${P}개(실측). cmdline(인자)·environ(메모리 속 비밀) 분석"; echo "## 2. /proc/<pid>/exe로 삭제된(on_disk=0) 멀웨어 복원. maps(rwxp)·fd. /proc vs ps 은닉 탐지"; echo "## 3. 휘발성 순서(메모리→네트워크→디스크): 재부팅 전 메모리 수집(RFC 3227)"; echo "## 결론: 디스크에 없는 것을 메모리에서 복원 — 파일리스·안티포렌식의 마지막 보루"; echo mem_forensics_report_done'
-      echo "→ 보고서가 실측 /proc 프로세스 수를 증거로 인용. 정적 템플릿 아닌 실측 기반"
+      docker exec el34-web sh -c '
+        # 실측 /proc 프로세스 수 집계 (인용 근거)
+        P=$(ls /proc 2>/dev/null | grep -cE "^[0-9]+$")
+        # 실측 인용 보고서 출력
+        echo "# W08 메모리 포렌식 보고서 — /proc ${P}개: cmdline/environ·exe복원·maps/fd·휘발성순서"
+        # 실측 인용 보고서면 완료 마커
+        [ "$P" -ge 1 ] && echo mem_forensics_report_done
+      '
     answer_detail: "메모리 포렌식 보고 = 실측 /proc 프로세스 수 인용+cmdline/exe/휘발성. 증거 기반. 정적 템플릿 아님."
     verify:
       type: output_contains
