@@ -270,9 +270,13 @@ el34 의 Apache 는 단일 `access.log` 가 아니라 **vhost 별 별도 로그*
 코드로 응답했나"를 담는 감사 기록이다. 세 로그 중 유일하게 **공격 판단의 근거**를 직접
 제공하므로, "이 요청이 왜 403 이 됐는가?"라는 질문에 답할 수 있는 단 하나의 로그다.
 
-el34 의 ModSec audit 은 `SecAuditLogFormat JSON` 설정으로 **한 요청 = 한 JSON 라인** 으로
-기록되며, 파일 경로는 `/var/log/apache2/modsec_audit.log` 다. JSON 형식이라 `jq` 로 필드를
-정확히 뽑아낼 수 있고, Wazuh 가 수집·정규화하기에도 좋다.
+el34 의 ModSec audit 은 `SecAuditLogFormat JSON` 으로 기록되며 파일 경로는
+`/var/log/apache2/modsec_audit.log` 다. 다만 실제 el34 에선 audit log 가 **멀티라인(pretty) JSON**
+으로 떨어져 `tail -1 | jq` 가 깨진다(한 줄이 JSON 조각). 따라서 **룰 ID·익명점수 요약은 per-vhost
+`error.log`**(예: `/var/log/apache2/dvwa_error.log`)의 ModSec 경고 라인에서 읽는 것이 신뢰 소스다 —
+한 줄에 `[id "942100"] [msg "..."] [client <출처IP>] [unique_id ...]` 가 임베드된다. 본 주차 실습도
+error.log 를 **요청 라인수로 격리**해 공격별 룰을 뽑는다. 아래 audit JSON 구조는 ModSec 의 일반 개념
+(SecAuditLogParts)으로 이해하면 되고, Wazuh 의 수집·정규화 대상이기도 하다.
 
 ### 2.2 el34 에서 어떻게 — audit JSON 의 구조
 

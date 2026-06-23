@@ -443,7 +443,15 @@ graph TD
 
 ### 5.5 ⚠️ 중요 — messages[] 의 정확한 형식
 
-`audit_data.messages[]` 의 각 element 는 **JSON object 가 아니라 단일 string** 이며,
+> **⚠️ el34 실제 환경 주의**: el34 의 `modsec_audit.log` 는 **멀티라인(pretty) JSON** 으로 적재되어
+> `tail -1 | jq` 가 깨진다(한 줄이 JSON 조각). 따라서 el34 에서 룰 ID·익명점수 요약은 **per-vhost
+> `error.log`**(예: `/var/log/apache2/dvwa_error.log`) 의 ModSec 경고 라인에서 읽는다 — 한 줄에
+> `[id "942100"] [msg "... SQLI=..,XSS=.. ..."] [client <출처IP>] [unique_id ...]` 가 모두 임베드된다.
+> 본 주차 실습(.yaml)도 error.log 를 **요청 직전/직후 라인수로 격리**(`B=$(wc -l)` → 공격 →
+> `tail -n +$((B+1)) | grep 'id "94x"'`)해 공격별 룰을 정확히 추출한다. 아래 audit JSON 구조 설명은
+> ModSec 의 **일반 개념**(SecAuditLogParts)으로 이해하면 된다.
+
+`audit_data.messages[]` 의 각 element 는 (audit log JSON 이 한 줄일 때) **JSON object 가 아니라 단일 string** 이며,
 ModSec 의 message format 으로 `[key "value"]` 형태가 embedded.
 
 따라서 jq 의 단순 추출이 안 됨:
