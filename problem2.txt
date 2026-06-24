@@ -359,6 +359,66 @@
    admincfg200 ftp200. ([표시] `head -c` 가 스트림 절단해 curl exit18 경고 — 무해, "정상" 주석 권장).
 [정직 서술 모범] W09 s5·W12 s5 "401=보호됨(막힘 확인도 결과)", W13 dalfox "무탐=안전 아님" — 타 트랙 확산 권장.
 
+--------------------------------------------------------------------------------
+8.3 soc 트랙 (standalone-soc, W01~W15, 122 step 전수 실측 완료) — 가장 깨끗한 트랙
+--------------------------------------------------------------------------------
+[성격] 방어/관제 트랙. 공격 생성(일부 step) → 로그 분석(eve.json/modsec/auth.log/Wazuh alerts.json) →
+  탐지룰 작성(wazuh-logtest) → IR(격리·제거·복구). 거의 전부 실동작. 공통 FIX 는 attack/web-vuln 과 동일.
+[인프라 실재 확인] sigma2wazuh.py·SIGMA rules(W07), OpenCTI/MISP(W13), execd Active-Response(W14) 모두 존재
+  (attack W13 Caldera 부재와 대조). 상태변경 step(W09~W12·W15) 의 자가정리 전부 정상 복원 확인.
+
+[버그 — 우선 수정]
+ ① W10 s7 pgrep self-match: 리스너 잔재 확인 `pgrep -f "http.server 44410"`(브래킷 없음)이 자신을 감싼 sh -c
+    명령줄을 매치 → 리스너가 실제 제거됐는데도 "리스너 잔재!" **오보**. osquery listening_ports 로 교차확인(빈값)
+    +`[h]ttp.server` 브래킷(s6 처럼)으로 수정. (s6 의 pkill 은 이미 브래킷 사용 — s7 만 누락)
+ ② W11 s3·s6 osquery self-match: `processes WHERE cmdline LIKE "%c2_beacon%"` 가 그 osqueryi 쿼리 자신의
+    cmdline(=c2_beacon 포함)을 매치 → 항상 ≥1건, s6 의 "제거 후 비어야 성공"이 **영원히 빈값 불가**. WHERE 에
+    `AND name != 'osqueryi'` 추가. (s7 은 `pgrep -f "[c]2_beacon"` 브래킷이라 정상 — 모범)
+ ③ W01 s1 필드명: alerts.json 미리보기가 `.data.srcip`(언더스코어 없음) → **null**. W03 s7 의 `.data.src_ip`
+    (언더스코어)는 정상 동작(rule 86601 등 Suricata 경유 alert) → W01 s1 도 `.data.src_ip` 로 통일.
+
+[CROSS-SOC]
+ - 시간대: 호스트 로그(auth.log)=**KST**(예 Jun 25 07:34) vs 컨테이너 로그(eve/modsec)=**UTC**(Jun 24 22:34)
+   9시간 차. 학생이 타임라인 상관 시 혼동 → 예상출력/해석에 "호스트 KST·컨테이너 UTC" 명시.
+ - modsec_audit.log **404MB**(거대) — tail 은 OK 지만 grep 범위/성능 주석.
+ - 호스트 **sysmon active**(Linux Sysmon 실재) — CLAUDE.md "Sysmon 미보유"와 상충(attack W13 에서도 동일 발견).
+
+[주차별 실측]
+ W01 다중벡터: s2 nmap+SSH brute x8+SQLi 생성 / s3 eve `6V6 nmap SYN scan` src .202 / s4 [우수] auth.log
+   `Invalid user socw1bad* from 127.0.0.1`(84건; 호스트 auth.log 실재) / s5 modsec 941/942/sqlmap 403 remote
+   .202 / s7 [우수] eve(37x .202)+modsec(.202) 동일출처 상관. (s1 src=null → 필드명 ③ 참고)
+ W02 SSH brute: s1 auth.log 4200 sshd줄 / s3 Invalid user 183 / s4 계정분포 oracle/admin/test(root 는 유효계정
+   이라 "Failed password for root"로 분리=정확) / s5 [우수] `Accepted for ccc from 192.168.0.107` / s6 [모범]
+   "인증=127.0.0.1 localhost·스캔=.202·실전은 같은 외부IP" 한계를 **정직히 명시** / s7 preauth 타임라인.
+ W03 교차분석: s1 modsec_audit 404MB / s4 access 403(36)/302(12)/200(1) / s5 [우수] eve types alert(25)/flow
+   (600)/http(1160)/tls(57) / s7 [중요] `.data.src_ip` → rule 86601 "6V6 sqlmap/UNION/XSS" 동작(W01 s1 필드명 정정 근거).
+ W04 커스텀룰: [모범] s2 logtest SSH→`srcip 9.9.9.9 id 5760 mitre T1110.001` / s3 룰100440→`id100440 level10
+   Alert`→복원0 / s5 alerts.json ids rule 86601 src .202 / 공유SIEM 백업·복원 완벽.
+ W05 경보폭주: [모범] s1 2000건 포화 / s3 [우수] level=3(1797)/7(149)/10(50) / s4 groups ["ids","suricata"]
+   (1779)/syscheck(142)/sigma(50) / s5 top rule 86601(1779) src .202(1779) / s7 억제룰100450(level0)→복원0.
+ W06 ATT&CK캠페인: s4 [우수] 캠페인 타임라인(.202 timestamp+description) / s6 [우수] eve sig `1000001 UNION
+   SELECT/1000002 XSS/1000003 sqlmap/1000004 PathTraversal/1000005 nmap scan`(el34 커스텀 sid).
+ W07 SIGMA: [모범] s1 sigma2wazuh.py+rules 3종 / s2 web-sqli.yml / s3 변환→rule 200002 `<regex pcre2>` / s4
+   logtest `id200002 level10 groups:sigma,apache` / s6 실제 SQLi→alerts.json sigma rule 200002 발화. 툴체인 실재.
+ W08 중간고사(10): s5 Invalid user/Accepted 1270 / s6 ids/suricata(490) / s9 [핵심] 공격출처 Accepted=**0**→P2
+   (침해 아님, 판정 로직 정확).
+ W09 IR: [모범] s2 socw9bd 백도어+웹쉘 / s3 osquery socw9bd(uid1001) / s4 [격리] IP룰 9509001 포착20 / s5
+   웹쉘+계정 eradicated / s6 web=302 clean. IR 전 사이클·완전복원. (IP기반 Suricata 룰은 발화 — attack W09
+   NULL flags:0 미발화와 대조)
+ W10 웹쉘: s4 [우수] osquery file socw10_shell.php size27 + listening_ports 44410 / s5 격리 포착31 / s6 웹쉘 rm
+   (osquery `[]`) / **s7 버그 ①**(리스너 pgrep self-match 오보 — 실제는 제거됨).
+ W11 악성코드C2: s1 sysmon active / s4 [우수] listening_ports 45511 / s5 C2룰 9511001 -T OK→복원0 / **s3·s6
+   버그 ②**(osquery LIKE self-match) / s7 [모범] `pgrep -f "[c]2_beacon"` 브래킷 정상 "clean".
+ W12 내부위협: s3 [우수] auth.log `ccc: USER=root COMMAND=/usr/bin/id` / s4 osquery exfil 556B / s5 [우수]
+   sha256+stat 증거보전 / s6 exfil룰9512001→복원0 / s7 clean(ls 방식, self-match 없음).
+ W13 인텔: s1 opencti/misp 컨테이너 4 / s4 인텔룰101310(level13)→복원0 / s6 `el34-opencti-1/connector-opencti-1/
+   misp-core-1`(OpenCTI+MISP 실재).
+ W14 자동대응: s1 analysisd+execd·AR블록4 / s3 ossec.conf `timeout1800/command`, active-responses.log **0바이트**
+   (AR 미트리거 — "기본 주석템플릿 미활성"으로 **정직 명시**, 공유랩서 자동차단 안 함이 안전) / s4 AR룰101410→복원0.
+ W15 기말APT(11): s2 4단계(스캔+SQLi+brute+백도어 socw15bd) / s6 격리 포착369 / s7 eradicated / s8 인텔룰
+   101515→복원0 / s11 user ok·전 룰 잔재0. APT 종합+IR 전 사이클·완전복원.
+[정직 서술 모범(타 트랙 확산 권장)] W02 s6 데모 한계, W14 AR 미활성, W08 s9 Accepted=0→P2.
+
 ================================================================================
 끝. 요약: 고칠 3곳 = (A)instruction 6요소 규약[contents/training/*/lab_week*.yaml],
 (B)Training.tsx 실습 렌더러[apps/ui/src/pages/Training.tsx], (C)build_lab_doc 워크북
