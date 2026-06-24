@@ -39,25 +39,29 @@ steps:
       `alerts.json`에 한 줄씩 쌓인다. 이 둘 중 하나라도 죽어 있으면 신규 경보가 생성·적재되지
       않으므로, 이후의 매핑·재구성·심층 분석이 전부 무의미해진다. 그래서 가장 먼저 확인한다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) Wazuh 분석 엔진 analysisd 가동 확인
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      # 2) alerts.json 최신 1건의 출발지/룰 설명 미리보기(적재 확인)
       docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json | jq "{src:.data.src_ip,sig:.rule.description}"'
       ```
 
       ## 🔧 처음 나오는 도구/옵션
       - `wazuh-control status` — Wazuh manager의 데몬 상태를 보여준다. `grep analysisd`로 분석 엔진만 추린다.
       - `tail -1 alerts.json` — 가장 최근 경보 한 줄(JSON)을 뗀다.
-      - `jq "{src:.data.src_ip,sig:.rule.description}"` — 그 JSON에서 출발지 IP와 룰 설명만 보기 좋게 추출한다(siem 컨테이너에 jq 설치됨).
+      - `jq "{src:.data.src_ip,sig:.rule.description}"` — 그 JSON에서 출발지 IP와 룰 설명만 보기 좋게 추출한다.
 
       ## ✅ 합격 기준
-      `analysisd is running` 출력 + 최신 경보 1건이 JSON으로 적재되어 보이면 통과. analysisd가
-      stopped면 신규 경보가 안 생기므로 먼저 복구해야 한다.
+      `analysisd` 출력 시 통과. **근거:** analysisd is running + 최신 경보 1건이 JSON으로 적재돼
+      보이면 통과 — analysisd 가 stopped 면 신규 경보가 안 생기므로 먼저 복구해야 한다.
     hint: 'analysisd + alerts.json'
     category: survey
     points: 10
     answer: |
+      # 1) Wazuh 분석 엔진 analysisd 가동 확인
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      # 2) alerts.json 최신 1건의 출발지/룰 설명 미리보기(적재 확인)
       docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json | jq "{src:.data.src_ip,sig:.rule.description}"'
     answer_detail: "ATT&CK 분석의 토대 = 살아 있는 경보 스트림(alerts.json)과 분석 엔진(analysisd) + 심층 소스(ModSec/Suricata). analysisd가 running이고 alerts.json에 최신 경보가 적재되면 통과로 판정한다. 엔진이 멈춰 있으면 이후 모든 분석이 빈 결과가 되므로 1순위 점검 항목이다."
     verify:
@@ -81,30 +85,34 @@ steps:
       (침투)"는 순서를 따르며, 이 순서가 곧 ATT&CK 전술 순서다. Red(공격)가 통제된 환경에서
       체인을 재현해야 Blue(분석)가 탐지·재구성을 검증할 수 있다 — Purple Team의 표준 절차다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) 정찰 — SYN 포트 스캔(T1046, 연결 안 맺는 은밀한 스캔)
       docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      # 2) 초기침투 — sqlmap UA로 SQLi 주입(T1190, 차단형 dvwa)
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw6%27%20UNION%20SELECT%201--%20-\""
+      # 3) 경보 전파 대기 후 완료 마커
+      sleep 6
       echo "chain done"
       ```
 
       ## 🔧 처음 나오는 도구/옵션
-      - `nmap -sS` — SYN 스캔. 연결을 끝까지 맺지 않는 은밀한 포트 스캔(정찰 T1046).
-      - `-p 20-120 -T4` — 포트 20~120 범위를 빠른 속도(T4)로 훑는다.
-      - `-A sqlmap/1.7` — User-Agent를 sqlmap으로 위장(탐지 유발용).
-      - `-H 'Host: dvwa.el34.lab'` — dvwa vhost로 보낸다. dvwa는 차단형(SecRuleEngine On)이라 SQLi가 ModSec에 잡힌다.
-      - `?id=...UNION%20SELECT...` — URL 인코딩된 SQL 주입 페이로드(초기침투 T1190).
-      - 경보가 Suricata·ModSec·Wazuh로 전파되는 데 수 초가 걸리므로, 다음 분석 실습 전 잠시 기다린다.
+      - `nmap -sS -p 20-120 -T4` — 포트 20~120 범위를 빠른 속도(T4)로 훑는 SYN 스캔(정찰 T1046).
+      - `-A sqlmap/1.7` — User-Agent를 sqlmap으로 위장(탐지 유발용). `?id=...UNION%20SELECT...` = SQL 주입(T1190).
+      - `-H 'Host: dvwa.el34.lab'` — 차단형(SecRuleEngine On) vhost 라 SQLi 가 ModSec 에 잡힌다.
 
       ## ✅ 합격 기준
-      nmap 스캔 완료(`scanned`) + SQLi curl 후 `chain done` 출력이면 통과. 이 시점부터 세
-      도구에 흔적이 쌓이기 시작한다.
+      `done` 출력 시 통과. **근거:** nmap 스캔 완료 + SQLi curl 후 chain done 이 나오면 통과 —
+      이 시점부터 세 도구(Suricata/ModSec/Wazuh)에 흔적이 쌓이기 시작한다.
     hint: 'nmap + 웹 SQLi'
     category: recon
     points: 10
     answer: |
+      # 1) 정찰 — SYN 포트 스캔(T1046, 연결 안 맺는 은밀한 스캔)
       docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      # 2) 초기침투 — sqlmap UA로 SQLi 주입(T1190, 차단형 dvwa)
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw6%27%20UNION%20SELECT%201--%20-\""
+      # 3) 경보 전파 대기 후 완료 마커
       sleep 6
       echo "chain done"
     answer_detail: "정찰(스캔, T1046)→초기침투(SQLi, T1190) — ATT&CK 전술 순서대로 진행되는 공격 체인을 한 출발지(10.20.30.202)에서 재현한다. `chain done` 출력이면 두 단계가 발생한 것으로 판정하며, sleep으로 경보 전파를 기다린 뒤 후속 분석 실습이 같은 출발지의 흔적을 잡을 수 있게 한다."
@@ -129,11 +137,16 @@ steps:
       매핑해야 "지금 어느 단계인가"를 말할 수 있다. 전술 번호의 순서를 보면 "정찰만(초기)" vs
       "침투까지(심각)"가 한눈에 갈린다 — 단계가 깊을수록 위험하다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      echo "스캔   → TA0043 정찰 / T1046 Network Service Scanning"
-      echo "SQLi   → TA0001 초기침투 / T1190 Exploit Public-Facing App"
-      echo "인증실패 → TA0006 자격증명 / T1110 Brute Force"
+      # 1) 스캔 → 정찰 전술/기술
+      echo "스캔     → TA0043 정찰 / T1046 Network Service Scanning"
+      # 2) SQLi → 초기침투 전술/기술
+      echo "SQLi     → TA0001 초기침투 / T1190 Exploit Public-Facing Application"
+      # 3) 인증 실패 → 자격증명 접근 전술/기술
+      echo "인증 실패 → TA0006 자격증명 접근 / T1110 Brute Force"
+      # 4) 해석 — 매핑하면 '정찰만(초기)' vs '침투까지(심각)' 단계가 한눈에
+      echo "→ 매핑하면 '정찰만(초기)' vs '침투까지(심각)' 단계가 한눈에"
       ```
 
       ## 🔧 매핑 규칙 (외울 게 아니라 단계로 읽기)
@@ -144,15 +157,19 @@ steps:
       | 인증 실패(SSH brute) | TA0006 자격증명 접근 | T1110 Brute Force |
 
       ## ✅ 합격 기준
-      각 경보가 ATT&CK 기술(T1190 등)에 매핑되면 통과. 매핑이 곧 단계 판독의 토대다.
+      `T1190` 출력 시 통과. **근거:** 각 경보가 ATT&CK 기술(T1190 등)에 매핑되면 통과 — 전술 순서
+      (정찰 TA0043→초기침투 TA0001→자격증명 TA0006)로 단계 깊이를 읽는 것이 에스컬레이션의 토대다.
     hint: '경보 → 전술/기술 매핑'
     category: analysis
     points: 12
     answer: |
-      echo "=== 경보 → ATT&CK 매핑 ==="
+      # 1) 스캔 → 정찰 전술/기술
       echo "스캔     → TA0043 정찰 / T1046 Network Service Scanning"
+      # 2) SQLi → 초기침투 전술/기술
       echo "SQLi     → TA0001 초기침투 / T1190 Exploit Public-Facing Application"
+      # 3) 인증 실패 → 자격증명 접근 전술/기술
       echo "인증 실패 → TA0006 자격증명 접근 / T1110 Brute Force"
+      # 4) 해석 — 매핑하면 '정찰만(초기)' vs '침투까지(심각)' 단계가 한눈에
       echo "→ 매핑하면 '정찰만(초기)' vs '침투까지(심각)' 단계가 한눈에"
     answer_detail: "경보를 ATT&CK 전술(왜)/기술(어떻게)로 매핑하면 공격 단계가 드러난다. 출력에 T1190 등 기술 번호가 포함되면 통과로 판정한다. 전술 순서(정찰 TA0043→초기침투 TA0001→자격증명 TA0006)로 '지금 어디까지 왔나'를 판단하며, 단계가 깊을수록 우선순위가 높아진다 — 이 매핑이 실습 7 에스컬레이션 판정의 근거가 된다."
     verify:
@@ -177,27 +194,30 @@ steps:
       **출발지 상관**(같은 src_ip로 묶기)과 **시간순 정렬**(timestamp 오름차순) — 을 쓴다.
       el34는 fw가 SNAT를 하지 않아 출처 IP가 전 계층에 보존되므로 10.20.30.202로 정확히 묶인다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) 출발지 10.20.30.202 경보만 골라 [시각, 룰설명] 시간순 최근 10건 — 캠페인 타임라인
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -10'
+      # 2) 해석 — 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인
+      echo "→ 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인"
       ```
 
       ## 🔧 명령 해부
       - `tail -2000` — 최근 경보 2000줄만 본다(전체를 다 읽으면 느리다).
       - `jq -rc "select(.data.src_ip==...)"` — 출발지가 공격자 IP인 줄만 고른다.
-      - `[.timestamp,.rule.description]|@tsv` — 시각과 경보 설명만 탭으로 뽑는다.
-      - `| tail -10` — 가장 최근 10건을 시간순으로 본다. 위→아래로 읽으면 단계 진행이 보인다.
+      - `[.timestamp,.rule.description]|@tsv` — 시각과 경보 설명만 탭으로 뽑아 `| tail -10` 으로 최근 10건을 시간순으로 읽는다.
 
       ## ✅ 합격 기준
-      출발지 10.20.30.202의 경보들이 시간순으로 나열되면 통과. 그 순서가 ATT&CK 전술 순서
-      (정찰→침투)와 맞아떨어지면 "우연한 노이즈가 아니라 의도된 캠페인"이라는 강한 신호다.
+      `10.20.30.202` 출력 시 통과. **근거:** 출발지 10.20.30.202 의 경보들이 시간순으로 나열되면
+      통과 — 그 순서가 ATT&CK 전술 순서(정찰→침투)와 맞으면 의도된 캠페인이라는 강한 신호다.
     hint: 'alerts.json src 10.20.30.202 시간순'
     category: analysis
     points: 14
     answer: |
-      echo "=== 캠페인 재구성 (출발지 10.20.30.202, 시간순) ==="
+      # 1) 출발지 10.20.30.202 경보만 골라 [시각, 룰설명] 시간순 최근 10건 — 캠페인 타임라인
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -10'
-      echo "→ 같은 출발지 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인"
+      # 2) 해석 — 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인
+      echo "→ 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인"
     answer_detail: "흩어진 경보를 출발지(src_ip)로 묶고 시간순 정렬하면 한 공격자의 공격 체인이 된다. 출력에 10.20.30.202가 보이면 통과로 판정한다. ATT&CK 전술 순서(정찰→침투)와 시간순이 일치하면 강한 캠페인 신호이며, el34의 출처 IP 보존(fw가 SNAT 안 함)이 이 묶음을 가능하게 하는 전제다. 침해 분석(IR)의 첫걸음 = '이 IP가 언제 무엇을 했나'의 타임라인 작성이다."
     verify:
       type: output_contains
@@ -222,9 +242,12 @@ steps:
       발동해 차단한다. 942가 보이고 뒤이어 949110이 보이면 "SQLi가 점수를 쌓아 차단됐다"는
       T1190의 직접 증거다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) modsec_audit 최근 80줄에서 CRS 룰ID(9xxxxx)만 추출해 룰별 횟수 집계
       docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      # 2) 해석 — 942(SQLi)가 anomaly score 누적 → 949110 차단. T1190 단계의 증거
+      echo "→ 942(SQLi) payload가 anomaly score 누적 → 949110 차단. T1190 단계의 증거"
       ```
 
       ## 🔧 명령 해부
@@ -233,14 +256,15 @@ steps:
       - `sort | uniq -c` — 룰 ID별 등장 횟수를 집계한다.
 
       ## ✅ 합격 기준
-      942 계열(SQLi)이 보이면 통과. 942 + 949110(임계 도달 차단)이 함께 보이면 웹 침투 단계가
-      완전히 입증된다. (dvwa는 차단형이라 룰이 잘 찍히고, juice는 DetectionOnly라 통과만 됨.)
+      `942` 출력 시 통과. **근거:** 942 계열(SQLi)이 보이면 통과 — 942 + 949110(임계 도달 차단)이
+      함께 보이면 웹 침투 단계가 완전히 입증된다(dvwa 는 차단형이라 룰이 잘 찍힌다).
     hint: 'modsec 942/949110'
     category: analysis
     points: 12
     answer: |
-      echo "=== ModSec 심층 (T1190 입증) ==="
+      # 1) modsec_audit 최근 80줄에서 CRS 룰ID(9xxxxx)만 추출해 룰별 횟수 집계
       docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      # 2) 해석 — 942(SQLi)가 anomaly score 누적 → 949110 차단. T1190 단계의 증거
       echo "→ 942(SQLi) payload가 anomaly score 누적 → 949110 차단. T1190 단계의 증거"
     answer_detail: "캠페인의 웹 침투 단계(T1190)를 ModSec으로 입증한다. 출력에 942가 보이면 통과로 판정한다. 942(SQLi 페이로드 매치)가 anomaly score를 누적해 949110(임계 도달) 차단으로 이어지는 것이 증거다. ModSec은 L7 페이로드만 보므로 네트워크 정찰은 다음 실습의 Suricata로 보강한다(다소스 상관)."
     verify:
@@ -265,27 +289,29 @@ steps:
       단위)가 담긴다. 한 출발지에서 짧은 시간에 수많은 flow가 여러 포트로 향하면 = 포트
       스캔(T1046)의 전형이다. signature로 "무엇을 탐지했나", flow로 "얼마나 광범위했나"를 읽는다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) eve에서 alert + 출발지 10.20.30.202만 골라 signature_id/signature 집계(정찰 입증)
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|[.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | tail -5'
+      # 2) 해석 — signature_id/signature로 스캔(T1046) 단계 입증, flow로 세션 규모
+      echo "→ signature_id/signature로 스캔(T1046) 단계 입증, flow로 세션 규모"
       ```
 
       ## 🔧 명령 해부
       - `tail -3000 eve.json` — alert는 flow보다 드물어 깊게 봐야 잡힌다.
       - `select(.event_type=="alert" and .src_ip=="10.20.30.202")` — alert 이벤트 중 공격자 출발지만 고른다.
-      - `[.alert.signature_id,.alert.signature]|@tsv` — 룰 번호와 설명을 탭으로 뽑는다.
-      - `sort | uniq -c | tail -5` — signature별 횟수를 집계해 상위 항목을 본다.
+      - `[.alert.signature_id,.alert.signature]|@tsv` → `sort | uniq -c | tail -5` — signature별 횟수를 집계해 상위 항목을 본다.
 
       ## ✅ 합격 기준
-      sqlmap(또는 스캔) 관련 signature가 보이면 통과. 같은 출발지(10.20.30.202)가 ModSec·
-      Suricata 양쪽에 찍힌 것을 확인하면 캠페인 단계가 확정된다. (ips는 두 NIC에서 sniff
-      하므로 같은 트랜잭션이 2줄로 보일 수 있는데, src_ip는 동일하다.)
+      `sqlmap` 출력 시 통과. **근거:** sqlmap(또는 스캔) 관련 signature 가 보이면 통과 — 같은 출발지
+      10.20.30.202 가 ModSec·Suricata 양쪽에 찍힌 것을 확인하면 다소스 상관으로 캠페인 단계가 확정된다.
     hint: 'eve alert signature_id'
     category: analysis
     points: 12
     answer: |
-      echo "=== Suricata 심층 (T1046 정찰 입증) ==="
+      # 1) eve에서 alert + 출발지 10.20.30.202만 골라 signature_id/signature 집계(정찰 입증)
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|[.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | tail -5'
+      # 2) 해석 — signature_id/signature로 스캔(T1046) 단계 입증, flow로 세션 규모
       echo "→ signature_id/signature로 스캔(T1046) 단계 입증, flow로 세션 규모"
     answer_detail: "캠페인의 정찰 단계(T1046)를 Suricata로 입증한다. 출력에 sqlmap(또는 스캔) signature가 보이면 통과로 판정한다. signature_id로 탐지 내용을, 보존된 출발지(10.20.30.202)로 동일 공격자임을, flow로 세션 규모를 읽는다. 이 네트워크 증거가 ModSec의 웹 증거와 같은 출발지에서 만나면 다소스 상관이 완성되어 캠페인 단계가 확정된다."
     verify:
@@ -310,11 +336,16 @@ steps:
       판정이 선행된다. 핵심 원리: **ATT&CK 전술 단계가 깊을수록, 체인이 전진 중일수록
       우선순위가 높다**(정찰은 피해 전, 침투 성공·지속성은 피해 후 + 시급).
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      echo "정찰만(T1046)        → P3"
-      echo "침투 시도(T1190 체인) → P2 (에스컬레이션)"
-      echo "침투 성공/지속성     → P1 (즉시 IR)"
+      # 1) 정찰만(T1046) → P3 모니터링
+      echo "정찰만(T1046)         → P3 (모니터링)"
+      # 2) 정찰→침투 체인(T1190) → P2 에스컬레이션
+      echo "정찰→침투 체인(T1190)  → P2 (에스컬레이션 — 진행형)"
+      # 3) 침투 성공/지속성(T1136) → P1 즉시 IR
+      echo "침투 성공/지속성(T1136) → P1 (즉시 IR)"
+      # 4) 본 캠페인 판정 — 정찰→침투 체인 진행 = P2 에스컬레이션
+      echo "→ 본 캠페인: 정찰→침투 체인 진행 = P2 에스컬레이션(L2/IR로)"
       ```
 
       ## 🔧 P1~P4 등급
@@ -326,16 +357,19 @@ steps:
       | P4 | 정보성/오탐 | 기록만 |
 
       ## ✅ 합격 기준
-      ATT&CK 단계 깊이 + 체인 진전으로 P1~P4를 판정하면 통과. 본 캠페인(정찰→침투 전진 중)은
-      P2(에스컬레이션)이며, 지속성(T1136)까지 잡히면 P1로 격상하는 논리를 설명할 수 있어야 한다.
+      `P2` 출력 시 통과. **근거:** ATT&CK 단계 깊이 + 체인 진전으로 P1~P4 를 판정하면 통과 — 본
+      캠페인(정찰→침투 전진 중)은 P2(에스컬레이션)이며, 지속성(T1136)까지 잡히면 P1 로 격상한다.
     hint: 'ATT&CK 단계 깊이 → P1~P4'
     category: analysis
     points: 14
     answer: |
-      echo "=== 에스컬레이션 판정 ==="
+      # 1) 정찰만(T1046) → P3 모니터링
       echo "정찰만(T1046)         → P3 (모니터링)"
+      # 2) 정찰→침투 체인(T1190) → P2 에스컬레이션
       echo "정찰→침투 체인(T1190)  → P2 (에스컬레이션 — 진행형)"
+      # 3) 침투 성공/지속성(T1136) → P1 즉시 IR
       echo "침투 성공/지속성(T1136) → P1 (즉시 IR)"
+      # 4) 본 캠페인 판정 — 정찰→침투 체인 진행 = P2 에스컬레이션
       echo "→ 본 캠페인: 정찰→침투 체인 진행 = P2 에스컬레이션(L2/IR로)"
     answer_detail: "ATT&CK 단계가 깊을수록(정찰<침투<지속성) 잠재 피해와 시급성이 커져 우선순위가 올라간다. 출력에 P2가 보이면 통과로 판정한다. 체인이 전진 중이면 에스컬레이션 — 본 캠페인은 정찰(T1046)→침투(T1190) 전진 중이라 P2(L2/IR로 올림)다. 단, 단계 깊이는 트리아지 가이드일 뿐, 자산 가치·위협 인텔 같은 맥락으로 조정한다."
     verify:
@@ -359,13 +393,17 @@ steps:
       분석가의 최종 산출물이다. 보고서는 분석의 흐름 그대로 — 매핑(무엇을 봤나) → 재구성
       (어떻게 엮었나) → 증거(어떻게 입증했나) → 우선순위(어떻게 결정했나) — 4단으로 쓴다.
 
-      ## 💻 보고서 양식
-      ```markdown
-      # SOC W06 캠페인 분석 보고서 (학번, 이름)
-      ## 1. ATT&CK 매핑 (경보→전술/기술)
-      ## 2. 캠페인 재구성 (시간순+출발지)
-      ## 3. 심층 증거 (ModSec/Suricata)
-      ## 4. 에스컬레이션 (P1~P4)
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ```bash
+      # 1) heredoc(<<'EOF' ... EOF)으로 캠페인 분석 보고서 출력 — ATT&CK→캠페인→증거→에스컬레이션→결론
+      cat <<'EOF'
+      # SOC W06 캠페인 분석 보고서
+      ## 1. ATT&CK: 스캔(T1046 정찰)→SQLi(T1190 침투)→(인증 T1110)
+      ## 2. 캠페인: 출발지 10.20.30.202, 시간순 정찰→침투 체인
+      ## 3. 증거: ModSec(942→949110), Suricata(scan signature_id), 출처 보존
+      ## 4. 에스컬레이션: 정찰→침투 체인 진행 = P2(L2/IR로)
+      ## 결론: ATT&CK으로 읽으면 흩어진 경보가 '어느 단계까지 온 캠페인'으로 보인다
+      EOF
       ```
 
       ## 🔧 각 절에 담을 내용
@@ -375,7 +413,8 @@ steps:
       - **4. 에스컬레이션** — 정찰→침투 전진 = P2(L2/IR로), 근거 명시.
 
       ## ✅ 합격 기준
-      보고서에 ATT&CK 매핑 + 캠페인 재구성 + 에스컬레이션이 모두 포함되면 통과.
+      `ATT&CK` 출력 시 통과. **근거:** 보고서에 ATT&CK 매핑 + 캠페인 재구성 + 에스컬레이션이
+      모두 담기면 통과 — 흩어진 경보를 단계로 읽어 재현 가능한 증거·우선순위로 보고한 것이다.
     hint: 'ATT&CK+캠페인+에스컬레이션'
     category: report
     points: 12
