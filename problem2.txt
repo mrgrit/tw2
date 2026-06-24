@@ -297,6 +297,68 @@
 [우수 샘플(예상출력 박제 1순위)] W03 s4 JWT payload, W04 s6/W05 s6 dvwa403·juice200, W06 s6 access.log,
   W08 s4·s5 osquery·커스텀룰, W09 s4 SYN scan, W12 s4 osquery 헌팅, W14 s4 logtest 갭닫힘.
 
+--------------------------------------------------------------------------------
+8.2 web-vuln 트랙 (standalone-web-vuln, W01~W15, 122 step 전수 실측 완료)
+--------------------------------------------------------------------------------
+[구조] attack과 동일 4블록 → 6요소 보강이 주작업. dvwa(차단 모드)/juice(DetectionOnly) 표적 구성 일관.
+[트랙 공통 FIX] attack과 동일(💻 다음 「▷ 이렇게 나오면 정상」 실측 박제, ✅→「▷ 스스로 확인」,
+  answer_detail→「▷ 결과 해석」 승격, 가변값 "환경마다 다름").
+
+[CROSS-CUTTING(트랙간 공유)]
+ ① ffuf/파일 probe WAF 균일 403 — W02 s4(+W03 s4·s5)에서 ffuf 가 스캐너 UA 일괄 차단으로 모든 워드
+    403(size278), `-mc`에 403 포함→전부 false positive. attack W02 와 동일 뿌리. "발견" 전제 불성립.
+ ② 명령주입 파이프 우회 — W07 s3 `1|id`=302(우회) vs `1;cat`=403(탐지). "; / | 모두 932 탐지" 단정 오류.
+ ③ 룰ID head 절단 — W08 s7 `sort -u|head` 가 942 이전에서 잘림(해석 echo 가 942 언급해 거짓 매칭).
+
+[주차별 실측·수정]
+ W01 HTTP메서드: s1 dvwa=302 / s2 [한계] OPTIONS→`HTTP/1.1 302`뿐 **Allow 헤더 없음**(프론트가 OPTIONS
+   리다이렉트)→"메서드는 s3 직접전송으로 확인"으로 / s3 PUT=403 DELETE=403 TRACE=403(전부 제한=안전) /
+   s4 [우수] "주요 보안 헤더 누락(HSTS/CSP/X-Frame)" 실측 / s5 evilhost=200(임의 Host 수용)·xff=302 /
+   s6 [우수] dvwa_access.log 에 OPTIONS302·PUT/DELETE/TRACE 403(출처 10.20.30.202) 기록.
+ W02 스캐너: s1 도구OK / s2 nikto(adminconsole**.6v6.lab**·X-Frame 누락·25s제한) / s3 whatweb 403·Apache
+   2.4.52·Ubuntu([표시]ANSI 색코드 다수→`--color=never`) / s4 [CROSS①] ffuf 5워드 전부 403 size278 /
+   s5 [우수] 913100(400)·913120·nikto 탐지 / s6 [발견] curl -sI=Apache **2.4.25(Debian, 백엔드)** ↔
+   nikto/whatweb 2.4.52(프론트) **버전 불일치**(어디를 핑거프린팅하느냐로 다름 — 좋은 교육포인트).
+ W03 정보수집: s1 juice200 dvwa302 / s2 [우수] robots(dvwa `Disallow:/`, juice `Disallow:/ftp`) /
+   s3 주석 `<!--`만(빈 주석) / s4 백업파일 .bak/~/.old=403 backup.zip=404 **.env=403**(노출0) / s5 VCS
+   .git/.svn/.DS_Store **전부 403**. → s4/s5 파일노출이 전부 WAF 403(403이라 '없음'과 '차단' 구분 불가).
+   해석 "200=노출/.env=200 심각"은 미발생 → 예상출력 403/404 박제 + "차단이 정상, 200이면 위험(일반론)".
+ W04 인증/세션: [모범] s1 login=401 / s2 [우수] admin123:200(약한PW 무차별 **성공**) / s3 SQLi→admin JWT /
+   s4 JWT payload(email/role) / s5 [우수] `Set-Cookie: PHPSESSID...path=/`(HttpOnly/Secure/SameSite **전부
+   누락**)+security=low / s6 [우수] juice_access.log 로그인 401/401/200/200. 깨짐 없음.
+ W05 SQLi: s2 union=403 / s3 [기법 미시연] boolean blind `true=200 false=200`(차이 없음 — `/?id=`가 실제
+   주입점 아님) / s4 [기법 미시연] time blind `time=403 0.0017s`(SLEEP 차단돼 지연 0) / s5 942100·942160·
+   942190·942270·942360 / s6 dvwa403 juice200. → s3/s4 주입점 교체 or "개념/차단" 정직화.
+ W06 XSS/CSRF: s2 xss=403 / s3 img403 svg403 / s4 **[버그]** `grep csrf|head -3||echo '미발견'` 의 `||`가
+   head 에 걸려 토큰 없을 때 **아무 출력 없음**(빈칸); dvwa `/`는 302라 본문에 토큰도 없음 → `(grep||echo)|head`
+   로 수정 / s5 941100·941110·941120·941160·941236 / s6 [상충] juice 에 `X-Frame-Options: SAMEORIGIN`
+   **있음**(CSP 만 없음) → 해석 "CSP/X-Frame 미설정"을 "X-Frame 있고 CSP 없음"으로 정정.
+ W07 업로드/PT/CMDi: s2 pt403 enc403 / s3 [CROSS②·해석오류] `;cat`=403 vs `|id`=**302 우회** ("; / | 모두
+   932 탐지" 오류; §2.2가 지적한 instruction-answer 불일치는 '단계별 분해' 리팩토링으로 **이미 해소**) /
+   s4 php=403 / s5 [우수] 93x 930100~933160 풍부.
+ W08 중간고사(10): s2 OPTIONS→`204`(Allow 없음)·ftp200 / s3 SQLi→token / s5 sqli403 xss403 / s6
+   admincfg200 ftp200(A01) / s7 [CROSS③] modsec head 절단(942 미노출). 기법 재조합 적절.
+ W09 접근제어: s2 admincfg200 / s3 ftp200 / s4 users401 vs admincfg200 / s5 IDOR `/api/Users/1·2·3` **전부
+   401**(보호됨, IDOR 미성공) / s6 **[버그]** `tail access.log` 가 **0바이트 빈 파일**이라 증거 0("detected"만)
+   — 흔적은 **juice_access.log**에 있음(검증: admin-config200·/api/Users 401·1·2·3 401) → 로그파일 교체.
+ W10 TLS: [모범] s1 https302 / s2 [우수] TLSv1.3 TLS_AES_256_GCM_SHA384 / s3 nmap `TLSv1.2 least strength
+   A` / s4 [우수] cert=selfsigned `CN=*.6v6.lab,O=6v6,C=KR`(self, instruction 이 이미 6v6.lab 불일치 정확
+   기술) / s5 tls11=refused. 깨짐 없음.
+ W11 정보노출: [모범] s2 `Server: Apache/2.4.52` / s3 `Unexpected path: /api/Nonexistent123` / s4
+   `SQLITE_ERROR: near "'%'": syntax error`(SQLite 확정; [표시]HTML엔티티 &quot;/&#39; 디코드 권장) /
+   s5 `X-Recruiting: /#/jobs`+`Feature-Policy`. 전부 실제 노출, 우수 샘플.
+ W12 API: s1/s2 api·prod=200 / s3 users401 / s4 [우수] `/api/Feedbacks` `UserId":1/2/3` 무인증 노출(과다
+   노출 API3) / s5 BOLA `/api/Users/1·2·3` 전부 401(보호 — 해석이 "401=인가 양호"로 **정직 처리**, 모범).
+ W13 자동화: [도구 존재] nuclei·dalfox·/root/nuclei-templates 전부 있음(attack W13 Caldera 부재와 대조) /
+   s2 tech-detect google-font-api / s3 missing-headers 8종 / s4 HSTS / s5 dalfox `dalfox=done`(무탐 — WAF
+   941 차단; 해석 "무탐=안전 아님"이 정확). 자동화 한계 교훈 견고.
+ W14 CVSS/보고서: **전 step echo/cat**(라이브 명령 없음). CVSS 9.8(SQLi/RCE)·A01 7.5 등 합리적. 라이브
+   검증 대상 아님 — '발견 정량화·문서화' 목적이라 현 echo 포맷 타당(6요소 중 명령·출력 비해당). [사소] s5
+   RCE PoC 가 `;` 형(403 탐지)이라 일관하나 "일부 메타문자(|) 우회됨" 한 줄 권장.
+ W15 기말(10): s2 nuclei_findings=6 / s3 SQLi→token / s5 sqli403 xss403 / s6 rce=403(`;`형 차단) / s7
+   admincfg200 ftp200. ([표시] `head -c` 가 스트림 절단해 curl exit18 경고 — 무해, "정상" 주석 권장).
+[정직 서술 모범] W09 s5·W12 s5 "401=보호됨(막힘 확인도 결과)", W13 dalfox "무탐=안전 아님" — 타 트랙 확산 권장.
+
 ================================================================================
 끝. 요약: 고칠 3곳 = (A)instruction 6요소 규약[contents/training/*/lab_week*.yaml],
 (B)Training.tsx 실습 렌더러[apps/ui/src/pages/Training.tsx], (C)build_lab_doc 워크북
