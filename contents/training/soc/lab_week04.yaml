@@ -45,20 +45,23 @@ steps:
       - **remoted** — agent와 통신(1514/tcp)하며 원격 로그를 받는 데몬.
       - **agent(web 004 / ips 003)** — 각 호스트의 로그를 읽어 manager로 ship하는 수집기.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) manager 데몬 상태 — 판정 엔진 analysisd + agent 통신 remoted 가동 확인
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted"
-      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips,"
+      # 2) agent 목록 — web(004)/ips(003)가 active인지 확인
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips," || echo "(agent)"
       ```
       ## ✅ 합격 기준
-      analysisd/remoted running + web/ips agent active.
+      `analysisd` 출력 시 통과. **근거:** analysisd/remoted 가 running 이고 web/ips agent 가 active 면
+      탐지를 만들고 적용할 토대가 선 것 — analysisd 가 멈추면 어떤 커스텀 룰도 평가되지 않는다.
     hint: 'wazuh-control + agent_control'
     category: survey
     points: 10
     answer: |
-      echo "=== manager daemon ==="
+      # 1) manager 데몬 상태 — 판정 엔진 analysisd + agent 통신 remoted 가동 확인
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted"
-      echo "=== agents ==="
+      # 2) agent 목록 — web(004)/ips(003)가 active인지 확인
       docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips," || echo "(agent)"
     answer_detail: "manager의 analysisd(decoder→rule 판정 엔진)와 remoted(agent 통신)가 running이고 agent(web 004/ips 003)가 active여야 탐지를 만들고 적용할 토대가 선다. analysisd가 멈추면 어떤 커스텀 룰도 평가되지 않으므로 룰 작업의 1순위 점검이다."
     verify:
@@ -88,21 +91,27 @@ steps:
         실패, group authentication_failed)이 잡는다. 5760이 보인다는 건 "기본 룰이 이미 이 패턴을
         잡으니 나는 그 위에 격상/보강만 하면 된다"는 신호다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      printf 'Jan  1 00:00:00 web sshd[1]: Failed password for root from 9.9.9.9 port 22 ssh2\n' \
-        | docker exec -i el34-siem /var/ossec/bin/wazuh-logtest
+      # 1) SSH 무차별 대입 한 줄을 임시 로그 파일로 작성(logtest 입력)
+      docker exec el34-siem sh -c 'cat > /tmp/socw4ssh.log <<EOF
+      Jan  1 00:00:00 web sshd[1]: Failed password for root from 9.9.9.9 port 22 ssh2
+      EOF'
+      # 2) wazuh-logtest로 decoder→rule 통과 — decoder 필드(srcip)와 매치 룰(5760) 확인 후 임시파일 삭제
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4ssh.log 2>&1 | grep -aE "decoder|id:|srcip|Failed" | head -6; rm -f /tmp/socw4ssh.log'
       ```
       ## ✅ 합격 기준
-      Phase2 decoder + Phase3 rule(5760)이 보인다.
+      `5760` 출력 시 통과. **근거:** Phase2 decoder 필드(srcip)와 Phase3 매치 룰 5760(다수 인증 실패)이
+      보이면 통과 — 5760 이 잡힌다는 건 기본 룰이 이미 이 패턴을 잡으니 그 위에 격상/보강만 하면 된다는 뜻.
     hint: 'sshd 줄 → wazuh-logtest → rule 5760'
     category: analysis
     points: 12
     answer: |
+      # 1) SSH 무차별 대입 한 줄을 임시 로그 파일로 작성(logtest 입력)
       docker exec el34-siem sh -c 'cat > /tmp/socw4ssh.log <<EOF
       Jan  1 00:00:00 web sshd[1]: Failed password for root from 9.9.9.9 port 22 ssh2
       EOF'
-      echo "=== wazuh-logtest (decoder→rule) ==="
+      # 2) wazuh-logtest로 decoder→rule 통과 — decoder 필드(srcip)와 매치 룰(5760) 확인 후 임시파일 삭제
       docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4ssh.log 2>&1 | grep -aE "decoder|id:|srcip|Failed" | head -6; rm -f /tmp/socw4ssh.log'
     answer_detail: "wazuh-logtest는 라이브 analysisd를 건드리지 않고 로그 한 줄을 decoder→rule에 통과시켜 단계별 결과를 보여준다. Phase2에서 sshd decoder가 뽑는 필드(srcip=9.9.9.9, dstuser=root)가 곧 룰이 쓸 재료이고, Phase3의 rule 5760(다수 인증 실패, group authentication_failed)은 기본 룰이 이미 이 무차별 대입 패턴을 잡고 있음을 뜻한다 — 커스텀 룰은 이 위에 격상/보강을 얹는다."
     verify:
@@ -133,28 +142,11 @@ steps:
       백업(cp) → 룰 append → wazuh-logtest로 발화 검증 → 백업 복원으로 잔재 0. 라이브는 재시작하지
       않는다(검증은 엔진 무중단).
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak
-      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
-      <group name="soc_w4,">
-        <rule id="100440" level="10">
-          <decoded_as>json</decoded_as>
-          <field name="alert_signature">SOC_CUSTOM</field>
-          <description>SOC W04 - custom detection</description>
-        </rule>
-      </group>
-      EOF'
-      echo '{"alert_signature":"SOC_CUSTOM","src_ip":"9.9.9.9"}' | sudo /var/ossec/bin/wazuh-logtest
-      sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak
-      ```
-      ## ✅ 합격 기준
-      logtest에 rule `100440` level 10 발화(정리 후 보존).
-    hint: 'field match 룰(100440) → logtest → cp 복원'
-    category: manipulation
-    points: 16
-    answer: |
+      # 1) 베이스 local_rules.xml 백업(검증 후 원복용)
       docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak'
+      # 2) 커스텀 탐지 룰(id 100440, level 10, json + alert_signature=SOC_CUSTOM) append
       docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
       <group name=\"soc_w4,\">
         <rule id=\"100440\" level=\"10\">
@@ -164,11 +156,41 @@ steps:
         </rule>
       </group>
       EOF"'
+      # 3) 마커 JSON을 임시 파일로 작성(logtest 입력)
       docker exec el34-siem sh -c 'cat > /tmp/socw4.json <<EOF
       {"alert_signature":"SOC_CUSTOM","src_ip":"9.9.9.9"}
       EOF'
-      echo "=== 커스텀 룰 logtest ==="
+      # 4) logtest로 룰 100440 level 10 발화 확인(라이브 무중단) 후 임시파일 삭제
       docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw4.json'
+      # 5) 백업 복원 — 커스텀 룰 잔재 0(공유 SIEM 베이스 보존)
+      docker exec el34-siem sh -c 'sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak; echo "복원 잔재=$(grep -c 100440 /var/ossec/etc/rules/local_rules.xml)"'
+      ```
+      ## ✅ 합격 기준
+      `100440` 출력 시 통과. **근거:** logtest 에 rule 100440(level 10) 발화가 보이면 통과 — 검증 후
+      cp 백업으로 복원해 베이스 local_rules.xml 을 원상 보존한다(라이브 무재시작).
+    hint: 'field match 룰(100440) → logtest → cp 복원'
+    category: manipulation
+    points: 16
+    answer: |
+      # 1) 베이스 local_rules.xml 백업(검증 후 원복용)
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak'
+      # 2) 커스텀 탐지 룰(id 100440, level 10, json + alert_signature=SOC_CUSTOM) append
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"soc_w4,\">
+        <rule id=\"100440\" level=\"10\">
+          <decoded_as>json</decoded_as>
+          <field name=\"alert_signature\">SOC_CUSTOM</field>
+          <description>SOC W04 custom detection</description>
+        </rule>
+      </group>
+      EOF"'
+      # 3) 마커 JSON을 임시 파일로 작성(logtest 입력)
+      docker exec el34-siem sh -c 'cat > /tmp/socw4.json <<EOF
+      {"alert_signature":"SOC_CUSTOM","src_ip":"9.9.9.9"}
+      EOF'
+      # 4) logtest로 룰 100440 level 10 발화 확인(라이브 무중단) 후 임시파일 삭제
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw4.json'
+      # 5) 백업 복원 — 커스텀 룰 잔재 0(공유 SIEM 베이스 보존)
       docker exec el34-siem sh -c 'sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak; echo "복원 잔재=$(grep -c 100440 /var/ossec/etc/rules/local_rules.xml)"'
     answer_detail: "분석가가 기본 룰이 모르는 내부 마커(alert_signature=SOC_CUSTOM)를 level 10으로 직접 탐지하는 첫 커스텀 룰. <decoded_as>json으로 대상 로그를 좁히고 <field>로 조건을 지정한다(id는 soc 대역 1004xx). wazuh-logtest에 'id 100440, level 10, Alert to be generated.'가 뜨면 성공. 공유 SIEM이므로 검증 후 cp 백업으로 복원해 베이스 local_rules.xml을 원상 보존한다(라이브 무재시작)."
     verify:
@@ -197,28 +219,11 @@ steps:
         이라는 임계(threshold) 격상. el34의 fw는 출발지 IP를 보존(SNAT 안 함)하므로 same_source_ip
         빈도가 정확히 동작한다. (빈도 룰은 누적 후 발화 → 검증 시 임계를 넘기는 다중 라인 필요.)
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak
-      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
-      <group name="soc_w4c,">
-        <rule id="100441" level="12">
-          <decoded_as>json</decoded_as>
-          <field name="threat">apt</field>
-          <description>SOC W04 - APT context escalation</description>
-        </rule>
-      </group>
-      EOF'
-      echo '{"threat":"apt","src_ip":"9.9.9.9"}' | sudo /var/ossec/bin/wazuh-logtest
-      sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak
-      ```
-      ## ✅ 합격 기준
-      logtest에 rule `100441` level 12 격상이 발화한다.
-    hint: '맥락 격상 룰(100441) → logtest → cp 복원'
-    category: manipulation
-    points: 14
-    answer: |
+      # 1) 베이스 local_rules.xml 백업(검증 후 원복용)
       docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak'
+      # 2) 맥락 격상 룰(id 100441, level 12, json + threat=apt) append
       docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
       <group name=\"soc_w4c,\">
         <rule id=\"100441\" level=\"12\">
@@ -228,11 +233,41 @@ steps:
         </rule>
       </group>
       EOF"'
+      # 3) 맥락 JSON을 임시 파일로 작성(logtest 입력)
       docker exec el34-siem sh -c 'cat > /tmp/socw4c.json <<EOF
       {"threat":"apt","src_ip":"9.9.9.9"}
       EOF'
-      echo "=== 격상 룰 logtest ==="
+      # 4) logtest로 룰 100441 level 12 격상 발화 확인 후 임시파일 삭제
       docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4c.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw4c.json'
+      # 5) 백업 복원 — 커스텀 룰 잔재 0(공유 SIEM 베이스 보존)
+      docker exec el34-siem sh -c 'sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak; echo "복원 잔재=$(grep -c 100441 /var/ossec/etc/rules/local_rules.xml)"'
+      ```
+      ## ✅ 합격 기준
+      `100441` 출력 시 통과. **근거:** logtest 에 rule 100441(level 12) 격상이 발화하면 통과 — 운영에서는
+      if_group/if_sid 로 기존 탐지 뒤에 체이닝하거나 frequency/timeframe+same_source_ip 로 임계 격상한다.
+    hint: '맥락 격상 룰(100441) → logtest → cp 복원'
+    category: manipulation
+    points: 14
+    answer: |
+      # 1) 베이스 local_rules.xml 백업(검증 후 원복용)
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw4_lr.bak'
+      # 2) 맥락 격상 룰(id 100441, level 12, json + threat=apt) append
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"soc_w4c,\">
+        <rule id=\"100441\" level=\"12\">
+          <decoded_as>json</decoded_as>
+          <field name=\"threat\">apt</field>
+          <description>SOC W04 APT context escalation</description>
+        </rule>
+      </group>
+      EOF"'
+      # 3) 맥락 JSON을 임시 파일로 작성(logtest 입력)
+      docker exec el34-siem sh -c 'cat > /tmp/socw4c.json <<EOF
+      {"threat":"apt","src_ip":"9.9.9.9"}
+      EOF'
+      # 4) logtest로 룰 100441 level 12 격상 발화 확인 후 임시파일 삭제
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4c.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw4c.json'
+      # 5) 백업 복원 — 커스텀 룰 잔재 0(공유 SIEM 베이스 보존)
       docker exec el34-siem sh -c 'sudo cp /tmp/socw4_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw4_lr.bak; echo "복원 잔재=$(grep -c 100441 /var/ossec/etc/rules/local_rules.xml)"'
     answer_detail: "맥락 필드(threat=apt)를 매치해 level 12로 격상하는 룰. wazuh-logtest에 'id 100441 level 12'가 뜨면 성공, 검증 후 cp 복원으로 베이스 보존. 운영에서는 <if_group>authentication_failed/<if_sid>5760으로 기존 탐지 뒤에 체이닝하거나, frequency/timeframe+same_source_ip로 '같은 출처 60초 5회+' 임계를 걸어 격상한다(예: '인증 실패 다발 + 악성 평판 IP' → critical). el34는 출발지 IP가 보존되어 same_source_ip 빈도가 신뢰성 있게 동작한다."
     verify:
@@ -259,21 +294,27 @@ steps:
       출발지 IP가 alerts.json에 **그대로** 남는다. 이 보존이 같은 출처의 반복을 세는 빈도 룰
       (same_source_ip)의 전제다. 운영 룰(restart 적용 시)이라면 이 경보를 커스텀 level로 격상한다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) 스캐너 UA로 SQLi 요청 — Suricata eve→Wazuh alerts.json 흐름 생성
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw4%27%20UNION%20SELECT%201--%20-\""
+      # 2) agent ship + manager 처리 대기
       sleep 8
+      # 3) alerts.json의 ids 경보에서 룰ID/출발지 추출 — 보존된 출발지 10.20.30.202 확인
       docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,s:.data.src_ip}" | tail -2'
       ```
       ## ✅ 합격 기준
-      실제 공격이 alerts.json(출발지 10.20.30.202)에 들어온다.
+      `10.20.30.202` 출력 시 통과. **근거:** alerts.json 의 ids 경보에 출발지 10.20.30.202 가 보이면
+      통과 — el34 fw 가 SNAT 를 안 해 출발지 IP 가 보존되며, 이 보존이 same_source_ip 빈도 격상의 전제다.
     hint: '공격 재현 → alerts.json ids src 10.20.30.202'
     category: detect
     points: 12
     answer: |
+      # 1) 스캐너 UA로 SQLi 요청 — Suricata eve→Wazuh alerts.json 흐름 생성
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw4%27%20UNION%20SELECT%201--%20-\""
+      # 2) agent ship + manager 처리 대기
       sleep 8
-      echo "=== alerts.json 실제 공격 ==="
+      # 3) alerts.json의 ids 경보에서 룰ID/출발지 추출 — 보존된 출발지 10.20.30.202 확인
       docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,s:.data.src_ip}" | tail -2'
     answer_detail: "커스텀 룰이 잡을 실제 이벤트의 흐름 — 스캐너 공격(sqlmap UA) → Suricata eve → Wazuh alerts.json. alerts.json의 ids 경보에 출발지 10.20.30.202가 보이면 정상(el34 fw가 SNAT를 안 해 출발지 IP가 보존됨을 확인). 이 출발지 보존이 same_source_ip 빈도 격상의 전제이며, 운영 룰(restart 적용 시)이라면 이 경보를 커스텀 level로 격상하게 된다."
     verify:
@@ -300,22 +341,31 @@ steps:
       - ② **level 적정화** — 다 높이면 전부 빨간불(무의미), 다 낮추면 묻힘. 실제 위험도에 맞춰.
       - ③ **정상 패턴 화이트리스트** — 운영자 점검 IP·헬스체크 계정처럼 '항상 정상'은 룰에서 제외.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      echo "오탐 많은 룰: <field name=\"url\">admin</field>  (정상 /admin 접근도 매치)"
-      echo "튜닝 후:     <field name=\"url\">admin</field> + <field name=\"status\">403</field>  (차단된 것만)"
-      echo "→ 조건을 좁히고(특정 status/UA), level을 적정화, 정상 패턴은 화이트리스트"
+      # 1) 오탐 많은 룰 예 — 넓은 조건(url=admin)은 정상 /admin 접근도 경보
+      echo "[오탐 많음] <field name=\"url\">admin</field>  → 정상 /admin 접근도 경보"
+      # 2) 튜닝 — status=403 추가로 차단된 것만(정상 제외)
+      echo "[튜닝]      + <field name=\"status\">403</field> → 차단된 것만 (정상 제외)"
+      # 3) 3원칙 — 조건 좁히기/level 적정화/화이트리스트
+      echo "[원칙] ① 조건 좁히기(status/UA/method) ② level 적정화(alert fatigue 방지) ③ 정상 패턴 화이트리스트"
+      # 4) 결론 — 좋은 룰 = 놓치지 않으면서(낮은 오탐) 묻히지 않게(적정 level)
+      echo "좋은 룰 = 놓치지 않으면서(낮은 오탐) 묻히지 않게(적정 level)"
       ```
       ## ✅ 합격 기준
-      오탐 줄이는 튜닝 원칙(조건 좁히기/예외)을 정리한다.
+      `오탐` 출력 시 통과. **근거:** 조건 좁히기·level 적정화·화이트리스트 3원칙이 정리되면 통과 —
+      너무 넓으면 오탐 폭주(alert fatigue), 너무 좁으면 공격을 놓친다.
     hint: '조건 좁히기 + level 적정화 + 화이트리스트'
     category: analysis
     points: 10
     answer: |
-      echo "=== 오탐 튜닝 ==="
+      # 1) 오탐 많은 룰 예 — 넓은 조건(url=admin)은 정상 /admin 접근도 경보
       echo "[오탐 많음] <field name=\"url\">admin</field>  → 정상 /admin 접근도 경보"
+      # 2) 튜닝 — status=403 추가로 차단된 것만(정상 제외)
       echo "[튜닝]      + <field name=\"status\">403</field> → 차단된 것만 (정상 제외)"
+      # 3) 3원칙 — 조건 좁히기/level 적정화/화이트리스트
       echo "[원칙] ① 조건 좁히기(status/UA/method) ② level 적정화(alert fatigue 방지) ③ 정상 패턴 화이트리스트"
+      # 4) 결론 — 좋은 룰 = 놓치지 않으면서(낮은 오탐) 묻히지 않게(적정 level)
       echo "좋은 룰 = 놓치지 않으면서(낮은 오탐) 묻히지 않게(적정 level)"
     answer_detail: "탐지의 절반은 튜닝이다 — 너무 넓으면 오탐 폭주(alert fatigue로 진짜를 놓침), 너무 좁으면 공격을 놓친다. 3원칙: ① status/UA/method로 조건을 좁혀 공격성 요청만(예: url=admin에 status=403 추가), ② 실제 위험도에 맞춘 level 적정화, ③ 운영자 점검 IP·헬스체크 계정 같은 정상 패턴은 화이트리스트로 예외. 인증 룰이라면 임계를 '60초 5회'로 좁히고 단발 실수는 낮은 level로 두면 자동화된 다발만 고위험으로 뜬다. SOC 효율의 핵심."
     verify:
@@ -337,18 +387,23 @@ steps:
       남으면 다음 사람의 검증·운영에 영향을 준다. "라이브 무재시작 + 작업 후 원복"은 공유 SIEM
       운영의 기본 매너이자 안전 규칙 — 베이스 local_rules.xml이 원상태(잔재 0)인지 확인한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) 커스텀 룰(100440/100441) 잔재와 임시 백업 잔존 점검
       docker exec el34-siem sh -c 'for r in 100440 100441; do echo "$r 잔재=$(grep -c $r /var/ossec/etc/rules/local_rules.xml)"; done; ls /tmp/socw4_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      # 2) 점검 완료 마커
       echo "---check done---"
       ```
       ## ✅ 합격 기준
-      100440/100441 잔재 0 + `check done`.
+      `check done` 출력 시 통과. **근거:** 100440/100441 잔재가 모두 0 이고 임시 백업(/tmp/socw4_lr.bak)도
+      없으면 통과 — 라이브 analysisd 는 재시작하지 않아 다른 학생의 탐지에 영향이 없다.
     hint: '커스텀 룰 잔재 0'
     category: cleanup
     points: 12
     answer: |
+      # 1) 커스텀 룰(100440/100441) 잔재와 임시 백업 잔존 점검
       docker exec el34-siem sh -c 'for r in 100440 100441; do echo "$r 잔재=$(grep -c $r /var/ossec/etc/rules/local_rules.xml)"; done; ls /tmp/socw4_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      # 2) 점검 완료 마커
       echo "---check done---"
     answer_detail: "공유 SIEM 보존 점검 — 커스텀 룰(100440/100441)을 cp 백업으로 복원했으니 잔재가 모두 0이고 임시 백업(/tmp/socw4_lr.bak)도 없어야 한다. 라이브 analysisd는 재시작하지 않았으므로 다른 학생의 탐지에 영향 없음. base local_rules.xml이 원상태임을 확인하는 마무리 절차다."
     verify:
@@ -369,16 +424,21 @@ steps:
       만든 룰은 문서로 남겨야 다른 분석가가 이해·유지보수하고, 룰 리뷰·감사에 대응할 수 있다.
       탐지 갭 → 룰(id/level/조건/decoder) → 검증(logtest) → 튜닝의 한 사이클을 근거와 함께 정리한다.
 
-      ## 💻 보고서 양식
-      ```markdown
-      # SOC W04 커스텀 룰 보고서 (학번, 이름)
-      ## 1. 탐지 갭 (못 잡던 위협)
-      ## 2. 룰 (id/level/조건/decoder)
-      ## 3. 검증 (logtest 발화)
-      ## 4. 튜닝 (오탐 대응)
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ```bash
+      # 1) heredoc(<<'EOF' ... EOF)으로 커스텀 룰 보고서 출력 — 탐지갭→룰→검증→튜닝→결론
+      cat <<'EOF'
+      # SOC W04 커스텀 룰 보고서
+      ## 1. 탐지 갭: 기본 룰이 SOC_CUSTOM/APT 맥락을 낮게 평가
+      ## 2. 룰: 100440(field match, level 10) + 100441(맥락 격상, level 12)
+      ## 3. 검증: wazuh-logtest로 발화 확인(라이브 무중단), cp 복원
+      ## 4. 튜닝: status/UA로 조건 좁힘, level 적정화, 정상 화이트리스트
+      ## 결론: 분석가가 탐지를 만들어 SOC의 눈을 확장. logtest로 안전 검증, 튜닝으로 오탐 관리
+      EOF
       ```
       ## ✅ 합격 기준
-      보고서에 룰 작성 + 검증 + 튜닝이 포함된다.
+      `커스텀` 출력 시 통과. **근거:** 보고서에 룰 작성(id/level/조건) + 검증(logtest) + 튜닝(오탐 대응)이
+      한 사이클로 담기면 통과 — 이 문서가 룰의 변경 이력·근거가 되어 유지보수와 룰 리뷰·감사를 가능케 한다.
     hint: '탐지갭+룰+검증+튜닝'
     category: report
     points: 14
