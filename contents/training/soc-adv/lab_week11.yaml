@@ -22,21 +22,30 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 1단계 준비(Preparation) — IR 도구 점검
-      **실습 의미:** IR의 성패는 사건 전에 갈린다 — 탐지(Wazuh)·대응(AR) 도구가 사건 전에 준비돼 있는지 점검한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 1 — 준비(Preparation): 사건 전에 IR 도구가 갖춰졌는지 점검
+      > **이 단계에서 할 일:** 탐지(Wazuh alerts.json)와 대응(firewall-drop) 도구가 사건 전에 준비돼
+      > 있는지 점검한다.
+      > **왜:** IR의 성패는 사건이 터지기 '전'에 갈린다. 탐지·증거·대응 도구가 미리 가동 중이어야 한다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 탐지 준비: Wazuh alerts.json(증거 저장소)이 있는지
         test -f /var/ossec/logs/alerts/alerts.json && echo siem_ok
-        # 대응 준비: active-response의 firewall-drop 액션이 있는지
         ls /var/ossec/active-response/bin/firewall-drop >/dev/null 2>&1 && echo ar_ok
-        # 탐지·대응 도구가 둘 다 있으면 준비 완료 마커
         test -f /var/ossec/logs/alerts/alerts.json && ls /var/ossec/active-response/bin/firewall-drop >/dev/null 2>&1 && echo prep_ready
       '
       ```
-      ## ✅ 합격 기준
-      `prep_ready` 출력 시 통과. **근거:** 마커는 탐지(alerts.json)·대응(firewall-drop)이 둘 다 가동 중일 때만 찍히므로, 사건 전 IR 준비가 됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      siem_ok
+      ar_ok
+      prep_ready
+      ```
+
+      ### ▷ 결과 해석
+      siem_ok(증거 저장소)+ar_ok(대응 액션)이 둘 다 있으면 IR 준비 완료. PICERL 6단계(준비-식별-격리-근절-
+      복구-교훈) 중 'P'에 해당. 이 둘이 없으면 사건이 나도 보지도 막지도 못한다.
     hint: '준비'
     category: survey
     points: 10
@@ -59,20 +68,28 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 사건 발생 — 공격 트리거
-      **실습 의미:** IR 실습의 대상 사건을 직접 만든다 — SQLi UNION 데이터 탈취 공격을 흘려 침해를 일으킨다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 2 — IR 대상 사건을 일으킨다 (SQLi 침해)
+      > **이 단계에서 할 일:** SQLi UNION 데이터 탈취 공격을 한 발 흘려 IR로 다룰 사건을 만든다.
+      > **왜:** IR 수명주기를 한 바퀴 돌려면 분석할 '사건'이 있어야 한다. 통제된 환경에서 직접 일으킨다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # IR 대상 사건 생성: SQLi UNION 데이터 탈취 시도를 웹 표적에 전송
         C=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?x=1%27%20UNION%20SELECT%20user,password%20FROM%20users--")
         echo "응답코드 $C"
-        # 공격을 실제 전송했으면 사건 발생 마커
         [ -n "$C" ] && echo incident_occurred
       '
       ```
-      ## ✅ 합격 기준
-      `incident_occurred`(과 응답코드)가 출력되면 통과. **근거:** 마커는 공격 요청이 실제 전송돼 응답코드를 받았을 때만 찍히므로, IR 대상 사건이 발생했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      응답코드 403
+      incident_occurred
+      ```
+
+      ### ▷ 결과 해석
+      403은 WAF가 이 SQLi를 차단했다는 뜻(공격이 막혀도 '시도'는 사건으로 기록된다). 이 시도가 다음
+      단계에서 Wazuh·Suricata 증거로 잡힌다.
     hint: '사건 발생'
     category: manipulation
     points: 12
@@ -94,20 +111,28 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 2단계 식별(Identification) — 사건 확증
-      **실습 의미:** 알림이 곧 사건은 아니다 — 증거(Wazuh 알림+출처 IP 상관)로 "진짜 침해인가"를 확증하고 triage한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 3 — 식별(Identification): 알림을 사건으로 확증한다
+      > **이 단계에서 할 일:** alerts.json에서 공격 출처(10.20.30.202) 흔적 건수를 세어 사건을 확증·triage한다.
+      > **왜:** 알림이 곧 사건은 아니다. 증거(출처 IP 상관)로 "진짜 침해인가, 심각도·범위는?"을 판정해야 한다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 식별: alerts.json에서 공격 출처(10.20.30.202) 흔적 건수를 세어 사건을 확증한다
         N=$(tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c "10.20.30.202")
         echo "출처 10.20.30.202 알림 ${N}건 — triage(심각도/범위)"
-        # 출처 상관을 실제 집계했으면 식별 완료 마커
         [ "$N" -ge 0 ] && echo identified
       '
       ```
-      ## ✅ 합격 기준
-      `identified`(과 알림 건수)가 출력되면 통과. **근거:** 마커는 출처 IP 상관을 실제 집계했을 때 찍히므로, 알림을 증거로 침해를 확증(triage)했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 건수는 환경마다 다름)
+      ```
+      출처 10.20.30.202 알림 1744건 — triage(심각도/범위)
+      identified
+      ```
+
+      ### ▷ 결과 해석
+      한 출처의 알림이 다수면 활동이 활발한 사건이다. triage는 이 수치로 '얼마나 급한가(심각도)·어디까지
+      번졌나(범위)'를 정해 대응 우선순위를 매긴다. PICERL의 'I' 단계.
     hint: '식별'
     category: analysis
     points: 14
@@ -129,19 +154,29 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 3단계 격리(Containment) — 확산 차단
-      **실습 의미:** 근절 전에 먼저 피를 멈춘다 — 공격 출처를 격리해 확산을 끊되, 증거 보존을 위해 종료가 아닌 격리를 한다(실차단 미발동, 계획 검증).
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 4 — 격리(Containment): 근절 전에 '피를 멈춘다'
+      > **이 단계에서 할 일:** 공격 출처를 격리할 계획(firewall-drop IP 차단+망 분리)을 검증한다(실차단
+      > 미발동).
+      > **왜:** 원인을 없애기(근절) 전에 먼저 확산을 끊어야 한다. 단 증거 보존을 위해 호스트를 '종료'하지
+      > 않고 '격리'한다(메모리·연결 증거가 종료 시 사라진다).
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 단기 격리 계획: 공격 IP(10.20.30.202)를 firewall-drop으로 차단 + 감염 호스트 망 분리 (증거 보존 위해 종료 X)
         echo "단기 격리: firewall-drop IP 차단 + 망 분리 (실차단 미발동·계획 검증)"
-        # 격리에 쓸 firewall-drop 액션이 실제 있으면 격리 계획 검증 마커
         ls /var/ossec/active-response/bin/firewall-drop >/dev/null 2>&1 && echo contained
       '
       ```
-      ## ✅ 합격 기준
-      `contained` 출력 시 통과. **근거:** 마커는 격리에 쓸 firewall-drop 액션이 실제 존재할 때만 찍히므로, 확산 차단 격리 계획이 실행 가능함을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      단기 격리: firewall-drop IP 차단 + 망 분리 (실차단 미발동·계획 검증)
+      contained
+      ```
+
+      ### ▷ 결과 해석
+      firewall-drop 액션이 있으면 '필요 시 이 IP를 즉시 차단할 수 있다'는 격리 실행성이 확인된 것. 본
+      실습은 공유 인프라라 실차단은 발동하지 않고 계획만 검증한다. PICERL의 'C' 단계.
     hint: '격리'
     category: analysis
     points: 14
@@ -162,19 +197,28 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 4단계 근절(Eradication) — 원인 제거
-      **실습 의미:** 증상이 아니라 원인을 제거한다 — osquery로 은닉 발판(on_disk=0)을 확인해 웹셸·백도어·취약점을 뿌리째 없앤다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 5 — 근절(Eradication): 증상이 아니라 원인을 없앤다
+      > **이 단계에서 할 일:** osquery로 은닉 발판(on_disk=0, 디스크에서 지워진 채 도는 프로세스)
+      > 잔존 수를 확인한다.
+      > **왜:** 알림만 끄는 건 증상 대처다. 웹셸·백도어·취약점 같은 '원인'을 뿌리째 없애야 재침해를 막는다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-web sh -c '
-        # 근절: osquery로 은닉 발판(on_disk=0, 디스크 삭제 후 실행) 잔존 수를 확인한다
         osqueryi --json "SELECT count(*) c FROM processes WHERE on_disk=0" 2>/dev/null | grep -oE "[0-9]+" | head -1
-        # 잔존 발판 점검(osquery)을 수행했으면 근절 단계 마커
         command -v osqueryi >/dev/null 2>&1 && echo eradicated
       '
       ```
-      ## ✅ 합격 기준
-      `eradicated`(과 on_disk=0 수)가 출력되면 통과. **근거:** 마커는 osquery로 잔존 발판을 실제 점검했을 때 찍히므로, 증상이 아닌 원인(은닉 발판) 제거 단계가 수행됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      0
+      eradicated
+      ```
+
+      ### ▷ 결과 해석
+      on_disk=0이 0이면 삭제 후 실행 중인 은닉 발판이 없다 = 깨끗(근절 확인). 0보다 크면 그 발판을 죽이고
+      관련 파일·계정·cron·SSH키를 함께 제거한다. PICERL의 'E' 단계.
     hint: '근절'
     category: analysis
     points: 14
@@ -195,20 +239,29 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 5단계 복구(Recovery) — 정상화·검증
-      **실습 의미:** 서비스를 복구하고 재침해가 없는지 검증한다 — 정상 응답을 확인하고 강화된 모니터링 하에 단계적으로 복귀한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 6 — 복구(Recovery): 정상화하고 재침해를 감시한다
+      > **이 단계에서 할 일:** 서비스가 정상 응답하는지 확인한다.
+      > **왜:** 근절 후 서비스를 되살리되, 같은 공격이 다시 들어오지 않는지 강화된 모니터링 하에 단계적으로
+      > 복귀해야 한다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 복구: 서비스가 정상 응답하는지 확인한다
         C=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" http://10.20.30.1/)
         echo "서비스 응답코드 $C"
-        # 정상 응답을 받았으면 복구 검증 마커
         [ -n "$C" ] && echo recovered
       '
       ```
-      ## ✅ 합격 기준
-      `recovered`(과 응답코드)가 출력되면 통과. **근거:** 마커는 서비스가 실제 응답을 돌려줄 때만 찍히므로, 정상화와 재침해 감시 하의 복귀가 검증됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      서비스 응답코드 302
+      recovered
+      ```
+
+      ### ▷ 결과 해석
+      302(로그인 리다이렉트)는 서비스가 살아서 정상 응답한다는 뜻. 복구는 '깨끗함을 검증한 뒤' 한다 —
+      근절이 불완전한 채 복구하면 재감염된다. 복귀 후 일정 기간은 감시를 평소보다 강화한다. PICERL의 'R'.
     hint: '복구'
     category: analysis
     points: 12
@@ -230,21 +283,31 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 6단계 교훈(Lessons Learned) — 타임라인 재구성
-      **실습 의미:** 사건의 흔적을 실집계해 타임라인과 근본원인을 도출한다 — 교훈은 IR의 끝이자 다음 준비의 시작(순환)이다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 7 — 교훈(Lessons Learned): 타임라인·근본원인을 도출한다
+      > **이 단계에서 할 일:** Suricata eve.json에서 사건 흔적을 집계해 타임라인을 재구성하고 근본원인·
+      > 개선과제를 적는다.
+      > **왜:** 교훈은 IR의 끝이자 다음 '준비(P)'의 시작이다. 같은 사건이 또 나지 않게 근본원인을 고친다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-ips sh -c '
-        # 교훈: 사건 흔적을 실집계해 타임라인을 재구성한다
         N=$(tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202)
         echo "사건 타임라인(실증거): 출처 10.20.30.202 흔적 ${N}건으로 침입→탐지→격리→근절→복구 재구성"
         echo "근본원인: 입력검증 부재. 개선과제: SIGMA룰/SOAR 플레이북/패치/교육"
-        # 흔적을 실집계했으면 교훈 도출 마커
         [ "$N" -ge 0 ] && echo lessons_done
       '
       ```
-      ## ✅ 합격 기준
-      `lessons_done`(과 흔적 수)가 출력되면 통과. **근거:** 마커는 사건 흔적을 실집계해 타임라인·근본원인·개선과제를 도출했을 때만 찍히므로, 사후 검토가 증거 기반으로 됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 흔적 수는 환경마다 다름)
+      ```
+      사건 타임라인(실증거): 출처 10.20.30.202 흔적 2944건으로 침입→탐지→격리→근절→복구 재구성
+      근본원인: 입력검증 부재. 개선과제: SIGMA룰/SOAR 플레이북/패치/교육
+      lessons_done
+      ```
+
+      ### ▷ 결과 해석
+      실제 흔적 수로 타임라인을 채우면 '추측'이 아닌 '증거 기반' 사후 검토가 된다. 근본원인(입력검증 부재)을
+      고치는 개선과제(SIGMA 룰 W03·SOAR 플레이북 W10·패치·교육)가 다음 사건의 준비가 된다(순환). PICERL의 'L'.
     hint: '교훈'
     category: report
     points: 12
@@ -267,21 +330,28 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 IR 보고서 작성
-      **실습 의미:** PICERL 6단계의 실측 증거(사건 흔적 수)를 인용한 보고서로 정리한다 — 추측이 아닌 증거로 사건 대응을 보고한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 8 — IR 보고서를 작성한다 (PICERL 종합)
+      > **이 단계에서 할 일:** 사건 흔적 수를 집계해, PICERL 6단계를 한 줄로 종합한 보고서 골격을 출력한다.
+      > **왜:** 사건 대응은 증거로 보고해야 신뢰받고, 그 보고가 조직의 학습 자산이 된다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-ips sh -c '
-        # 보고서 근거: 사건 흔적 수를 실집계
         N=$(tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202)
-        # 실측 흔적 수를 인용한 IR 보고서 출력 (본문 상세는 학생이 보강)
         echo "# W11 IR 보고서 — PICERL: 식별(출처 ${N}건 SQLi 확증)·격리·근절·복구·교훈(입력검증 부재→SIGMA/SOAR/패치)"
-        # 실측 인용 보고서면 완료 마커
         [ "$N" -ge 0 ] && echo ir_report_done
       '
       ```
-      ## ✅ 합격 기준
-      `ir_report_done` 출력 시 통과. **근거:** 마커는 실측 사건 흔적 수를 인용한 보고서가 생성될 때만 찍히므로, 증거 기반 IR 보고가 작성됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 흔적 수는 환경마다 다름)
+      ```
+      # W11 IR 보고서 — PICERL: 식별(출처 2944건 SQLi 확증)·격리·근절·복구·교훈(입력검증 부재→SIGMA/SOAR/패치)
+      ir_report_done
+      ```
+
+      ### ▷ 결과 해석
+      보고서 골격이다. 제출용은 STEP 1~7의 각 단계 실측(준비 점검, 식별 알림 수, 격리 계획, 근절 결과,
+      복구 응답, 교훈 타임라인)을 PICERL 6단계 표로 채우고, 의사결정자용 요약과 개선과제를 덧붙인다.
     hint: 'PICERL+타임라인+교훈'
     category: report
     points: 12
