@@ -211,6 +211,93 @@
 (채점은 기존 answer/verify 로 백그라운드 수행 — 학생 화면엔 위 4블록만.)
 
 ================================================================================
+8. 트랙별 스텝 실측 검증 + 수정 지시 (el34 라이브, 사람 순차 1스텝씩 실행)
+================================================================================
+방법: ssh ccc@192.168.0.151(el34) 에서 각 lab_week*.yaml 의 step.answer 명령을 한 개씩
+  직접 실행하고 실제 출력을 관찰 → (a)실행성, (b)instruction/answer 일치, (c)예상출력 실측,
+  (d)해석(answer_detail)의 사실성 을 점검. 병렬/샘플링/일괄PASS자동화 안 씀(과거 /tmp/exec_results
+  의 expect-substring PASS는 거짓통과 다수 — 본 검증서 적발). 상태변경 step은 자가정리까지 실행해 복원 확인.
+표기: [HIGH]교육적 깨짐 / [해석오류]본문과 실측 모순 / [사실오류] / [표시]출력 가독성 / [우수]박제가치.
+
+--------------------------------------------------------------------------------
+8.1 attack 트랙 (standalone-attack, W01~W15, 119 step 전수 실측 완료)
+--------------------------------------------------------------------------------
+[트랙 구조 진단] instruction 이 이미 4블록(🎯목표/📖개념 한 줄/💻실행 명령/✅합격 기준) 보유 →
+  secuops 다음으로 양호. '따라하기 6요소' 중 빠진 것은 (4)예상 출력 실측 샘플, (5)결과 해석.
+[트랙 공통 FIX] (모든 step 동일 적용)
+  - 💻 다음에 「### ▷ 이렇게 나오면 정상 (실측 예 — 숫자/시간 환경마다 다름)」 코드블록 신설(아래 실측 박제).
+  - 「## ✅ 합격 기준」 → 「### ▷ 스스로 확인」 으로 톤 완화(시험→자가확인).
+  - answer_detail 을 「### ▷ 결과 해석」 으로 UI/워크북에 승격(현재 숨김).
+  - 💻블록은 answer 와 1:1 유지(불일치 step은 아래 개별 표기). 가변값은 "환경마다 다름" 명시.
+
+[CROSS-CUTTING ① 주석삽입 SQLi 우회] W04 s3·W10 s4 모두 `UN/**/ION SE/**/LECT`(주석분할)가
+  dvwa WAF 를 **302 로 우회**(차단 안 됨). 그런데 두 주차 instruction/해석 모두 "정규화
+  (t:removeComments)로 막힌다/우회 어렵다"고 잘못 서술. → 두 곳 다 "주석삽입은 이 CRS 설정의 실제
+  우회 경로(302), 대소문자/인코딩/탭은 차단(403)"으로 정정. (오히려 좋은 교육 포인트 — 우회 성공 사례)
+[CROSS-CUTTING ② Caldera 부재] W13·W14 의 ~/caldera-src 가 el34 에 **미설치**. 랩명은 'Caldera
+  자동 에뮬레이션'이나 실제론 docker exec 로 atomic 수동 실행. → s1 의 caldera 체크가 false-pass/
+  무출력. 랩을 "수동 ATT&CK atomic(Caldera 개념)"으로 재프레이밍하거나 Caldera 설치 후 본문 일치.
+[CROSS-CUTTING ③ 룰ID head 절단] W08 s6·W15 s7 의 `grep 6자리|sort -u|head` 가 928xxx 까지만
+  보여 주장한 942(SQLi) 가 화면 밖. → `head` → `grep -E '913|942|949'` 로 정찰→침투→차단 체인 실노출.
+
+[주차별 실측·수정]
+ W01 정찰: s1 which→/usr/bin/nmap·curl, 도달=302 / s2 nmap→80·443·8001-8007 open([사실오류]9100은
+   미오픈인데 instruction·보고서 s6/s8 가 "9100(API)" 공개포트로 언급→삭제) / s3 Apache 2.4.52 / s4
+   [우수] dvwa Server=Apache/2.4.25(Debian) vs juice 2.4.52(Ubuntu) 백/프론트 상이 / s5 [HIGH]
+   src 10.20.30.202 alert 214건(탐지OK)이나 2차 시그니처 명령 `…|sort|uniq -c|tail -3`이 **사전순 tail**
+   이라 무의미한 `thr_both/thr_limit 10s 5` 노출; 빈도순(sort -rn)이면 실제는 `6V6 Bot UA-sqlmap(108)/
+   6V6 SQLi-UNION(30)/XSS(21)/Path Traversal(16)` = 타 랩 공유 노이즈(eve.json 공유·stateless). →
+   "ET SCAN Nmap 으로 탐지" 단정 삭제, `tail -3`→`sort -rn|head`, 한계(nmap 단독탐지 보장 못함) 명시.
+ W02 정찰심화: s1 nikto/gobuster/ffuf OK / s2 NSE Server 2.4.52·title 403(기본 vhost) / s3 nikto 빈약
+   (X-Frame-Options 누락만)·[표시]Target Hostname=adminconsole**.6v6.lab**(el34 이관 잔재) / s4 [HIGH 깨짐]
+   ffuf 9단어 **전부 403 size278**(WAF 가 스캐너 UA 일괄 차단) + `-mc`에 403 포함→전부 매칭=전부 false
+   positive. 직접 curl(기본 UA)은 config 301/login.php 200/admin 404 로 정상분기 → "ffuf 매칭=숨은경로"
+   전제 불성립. FIX: WAF 차단을 방어발견으로 재프레이밍 or UA변경+`-mc 200,301`. / s5 [우수] WAF 913100·
+   913120·Nikto, IDS 129건.
+ W03 API/JWT: s1 success JSON / s2 ffuf /rest/ 대부분 500·products/search만 200 / s3 SQLi `' OR 1=1--`
+   →RS256 admin JWT / s4 [우수] JWT payload 디코드→email=admin@juice-sh.op·password MD5·role=admin /
+   s5 942100 등. 깨짐 없음. (s7 alg:none 은 개념 — 실제 토큰 RS256, "일반론" 1줄)
+ W04 SQLi: s1 sqlmap OK 도달302 / s2 UNION→dvwa403 / s3 [해석오류] comment tamper→**302 우회**, case→403
+   인데 본문 "단순tamper 대부분403/우회어렵다"가 모순 / s4 sqlmap testing OK / s5 [우수] 942100(152)·
+   942160·942190 / s6 [우수] dvwa=403 juice=200(차단 vs DetectionOnly).
+ W05 XSS: s1 dvwa302 juice200 / s2~s4 script·img·svg·case·enc **전부 403**(본문과 일치, 우회 없음) /
+   s5 [우수] 941100·941110·941120·941160 / s6 dvwa403 juice200. → 모범 주차(사실오류 없음).
+ W06 IDOR/A01: s1 juice200 / s2 ftp=200 legal=200 / s3 admincfg=200(무인증 노출) / s4 users=401 vs
+   admincfg=200(인가 비일관) / s5 [깨짐] `/rest/products/1,2,3`=**전부 500**(IDOR 시연 실패); 올바른
+   엔드포인트 `/api/Products/$i`=200+상품데이터(검증함), 진짜 보호자원은 `/rest/basket/1`=401 → answer
+   교체 / s6 [우수] juice_access.log 에 내 요청(10.20.30.202) ftp200·legal200·admincfg200·Users401 기록.
+ W07 SSRF/PT/업로드: s1 dvwa302 / s2 pt=403 enc=403 / s3 ssrf=403 localhost=403(둘 다 차단 — 해석의
+   "확정 403 아님" 헤지는 실측상 403, 완화) / s4 php=403 / s5 [우수] 93x 룰군 930100~933210+935/938/939.
+ W08 중간CTF: s1~s3 정상(exploit=403) / s4 [상태변경·자가정리OK] http.server 48008→osquery **2행(IPv4+
+   IPv6)** pid→kill→clean / s5 [우수·상태변경OK] local.rules sid9408001 추가→reload→sqlmap UA 트리거→
+   eve.json sig "CTF8 sqlmap recon"→삭제→잔재0 / s6 [표시] head 절단으로 942 미노출(CROSS③) / s7 정리OK.
+ W09 scapy: s1 scapy2.7.0 / s2 SYN open:[22,80,443,8001,8002] / s3 FIN/XMAS/NULL sent / s4 [우수] 대량
+   SYN→eve.json "6V6 Possible nmap SYN scan" / s5 sr1 flags=SA / s6 [HIGH 실동작안함] flags:0 NULL탐지룰
+   추가→`suricata -T` "successfully loaded"(expect 매칭)지만 **NULL 트리거 매치=0**(4s/8s·여러포트 재검증
+   해도 0; NULL 패킷 fw 드롭/미탐) → 룰로드만 보는 expect 가 실패를 가림. 또 `-T`에 기존 `can't suppress
+   sid 9005011 unknown rule` 경고(랩무관 노이즈) 노출. FIX: NULL 미탐 한계 명시 or s4 SYN임계로 시연 대체.
+ W10 필터우회: s1 dvwa302 / s2 plain403 / s3 dbl403 mix403 / s4 [해석오류·CROSS①] cmt=**302 우회**
+   tab=403 / s5 [교훈오류] "t:removeComments→주석 무력화" echo 가 s4 cmt=302 와 정면 모순 / s6 942 탐지.
+ W11 권한상승: s1 uid1000(ccc) groups에 sudo / s2 표준 SUID(비정상 셸SUID 없음) / s3 [우수] `(ALL)
+   NOPASSWD: ALL`(privesc 벡터) / s4 cron.d=e2scrub_all·passwd644/shadow640 **권한 정상**(오설정 없음→
+   "파일권한 시나리오는 개념" 1줄) / s6 osquery suid_bin OK.
+ W12 persistence: s1 osquery5.23.0 / s2 [상태변경] 계정atkw12bd·cron·SSH키 3종 심기 / s3 타임스톰프
+   2020-01-01 / s4 [우수] osquery 가 3벡터 전부 발견(타임스톰프 무력) / s5 web agent ID004 Active·FIM6건
+   (중앙수집 실재; 단 atkw12 특정 grep 으로 강화 권장) / s6 [정리OK] 계정/cron/키 잔재 0/0/0 완전복원.
+ W13 Caldera: s1 [HIGH·CROSS②] caldera 미설치 / s2~s4 discovery/T1136 atkw13/T1059 OK / s5 osquery
+   atkw13 발견; [발견] **Linux-Sysmon 존재**(syslog 45433건 — CLAUDE.md "Sysmon 미보유"와 상충) 단 추출
+   `b64decode[^&lt;]{0,30}`(자기 탐지명령 로깅된 HTML이스케이프 잔재)라 지저분→commandline 필드로 정제 /
+   s7 정리OK(atkw13 clean).
+ W14 PurpleTeam: s1 caldera 미설치·analysisd running / s2 emulated / s3 logtest Phase1/2(룰매칭 없음=갭) /
+   s4 [우수·공유SIEM 백업·복원 완벽] local_rules 백업→룰101414 추가→logtest `id:101414 level:10 Alert to
+   be generated`(갭닫힘)→cp 복원→잔재0 (wazuh-logtest 는 디스크 룰 즉시 평가, 재시작 불요) / s5~s8 echo.
+ W15 PTES캡스톤(9step): s1 tools-ok / s2 포트open+ffuf / s3 sqli=403 ftp=200 / s4 셸51515 osquery2행 /
+   s5 SUID+sudo / s6 [상태변경] pt15ghost(uid1001)+exfil tar / s7 modsec+pt15ghost([표시]head 절단 CROSS③) /
+   s9 [정리OK] pt15ghost/tar/셸 전부 user·shell·staging ok 완전복원.
+[우수 샘플(예상출력 박제 1순위)] W03 s4 JWT payload, W04 s6/W05 s6 dvwa403·juice200, W06 s6 access.log,
+  W08 s4·s5 osquery·커스텀룰, W09 s4 SYN scan, W12 s4 osquery 헌팅, W14 s4 logtest 갭닫힘.
+
+================================================================================
 끝. 요약: 고칠 3곳 = (A)instruction 6요소 규약[contents/training/*/lab_week*.yaml],
 (B)Training.tsx 실습 렌더러[apps/ui/src/pages/Training.tsx], (C)build_lab_doc 워크북
 [apps/api/app/services/workbook.py]. 선행 결정 = (E)get_lab 의 answer 노출 정책
