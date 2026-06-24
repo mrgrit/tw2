@@ -22,15 +22,25 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 /proc 접근 확인
-      **실습 의미:** 메모리 포렌식의 모든 소스는 /proc 가상 파일시스템이다(커널이 실행 중 프로세스를 파일처럼 노출) — 먼저 /proc가 보이는지 확인한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 1 — 메모리 포렌식의 원천(/proc)이 보이는지 확인
+      > **이 단계에서 할 일:** /proc 아래 숫자(PID) 디렉터리 개수를 세어 실행 중 프로세스가 보이는지 본다.
+      > **왜:** 메모리 포렌식의 모든 소스는 /proc 가상 파일시스템이다 — 커널이 실행 중 프로세스를 파일처럼
+      > 노출한다. 각 /proc/<pid>가 그 프로세스의 메모리를 들여다보는 창.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) /proc 아래 숫자(PID) 디렉터리 개수를 세어 실행 중 프로세스 가시성을 확인하고, 1개 이상이면 마커
       docker exec el34-web sh -c 'N=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l); echo "실행 중 프로세스 ${N}개 가시"; [ "$N" -ge 1 ] && echo proc_ready'
       ```
-      ## ✅ 합격 기준
-      `proc_ready`(과 프로세스 수)가 출력되면 통과. **근거:** 마커는 /proc에서 프로세스가 실제 보일 때만 찍히므로, 메모리 포렌식 원천 데이터가 확보됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 개수는 환경마다 다름)
+      ```
+      실행 중 프로세스 16개 가시
+      proc_ready
+      ```
+
+      ### ▷ 결과 해석
+      /proc/<pid> 디렉터리가 보이면(여기선 16개) 각 프로세스의 cmdline·environ·exe·maps·fd를 파일처럼
+      읽을 수 있다는 뜻. 디스크에 없는 것도 여기엔 살아 있다 — 그게 메모리 포렌식의 힘.
     hint: '/proc'
     category: survey
     points: 10
@@ -47,21 +57,29 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 프로세스 인자 (cmdline)
-      **실습 의미:** /proc/<pid>/cmdline은 프로세스의 전체 실행 인자다 — ps로 잘리는 긴 명령행·숨은 옵션·평문 비밀번호를 여기서 복원한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 2 — 전체 실행 인자를 복원한다 (cmdline)
+      > **이 단계에서 할 일:** 첫 PID의 /proc/<pid>/cmdline을 읽어 전체 실행 인자를 본다.
+      > **왜:** ps는 긴 명령행을 자른다. /proc/<pid>/cmdline에는 잘리지 않은 전체 인자가 있어, 숨은
+      > 옵션이나 평문 비밀번호까지 복원된다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-web sh -c '
-        # 분석할 첫 번째 실제 프로세스 PID를 고른다
         PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
-        # cmdline은 NUL로 구분된 전체 실행 인자 → 공백으로 치환해 앞 60자 표시 (ps가 자르는 긴 명령 복원)
         tr "\0" " " < /proc/$PID/cmdline 2>/dev/null | head -c 60; echo
-        # PID를 잡아 cmdline을 읽었으면 분석 완료 마커
         [ -n "$PID" ] && echo cmdline_read
       '
       ```
-      ## ✅ 합격 기준
-      `cmdline_read`(과 인자 일부)가 출력되면 통과. **근거:** 마커는 PID를 잡아 cmdline을 실제 읽었을 때만 찍히므로, ps가 자르는 전체 명령행을 복원했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 프로세스는 환경마다 다름)
+      ```
+      sshd: /usr/sbin/sshd -D -e [listener] 0 of 10-100 startups
+      cmdline_read
+      ```
+
+      ### ▷ 결과 해석
+      cmdline은 NUL(\0)로 구분된 인자라 공백으로 치환해 읽는다. 여기선 첫 PID가 sshd(데몬). 침해 조사에선
+      이렇게 의심 프로세스의 전체 인자를 보고 `-c base64...`, `nc -e`, DB 비밀번호 노출 등을 찾는다.
     hint: 'cmdline'
     category: manipulation
     points: 12
@@ -84,22 +102,30 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 환경 변수 (environ)
-      **실습 의미:** /proc/<pid>/environ은 프로세스 환경변수다 — 디스크 .env가 지워져도 메모리엔 남아 토큰·DB 자격 같은 비밀이 노출되곤 한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 3 — 메모리 속 환경변수를 점검한다 (environ)
+      > **이 단계에서 할 일:** 첫 PID의 /proc/<pid>/environ에서 환경변수 개수를 센다.
+      > **왜:** 디스크의 .env가 지워져도 프로세스 메모리의 environ엔 토큰·DB 자격 같은 비밀이 남아 있곤
+      > 한다 — 유출 점검의 핵심 자리.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-web sh -c '
-        # 분석할 첫 PID 선택
         PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
-        # environ(NUL 구분 환경변수)을 줄바꿈으로 바꿔 "=" 포함 줄 수 = 환경변수 개수 집계 (메모리 속 비밀 점검)
         C=$(tr "\0" "\n" < /proc/$PID/environ 2>/dev/null | grep -c "=")
         echo "환경변수 ${C}개"
-        # environ을 읽었으면 마커
         [ -n "$PID" ] && echo environ_read
       '
       ```
-      ## ✅ 합격 기준
-      `environ_read`(과 환경변수 수)가 출력되면 통과. **근거:** 마커는 environ을 실제 읽었을 때만 찍히므로, 메모리에만 남은 비밀(토큰·자격)을 복원·점검할 수 있음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 개수는 프로세스마다 다름)
+      ```
+      환경변수 0개
+      environ_read
+      ```
+
+      ### ▷ 결과 해석
+      여기선 첫 PID(sshd)의 environ이 0개로 보인다(루트 데몬은 환경이 비거나, 권한상 안 보일 수 있다).
+      앱 프로세스의 PID를 골라 보면 DB_PASSWORD·API_TOKEN 같은 비밀이 메모리에 그대로 노출되는 걸 흔히 본다.
     hint: 'environ'
     category: manipulation
     points: 14
@@ -123,22 +149,32 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 삭제된 실행 파일 복원 (exe)
-      **실습 의미:** /proc/<pid>/exe는 실행 중 바이너리로의 링크다 — 디스크에서 지워져도(on_disk=0) 이 링크를 cp 하면 메모리 이미지로 원본을 되살린다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 4 — 삭제된 실행 파일을 메모리에서 되살린다 (exe)
+      > **이 단계에서 할 일:** 첫 PID의 /proc/<pid>/exe 링크가 가리키는 바이너리 경로를 확인한다.
+      > **왜:** exe는 실행 중 바이너리로의 링크다. 디스크에서 지워져도(on_disk=0) 이 링크를 cp 하면
+      > 메모리 이미지에서 원본 멀웨어를 복원할 수 있다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-web sh -c '
-        # 분석할 첫 PID 선택
         PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
-        # /proc/<pid>/exe 링크 대상 확인 (지워졌으면 " (deleted)" 표시 → 이 링크를 cp 하면 원본 복원)
         readlink /proc/$PID/exe 2>/dev/null
         echo "(지워졌다면 (deleted) 표시 → exe로 원본 복원)"
-        # exe 링크를 확인했으면 마커
         [ -n "$PID" ] && echo exe_recovered
       '
       ```
-      ## ✅ 합격 기준
-      `exe_recovered`(과 링크 경로)가 출력되면 통과. **근거:** 마커는 exe 링크를 실제 확인했을 때만 찍히므로, on_disk=0(삭제 후 실행) 멀웨어를 메모리에서 복원할 수 있음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      /usr/sbin/sshd
+      (지워졌다면 (deleted) 표시 → exe로 원본 복원)
+      exe_recovered
+      ```
+
+      ### ▷ 결과 해석
+      정상 프로세스는 실제 경로(/usr/sbin/sshd)가 보인다. 멀웨어가 자기 파일을 지운 채 돌고 있으면
+      readlink에 `/tmp/x (deleted)`처럼 (deleted)가 붙는다 → `cp /proc/<pid>/exe 복원본`으로 분석용
+      원본을 되살린다.
     hint: 'exe 복원'
     category: analysis
     points: 14
@@ -162,23 +198,33 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 메모리 영역·열린 파일 (maps·fd)
-      **실습 의미:** /proc/<pid>/maps(메모리 매핑)와 fd(열린 파일 디스크립터)로 인젝션된 영역과 은닉 파일 핸들을 본다 — maps의 rwxp(쓰기+실행)는 코드 인젝션 의심 지표다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 5 — 인젝션·은닉을 본다 (maps·fd)
+      > **이 단계에서 할 일:** 첫 PID의 maps에서 rwxp(쓰기+실행 동시) 영역 수와, fd(열린 파일/소켓)
+      > 개수를 센다.
+      > **왜:** maps의 rwxp 영역은 코드 인젝션 의심 지표(정상 코드는 보통 r-xp). fd엔 삭제된 파일
+      > 핸들·은닉 소켓이 보인다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-web sh -c '
-        # 분석할 첫 PID 선택
         PID=$(ls /proc | grep -E "^[0-9]+$" | head -1)
-        # maps의 rwxp(쓰기+실행 동시 허용) 영역 개수 = 코드 인젝션 의심 지표
         echo "rwxp(쓰기+실행) 영역: $(grep -c rwxp /proc/$PID/maps 2>/dev/null)개"
-        # fd = 열린 파일/소켓 디스크립터 수 (삭제된 파일 핸들도 보임)
         echo "열린 fd: $(ls /proc/$PID/fd 2>/dev/null | wc -l)개"
-        # 두 영역을 읽었으면 마커
         [ -n "$PID" ] && echo maps_fd_read
       '
       ```
-      ## ✅ 합격 기준
-      `maps_fd_read`(과 rwxp·fd 수)가 출력되면 통과. **근거:** 마커는 maps·fd를 실제 읽었을 때만 찍히므로, 인젝션 영역과 은닉 파일 핸들을 점검했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 수는 프로세스마다 다름)
+      ```
+      rwxp(쓰기+실행) 영역: 0개
+      열린 fd: 5개
+      maps_fd_read
+      ```
+
+      ### ▷ 결과 해석
+      rwxp 0개 = 쓰기+실행 동시 메모리 영역이 없다(정상). 1개 이상이면 셸코드 인젝션 의심 → 그 영역을
+      덤프해 분석. fd 5개는 이 프로세스가 연 파일/소켓 수 — `ls -l /proc/<pid>/fd`로 (deleted) 핸들이나
+      예상 밖 소켓을 찾는다.
     hint: 'maps/fd'
     category: analysis
     points: 14
@@ -203,22 +249,30 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 은닉 프로세스 탐지 (/proc vs ps)
-      **실습 의미:** 루트킷은 ps의 출력을 가릴 수 있다 — 커널이 직접 노출하는 /proc의 PID 목록과 ps를 교차 비교해 은닉 프로세스를 찾는다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 6 — 숨은 프로세스를 찾는다 (/proc vs ps)
+      > **이 단계에서 할 일:** 커널이 직접 노출하는 /proc의 PID 개수와, ps가 보고하는 개수를 교차 비교한다.
+      > **왜:** 루트킷은 ps의 출력을 가릴 수 있다. /proc는 커널이 직접 노출해 속이기 어렵다 — 두 수의
+      > 차이가 곧 은닉 프로세스 신호.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-web sh -c '
-        # /proc의 PID 개수 (커널이 직접 노출 — 속이기 어려움)
         PROC=$(ls /proc | grep -cE "^[0-9]+$")
-        # ps의 프로세스 개수 (라이브러리 경유 — 루트킷이 가릴 수 있음)
         PS=$(ps -e 2>/dev/null | grep -c "[0-9]")
-        # 두 수를 교차 비교: 차이가 크면 ps를 가린 루트킷 의심
         echo "proc=$PROC ps=$PS"
         [ "$PROC" -ge 1 ] && echo crosscheck_done
       '
       ```
-      ## ✅ 합격 기준
-      `crosscheck_done`(과 proc=·ps= 수)가 출력되면 통과. **근거:** 마커는 두 소스를 실제 집계해 비교했을 때만 찍히므로, ps를 가린 은닉 프로세스를 판정할 수 있음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 수는 환경마다 다름)
+      ```
+      proc=16 ps=16
+      crosscheck_done
+      ```
+
+      ### ▷ 결과 해석
+      proc와 ps가 같으면(16=16) 숨은 프로세스 없음(정상). proc > ps면 ps에는 안 보이는데 /proc엔 있는
+      프로세스가 있다는 뜻 = ps를 가린 루트킷 의심 → 그 PID를 /proc에서 직접 조사한다.
     hint: '교차 비교'
     category: analysis
     points: 12
@@ -242,24 +296,35 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 휘발성 순서 (order of volatility)
-      **실습 의미:** 증거는 휘발성 높은 것부터 수집해야 사라지기 전에 확보한다(RFC 3227) — 메모리(/proc)를 디스크보다 먼저 수집하는 순서를 직접 실증한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 7 — 휘발성 높은 것부터 수집한다 (order of volatility)
+      > **이 단계에서 할 일:** 메모리(/proc)→네트워크(/proc/net/tcp)→디스크 순으로 실제 수집해 보며
+      > 수집 순서를 실증한다.
+      > **왜:** 증거는 사라지기 전에 잡아야 한다(RFC 3227). 메모리·연결 상태는 재부팅이면 소멸하므로
+      > 디스크보다 먼저 수집한다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-web sh -c '
         echo "휘발성 순서(RFC 3227) 실수집:"
-        # 1순위: 메모리·프로세스(/proc) — 재부팅 시 소멸하므로 가장 먼저 수집
         P=$(ls /proc 2>/dev/null | grep -cE "^[0-9]+$"); echo "1) 메모리·프로세스(/proc): ${P}개"
-        # 2순위: 네트워크 연결 상태(/proc/net/tcp)
         NC=$(cat /proc/net/tcp 2>/dev/null | wc -l); echo "2) 네트워크 상태(/proc/net/tcp): ${NC}줄"
-        # 3순위: 디스크(영속적이라 마지막)
         echo "3) 디스크(영속, 마지막)"
-        # 휘발성 높은 메모리를 실제 먼저 수집했으면 마커
         [ "$P" -ge 1 ] && echo volatility_order_done
       '
       ```
-      ## ✅ 합격 기준
-      `volatility_order_done` 출력 시 통과. **근거:** 마커는 메모리(/proc)를 실제 먼저 수집했을 때만 찍히므로, 휘발성 순서(메모리→네트워크→디스크) 원칙을 실증했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 수는 환경마다 다름)
+      ```
+      휘발성 순서(RFC 3227) 실수집:
+      1) 메모리·프로세스(/proc): 16개
+      2) 네트워크 상태(/proc/net/tcp): 38줄
+      3) 디스크(영속, 마지막)
+      volatility_order_done
+      ```
+
+      ### ▷ 결과 해석
+      순서대로 메모리(1순위)→네트워크 연결(2순위)→디스크(3순위)를 수집했다. 실수로 디스크부터 만지면
+      그 행위가 메모리·캐시를 바꿔 휘발성 증거를 오염시킨다. 그래서 '가장 빨리 사라지는 것부터'가 원칙.
     hint: '휘발성 순서'
     category: report
     points: 10
@@ -285,21 +350,28 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 메모리 포렌식 보고서 작성
-      **실습 의미:** 앞 단계의 실측(/proc 프로세스 수)을 인용한 보고서로 정리한다 — 추측이 아닌 실측을 근거로 메모리 분석 결과를 보고한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 8 — 메모리 포렌식 결과를 보고서로 남긴다
+      > **이 단계에서 할 일:** /proc 프로세스 수를 집계해, 그 실측을 인용한 보고서 골격을 출력한다.
+      > **왜:** 메모리 분석 결과도 실측을 근거로 보고해야 신뢰받는다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-web sh -c '
-        # 실측 /proc 프로세스 수를 집계 (보고서 인용 근거)
         P=$(ls /proc 2>/dev/null | grep -cE "^[0-9]+$")
-        # 실측 수치를 인용한 메모리 포렌식 보고서 출력 (본문 상세는 학생이 보강)
         echo "# W08 메모리 포렌식 보고서 — /proc ${P}개: cmdline/environ·exe복원·maps/fd·휘발성순서"
-        # 실측 인용 보고서면 완료 마커
         [ "$P" -ge 1 ] && echo mem_forensics_report_done
       '
       ```
-      ## ✅ 합격 기준
-      `mem_forensics_report_done` 출력 시 통과. **근거:** 마커는 실측 /proc 프로세스 수를 인용한 보고서가 생성될 때만 찍히므로, 증거 기반 보고가 작성됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 수는 환경마다 다름)
+      ```
+      # W08 메모리 포렌식 보고서 — /proc 16개: cmdline/environ·exe복원·maps/fd·휘발성순서
+      mem_forensics_report_done
+      ```
+
+      ### ▷ 결과 해석
+      보고서 한 줄 골격이다. 제출용은 STEP 2~7의 구체값(의심 프로세스 cmdline, 메모리 속 비밀, exe 복원
+      여부, rwxp 인젝션 영역, proc vs ps 차이, 휘발성 수집 순서)을 본문으로 채운다.
     hint: '분석+복원+휘발성'
     category: report
     points: 14
