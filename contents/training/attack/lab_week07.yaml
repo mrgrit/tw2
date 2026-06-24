@@ -37,20 +37,21 @@ steps:
       쏘기 전에 대상이 응답하는지부터 본다. 이번 주 대상은 **dvwa**(`dvwa.el34.lab`)이며,
       el34 에서 dvwa 는 **ModSec 차단 모드**(`SecRuleEngine On`)라 경로순회·PHP 주입이 403 으로
       막히는 vhost 다(juice 는 DetectionOnly 라 탐지만 하고 200 통과 — 그래서 "차단 확인"은 dvwa).
-      ### 💻 실행 명령
-      el34 호스트에서 attacker 컨테이너로 발사한다. `-o /dev/null`(본문 버림) + `-w '%{http_code}'`
-      (응답 코드만 출력)로 도달성만 본다. 라우팅은 attacker → `http://10.20.30.1/`(Host 헤더로
-      vhost 지정).
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) 차단형 dvwa 도달성 — 응답코드만(페이로드 발사 전 표적 생존 확인)
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
       ```
+      - `-o /dev/null`(본문 버림)+`-w '%{http_code}'`(응답 코드만), `-H 'Host: ...'`(vhost 지정). attacker → `http://10.20.30.1/`.
+
       ## ✅ 합격 기준
-      `dvwa=<코드>` 형태로 HTTP 응답 코드가 떨어지면(예: 200/302/403 등 무엇이든 응답) 도달 정상.
+      `dvwa` 출력 시 통과. **근거:** dvwa=<코드>(예: 200/302/403 무엇이든)가 떨어지면 도달 정상 —
       응답이 없으면 라우팅·컨테이너 문제이니 이후 단계 진행 전 점검한다.
     hint: '도달성'
     category: survey
     points: 10
     answer: |
+      # 1) 차단형 dvwa 도달성 — 응답코드만(페이로드 발사 전 표적 생존 확인)
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
     answer_detail: "입력 기반 공격의 대상 = dvwa(차단 모드 vhost, ModSec CRS 930/932/933 탐지). 페이로드 발사 전 표적 생존·도달성을 확인하는 정찰 마무리 단계. HTTP 응답 코드가 돌아오면(코드 종류 무관) 도달 정상으로 판정한다."
     verify:
@@ -73,23 +74,28 @@ steps:
       막는 방어는 **URL 인코딩 우회**(`.`=`%2e`, `/`=`%2f` → `%2e%2e%2f`)로 뚫린다. 그래서 두
       형태(평문 + 인코딩)를 함께 쏴서, ModSec 이 **정규화(canonicalization)** 로 인코딩 우회까지
       막는지 확인한다.
-      ### 💻 실행 명령
-      두 줄: 첫 줄은 평문 `../../etc/passwd`, 둘째 줄은 같은 의미를 URL 인코딩한 형태.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pt=%{http_code} ' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=../../etc/passwd'"
+      # 1) 경로순회 평문 — ../../etc/passwd로 파일시스템 경계 탈출 시도
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pt=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=../../etc/passwd'"
+      # 2) 경로순회 URL 인코딩 — %2e%2e%2f(.,/를 인코딩)로 단순 필터 우회 시도
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'enc=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd'"
+      # 3) 해석 — ../ 탈출을 ModSec 930(LFI)이 잡아 403, 인코딩해도 정규화로 차단
+      echo "→ ../로 경로 탈출 시도 → ModSec 930(LFI)이 잡아 403. 인코딩해도 정규화로 차단"
       ```
+
       ## ✅ 합격 기준
-      평문·인코딩 **둘 다 403** 으로 차단된다 — CRS **930 룰군**(LFI/Path Traversal)이 `../`,
-      `/etc/passwd` 패턴을 잡고 949110 anomaly 가 최종 차단. (둘 다 403 = 정규화가 인코딩 우회를
-      무력화했다는 뜻.)
+      `403` 출력 시 통과. **근거:** 평문·인코딩 둘 다 403 으로 차단되면 통과 — CRS 930 룰군(LFI/Path
+      Traversal)이 `../`·`/etc/passwd` 패턴을 잡고 949110 anomaly 가 최종 차단(둘 다 403=정규화가 우회 무력화).
     hint: '../../etc/passwd → 403'
     category: manipulation
     points: 12
     answer: |
-      echo "=== Path Traversal ==="
-      echo "[평문]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pt=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=../../etc/passwd'"
-      echo "[URL 인코딩]"; docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'enc=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd'"
+      # 1) 경로순회 평문 — ../../etc/passwd로 파일시스템 경계 탈출 시도
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pt=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=../../etc/passwd'"
+      # 2) 경로순회 URL 인코딩 — %2e%2e%2f(.,/를 인코딩)로 단순 필터 우회 시도
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'enc=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd'"
+      # 3) 해석 — ../ 탈출을 ModSec 930(LFI)이 잡아 403, 인코딩해도 정규화로 차단
       echo "→ ../로 경로 탈출 시도 → ModSec 930(LFI)이 잡아 403. 인코딩해도 정규화로 차단"
     answer_detail: "경로순회(Path Traversal, A03/A05) = ../로 의도된 디렉토리를 탈출해 임의 파일(/etc/passwd 등)을 읽는 공격. el34 dvwa(차단 모드)에서 ModSec CRS 930xxx(LFI/Path Traversal) 룰군이 ../, /etc/passwd 패턴을 잡아 403. 평문이든 URL 인코딩(%2e%2e%2f)이든 ModSec 이 검사 전 정규화(canonicalization)하므로 같은 룰에 걸려 둘 다 403 — 인코딩 우회 무력화 확인이 본 step 의 핵심."
     verify:
@@ -110,24 +116,29 @@ steps:
       직접 못 닿지만, 서버는 내부망 안에 있다. 입력 URL로 `http://169.254.169.254/`(클라우드 VM
       내부에서만 닿는 **메타데이터 엔드포인트** — IAM 키 노출처)나 `http://127.0.0.1:9100/`(로컬
       관리 서비스)을 주면, 서버가 대신 그곳에 요청을 보내 응답을 공격자에게 돌려준다 = 방화벽 우회.
-      ### 💻 실행 명령
-      메타데이터 + 로컬 관리포트 두 표적을 시도한다.
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) SSRF — 서버가 클라우드 메타데이터(169.254.169.254=IAM 키)에 대신 요청하게 유도
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ssrf=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=http://169.254.169.254/latest/meta-data/'"
+      # 2) SSRF — 로컬 관리포트(127.0.0.1:9100)에 대신 요청하게 유도
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'localhost=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=http://127.0.0.1:9100/'"
+      # 3) 해석 — 서버가 대신 내부에 요청 = SSRF, 위험 URL 패턴 탐지(정상 요청과 비슷해 확정 403 아님)
+      echo "→ 서버가 대신 내부(메타데이터/localhost)에 요청하게 유도 = SSRF. 위험 URL 패턴 탐지"
       ```
+
       ## ✅ 합격 기준
-      SSRF 시도(메타데이터/내부 URL)가 **발사되고 흔적이 남는다**. 주의: SSRF 는 정상 URL과 형태가
-      비슷해 경로순회처럼 항상 403 으로 깔끔히 막히지는 않는다(그래서 합격 기준이 "403"이 아니라
-      "ssrf 시도"). 응답 코드를 관찰하며 "WAF 가 SSRF 는 왜 확실히 못 막는가"를 토론한다 — 이것이
-      SSRF 가 OWASP Top 10 에 별도 항목(A10)이 된 이유. (el34 는 실제 클라우드가 아니라 진짜 IAM
-      키는 안 나온다 — 페이로드 형태·흔적 학습이 목적.)
+      `ssrf` 출력 시 통과. **근거:** SSRF 시도(메타데이터/내부 URL)가 발사되고 흔적이 남으면 통과 —
+      SSRF 는 정상 URL 과 형태가 비슷해 항상 403 으로 막히지 않으므로(A10 별도 항목 이유) 판정은
+      "ssrf 시도"로 한다(el34 는 실제 클라우드가 아니라 진짜 IAM 키는 안 나온다 — 형태·흔적 학습).
     hint: 'url=169.254.169.254 메타데이터'
     category: manipulation
     points: 12
     answer: |
-      echo "=== SSRF 시도 (클라우드 메타데이터) ==="
+      # 1) SSRF — 서버가 클라우드 메타데이터(169.254.169.254=IAM 키)에 대신 요청하게 유도
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ssrf=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=http://169.254.169.254/latest/meta-data/'"
+      # 2) SSRF — 로컬 관리포트(127.0.0.1:9100)에 대신 요청하게 유도
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'localhost=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=http://127.0.0.1:9100/'"
+      # 3) 해석 — 서버가 대신 내부에 요청 = SSRF, 위험 URL 패턴 탐지(정상 요청과 비슷해 확정 403 아님)
       echo "→ 서버가 대신 내부(메타데이터/localhost)에 요청하게 유도 = SSRF. 위험 URL 패턴 탐지"
     answer_detail: "SSRF(A10) = 사용자가 준 URL로 서버가 대신 요청 → 공격자가 직접 못 닿는 내부망/클라우드 메타데이터(169.254.169.254 = IAM 키)/로컬 관리포트에 접근. 요청 주체가 내부 서버라 방화벽을 무력화한다. el34 ModSec/CRS 는 내부 IP·위험 스킴 패턴을 일부 탐지하나 정상 요청과 비슷해 확정 403 은 아니다 → 판정은 'SSRF 시도 발사'로 한다. 근본 방어 = URL allowlist + 내부/링크-로컬 IP(127/10.x/169.254) 차단 + 해석된 최종 IP 기준 검사."
     verify:
@@ -150,19 +161,24 @@ steps:
       서버 장악**이 된다. 흔한 침투 경로는 **악성 파일 업로드**(검사가 허술하면 .php 업로드, 우회는
       .phtml/.php5·MIME 위조·polyglot). 여기서는 그 코드 주입이 WAF 에 어떻게 잡히는지 본다.
       페이로드 `%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E` 는 `<?php system('id'); ?>` 의 URL 인코딩.
-      ### 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) PHP 코드 주입 — <?php system('id'); ?>(URL 인코딩) = webshell/RCE 시도
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'php=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'"
+      # 2) 해석 — ModSec 933(PHP)이 <?php/system( 패턴 탐지 → 403(코드 미실행)
+      echo "→ <?php system('id');?> 주입 = webshell/RCE 시도. ModSec 933(PHP)이 <?php/system( 탐지 → 403"
       ```
+
       ## ✅ 합격 기준
-      PHP 코드 주입이 **403** 으로 차단된다 — CRS **933 룰군**(PHP Injection)이 `<?php`, `system(`
-      패턴을 잡는다. 막혔으므로 `id` 명령은 실행되지 않는다(출력이 나오면 안 된다 — 차단이 정상).
+      `403` 출력 시 통과. **근거:** PHP 코드 주입이 403 으로 차단되면 통과 — CRS 933 룰군(PHP Injection)이
+      `<?php`·`system(` 패턴을 잡는다. 막혔으므로 id 명령은 실행되지 않는다(출력이 나오면 안 됨).
     hint: '<?php system(id);?> → 403'
     category: manipulation
     points: 12
     answer: |
-      echo "=== 악성 콘텐츠 (PHP 코드 주입) ==="
+      # 1) PHP 코드 주입 — <?php system('id'); ?>(URL 인코딩) = webshell/RCE 시도
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'php=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'"
+      # 2) 해석 — ModSec 933(PHP)이 <?php/system( 패턴 탐지 → 403(코드 미실행)
       echo "→ <?php system('id');?> 주입 = webshell/RCE 시도. ModSec 933(PHP)이 <?php/system( 탐지 → 403"
     answer_detail: "악성 콘텐츠/업로드(A03) = webshell(PHP) 코드(<?php system('id'); ?>)를 입력·파일로 서버에 심어 실행 → RCE/서버 장악. el34 dvwa 에서 ModSec CRS 933xxx(PHP Injection)이 <?php, system( 패턴을 잡아 403 차단 → 코드 미실행(id 출력 없음이 정상). 우회=확장자(.phtml/.php5)·MIME 위조·polyglot(고급). 방어=확장자/MIME allowlist + 업로드 디렉토리 실행권한 제거 + 디렉토리 분리."
     verify:
@@ -184,22 +200,24 @@ steps:
       넘으면 949110(Inbound Anomaly Score Exceeded)이 최종 403 을 낸다. 이번 주 룰군 매핑:
       **930**=LFI/경로순회, **931**=RFI, **932**=RCE/명령주입, **933**=PHP 주입. audit log 에는
       매치된 룰 ID 가 6자리(930120, 933160, 949110 …)로 남는다.
-      ### 💻 실행 명령
-      web 의 modsec_audit.log 에서 6자리 룰 ID 를 뽑아(grep -oE) 중복 제거(sort -u) 후 93x 대역만
-      남긴다(grep -E "^93[0-9]").
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | grep -E "^93[0-9]"'
+      # 1) modsec_audit 최근 200줄에서 6자리 룰ID 추출·중복제거 후 93x(930 LFI/931 RFI/932 RCE/933 PHP)만
+      docker exec el34-web sh -c 'sudo tail -200 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | grep -E "^93"'
+      # 2) 해석 — 930(LFI/path traversal)/931(RFI)/932(RCE)/933(PHP) 룰군이 입력 기반 공격 탐지
+      echo "→ 930(LFI/path traversal), 931(RFI), 932(RCE), 933(PHP) 룰군이 입력 기반 공격을 탐지"
       ```
+
       ## ✅ 합격 기준
-      LFI/RCE/PHP 룰군(930/932/933)이 탐지됨을 확인한다. 출력에 **930** 이 보이면(직전 step 2 의
-      경로순회 흔적) 정상이며, 보낸 페이로드에 따라 933 등도 함께 보인다 — 즉 어떤 룰 ID 가 뜨는지는
-      직전에 무엇을 발사했는지로 결정된다.
+      `930` 출력 시 통과. **근거:** LFI/RCE/PHP 룰군(930/932/933)이 탐지되면 통과 — 직전 step 2 의
+      경로순회로 930 이 반드시 보이고, 보낸 페이로드에 따라 933 등도 함께 보인다.
     hint: 'modsec 930/932/933'
     category: analysis
     points: 12
     answer: |
-      echo "=== 탐지 (ModSec 930 LFI/931 RFI/932 RCE/933 PHP) ==="
+      # 1) modsec_audit 최근 200줄에서 6자리 룰ID 추출·중복제거 후 93x(930 LFI/931 RFI/932 RCE/933 PHP)만
       docker exec el34-web sh -c 'sudo tail -200 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | grep -E "^93"'
+      # 2) 해석 — 930(LFI/path traversal)/931(RFI)/932(RCE)/933(PHP) 룰군이 입력 기반 공격 탐지
       echo "→ 930(LFI/path traversal), 931(RFI), 932(RCE), 933(PHP) 룰군이 입력 기반 공격을 탐지"
     answer_detail: "입력 기반 공격 탐지 = ModSec CRS 930(LFI/경로순회)/931(RFI)/932(RCE·명령주입)/933(PHP 주입) 룰군. anomaly scoring 으로 매치 점수가 누적되면 949110(Inbound Anomaly Score Exceeded)이 최종 403 차단. 보낸 페이로드에 따라 뜨는 룰 ID 가 달라지며, 본 lab 은 직전 step 2(경로순회)로 인해 930 이 반드시 보이는 것을 합격 기준으로 한다."
     verify:
@@ -220,21 +238,32 @@ steps:
       경로순회로 설정·키 파일을 읽고 → SSRF 로 내부망/클라우드 자격 증명을 얻고 → 업로드/주입으로
       RCE 에 도달. 한 침해 안에서 서로 발판이 되며, 이 사슬이 다음 주(W08) CTF 익스플로잇 체인의
       뼈대다.
-      ### 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      echo "Path Traversal→임의파일읽기(설정/키), SSRF→내부망/메타데이터(클라우드 키 탈취), 업로드→RCE"
+      # 1) Path Traversal 영향 — 임의 파일 읽기(설정/소스/키) → 정보 노출
+      echo "Path Traversal: /etc/passwd, 설정파일, 소스, 키 읽기 → 정보 노출"
+      # 2) SSRF 영향 — 클라우드 메타데이터(IAM 키)/내부 서비스 → 측면 이동
+      echo "SSRF: 클라우드 메타데이터(IAM 키 탈취), 내부 서비스 접근, 내부망 스캔 → 측면 이동"
+      # 3) 악성 업로드 영향 — webshell → RCE → 완전 장악
+      echo "악성 업로드: webshell → RCE → 완전 장악"
+      # 4) 결론 — 모두 사용자 입력을 신뢰한 결과, 영향이 크다(정보~RCE)
+      echo "→ 모두 사용자 입력을 신뢰한 결과. 영향이 크다(정보~RCE)"
       ```
+
       ## ✅ 합격 기준
-      세 공격의 영향(파일 읽기 → 내부망/클라우드 키 → RCE)을 정리하고, 셋의 공통점이 "입력 신뢰의
-      대가"임을 짚는다.
+      `SSRF` 출력 시 통과. **근거:** 세 공격의 영향(파일 읽기 → 내부망/클라우드 키 → RCE)을 정리하고
+      셋의 공통점이 "입력 신뢰의 대가"임을 짚으면 통과.
     hint: '파일읽기/내부망/RCE 영향'
     category: analysis
     points: 10
     answer: |
-      echo "=== 영향 ==="
+      # 1) Path Traversal 영향 — 임의 파일 읽기(설정/소스/키) → 정보 노출
       echo "Path Traversal: /etc/passwd, 설정파일, 소스, 키 읽기 → 정보 노출"
+      # 2) SSRF 영향 — 클라우드 메타데이터(IAM 키)/내부 서비스 → 측면 이동
       echo "SSRF: 클라우드 메타데이터(IAM 키 탈취), 내부 서비스 접근, 내부망 스캔 → 측면 이동"
+      # 3) 악성 업로드 영향 — webshell → RCE → 완전 장악
       echo "악성 업로드: webshell → RCE → 완전 장악"
+      # 4) 결론 — 모두 사용자 입력을 신뢰한 결과, 영향이 크다(정보~RCE)
       echo "→ 모두 사용자 입력을 신뢰한 결과. 영향이 크다(정보~RCE)"
     answer_detail: "영향의 사슬 = 파일 읽기(경로순회: /etc/passwd·설정·키) → 내부망/클라우드 키(SSRF: 169.254.169.254 IAM 키, 내부 서비스) → RCE/완전 장악(업로드·PHP 주입: webshell). 셋 다 입력을 신뢰한 대가이며 영향 범위가 정보 노출~서버 장악으로 넓다. 한 침해 안에서 서로 발판이 되어 W08 CTF 익스플로잇 체인으로 이어진다."
     verify:
@@ -254,21 +283,32 @@ steps:
       WAF(ModSec)는 보조 한 겹일 뿐 — 알려진 패턴 기반이라 새 인코딩·난독화로 우회될 수 있다.
       근본 방어는 **신뢰 경계 안쪽 코드**가 입력을 신뢰하지 않는 것이며, 세 공격 모두 공통 원칙
       "허용한 것만 통과(deny by default)"로 막는다. 공격을 익혔으니 방어를 정리해 학습을 닫는다.
-      ### 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      echo "Path: 경로 정규화+allowlist / SSRF: URL allowlist+내부IP차단 / 업로드: 확장자·MIME allowlist+실행권한 제거"
+      # 1) Path Traversal 방어 — 경로 정규화+allowlist(입력으로 경로 구성 금지)
+      echo "Path Traversal: 경로 정규화(canonicalize)+allowlist, 사용자 입력으로 경로 구성 금지"
+      # 2) SSRF 방어 — URL allowlist+내부 IP(169.254/127/10.x) 차단+메타데이터 차단
+      echo "SSRF: URL allowlist, 내부 IP(169.254/127/10.x) 차단, 메타데이터 엔드포인트 차단"
+      # 3) 업로드 방어 — 확장자/MIME allowlist+디렉토리 실행권한 제거·분리+콘텐츠 검사
+      echo "업로드: 확장자/MIME allowlist, 업로드 디렉토리 실행권한 제거+분리, 콘텐츠 검사"
+      # 4) 공통 — 사용자 입력을 신뢰 말 것, allowlist(deny by default)
+      echo "→ 공통: 사용자 입력을 신뢰 말 것. allowlist(deny by default)"
       ```
+
       ## ✅ 합격 기준
-      세 공격의 방어를 정리하고, 공통 원칙(입력 불신 + allowlist)이 하나임을 명시한다 — "WAF 가
-      막았으니 끝"이 아니라 "코드 수준 방어가 근본"임을 짚으면 합격.
+      `allowlist` 출력 시 통과. **근거:** 세 공격 방어를 정리하고 공통 원칙(입력 불신 + allowlist)이
+      하나임을 명시하면 통과 — "WAF 가 막았으니 끝"이 아니라 "코드 수준 방어가 근본"임을 짚는다.
     hint: '정규화/allowlist/내부IP차단'
     category: report
     points: 12
     answer: |
-      echo "=== 방어 ==="
+      # 1) Path Traversal 방어 — 경로 정규화+allowlist(입력으로 경로 구성 금지)
       echo "Path Traversal: 경로 정규화(canonicalize)+allowlist, 사용자 입력으로 경로 구성 금지"
+      # 2) SSRF 방어 — URL allowlist+내부 IP(169.254/127/10.x) 차단+메타데이터 차단
       echo "SSRF: URL allowlist, 내부 IP(169.254/127/10.x) 차단, 메타데이터 엔드포인트 차단"
+      # 3) 업로드 방어 — 확장자/MIME allowlist+디렉토리 실행권한 제거·분리+콘텐츠 검사
       echo "업로드: 확장자/MIME allowlist, 업로드 디렉토리 실행권한 제거+분리, 콘텐츠 검사"
+      # 4) 공통 — 사용자 입력을 신뢰 말 것, allowlist(deny by default)
       echo "→ 공통: 사용자 입력을 신뢰 말 것. allowlist(deny by default)"
     answer_detail: "방어 공통 원칙 = 입력 불신 + allowlist(deny by default). 경로순회=경로 정규화(canonicalize)+허용 경로 allowlist(입력으로 경로 구성 금지, ID 간접참조 권장); SSRF=URL allowlist+사설/링크-로컬 IP(127/10.x/169.254) 차단+해석된 최종 IP 검사; 업로드=확장자/MIME allowlist+업로드 디렉토리 실행권한 제거·분리. WAF(CRS 930/932/933)는 그 위에 더해지는 보조 한 겹일 뿐 근본이 아니다."
     verify:
@@ -288,17 +328,22 @@ steps:
       모의침투는 발사로 끝나지 않는다 — 발견(Finding) → 영향(Impact) → 권고(Remediation)를 하나의
       문서로 엮어야 가치가 된다. 이번 주 세 공격·탐지·방어를 보고서 한 장으로 정리한다(실제 진단
       보고서의 축약판).
-      ## 💻 보고서 양식
-      ```markdown
-      # 공격 W07 SSRF/Path Traversal/업로드 보고서 (학번, 이름)
-      ## 1. Path Traversal (경로 탈출)
-      ## 2. SSRF (내부 자원)
-      ## 3. 악성 콘텐츠 (PHP/RCE)
-      ## 4. 탐지(930/932/933) + 방어(allowlist)
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ```bash
+      # 1) heredoc(<<'EOF' ... EOF)으로 보고서 출력 — Path Traversal→SSRF→악성콘텐츠→탐지/방어→결론
+      cat <<'EOF'
+      # 공격 W07 SSRF/Path Traversal/업로드 보고서
+      ## 1. Path Traversal: ../../etc/passwd → 403(930), 인코딩도 정규화로 차단
+      ## 2. SSRF: 169.254.169.254 메타데이터/localhost 요청 유도 → 위험 URL 탐지
+      ## 3. 악성 콘텐츠: <?php system('id')?> → 403(933)
+      ## 4. 탐지: ModSec 930/931/932/933 룰군. 방어: 정규화+allowlist+내부IP차단
+      ## 결론: 입력으로 경계를 넘는 세 공격. 영향 큼(파일~RCE). 방어=입력 불신+allowlist
+      EOF
       ```
+
       ## ✅ 합격 기준
-      보고서에 세 공격(경로순회·SSRF·악성 업로드/PHP 주입) + 탐지(ModSec 930/932/933) + 방어
-      (입력 불신·allowlist)가 모두 포함된다.
+      `SSRF` 출력 시 통과. **근거:** 보고서에 세 공격(경로순회·SSRF·악성 업로드/PHP 주입) + 탐지
+      (ModSec 930/932/933) + 방어(입력 불신·allowlist)가 모두 포함되면 통과.
     hint: 'PathT+SSRF+업로드+방어'
     category: report
     points: 10
