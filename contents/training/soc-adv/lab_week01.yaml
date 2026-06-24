@@ -22,15 +22,25 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 대상 도달 확인
-      **실습 의미:** 4계층 가시성 점검 전에 표적(웹)에 실제 도달하는지부터 확인한다 — 도달이 안 되면 이후 "안 보임"이 가시성 공백인지 단순 미도달인지 구분할 수 없다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 1 — 표적 웹(dvwa)에 실제로 닿는지부터 확인한다
+      > **이 단계에서 할 일:** 공격자 컨테이너에서 dvwa 웹에 요청을 한 번 보내 응답 코드를 본다.
+      > **왜:** 뒤에서 "공격이 안 보인다"가 나왔을 때, 그게 진짜 탐지 공백인지 아니면 그냥 표적에
+      > 못 닿은 건지 구분하려면, 먼저 표적에 닿는지부터 확정해야 한다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 공격자 컨테이너에서 웹 표적(dvwa)에 HTTP 요청을 보내 응답 코드를 dvwa= 형식으로 출력한다
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
       ```
-      ## ✅ 합격 기준
-      `dvwa=` 와 응답코드(예 302)가 출력되면 통과. **근거:** 코드가 찍힌다는 건 표적에 실제 도달했다는 뜻이므로, 이후의 가시성 점검 결과를 신뢰할 수 있다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 코드 숫자는 환경마다 다를 수 있음)
+      ```
+      dvwa=302
+      ```
+      `dvwa=` 뒤에 세 자리 HTTP 코드가 찍히면 OK. 302는 dvwa가 로그인 페이지로 리다이렉트한 것(=정상 도달).
+
+      ### ▷ 결과 해석
+      코드가 찍혔다 = 공격자→fw→ips→web→dvwa 경로가 살아 있다는 뜻. 이제부터의 4계층 가시성 점검
+      결과를 신뢰할 수 있다. 만약 `dvwa=000`이면 표적 미도달(네트워크/컨테이너 상태부터 확인).
     hint: '도달성'
     category: survey
     points: 10
@@ -50,17 +60,29 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 ① 웹 계층 가시성 — SQLi → ModSec 탐지
-      **실습 의미:** "우리 SOC가 웹공격을 보는가?"를 확인한다 — SQLi를 한 발 보내 WAF(ModSec) audit에 탐지로 남는지로 웹 계층 가시성을 판정.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 2 — 웹 공격(SQLi)이 우리 눈에 '보이는가' (① 웹 계층 가시성)
+      > **이 단계에서 할 일:** SQLi를 한 발 보내고, WAF(ModSec) 감사 로그에 그 시도가 탐지로 남는지 본다.
+      > **왜:** 웹은 가장 많이 노출된 표면이다. "막았는가"가 아니라 "기록(탐지)되는가"가 SOC 가시성의 첫 척도.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 공격자가 SQLi(UNION SELECT) 요청을 웹 표적에 전송한다
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password--\""
-      # 2) 웹서버 ModSec audit 로그에서 SQLi 탐지 룰군(942xxx)만 골라 발화 횟수를 센다
       docker exec el34-web sh -c "sudo tail -400 /var/log/apache2/modsec_audit.log 2>/dev/null | grep -oE '942[0-9]{3}' | sort | uniq -c | head -3"
       ```
-      ## ✅ 합격 기준
-      `942`(CRS의 SQLi 룰군)가 출력되면 통과. **근거:** 942가 audit에 남았다는 건 ModSec이 SQLi를 실제로 탐지했다는 뜻이라, 웹 계층 가시성이 확보된 것이다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 횟수 숫자는 환경마다 다름)
+      ```
+      sqli=403
+           52 942100
+            2 942160
+           10 942190
+      ```
+      `sqli=403` = WAF가 이 SQLi를 차단. `942xxx`가 보이면 그 시도가 감사 로그에 탐지로 기록된 것.
+
+      ### ▷ 결과 해석
+      403(차단) 여부보다 핵심은 **942 룰이 audit에 남았는가**다. 942가 1건이라도 보이면 웹 계층 가시성
+      '있음'. 안 보이면 tail 범위를 늘려(-2000) 다시 보거나 해당 vhost의 ModSec 모드를 확인한다
+      (dvwa=차단 모드, juice=탐지만).
     hint: 'ModSec 942'
     category: manipulation
     points: 14
@@ -82,19 +104,30 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 ② 네트워크 계층 가시성 — Suricata 흔적
-      **실습 의미:** 네트워크 계층(IPS)이 공격 트래픽을 보는가 — 스캔을 흘려 Suricata eve.json에 출처 IP 흔적이 남는지로 판정.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 3 — 네트워크 계층(IPS)이 공격 트래픽을 보는가 (② 네트워크 가시성)
+      > **이 단계에서 할 일:** 포트 스캔을 한 번 흘리고, Suricata eve.json에 공격자 출처 IP 흔적이 쌓이는지 센다.
+      > **왜:** 웹 로그에 안 남는 포트 스캔·비-HTTP 트래픽은 네트워크 계층(IPS)이 본다. el34는 방화벽이
+      > SNAT를 안 해서 출처 IP(10.20.30.202)가 보존된다 → "누가" 스캔했는지 귀속이 된다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 공격자가 포트 스캔을 수행한다 (IPS가 트래픽을 보게 만든다)
       docker exec el34-attacker sh -c "nmap -sS -T4 --top-ports 50 10.20.30.1 2>/dev/null | grep -c open"
-      # 2) IPS eve.json에서 출처 IP(10.20.30.202) 흔적 건수를 센다
       docker exec el34-ips sh -c "tail -2000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'"
-      # 3) 네트워크 가시성 점검 완료 마커
       echo netvis_done
       ```
-      ## ✅ 합격 기준
-      `netvis_done`(과 흔적 건수)이 출력되면 통과. **근거:** eve.json에 출처 흔적이 잡힌다는 건 IPS가 트래픽을 본다는 뜻 — el34는 SNAT가 없어 출처가 보존되므로 공격자 귀속까지 가능하다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 숫자는 환경마다 다름)
+      ```
+      4
+      1969
+      netvis_done
+      ```
+      첫 줄(4)=열린 포트 수. 둘째 줄(1969)=최근 eve.json에서 공격자 출처 IP가 찍힌 이벤트 수.
+
+      ### ▷ 결과 해석
+      둘째 줄이 0보다 크면 IPS가 그 출처의 트래픽을 '보고 있다'(네트워크 가시성 있음). 출처가 보존되므로
+      이 흔적을 뒤(SIEM)에서 같은 공격자의 다른 단서와 묶을 수 있다. (마지막 `netvis_done`은 단계 완료
+      표시일 뿐 — 진짜 근거는 둘째 줄의 건수다.)
     hint: 'Suricata eve'
     category: manipulation
     points: 12
@@ -118,15 +151,25 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 ③ SIEM 계층 가시성 — Wazuh 고위험 상관
-      **실습 의미:** SIEM이 다소스 로그를 모아 고위험으로 상관·격상하는가 — Wazuh alerts.json의 고위험(level≥10) 건수로 판정.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 4 — SIEM(Wazuh)이 여러 단서를 모아 '고위험'으로 올리는가 (③ SIEM 가시성)
+      > **이 단계에서 할 일:** Wazuh 경보 파일에서 고위험(level 10 이상) 경보 건수를 센다.
+      > **왜:** 단일 계층의 단서 하나하나는 약하다. SIEM은 ips·web 등 여러 소스를 모아 상관하고, 위험한
+      > 것을 level≥10으로 격상해 분석가의 눈을 모은다. 그 격상이 실제로 일어나는지 본다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) SIEM(Wazuh) alerts.json에서 고위험(level 10~19) 알림 수를 세어 siem_high=N 으로 출력한다
       docker exec el34-siem sh -c 'N=$(tail -3000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -oE "\"level\":1[0-9]" | wc -l); echo "siem_high=$N"'
       ```
-      ## ✅ 합격 기준
-      `siem_high=`(과 건수)이 출력되면 통과. **근거:** 고위험 집계가 나온다는 건 Wazuh가 여러 소스를 모아 상관·격상하고 있다는 뜻 — SIEM 계층 가시성의 핵심 증거다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 건수는 환경마다 다름)
+      ```
+      siem_high=44
+      ```
+      `siem_high=` 뒤 숫자가 고위험(level 10~19) 경보 수.
+
+      ### ▷ 결과 해석
+      0보다 크면 Wazuh가 다소스 로그를 모아 위험도를 매기고 고위험으로 격상하고 있다는 뜻(SIEM 가시성
+      있음). 0이면 디코더·룰이 부족해 raw 로그만 쌓이는 상태일 수 있다(고급 트랙 W02~W03에서 보강).
     hint: 'Wazuh level>=10'
     category: analysis
     points: 12
@@ -146,17 +189,30 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 ④ 호스트 계층 가시성 — osquery 헌팅
-      **실습 의미:** 호스트 계층(은닉 프로세스·백도어 계정·리스너)을 볼 수 있는가 — osquery로 호스트 상태를 SQL 질의할 수 있는지로 판정.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 5 — 호스트 안(프로세스·포트·계정)을 들여다볼 수 있는가 (④ 호스트 가시성)
+      > **이 단계에서 할 일:** osquery로 호스트의 프로세스 테이블을 한 건 질의해, 호스트를 SQL로
+      > 들여다볼 수 있는지 확인한다.
+      > **왜:** 네트워크 시그니처로 안 잡히는 것 — 백도어 계정, 숨은 리스너, 삭제된 채 도는 프로세스 —
+      > 은 호스트 계층만 본다. osquery가 그 헌팅 도구다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 웹서버에서 osquery로 프로세스 테이블을 1건 질의한다 (호스트를 SQL로 들여다볼 수 있는지)
       docker exec el34-web sh -c "osqueryi --json 'SELECT pid,name FROM processes LIMIT 1' 2>/dev/null | head -c 40"
-      # 2) 줄바꿈 후 호스트 가시성 점검 완료 마커
       echo; echo hostvis_done
       ```
-      ## ✅ 합격 기준
-      `hostvis_done`(과 질의 결과)이 출력되면 통과. **근거:** osquery 질의가 된다는 건 processes·listening_ports·users 테이블로 백도어/은닉을 헌팅할 수 있다는 뜻 — 호스트 계층 가시성 확보.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 프로세스 이름/pid는 다를 수 있음)
+      ```
+      [
+        {"name":"sshd","pid":"1"}
+      hostvis_done
+      ```
+      JSON 한 건이 나오면 osquery 질의가 동작하는 것(`head -c 40`으로 앞부분만 잘라 보여줌).
+
+      ### ▷ 결과 해석
+      질의가 되면 processes·listening_ports·users 같은 테이블로 백도어/은닉을 헌팅할 수 있다(호스트
+      가시성 있음). osquery는 '지금 이 순간'의 스냅샷이라, 잠깐 생겼다 사라지는 행위는 이벤트 스트림
+      (sysmon, 후속 주차)으로 보완한다. (`hostvis_done`은 완료 표시 — 진짜 근거는 위 JSON 출력.)
     hint: 'osquery'
     category: manipulation
     points: 12
@@ -178,23 +234,35 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 SOC-CMM 가시성 정량화
-      **실습 의미:** 성숙도(SOC-CMM)는 문서가 아니라 "실제로 탐지하는 계층 수"로 증명된다 — 4계층을 실제 프로브해 가시성을 숫자로 정량화한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 6 — 가시성을 '숫자'로 정량화한다 (SOC-CMM)
+      > **이 단계에서 할 일:** 인프라 3계층(네트워크/SIEM/호스트)의 점검 소스가 실제로 있는지 프로브해
+      > "몇 계층 확보"를 숫자로 만든다.
+      > **왜:** SOC 성숙도는 "우리는 잘한다"는 말이 아니라 "몇 계층에서 증거가 남는가"라는 측정값이다.
+      > (웹 계층은 STEP 2에서 SQLi로 이미 직접 확인했고, 여기서는 나머지 3계층을 점검 → 합쳐서 4계층.)
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 가시성 확보 계층 수 카운터 초기화
       N=0
-      # 2) 네트워크 계층: Suricata eve.json 있으면 +1
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' && { echo "네트워크(Suricata eve) OK"; N=$((N+1)); }
-      # 3) SIEM 계층: Wazuh alerts.json 있으면 +1
-      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' && { echo "SIEM(Wazuh alerts) OK"; N=$((N+1)); }
-      # 4) 호스트 계층: osqueryi 설치돼 있으면 +1
-      docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' && { echo "호스트(osquery) OK"; N=$((N+1)); }
-      # 5) 확보 계층 수 출력 + 2계층 이상이면 합격 마커 (SOC-CMM Technology 가시성 정량화)
+      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' && { echo "네트워크(Suricata eve) 가시성 OK"; N=$((N+1)); }
+      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' && { echo "SIEM(Wazuh alerts) 가시성 OK"; N=$((N+1)); }
+      docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' && { echo "호스트(osquery) 가시성 OK"; N=$((N+1)); }
       echo "가시성 확보 계층: $N/3"; [ "$N" -ge 2 ] && echo soc_cmm_assessed
       ```
-      ## ✅ 합격 기준
-      `soc_cmm_assessed` 출력 시 통과(2계층 이상 확보). **근거:** 이 마커는 N≥2일 때만 찍히므로, 출력은 가시성이 실제로 정량화되어 최소 기준을 넘었음을 증명한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      네트워크(Suricata eve) 가시성 OK
+      SIEM(Wazuh alerts) 가시성 OK
+      호스트(osquery) 가시성 OK
+      가시성 확보 계층: 3/3
+      soc_cmm_assessed
+      ```
+
+      ### ▷ 결과 해석
+      이 프로브는 각 계층의 '점검 소스가 살아 있는가'(eve.json / alerts.json / osqueryi)를 확인한다.
+      여기에 STEP 2~5에서 본 '실제 탐지'까지 합쳐야 성숙도의 완전한 그림이다. 2계층 이상(`N≥2`)이면
+      최소 기준 통과로 `soc_cmm_assessed`가 찍힌다. (주의: 소스가 있다 ≠ 탐지 품질이 좋다 — 룰·디코더
+      보강은 별개 과제.)
     hint: 'SOC-CMM'
     category: analysis
     points: 12
@@ -222,21 +290,31 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 갭 분석·개선 로드맵
-      **실습 의미:** 탐지 못 하는 계층(갭)이 곧 공격자의 사각지대다 — 어느 계층이 안 보이는지 실제로 찾아 개선 우선순위를 정한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 7 — 안 보이는 계층(갭)을 찾고 개선 순서를 정한다
+      > **이 단계에서 할 일:** STEP 6의 반대 — 각 계층 프로브가 '실패'하는 곳(=미탐 계층=갭)을 모아
+      > 출력하고, 표준 개선 로드맵을 붙인다.
+      > **왜:** 탐지 못 하는 계층이 곧 공격자의 사각지대다. 갭을 알아야 어디부터 투자할지 정한다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 갭(미탐 계층) 목록 초기화
       GAP=""
-      # 2) 각 계층 프로브가 실패(||)하면 그 계층명을 갭 목록에 추가
       docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' || GAP="$GAP 네트워크"
       docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' || GAP="$GAP SIEM"
       docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' || GAP="$GAP 호스트"
-      # 3) 갭 목록 + 표준 개선 로드맵 출력 → 완료 마커
       echo "탐지 갭(미탐 계층):${GAP:- 없음}"; echo "로드맵: ①룰 보강(SIGMA/Suricata) ②격상(Wazuh) ③SOAR ④헌팅 정례화"; echo gap_roadmap_done
       ```
-      ## ✅ 합격 기준
-      `gap_roadmap_done` 출력 시 통과. **근거:** 이 마커는 세 계층 프로브를 모두 돌려 갭을 집계한 뒤에야 찍히므로, 출력은 갭 식별·로드맵 도출이 실제 수행됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      탐지 갭(미탐 계층): 없음
+      로드맵: ①룰 보강(SIGMA/Suricata) ②격상(Wazuh) ③SOAR ④헌팅 정례화
+      gap_roadmap_done
+      ```
+
+      ### ▷ 결과 해석
+      el34는 3계층 소스가 다 살아 있어 보통 "갭 없음"이 나온다. 실무에선 여기서 빠진 계층이 곧 1순위
+      개선 대상이다. 우선순위는 '가시성 공백이 큰 계층 + 위험이 높은 TTP'부터. (소스가 있어도 룰이
+      약하면 '보이지만 못 잡는' 갭이 따로 있다 — 그건 STEP 2~5의 탐지 품질로 판단.)
     hint: '갭/로드맵'
     category: report
     points: 14
@@ -262,22 +340,38 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 SOC 성숙도 보고서 작성
-      **실습 의미:** 점검 결과를 의사결정자가 행동할 수 있는 보고서로 정리한다 — 앞 단계에서 실측한 가시성 수치를 근거로 인용해야 신뢰받는다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 8 — 점검 결과를 '증거 기반' 보고서로 정리한다
+      > **이 단계에서 할 일:** 앞 단계에서 실측한 가시성 계층 수를 다시 집계해, 그 숫자를 인용한
+      > 성숙도 보고서 골격을 출력한다.
+      > **왜:** 의사결정자는 "느낌"이 아니라 "실측 수치"를 보고 움직인다. 앞에서 직접 잰 N계층을
+      > 근거로 인용해야 보고가 신뢰받는다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 가시성 계층 수를 다시 집계한다 (보고서 인용 근거)
       N=0
       docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' && N=$((N+1))
       docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' && N=$((N+1))
       docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' && N=$((N+1))
-      # 2) 실측 계층 수(N)를 인용한 성숙도 보고서를 출력한다 (본문 상세는 학생이 보강)
-      echo "# SOC고급 W01 성숙도 보고서"; echo "## 가시성(실측) ${N}/3계층, SOC-CMM 정량화, 갭→로드맵"
-      # 3) 2계층 이상 실측이 인용된 보고서면 완료 마커
+      echo "# SOC고급 W01 성숙도 보고서"
+      echo "## 1. 가시성(실측): 네트워크/SIEM/호스트 ${N}/3계층 탐지 가능"
+      echo "## 2. SOC-CMM 5도메인으로 정량화"
+      echo "## 3. 갭/로드맵: 미탐 계층 → 룰 보강→격상→SOAR→헌팅 정례화"
       [ "$N" -ge 2 ] && echo soc_maturity_report_done
       ```
-      ## ✅ 합격 기준
-      `soc_maturity_report_done` 출력 시 통과. **근거:** 이 마커는 실측 계층 수(N≥2)를 인용한 보고서가 생성될 때만 찍히므로, 출력은 증거 기반 보고가 작성됐음을 증명한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      # SOC고급 W01 성숙도 보고서
+      ## 1. 가시성(실측): 네트워크/SIEM/호스트 3/3계층 탐지 가능
+      ## 2. SOC-CMM 5도메인으로 정량화
+      ## 3. 갭/로드맵: 미탐 계층 → 룰 보강→격상→SOAR→헌팅 정례화
+      soc_maturity_report_done
+      ```
+
+      ### ▷ 결과 해석
+      이 출력은 보고서의 '골격'이다. 실제 제출용은 여기에 STEP 2~7에서 본 구체 수치(942 탐지 건수,
+      eve.json 흔적 수, 고위험 경보 수)와 갭별 개선안을 본문으로 채워 완성한다. `soc_maturity_report_done`
+      은 실측 N(≥2)이 인용된 보고서가 만들어졌다는 표시.
     hint: '가시성+성숙도+로드맵'
     category: report
     points: 14
