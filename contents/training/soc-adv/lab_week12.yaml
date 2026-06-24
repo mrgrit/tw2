@@ -22,20 +22,29 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 1단계 수집 — 입력 소스(localfile)
-      **실습 의미:** 파이프라인의 시작은 로그 입력이다 — ossec.conf의 <localfile>이 어떤 로그를 수집할지 정의하며, 수집 안 된 로그는 탐지도 불가하다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 1 — 수집(Collection): 무엇을 로그로 받는지 본다 (localfile)
+      > **이 단계에서 할 일:** ossec.conf의 <localfile> 입력 정의 개수를 센다.
+      > **왜:** 파이프라인의 시작은 로그 입력이다. <localfile>이 '어떤 로그를 수집할지'를 정한다 —
+      > 수집 안 된 로그는 아무리 중요해도 탐지가 불가능하다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 수집: ossec.conf의 <localfile> 입력 정의 개수를 센다
         N=$(grep -c "<localfile>" /var/ossec/etc/ossec.conf)
         echo "입력 소스(localfile) ${N}개"
-        # 입력 소스를 집계했으면 마커
         [ "$N" -ge 0 ] && echo inputs_found
       '
       ```
-      ## ✅ 합격 기준
-      `inputs_found`(과 입력 소스 수)가 출력되면 통과. **근거:** 마커는 ossec.conf의 입력 정의를 실제 집계했을 때 찍히므로, 파이프라인 입구(수집)를 확인했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 개수는 환경마다 다름)
+      ```
+      입력 소스(localfile) 4개
+      inputs_found
+      ```
+
+      ### ▷ 결과 해석
+      localfile 4개 = 이 Wazuh가 4종류의 로그 입력을 받고 있다는 뜻. 파이프라인 5단계(수집→파싱→정규화→
+      저장→탐지) 중 첫 단계. 여기에 없는 로그 소스가 곧 STEP 7의 '사각'이다.
     hint: 'localfile'
     category: survey
     points: 10
@@ -57,19 +66,31 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 로그 포맷 식별
-      **실습 의미:** 로그마다 포맷이 다르다(syslog/json/command) — 포맷에 맞는 파서가 있어야 분해되므로, 어떤 포맷을 수집 중인지 식별한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 2 — 수집되는 로그의 '포맷'을 식별한다
+      > **이 단계에서 할 일:** ossec.conf의 <log_format>을 포맷별(syslog/json/command…)로 집계한다.
+      > **왜:** 로그마다 포맷이 다르고, 포맷에 맞는 파서가 있어야 분해된다. 어떤 포맷을 받는지 알아야
+      > 파싱 전략이 선다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 로그 포맷별(syslog/json/command) 개수를 집계한다 (포맷마다 파서가 다름)
         grep "<log_format>" /var/ossec/etc/ossec.conf | sort | uniq -c
-        # 포맷을 실제 집계했으면 마커
         grep -q "<log_format>" /var/ossec/etc/ossec.conf && echo formats_listed
       '
       ```
-      ## ✅ 합격 기준
-      `formats_listed`(과 포맷별 수)가 출력되면 통과. **근거:** 마커는 log_format이 실제 존재해 집계됐을 때만 찍히므로, 포맷별 파서 매핑의 기준을 파악했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 분포는 환경마다 다름)
+      ```
+            1     <log_format>command</log_format>
+            2     <log_format>full_command</log_format>
+            1     <log_format>plain</log_format>
+            1     <log_format>syslog</log_format>
+      formats_listed
+      ```
+
+      ### ▷ 결과 해석
+      syslog=전통적 텍스트 로그, command/full_command=명령 실행 출력, plain=가공 없는 줄. 구조화된
+      포맷(json)일수록 파싱이 쉽고 정확하다. 비구조 텍스트(syslog)는 디코더 정규식이 필요하다.
     hint: 'log_format'
     category: manipulation
     points: 12
@@ -90,20 +111,30 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 2단계 파싱 — 디코더
-      **실습 의미:** 디코더는 원시 로그 한 줄을 의미 있는 필드(srcip·user·url…)로 분해한다 — 룰은 이 분해된 필드를 보고 판단하므로 디코더 집합을 확인한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 3 — 파싱(Parsing): 디코더 자산을 확인한다
+      > **이 단계에서 할 일:** Wazuh 디코더 파일 개수를 센다.
+      > **왜:** 디코더는 원시 로그 한 줄을 의미 있는 필드(srcip·user·url…)로 분해한다. 룰은 이 분해된
+      > 필드를 보고 판단하므로, 디코더가 파이프라인의 핵심 파서다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 파싱: 디코더 집합 개수를 센다 (원시 로그를 필드로 분해하는 파서들)
         D=$(ls /var/ossec/ruleset/decoders/ 2>/dev/null | wc -l)
         echo "디코더 ${D}개"
-        # 디코더 집합이 있으면 마커
         [ "$D" -ge 1 ] && echo decoders_counted
       '
       ```
-      ## ✅ 합격 기준
-      `decoders_counted`(과 디코더 수)가 출력되면 통과. **근거:** 마커는 디코더 집합이 실제 존재할 때만 찍히므로, 원시 로그를 필드로 분해할 파싱 자산이 있음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 개수는 버전마다 다름)
+      ```
+      디코더 120개
+      decoders_counted
+      ```
+
+      ### ▷ 결과 해석
+      기본 디코더 120개가 sshd·apache·firewall 등 수많은 로그 형식을 필드로 분해할 준비가 됐다는 뜻.
+      새 로그 소스가 기존 디코더로 안 잡히면 커스텀 디코더를 추가한다(secuops W12). 다음 단계에서 실제
+      분해를 눈으로 확인한다.
     hint: '디코더'
     category: analysis
     points: 14
@@ -125,19 +156,29 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 파싱 검증 — logtest 필드 분해
-      **실습 의미:** wazuh-logtest로 실제 원시 로그가 어떤 필드(srcip/dstuser)로 분해되는지 눈으로 확인한다 — 디코더가 동작하는지 검증하는 단계다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 4 — 파싱 검증: 원시 로그가 필드로 쪼개지는지 본다 (logtest)
+      > **이 단계에서 할 일:** wazuh-logtest에 syslog 한 줄을 넣어 어떤 필드(srcip/dstuser/decoder)로
+      > 분해되는지 확인한다.
+      > **왜:** 디코더가 있어도 실제로 동작하는지는 넣어 봐야 안다. logtest가 파싱을 눈으로 보여준다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 원시 syslog 한 줄을 wazuh-logtest에 넣어 분해된 필드(srcip/dstuser/decoder)를 본다 (2>&1: logtest는 stderr 출력)
         printf "Jan  1 00:00:00 host sshd[1]: Failed password for root from 10.20.30.202 port 22 ssh2\n" | /var/ossec/bin/wazuh-logtest 2>&1 | grep -iE "srcip|dstuser|decoder" | head
-        # 필드로 실제 분해(srcip/decoder)되면 마커
         printf "Jan  1 00:00:00 host sshd[1]: Failed password for root from 10.20.30.202 port 22 ssh2\n" | /var/ossec/bin/wazuh-logtest 2>&1 | grep -qiE "srcip|decoder" && echo parsed_fields
       '
       ```
-      ## ✅ 합격 기준
-      `parsed_fields`(과 필드)가 출력되면 통과. **근거:** 마커는 원시 로그가 srcip/decoder 등 필드로 실제 분해될 때만 찍히므로, 디코더가 동작함을 검증했음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+              dstuser: 'root'
+              srcip: '10.20.30.202'
+      parsed_fields
+      ```
+
+      ### ▷ 결과 해석
+      원시 텍스트 `...Failed password for root from 10.20.30.202...`가 dstuser='root', srcip='10.20.30.202'
+      로 분해됐다 = 디코더가 동작한다는 뜻. 이 필드들이 룰의 판단 재료가 된다.
     hint: 'logtest 분해'
     category: analysis
     points: 14
@@ -158,19 +199,29 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 3단계 정규화 — 공통 필드(srcip) 추출
-      **실습 의미:** ssh의 'from X', 웹의 'client X'를 모두 srcip=X로 통일하는 것이 정규화다 — 출처 IP 하나로 전 소스를 상관(W02/W07)할 수 있는 전제다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 5 — 정규화(Normalization): 제각각을 '공통 필드'로 통일한다
+      > **이 단계에서 할 일:** ssh의 'from X'가 공통 필드 srcip로 통일되는지 logtest로 확인한다.
+      > **왜:** ssh는 'from X', 웹은 'client X'로 출처를 적는다. 이걸 모두 srcip=X로 통일(정규화)해야,
+      > 출처 IP 하나로 전 소스를 상관(W02 교차상관·W07 포렌식)할 수 있다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 정규화: ssh의 "from X"가 공통 필드 srcip로 통일되는지 logtest로 확인한다
         printf "Jan  1 00:00:00 host sshd[1]: Failed password for root from 10.20.30.202 port 22 ssh2\n" | /var/ossec/bin/wazuh-logtest 2>&1 | grep -iE "srcip"
-        # srcip 공통 필드가 실제 추출되면 정규화 실증 마커
         printf "Jan  1 00:00:00 host sshd[1]: Failed password for root from 10.20.30.202 port 22 ssh2\n" | /var/ossec/bin/wazuh-logtest 2>&1 | grep -qi "srcip" && echo "원시 로그→공통 필드(srcip) 정규화 확인" && echo normalized
       '
       ```
-      ## ✅ 합격 기준
-      `normalized` 출력 시 통과. **근거:** 마커는 원시 로그에서 공통 필드 srcip가 실제 추출될 때만 찍히므로, 출처 IP 하나로 전 소스를 상관할 정규화가 됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+              srcip: '10.20.30.202'
+      원시 로그→공통 필드(srcip) 정규화 확인
+      normalized
+      ```
+
+      ### ▷ 결과 해석
+      ssh의 'from 10.20.30.202'가 srcip 필드로 정규화됐다. 웹·방화벽 로그도 같은 srcip로 통일되므로,
+      이 한 필드로 'sshd에서 무차별 대입하던 그 IP가 웹에서도 SQLi했다'를 한 번에 묶을 수 있다.
     hint: '정규화'
     category: analysis
     points: 14
@@ -191,21 +242,31 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 4단계 저장·보존 정책
-      **실습 의미:** 침해는 수개월 잠복하므로 보존이 짧으면 조사 자체가 불가하다 — 실제 보존 중인 로그(alerts.json) 크기를 확인하고 hot/warm/cold·규정 최소보존을 이해한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 6 — 저장·보존(Retention): 미래의 조사 능력을 지킨다
+      > **이 단계에서 할 일:** 실제 보존 중인 alerts.json 크기를 확인하고 보존 계층·규정을 이해한다.
+      > **왜:** 침해는 수개월 잠복하기도 한다. 보존 기간이 짧으면 사건을 발견했을 때 이미 로그가 사라져
+      > 조사 자체가 불가능하다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 보존: 실제 보존 중인 alerts.json 크기를 확인한다 (hot 계층)
         SZ=$(wc -c < /var/ossec/logs/alerts/alerts.json 2>/dev/null)
         echo "alerts.json 보존 크기: ${SZ} bytes (hot 계층)"
         echo "계층: hot(즉시검색)→warm→cold. 규정: PCI 1년 최소보존. 로그 없으면 포렌식/IR 불가"
-        # 보존 로그가 실제 존재하면 마커
         test -f /var/ossec/logs/alerts/alerts.json && echo retention_done
       '
       ```
-      ## ✅ 합격 기준
-      `retention_done`(과 보존 크기)가 출력되면 통과. **근거:** 마커는 보존 로그(alerts.json)가 실제 존재할 때만 찍히므로, 미래의 조사 능력(보존)이 확보됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 크기는 환경마다 다름)
+      ```
+      alerts.json 보존 크기: 2569148 bytes (hot 계층)
+      계층: hot(즉시검색)→warm→cold. 규정: PCI 1년 최소보존. 로그 없으면 포렌식/IR 불가
+      retention_done
+      ```
+
+      ### ▷ 결과 해석
+      현재 hot 계층(즉시 검색용)에 약 2.5MB가 보존 중. 운영에선 비용 때문에 hot(최근, 빠름)→warm→
+      cold(오래됨, 저렴·느림)로 계층화한다. PCI-DSS는 최소 1년 보존을 요구한다(compliance 트랙과 연결).
     hint: '보존'
     category: report
     points: 12
@@ -228,21 +289,32 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 파이프라인 사각(blind spot) 점검
-      **실습 의미:** 수집되지 않는 소스는 탐지 불가 구간(사각)이자 공격자의 은신처다 — 수집 중인 localfile 소스를 실집계해 사각을 점검한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 7 — 파이프라인의 '사각(blind spot)'을 점검한다
+      > **이 단계에서 할 일:** 수집 중인 localfile 소스를 집계해, 여기에 없는 소스(=사각)를 점검할
+      > 기준을 세운다.
+      > **왜:** 수집되지 않는 소스는 탐지 불가 구간이자 공격자의 은신처다. '무엇을 안 보고 있나'를 아는
+      > 게 로그 엔지니어링의 핵심.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 사각 점검: 수집 중인 localfile 소스를 실집계한다 (여기 없는 소스가 사각=탐지 불가)
         L=$(grep -c "<localfile>" /var/ossec/etc/ossec.conf)
         echo "수집 소스(localfile) ${L}개 — 여기 없는 소스가 사각(blind spot)=탐지 불가"
         echo "사각 유형: 수집누락/파싱실패/NTP 시간오류/폭주유실"
-        # 수집 소스를 실집계했으면 사각 점검 마커
         [ "$L" -ge 1 ] && echo blindspot_done
       '
       ```
-      ## ✅ 합격 기준
-      `blindspot_done`(과 소스 수)가 출력되면 통과. **근거:** 마커는 수집 소스를 실집계했을 때 찍히므로, 미수집 사각(공격자 은신처)을 점검할 기준이 섰음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      수집 소스(localfile) 4개 — 여기 없는 소스가 사각(blind spot)=탐지 불가
+      사각 유형: 수집누락/파싱실패/NTP 시간오류/폭주유실
+      blindspot_done
+      ```
+
+      ### ▷ 결과 해석
+      4개 소스 밖의 로그(예: 특정 앱 로그, DNS 쿼리)는 안 보인다 = 사각. 사각은 ① 수집 누락 ② 파싱
+      실패(디코더 없음) ③ NTP 시간 오류로 상관 깨짐 ④ 폭주 시 유실로 생긴다. 이 사각을 메우는 게 다음 과제.
     hint: '사각'
     category: report
     points: 12
@@ -265,22 +337,31 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 로그 엔지니어링 보고서 작성
-      **실습 의미:** 앞 단계의 실측(localfile·디코더 수)을 인용한 보고서로 정리한다 — 좋은 탐지는 좋은 로그에서 나오므로 파이프라인 건강을 증거로 보고한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 8 — 로그 파이프라인 건강을 보고서로 남긴다
+      > **이 단계에서 할 일:** localfile 수집 소스 수와 디코더 수를 집계해, 그 실측을 인용한 보고서
+      > 골격을 출력한다.
+      > **왜:** "좋은 탐지는 좋은 로그에서 나온다." 파이프라인 건강(수집·파싱·보존·사각)을 증거로
+      > 보고해야 탐지 역량의 토대가 관리된다.
+
+      ### ▷ 그대로 입력
       ```bash
       docker exec el34-siem sh -c '
-        # 보고서 근거: localfile 수집 소스 수와 디코더 수를 실측
         L=$(grep -c "<localfile>" /var/ossec/etc/ossec.conf)
         D=$(ls /var/ossec/ruleset/decoders/ 2>/dev/null | wc -l)
-        # 실측 수치를 인용한 로그 엔지니어링 보고서 출력 (본문 상세는 학생이 보강)
         echo "# W12 로그 엔지니어링 보고서 — 수집(localfile ${L})→파싱(디코더 ${D}, srcip 분해)·정규화·보존·사각점검"
-        # 실측 인용 보고서면 완료 마커
         [ "$D" -ge 1 ] && echo logeng_report_done
       '
       ```
-      ## ✅ 합격 기준
-      `logeng_report_done` 출력 시 통과. **근거:** 마커는 실측 localfile·디코더 수를 인용한 보고서가 생성될 때만 찍히므로, 증거 기반 보고가 작성됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 수치는 환경마다 다름)
+      ```
+      # W12 로그 엔지니어링 보고서 — 수집(localfile 4)→파싱(디코더 120, srcip 분해)·정규화·보존·사각점검
+      logeng_report_done
+      ```
+
+      ### ▷ 결과 해석
+      보고서 골격이다. 제출용은 STEP 1~7의 실측(수집 소스·포맷 분포·디코더 수·필드 분해·정규화·보존
+      크기·사각 유형)을 파이프라인 5단계 표로 채우고, 사각 보완 계획을 덧붙인다.
     hint: '파이프라인+정규화+사각'
     category: report
     points: 12
