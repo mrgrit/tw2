@@ -22,17 +22,28 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 CTI 플랫폼 확인
-      **실습 의미:** CTI 실습은 외부 위협 정보를 다루는 플랫폼이 있어야 시작된다 — OpenCTI(관리)·MISP(공유) 가동을 먼저 확인한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 1 — 위협 인텔 플랫폼(OpenCTI/MISP)이 떠 있는지 확인
+      > **이 단계에서 할 일:** 실행 중 컨테이너에서 OpenCTI(인텔 관리)·MISP(인텔 공유)를 찾는다.
+      > **왜:** CTI 실습은 외부 위협 정보를 다루는 플랫폼이 있어야 시작된다. 그 두 축이 OpenCTI/MISP다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 실행 중 컨테이너 목록에서 OpenCTI/MISP를 찾아 CTI 인프라 가동을 확인한다
       docker ps --format '{{.Names}}' | grep -iE 'opencti|misp' | head
-      # 2) CTI 플랫폼 확인 마커
       echo cti_ready
       ```
-      ## ✅ 합격 기준
-      `cti_ready`(과 컨테이너명)가 출력되면 통과. **근거:** 플랫폼 컨테이너가 실제 떠 있어야 목록에 나오므로, 출력은 인텔 수집·공유 인프라가 가용함을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      el34-opencti-1
+      el34-connector-opencti-1
+      el34-misp-core-1
+      el34-misp-modules-1
+      cti_ready
+      ```
+
+      ### ▷ 결과 해석
+      OpenCTI(+connector)와 MISP(core/modules)가 떠 있으면 인텔 수집·공유 인프라 가용. 이 플랫폼들이
+      외부 위협(IOC/TTP)을 모으고, 그걸 우리 환경 탐지(STEP 4)로 잇는다.
     hint: 'OpenCTI/MISP'
     category: survey
     points: 10
@@ -51,17 +62,30 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 IOC 저장소 — Wazuh CDB list
-      **실습 의미:** 외부 IOC(악성 IP/해시/도메인)를 어디에 담아 로그와 대조하는지 확인한다 — Wazuh의 CDB list(key:value)가 그 저장소다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 2 — IOC를 담아 로그와 대조할 저장소(Wazuh CDB list)를 본다
+      > **이 단계에서 할 일:** SIEM의 /var/ossec/etc/lists/ 아래 CDB list 파일들을 나열한다.
+      > **왜:** 외부 IOC(악성 IP/해시/도메인)를 어딘가에 담아 들어오는 로그와 빠르게 대조해야 한다.
+      > Wazuh에서 그 저장소가 CDB list(key:value)다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) SIEM의 /var/ossec/etc/lists/ 아래 CDB list 파일들을 나열한다 (IOC 저장소)
       docker exec el34-siem sh -c "ls /var/ossec/etc/lists/ 2>/dev/null"
-      # 2) IOC 저장소 확인 마커
       echo cdb_listed
       ```
-      ## ✅ 합격 기준
-      `cdb_listed`(과 리스트 파일)가 출력되면 통과. **근거:** CDB list가 실제 존재한다는 뜻이라, IOC를 담아 룰의 list lookup으로 고속 매칭할 기반이 있음을 확인한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 목록은 환경마다 다름)
+      ```
+      amazon
+      audit-keys
+      audit-keys.cdb
+      security-eventchannel
+      security-eventchannel.cdb
+      cdb_listed
+      ```
+
+      ### ▷ 결과 해석
+      여기 보이는 건 Wazuh 기본 CDB list들이다(`.cdb`는 컴파일된 인덱스). 우리가 만든 IOC list도 이
+      디렉토리에 넣고 룰에서 list lookup으로 매칭한다. 즉 이 폴더가 'IOC를 꽂는 자리'다.
     hint: 'CDB list'
     category: manipulation
     points: 12
@@ -80,19 +104,27 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 IOC 살포 시뮬 (알려진 악성 도구 흔적)
-      **실습 의미:** 인텔 매칭을 검증할 대상을 만든다 — 알려진 악성 도구 UA(IOC)를 흘려 로그에 흔적을 남긴다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 3 — 인텔 매칭을 검증할 'IOC 흔적'을 만든다
+      > **이 단계에서 할 일:** 알려진 악성 도구처럼 보이는 UA(known-bad-tool)로 요청을 보내 로그에
+      > 흔적을 남기고, 그 흔적이 잡히는지 센다.
+      > **왜:** IOC 기반 탐지가 동작하는지 보려면, 먼저 'IOC가 든 로그'가 있어야 한다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 알려진 악성 도구 UA(IOC)로 요청을 보내 로그에 흔적을 남긴다
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A 'known-bad-tool/1.0' -H 'Host: dvwa.el34.lab' http://10.20.30.1/?id=ioc_test"
-      # 2) 웹 액세스 로그에서 그 UA(IOC) 흔적 건수를 센다
       docker exec el34-web sh -c "sudo tail -200 /var/log/apache2/dvwa_access.log 2>/dev/null | grep -c 'known-bad-tool' || sudo tail -200 /var/log/apache2/access.log 2>/dev/null | grep -c 'known-bad-tool'"
-      # 3) IOC 흔적 생성 마커
       echo ioc_planted
       ```
-      ## ✅ 합격 기준
-      `ioc_planted`(과 흔적 건수)가 출력되면 통과. **근거:** 악성 UA가 로그에 남았다는 뜻이라, 이 IOC가 CDB list에 있으면 매칭·격상될 대상이 실제로 생긴 것이다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      1
+      ioc_planted
+      ```
+
+      ### ▷ 결과 해석
+      액세스 로그에 'known-bad-tool' 흔적이 1건 이상이면, 이 UA가 IOC list에 등록돼 있을 때 list lookup으로
+      매칭·격상될 대상이 실제로 생긴 것. (UA는 단순 예시 IOC — 실무 IOC는 IP/해시/도메인/JA3 등 다양.)
     hint: 'known-bad UA'
     category: manipulation
     points: 14
@@ -113,17 +145,29 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 인텔 기반 탐지 (CDB 매칭)
-      **실습 의미:** 등록한 IOC가 들어오는 로그와 자동 대조돼 격상되는 흐름을 본다 — 외부 인텔이 우리 탐지로 이어지는 핵심 고리.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 4 — 외부 인텔이 우리 탐지로 이어지는 고리를 본다 (CDB 매칭)
+      > **이 단계에서 할 일:** IOC(known-bad-tool)가 든 로그를 wazuh-logtest에 넣어 디코드·룰 처리
+      > 단계가 도는지 본다.
+      > **왜:** 등록한 IOC가 들어오는 로그와 자동 대조돼 격상되는 흐름이 CTI의 핵심 — '외부에서 아는
+      > 것'을 '내가 본 것'에 붙이는 고리다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) IOC(known-bad-tool)가 든 로그를 wazuh-logtest에 넣어 디코드·룰 처리 단계를 본다 (2>&1: logtest는 stderr 출력)
       docker exec el34-siem sh -c 'echo "Jan 1 00:00:00 host suspicious activity from 10.20.30.202 tool=known-bad-tool" | /var/ossec/bin/wazuh-logtest 2>&1 | grep -iE "Phase|id:|level" | head -3'
-      # 2) logtest가 처리 단계(Phase)를 내면 인텔 기반 탐지 흐름 확인 마커 (운영에선 CDB list+field-match로 자동 매칭)
       docker exec el34-siem sh -c 'echo "Jan 1 00:00:00 host suspicious activity from 10.20.30.202 tool=known-bad-tool" | /var/ossec/bin/wazuh-logtest 2>&1 | grep -qiE "Phase" && echo intel_detect'
       ```
-      ## ✅ 합격 기준
-      `intel_detect` 출력 시 통과. **근거:** 마커는 logtest가 IOC 포함 로그를 실제 처리(Phase)했을 때만 찍히므로, CDB 등록 시 인텔 기반 자동 매칭·격상이 가능함을 보인다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      **Phase 1: Completed pre-decoding.
+      **Phase 2: Completed decoding.
+      intel_detect
+      ```
+
+      ### ▷ 결과 해석
+      logtest가 이 로그를 처리(Phase)했다 = 파이프라인을 탄다는 뜻. 이 샘플은 전용 룰이 없어 Phase 2까지만
+      보인다 — 핵심은 IOC 로그가 파이프라인에 올라온다는 것. 운영에선 여기에 IOC를 담은 CDB list +
+      field-match 룰을 더해, 'tool=known-bad-tool'이 CDB에 있으면 자동으로 고위험 격상되게 한다.
     hint: 'CDB 매칭'
     category: manipulation
     points: 14
@@ -142,17 +186,30 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 STIX/TAXII 표준
-      **실습 의미:** STIX(인텔 표준 데이터 모델)+TAXII(교환 프로토콜) 덕에 전 세계 인텔이 한 포맷으로 흐른다 — 이 표준으로 동작하는 OpenCTI/MISP 가동을 확인한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 5 — 인텔이 한 포맷으로 흐르게 하는 표준(STIX/TAXII)
+      > **이 단계에서 할 일:** STIX(인텔 표준 데이터 모델)+TAXII(교환 프로토콜)로 동작하는 OpenCTI/MISP
+      > 플랫폼 수를 세어 가동을 확인한다.
+      > **왜:** 전 세계 인텔이 제각각 포맷이면 합칠 수 없다. STIX/TAXII 표준 덕에 OpenCTI·MISP가 같은
+      > 언어로 인텔을 주고받는다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 실행 중 컨테이너에서 OpenCTI/MISP 개수(N)를 센다
       N=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -ciE "opencti|misp")
-      # 2) 플랫폼 수·이름 출력 + N≥1이면 STIX/TAXII 가동 마커
       echo "CTI 플랫폼 컨테이너(STIX/TAXII): ${N}개 가동"; docker ps --format '{{.Names}}' 2>/dev/null | grep -iE "opencti|misp" | head -3; [ "$N" -ge 1 ] && echo stix_taxii
       ```
-      ## ✅ 합격 기준
-      `stix_taxii` 출력 시 통과. **근거:** 마커는 N≥1(플랫폼이 실제 떠 있음)일 때만 찍히므로, 출력은 STIX/TAXII 기반 인텔 인프라가 동작함을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 개수는 환경마다 다름)
+      ```
+      CTI 플랫폼 컨테이너(STIX/TAXII): 4개 가동
+      el34-opencti-1
+      el34-connector-opencti-1
+      el34-misp-core-1
+      stix_taxii
+      ```
+
+      ### ▷ 결과 해석
+      플랫폼이 떠 있으면 STIX 객체(Indicator, Malware, Threat-Actor 등)를 TAXII로 받아 그래프로 엮을 수
+      있다. el34의 connector가 외부 피드(MITRE 등)를 STIX로 당겨와 OpenCTI에 적재하는 역할을 한다.
     hint: 'STIX/TAXII'
     category: analysis
     points: 12
@@ -171,15 +228,31 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 인텔 평가 (신뢰도·TLP)
-      **실습 의미:** 모든 IOC가 같지 않다 — 신뢰도·유효기간·TLP로 평가해 고신뢰만 배포해야 오탐이 안 터진다. 평가 통과 IOC가 모이는 CDB 저장소를 확인한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 6 — 모든 IOC가 같지 않다: 신뢰도·TLP로 평가한다
+      > **이 단계에서 할 일:** 평가를 통과한 IOC가 모이는 CDB 저장소를 나열·집계해 '배포 위치'를 확인한다.
+      > **왜:** 저신뢰 IOC를 그대로 배포하면 오탐이 터진다. 신뢰도·유효기간·TLP(공유 범위)로 평가해
+      > 고신뢰만 골라 배포해야 한다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) SIEM의 CDB 리스트를 나열하고 개수(N)를 세어 IOC 배포 위치를 확인한다 (평가 통과 IOC만 여기 배포)
       docker exec el34-siem sh -c 'echo "Wazuh CDB IOC 리스트(/var/ossec/etc/lists/):"; ls /var/ossec/etc/lists/ 2>/dev/null | head; N=$(ls /var/ossec/etc/lists/ 2>/dev/null | wc -l); echo "CDB 리스트 ${N}개 — 평가 통과한 IOC만 여기 배포"; [ "$N" -ge 0 ] && echo intel_evaluated'
       ```
-      ## ✅ 합격 기준
-      `intel_evaluated`(과 리스트 수)가 출력되면 통과. **근거:** CDB 저장소가 실제 확인됐다는 뜻이라, 평가 통과한 고신뢰 IOC만 골라 배포하는 운영 기반이 있음을 보인다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 수는 환경마다 다름)
+      ```
+      Wazuh CDB IOC 리스트(/var/ossec/etc/lists/):
+      amazon
+      audit-keys
+      audit-keys.cdb
+      security-eventchannel
+      security-eventchannel.cdb
+      CDB 리스트 5개 — 평가 통과한 IOC만 여기 배포
+      intel_evaluated
+      ```
+
+      ### ▷ 결과 해석
+      평가 흐름: 수집한 IOC를 신뢰도(소스 평판)·유효기간(만료)·TLP(RED/AMBER/GREEN/CLEAR 공유 범위)로
+      거른 뒤, 통과한 것만 이 CDB 폴더에 배포한다. TLP는 '이 정보를 누구와 공유해도 되나'의 표식이다.
     hint: '신뢰도/TLP'
     category: analysis
     points: 12
@@ -196,17 +269,29 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 인텔 운영 루프 (IOC 배포)
-      **실습 의미:** CTI는 일회성이 아니라 수집→평가→배포→탐지→환류의 순환이다 — 그 중 '배포' 단계를 직접 수행해 IOC를 CDB 형식으로 만든다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 7 — CTI 운영 루프의 '배포' 단계를 직접 한다
+      > **이 단계에서 할 일:** 평가 통과 IOC를 CDB key:value(IP:라벨) 형식으로 작성해 배포 단계를
+      > 시연한 뒤 정리한다.
+      > **왜:** CTI는 일회성이 아니라 '수집→평가→배포→탐지→환류'의 순환이다. 그중 배포는 IOC를 탐지
+      > 엔진이 읽는 형식(CDB)으로 떨구는 단계.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 평가 통과 IOC를 CDB key:value(IP:라벨) 형식으로 작성한다 (배포 단계)
       docker exec el34-siem sh -c 'echo "10.20.30.202:malicious_scanner" > /tmp/ioc05.cdb'
-      # 2) 배포된 IOC를 확인하고, 형식이 맞으면 운영 루프 배포 단계 마커 + self-clean
       docker exec el34-siem sh -c 'echo "배포된 IOC(CDB key:value):"; cat /tmp/ioc05.cdb; grep -q "malicious" /tmp/ioc05.cdb && echo "수집→평가→배포(CDB)→탐지→환류 루프의 배포 단계 실행" && echo cti_loop_done; rm -f /tmp/ioc05.cdb'
       ```
-      ## ✅ 합격 기준
-      `cti_loop_done` 출력 시 통과. **근거:** 마커는 CDB 형식 IOC가 실제 작성됐을 때만 찍히므로, 출력은 수집~환류 루프의 배포 단계가 실행됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      배포된 IOC(CDB key:value):
+      10.20.30.202:malicious_scanner
+      수집→평가→배포(CDB)→탐지→환류 루프의 배포 단계 실행
+      cti_loop_done
+      ```
+
+      ### ▷ 결과 해석
+      `IP:라벨` 한 줄이 CDB 형식의 IOC다. 실제 배포는 이 파일을 /var/ossec/etc/lists/에 두고 ossec.conf에
+      등록 후 룰에서 list lookup으로 매칭한다. (여기선 형식 시연 후 self-clean으로 삭제 — 공유 SIEM 보존.)
     hint: 'CTI 루프'
     category: report
     points: 12
@@ -225,21 +310,28 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 CTI 보고서 작성
-      **실습 의미:** 앞 단계의 실측(플랫폼·CDB 수)을 인용한 보고서로 정리한다 — 추측이 아닌 가동 현황을 근거로 인텔 운영을 보고한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 8 — 인텔 운영 현황을 보고서로 남긴다
+      > **이 단계에서 할 일:** CTI 플랫폼 수와 CDB 리스트 수를 집계해, 그 실측을 인용한 보고서 골격을
+      > 출력한다.
+      > **왜:** 인텔 운영도 '가동 현황'이라는 사실을 근거로 보고해야 신뢰받는다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) CTI 플랫폼 수(P)를 집계한다 (보고서 인용 근거 ①)
       P=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -ciE "opencti|misp")
-      # 2) CDB 리스트 수(L)를 집계한다 (보고서 인용 근거 ②)
       L=$(docker exec el34-siem sh -c 'ls /var/ossec/etc/lists/ 2>/dev/null | wc -l')
-      # 3) 실측 수치를 인용한 CTI 보고서 출력 (본문 상세는 학생이 보강)
       echo "# W05 CTI 보고서 — 플랫폼 ${P}개·CDB ${L}개·STIX/TAXII·신뢰도/TLP·운영 루프(수집→평가→배포→탐지→환류)"
-      # 4) 플랫폼 1개 이상 실측 인용이면 완료 마커
       [ "$P" -ge 1 ] && echo cti_report_done
       ```
-      ## ✅ 합격 기준
-      `cti_report_done` 출력 시 통과. **근거:** 실측 플랫폼/CDB 수를 인용한 보고서가 생성될 때만 마커가 찍히므로, 출력은 증거 기반 보고가 작성됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 수치는 환경마다 다름)
+      ```
+      # W05 CTI 보고서 — 플랫폼 4개·CDB 5개·STIX/TAXII·신뢰도/TLP·운영 루프(수집→평가→배포→탐지→환류)
+      cti_report_done
+      ```
+
+      ### ▷ 결과 해석
+      보고서 한 줄 골격이다. 제출용은 STEP 1~7의 구체값(플랫폼 가동, CDB 저장소, IOC 살포/매칭, STIX/TLP
+      평가, 배포 루프)과 인텔 출처·신뢰도 표를 본문으로 채운다.
     hint: '플랫폼+IOC+루프'
     category: report
     points: 14
