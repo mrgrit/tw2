@@ -22,17 +22,24 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 YARA 엔진 가용 확인
-      **실습 의미:** 악성코드 시그니처 탐지를 시작하려면 YARA 엔진이 있어야 한다 — 먼저 도구 가용성부터 확인한다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 1 — 악성코드 시그니처 엔진(YARA)이 있는지 확인
+      > **이 단계에서 할 일:** 공격자 컨테이너에서 yara 버전을 출력해 엔진이 설치돼 있는지 본다.
+      > **왜:** 이번 주는 파일·메모리에서 악성코드를 '문자열/패턴 시그니처'로 잡는다. 그 엔진이 YARA다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 공격자 컨테이너에서 yara 버전을 출력해 엔진 설치를 확인한다
       docker exec el34-attacker sh -c "yara --version"
-      # 2) 엔진 가용 확인 마커
       echo yara_ready
       ```
-      ## ✅ 합격 기준
-      `yara_ready` 출력 시 통과. **근거:** yara --version이 성공해야 마커가 찍히므로, 출력은 탐지 엔진이 준비됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      4.1.3
+      yara_ready
+      ```
+
+      ### ▷ 결과 해석
+      버전(4.1.3)이 찍히면 엔진 준비 완료. 이제 룰을 만들고(STEP 2) 악성/정상 파일에 스캔한다(STEP 3~4).
     hint: 'yara version'
     category: survey
     points: 10
@@ -51,19 +58,33 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 YARA 룰 구조 작성 (strings/condition)
-      **실습 의미:** YARA 룰은 strings(찾을 문자열/바이트)+condition(조합 논리)로 구성된다 — 웹셸 특징을 잡는 룰을 직접 열어 구조를 익힌다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 2 — YARA 룰의 2대 구조를 만들고 읽는다 (strings/condition)
+      > **이 단계에서 할 일:** 웹셸 탐지 룰을 만들고(base64 디코드) 본문을 출력해 'strings(찾을 패턴)+
+      > condition(조합 논리)' 구조를 익힌 뒤 정리한다.
+      > **왜:** 이 두 칸이 YARA의 핵심. 어떤 문자열을 어떻게 조합해 '악성'으로 판정할지가 여기서 정해진다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 웹셸 탐지 YARA 룰을 생성한다 (base64 디코드 → strings: system($_GET·<?php / condition: 둘 다 AND)
       docker exec el34-attacker sh -c 'echo cnVsZSB3ZWJzaGVsbF9waHAgewogIHN0cmluZ3M6CiAgICAkc2hlbGwgPSAic3lzdGVtKCRfR0VUIgogICAgJHRhZyA9ICI8P3BocCIKICBjb25kaXRpb246CiAgICAkc2hlbGwgYW5kICR0YWcKfQo= | base64 -d > /tmp/sa04.yar'
-      # 2) 생성한 룰 본문을 출력해 strings/condition 구조를 확인한다
       docker exec el34-attacker sh -c 'cat /tmp/sa04.yar'
-      # 3) 룰 파일 정리(self-clean)
       docker exec el34-attacker sh -c 'rm -f /tmp/sa04.yar'
       ```
-      ## ✅ 합격 기준
-      `condition`(섹션)이 출력되면 통과. **근거:** 룰 본문이 실제 출력됐다는 뜻이라, YARA의 핵심 구성(특징 문자열+조합 논리)을 파악한 것이다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      rule webshell_php {
+        strings:
+          $shell = "system($_GET"
+          $tag = "<?php"
+        condition:
+          $shell and $tag
+      }
+      ```
+
+      ### ▷ 결과 해석
+      `strings`에 웹셸 특징 두 개($shell=`system($_GET`, $tag=`<?php`)를 정의하고, `condition`에서
+      둘 다(AND) 있어야 매칭. 'AND'라서 둘 중 하나만 있는 정상 파일은 안 걸린다(오탐↓). (룰 파일은 보고
+      나서 self-clean으로 지운다.)
     hint: 'strings/condition'
     category: manipulation
     points: 14
@@ -84,21 +105,26 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 웹셸 샘플 탐지 (진탐)
-      **실습 의미:** 작성한 룰이 진짜 악성을 잡는지 검증한다 — 웹셸 샘플을 YARA로 스캔해 매칭(탐지)이 나는지로 진탐 능력을 확인.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 3 — 진짜 악성(웹셸)을 잡는지 검증한다 (진탐)
+      > **이 단계에서 할 일:** 룰을 만들고, 악성 웹셸 샘플을 만들어, yara로 스캔해 매칭이 나는지 본다.
+      > **왜:** 룰을 썼다고 끝이 아니다. 진짜 악성 샘플에 매칭(진탐)되는지 확인해야 쓸 수 있는 룰이다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 웹셸 탐지 룰 생성
       docker exec el34-attacker sh -c 'echo cnVsZSB3ZWJzaGVsbF9waHAgewogIHN0cmluZ3M6CiAgICAkc2hlbGwgPSAic3lzdGVtKCRfR0VUIgogICAgJHRhZyA9ICI8P3BocCIKICBjb25kaXRpb246CiAgICAkc2hlbGwgYW5kICR0YWcKfQo= | base64 -d > /tmp/sa04.yar'
-      # 2) 악성 웹셸 샘플 생성 (system($_GET[c]) 백도어)
       docker exec el34-attacker sh -c 'echo PD9waHAgc3lzdGVtKCRfR0VUWyJjIl0pOyBlY2hvICJvayI7ID8+Cg== | base64 -d > /tmp/sa04_shell.php'
-      # 3) yara <룰> <파일>로 스캔 → 매칭 시 "webshell_php <경로>" 출력
       docker exec el34-attacker sh -c 'yara /tmp/sa04.yar /tmp/sa04_shell.php'
-      # 4) 샘플·룰 정리(self-clean)
       docker exec el34-attacker sh -c 'rm -f /tmp/sa04.yar /tmp/sa04_shell.php'
       ```
-      ## ✅ 합격 기준
-      `webshell_php`(매칭)가 출력되면 통과. **근거:** YARA가 샘플에서 룰을 매칭했다는 뜻이라, 룰이 실제 악성을 탐지하는 진탐 능력이 입증된다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      webshell_php /tmp/sa04_shell.php
+      ```
+
+      ### ▷ 결과 해석
+      `webshell_php <파일경로>` = 그 파일이 룰에 매칭됐다는 뜻(=탐지 성공, 진탐). 샘플은 `system($_GET[c])`
+      백도어라 두 문자열을 모두 갖는다. (샘플·룰은 self-clean으로 삭제.)
     hint: 'yara 스캔 매칭'
     category: manipulation
     points: 16
@@ -121,21 +147,26 @@ steps:
 
   - order: 4
     instruction: |
-      ## 🎯 정상 파일 미탐 (오탐 0)
-      **실습 의미:** 좋은 룰은 악성은 잡고 정상은 안 잡는다 — 정상 PHP를 스캔해 매칭이 없어야(오탐 0) 운영에 쓸 수 있다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 4 — 정상 파일은 안 잡는지 검증한다 (오탐 0)
+      > **이 단계에서 할 일:** 정상 PHP(phpinfo만)를 같은 룰로 스캔해, 매칭이 '안' 나는지 본다.
+      > **왜:** 좋은 룰은 악성은 잡고(진탐) 정상은 안 잡는다(오탐 0). 오탐이 많으면 운영에서 결국 무시당한다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 웹셸 탐지 룰 생성
       docker exec el34-attacker sh -c 'echo cnVsZSB3ZWJzaGVsbF9waHAgewogIHN0cmluZ3M6CiAgICAkc2hlbGwgPSAic3lzdGVtKCRfR0VUIgogICAgJHRhZyA9ICI8P3BocCIKICBjb25kaXRpb246CiAgICAkc2hlbGwgYW5kICR0YWcKfQo= | base64 -d > /tmp/sa04.yar'
-      # 2) 정상 PHP 파일 생성 (phpinfo만, 악성 아님)
       docker exec el34-attacker sh -c 'echo ZWNobyAidGhpcyBpcyBhIG5vcm1hbCBwaHAgZmlsZSI7IHBocGluZm8oKTsK | base64 -d > /tmp/sa04_ok.php'
-      # 3) 정상 파일 스캔 → 매칭 없으면 yara는 아무 줄도 안 찍음, 이어 no_false_positive 출력
       docker exec el34-attacker sh -c 'yara /tmp/sa04.yar /tmp/sa04_ok.php; echo no_false_positive'
-      # 4) 정리(self-clean)
       docker exec el34-attacker sh -c 'rm -f /tmp/sa04.yar /tmp/sa04_ok.php'
       ```
-      ## ✅ 합격 기준
-      매칭 줄 없이 `no_false_positive`만 출력되면 통과. **근거:** 정상 파일에 룰이 안 걸렸다는 뜻이라, 진탐(3단계)과 함께 오탐 0의 균형 잡힌 룰임이 입증된다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      no_false_positive
+      ```
+
+      ### ▷ 결과 해석
+      매칭 줄(`webshell_php ...`) 없이 `no_false_positive`만 찍히면 = 정상 파일에 안 걸렸다는 뜻(오탐 0).
+      정상 PHP엔 `system($_GET`가 없어 AND condition이 성립 안 한다. 진탐(STEP 3)+오탐0(여기)이 룰 품질.
     hint: '오탐 0'
     category: manipulation
     points: 12
@@ -158,19 +189,28 @@ steps:
 
   - order: 5
     instruction: |
-      ## 🎯 메모리/디렉토리 스캔
-      **실습 의미:** YARA는 파일뿐 아니라 디렉토리 재귀(-r)·실행 중 프로세스 메모리(-p PID)도 스캔한다 — 디스크에 없는 파일리스 악성코드를 메모리에서 잡기 위함.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 5 — 파일 하나를 넘어 디렉토리·메모리까지 스캔한다
+      > **이 단계에서 할 일:** yara -r 로 /tmp 디렉토리를 재귀 스캔한다(-p PID를 쓰면 프로세스 메모리).
+      > **왜:** 악성코드는 한 파일에만 있지 않다. 디렉토리 전체, 나아가 디스크에 없는 '파일리스'는
+      > 메모리(-p)에서 잡아야 한다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 웹셸 탐지 룰 생성
       docker exec el34-attacker sh -c 'echo cnVsZSB3ZWJzaGVsbF9waHAgewogIHN0cmluZ3M6CiAgICAkc2hlbGwgPSAic3lzdGVtKCRfR0VUIgogICAgJHRhZyA9ICI8P3BocCIKICBjb25kaXRpb246CiAgICAkc2hlbGwgYW5kICR0YWcKfQo= | base64 -d > /tmp/sa04.yar'
-      # 2) yara -r 로 /tmp 디렉토리를 재귀 스캔한다 (-p PID를 쓰면 프로세스 메모리 스캔)
       docker exec el34-attacker sh -c 'yara -r /tmp/sa04.yar /tmp 2>/dev/null; echo dir_scanned'
-      # 3) 정리(self-clean)
       docker exec el34-attacker sh -c 'rm -f /tmp/sa04.yar'
       ```
-      ## ✅ 합격 기준
-      `dir_scanned` 출력 시 통과. **근거:** 재귀 스캔이 실제 수행됐다는 뜻이라, 파일 단위를 넘어 디렉토리·메모리까지 탐지 범위를 넓힐 수 있음이 확인된다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      webshell_php /tmp/sa04.yar
+      dir_scanned
+      ```
+
+      ### ▷ 결과 해석
+      `-r`로 /tmp 아래 모든 파일을 검사했다. (재미있는 점: 룰 파일 자체가 `system($_GET`·`<?php` 문자열을
+      담고 있어 룰이 '자기 자신'을 매칭한다 — 그래서 sa04.yar가 잡힌다. 운영에선 룰 디렉토리를 스캔
+      대상에서 제외한다.) `-p <PID>`로 바꾸면 그 프로세스의 메모리를 스캔한다.
     hint: 'yara -r / -p'
     category: analysis
     points: 12
@@ -191,21 +231,30 @@ steps:
 
   - order: 6
     instruction: |
-      ## 🎯 탐지 파이프라인 통합
-      **실습 의미:** YARA는 단독이 아니라 업로드 디렉토리·FIM 트리거 스캔→Wazuh 경보로 엮어야 자동 탐지가 된다 — 업로드 폴더 재귀 스캔으로 그 한 토막을 시연.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 6 — YARA를 자동 탐지 파이프라인에 끼운다
+      > **이 단계에서 할 일:** 업로드 폴더에 웹셸을 떨구고(업로드 공격 모사), 그 폴더를 재귀 스캔해
+      > 매칭되면 '경보 파이프라인' 한 토막을 시연한다.
+      > **왜:** YARA는 단독 명령이 아니라 '업로드/FIM 트리거 → 스캔 → Wazuh 경보'로 엮여야 자동 탐지가 된다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 업로드 폴더를 만들고 웹셸을 떨군다 (업로드 공격 모사)
       docker exec el34-attacker sh -c 'mkdir -p /tmp/y4; echo PD9waHAgc3lzdGVtKCRfR0VUWyJjIl0pOyA/Pgo= | base64 -d > /tmp/y4/upload_shell.php'
-      # 2) 탐지 룰 생성
       docker exec el34-attacker sh -c 'echo cnVsZSB3ZWJzaGVsbF9waHAgewogIHN0cmluZ3M6CiAgICAkc2hlbGwgPSAic3lzdGVtKCRfR0VUIgogICAgJHRhZyA9ICI8P3BocCIKICBjb25kaXRpb246CiAgICAkc2hlbGwgYW5kICR0YWcKfQo= | base64 -d > /tmp/y4.yar'
-      # 3) 업로드 디렉토리 재귀 스캔 → 웹셸 매칭되면 경보 파이프라인 마커
       docker exec el34-attacker sh -c 'echo "업로드 디렉토리 재귀 YARA 스캔:"; yara -r /tmp/y4.yar /tmp/y4 2>/dev/null; yara -r /tmp/y4.yar /tmp/y4 2>/dev/null | grep -q webshell_php && echo "웹셸 매칭→Wazuh 경보 파이프라인" && echo pipeline_done'
-      # 4) 정리(self-clean)
       docker exec el34-attacker sh -c 'rm -rf /tmp/y4 /tmp/y4.yar'
       ```
-      ## ✅ 합격 기준
-      `pipeline_done` 출력 시 통과. **근거:** 마커는 업로드 폴더 재귀 스캔이 웹셸을 실제 매칭했을 때만 찍히므로, 출력은 자동 탐지 파이프라인이 동작함을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      업로드 디렉토리 재귀 YARA 스캔:
+      webshell_php /tmp/y4/upload_shell.php
+      웹셸 매칭→Wazuh 경보 파이프라인
+      pipeline_done
+      ```
+
+      ### ▷ 결과 해석
+      업로드된 웹셸이 재귀 스캔에 매칭되면, 운영에선 그 결과를 Wazuh 경보로 보내 자동 대응(격리/삭제)에
+      건다. 여기선 그 사슬의 '탐지' 토막을 실제로 돌려본 것. (폴더·룰은 self-clean.)
     hint: 'YARA 통합'
     category: report
     points: 12
@@ -228,21 +277,35 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 룰 정교화 (회피 대응)
-      **실습 의미:** 공격자는 문자열을 변형해 단순 룰을 회피한다 — 다중 문자열 AND 조합으로 룰을 정교화해 회피에 견디게 한다(단 너무 넓히면 오탐↑).
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 7 — 회피에 견디게 룰을 정교화한다 (다중 문자열 AND)
+      > **이 단계에서 할 일:** 다중 문자열을 AND로 묶은 룰로 웹셸을 다시 스캔해, 여전히 진탐되는지 본다.
+      > **왜:** 공격자는 문자열을 변형해 단순 룰을 회피한다. 여러 특징을 AND로 묶으면 회피에 더 견딘다
+      > (단 너무 넓히면 오탐↑ — 균형이 핵심).
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 다중 문자열 AND condition 정교화 룰 생성
       docker exec el34-attacker sh -c 'echo cnVsZSB3ZWJzaGVsbF9waHAgewogIHN0cmluZ3M6CiAgICAkc2hlbGwgPSAic3lzdGVtKCRfR0VUIgogICAgJHRhZyA9ICI8P3BocCIKICBjb25kaXRpb246CiAgICAkc2hlbGwgYW5kICR0YWcKfQo= | base64 -d > /tmp/y4r.yar'
-      # 2) 룰 본문(다중 문자열 shell+tag, AND) 앞부분 확인
       docker exec el34-attacker sh -c 'echo "정교화 룰(다중 문자열 shell+tag, AND condition):"; head -6 /tmp/y4r.yar'
-      # 3) 웹셸 샘플 생성 후 스캔 → 여전히 진탐되면 마커
       docker exec el34-attacker sh -c 'echo PD9waHAgc3lzdGVtKCRfR0VUWyJjIl0pOyA/Pgo= | base64 -d > /tmp/y4r.php; yara /tmp/y4r.yar /tmp/y4r.php 2>/dev/null | grep -q webshell_php && echo "다중 문자열 AND 룰 진탐 성공" && echo rule_refined'
-      # 4) 정리(self-clean)
       docker exec el34-attacker sh -c 'rm -f /tmp/y4r.yar /tmp/y4r.php'
       ```
-      ## ✅ 합격 기준
-      `rule_refined` 출력 시 통과. **근거:** 다중 문자열 AND 룰이 샘플을 실제 매칭했다는 뜻이라, 회피에 견디는 정교한 룰이 동작함이 입증된다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      정교화 룰(다중 문자열 shell+tag, AND condition):
+      rule webshell_php {
+        strings:
+          $shell = "system($_GET"
+          $tag = "<?php"
+        condition:
+          $shell and $tag
+      다중 문자열 AND 룰 진탐 성공
+      rule_refined
+      ```
+
+      ### ▷ 결과 해석
+      두 문자열을 AND로 묶은 룰이 웹셸을 여전히 잡는다. 실무 정교화는 여기에 nocase·정규식·바이트
+      패턴·파일 크기 조건 등을 더해 변형까지 잡되, 오탐이 늘지 않게 condition을 좁힌다.
     hint: '회피 대응'
     category: analysis
     points: 12
@@ -265,19 +328,26 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 YARA 탐지 보고서 작성
-      **실습 의미:** 앞 단계의 실측 매칭 결과를 인용한 보고서로 정리한다 — 진탐/오탐 균형과 통합을 추적 가능한 형태로 남긴다.
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## STEP 8 — YARA 탐지 결과를 보고서로 남긴다
+      > **이 단계에서 할 일:** 웹셸 매칭 건수를 집계해, 그 실측을 인용한 보고서 골격을 출력한다.
+      > **왜:** 진탐/오탐 균형과 통합 결과를 추적 가능하게 남겨야 다음 룰 개선의 근거가 된다.
+
+      ### ▷ 그대로 입력
       ```bash
-      # 1) 룰·웹셸 샘플 생성 (보고서 근거 수집용)
       docker exec el34-attacker sh -c 'echo cnVsZSB3ZWJzaGVsbF9waHAgewogIHN0cmluZ3M6CiAgICAkc2hlbGwgPSAic3lzdGVtKCRfR0VUIgogICAgJHRhZyA9ICI8P3BocCIKICBjb25kaXRpb246CiAgICAkc2hlbGwgYW5kICR0YWcKfQo= | base64 -d > /tmp/y4rp.yar; echo PD9waHAgc3lzdGVtKCRfR0VUWyJjIl0pOyA/Pgo= | base64 -d > /tmp/y4rp.php'
-      # 2) 매칭 건수(M)를 집계해 실측 인용 보고서 출력 → M≥1이면 완료 마커
       docker exec el34-attacker sh -c 'M=$(yara /tmp/y4rp.yar /tmp/y4rp.php 2>/dev/null | grep -c webshell_php); echo "# W04 YARA 보고서 — 진탐(매칭 ${M}건)/오탐0·재귀스캔·파이프라인/정교화"; [ "$M" -ge 1 ] && echo yara_report_done'
-      # 3) 정리(self-clean)
       docker exec el34-attacker sh -c 'rm -f /tmp/y4rp.yar /tmp/y4rp.php'
       ```
-      ## ✅ 합격 기준
-      `yara_report_done` 출력 시 통과. **근거:** 실측 매칭 건수(M≥1)를 인용한 보고서가 생성될 때만 마커가 찍히므로, 출력은 증거 기반 보고가 작성됐음을 뜻한다.
+
+      ### ▷ 이렇게 나오면 정상 (실측 예)
+      ```
+      # W04 YARA 보고서 — 진탐(매칭 1건)/오탐0·재귀스캔·파이프라인/정교화
+      yara_report_done
+      ```
+
+      ### ▷ 결과 해석
+      매칭 1건을 인용한 보고서 골격이다. 제출용은 STEP 3~7의 구체 결과(진탐 파일, 오탐0 확인, 재귀/메모리
+      스캔, 파이프라인 매칭, 정교화 룰)와 운영 권고(룰 디렉토리 제외 등)를 본문으로 채운다.
     hint: '진탐/오탐+스캔+통합'
     category: report
     points: 12
