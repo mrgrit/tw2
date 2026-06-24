@@ -40,24 +40,28 @@ steps:
       분석가는 사건을 파기 전에 항상 데이터 소스·도구의 가용성부터 확인한다. 죽은 도구가 보는 단면은
       애초에 분석 범위에서 빠지므로, 시작부터 무엇을 볼 수 있고 없는지 정확히 알아야 한다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) SIEM 평결 엔진 analysisd 가동(심장)
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
-      docker exec el34-web osqueryi --version; docker exec el34-ips sh -c 'suricata -V 2>/dev/null | head -1'
+      # 2) 호스트 헌팅 도구 osquery 버전(가동 여부)
+      docker exec el34-web osqueryi --version
+      # 3) 네트워크 IDS Suricata 버전
+      docker exec el34-ips sh -c 'suricata -V 2>/dev/null | head -1'
       ```
-      - `wazuh-control status | grep analysisd` — SIEM 의 평결 엔진(심장) analysisd 가 running 인지.
-      - `osqueryi --version` — 호스트 헌팅 도구 osquery 의 버전(가동 여부).
-      - `suricata -V` — 네트워크 IDS Suricata 의 버전.
 
       ## ✅ 합격 기준
-      analysisd 가 running 이고 osquery·Suricata 가 버전을 응답한다(SIEM/osquery/Suricata 전 도구 준비).
-      셋 중 하나라도 응답이 없으면 그 단계는 분석/대응 불가 — 먼저 원인부터 파악한다.
+      `5.23` 출력 시 통과. **근거:** analysisd 가 running 이고 osquery·Suricata 가 버전을 응답하면
+      SIEM/osquery/Suricata 전 도구가 준비된 것 — 셋 중 하나라도 없으면 그 단계는 분석/대응 불가다.
     hint: 'analysisd + osquery + suricata'
     category: survey
     points: 8
     answer: |
+      # 1) SIEM 평결 엔진 analysisd 가동(심장)
       docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      # 2) 호스트 헌팅 도구 osquery 버전(가동 여부)
       docker exec el34-web osqueryi --version
+      # 3) 네트워크 IDS Suricata 버전
       docker exec el34-ips sh -c 'suricata -V 2>/dev/null | head -1'
     answer_detail: "SOC 전 도구 점검 — SIEM(Wazuh analysisd) 분석/평결, osquery 호스트 헌팅, Suricata 네트워크. APT 4 단계를 끊을 도구가 전부 살아 있어야 분석·대응이 가능하다. 채점은 osquery 버전 문자열(5.23)이 출력에 보이는지로 도구 가용을 확인한다."
     verify:
@@ -81,34 +85,38 @@ steps:
       인증은 auth.log, 발판은 호스트(osquery). el34 가 SNAT 를 안 하므로 네 흔적의 출처가 모두
       10.20.30.202 로 보존된다(이것이 뒤의 교차 상관을 가능하게 한다).
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1'
+      # 1) ① 정찰 — SYN 포트 스캔(T1046)
+      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      # 2) ② 웹 익스플로잇 — sqlmap UA + SQLi(T1190, 공격 마커 aptsoc)
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=aptsoc%27%20UNION%20SELECT%201--%20-\""
+      # 3) ③ 인증 공격 — 여러 계정 SSH 무차별 대입(T1110)
       for u in root admin oracle; do ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 $u@127.0.0.1 exit 2>/dev/null; done
+      # 4) ④ 호스트 발판 — 백도어 계정 socw15bd 생성(T1136, 침투 성공 흔적)
       docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; useradd -m -s /bin/bash socw15bd; echo planted'
+      # 5) SIEM 적재 대기 후 완료 마커
+      sleep 6
       echo "apt campaign done"
       ```
-      - `nmap -sS -p 20-120 -T4` — ① 정찰(T1046). SYN 스캔으로 fw(10.20.30.1)의 열린 포트를 훑는다.
-      - `curl -A sqlmap/1.7 ... UNION SELECT` — ② 웹 익스플로잇(T1190). 스캐너 UA + SQLi 페이로드를 차단 모드 vhost(dvwa.el34.lab)로. 공격 마커는 `aptsoc`.
-      - `for u in root admin oracle; ssh ...` — ③ 인증 공격(T1110). 여러 계정에 SSH 무차별 대입 → auth.log 에 Invalid user 다발.
-      - `useradd -m -s /bin/bash socw15bd` — ④ 호스트 발판(T1136). 백도어 계정 생성(= 침투 성공의 흔적). 다음 헌팅·제거 미션의 대상.
+      - `nmap -sS`=SYN(half-open) 스캔, `-T4`=빠른 타이밍. `curl -A`=UA 지정. `ssh -o BatchMode=yes`=프롬프트 없이 즉시 실패(시도 흔적만). `useradd`=침투 성공의 호스트 흔적.
 
       ## ✅ 합격 기준
-      네 단계가 순서대로 실행되고 `apt campaign done` 이 출력된다. 단계가 빠지면 이후 그 소스 분석에서
-      흔적이 안 보이므로 재현부터 다시 한다.
-
-      ## 처음 나오는 옵션 풀이
-      `nmap -sS`=SYN(half-open) 스캔, `-T4`=빠른 타이밍. `curl -A`=User-Agent 지정, `-o /dev/null`=본문
-      버림(응답코드만). `ssh -o BatchMode=yes`=비밀번호 프롬프트 없이(실패 보장으로 시도 흔적만 남김).
+      `done` 출력 시 통과. **근거:** 네 단계가 순서대로 실행되고 apt campaign done 이 나오면 통과 —
+      단계가 빠지면 이후 그 소스 분석에서 흔적이 안 보이므로 재현부터 다시 한다.
     hint: 'nmap+웹+ssh브루트+백도어계정'
     category: recon
     points: 10
     answer: |
+      # 1) ① 정찰 — SYN 포트 스캔(T1046)
       docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      # 2) ② 웹 익스플로잇 — sqlmap UA + SQLi(T1190, 공격 마커 aptsoc)
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=aptsoc%27%20UNION%20SELECT%201--%20-\""
+      # 3) ③ 인증 공격 — 여러 계정 SSH 무차별 대입(T1110)
       for u in root admin oracle; do ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 $u@127.0.0.1 exit 2>/dev/null; done
+      # 4) ④ 호스트 발판 — 백도어 계정 socw15bd 생성(T1136, 침투 성공 흔적)
       docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; useradd -m -s /bin/bash socw15bd; echo planted'
+      # 5) SIEM 적재 대기 후 완료 마커
       sleep 6
       echo "apt campaign done"
     answer_detail: "APT 4 단계 재현 — 정찰(nmap, T1046) → 웹침투(sqlmap UA + SQLi, T1190) → 인증(SSH 무차별 대입, T1110) → 발판(백도어 계정 socw15bd, T1136). 한 출처(10.20.30.202)가 네 소스(네트워크·웹·인증·호스트)에 흔적을 남긴다. 끝에 sleep 6 은 SIEM(Wazuh)이 경보를 적재할 시간을 준 뒤 done 을 출력하기 위함. 채점은 출력에 'done' 이 보이는지로 4 단계 재현 완료를 확인한다. 이 흔적들이 이후 트리아지·교차 분석·격리·제거의 원천이다."
@@ -134,22 +142,24 @@ steps:
       단발 정찰은 P3 이지만, 같은 출처가 정찰→침투→인증→발판까지 갔다면 진행형 침해다. 특히 백도어 계정
       (socw15bd)이 심겼다는 것은 **침투 성공의 확정 증거**이므로 이 캠페인은 **P1**이다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) alerts.json 최근 500줄에서 출처 10.20.30.202 경보의 시그니처/심각도 추출(4요소)
       docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -c "select(.data.src_ip==\"10.20.30.202\")|{sig:.rule.description,level:.rule.level}" | tail -5'
+      # 2) 판정 — 출발지 10.20.30.202, 다단계, 발판=침투성공 → P1
+      echo "→ 출발지 10.20.30.202, 다단계, 발판=침투성공 → P1"
       ```
-      - `alerts.json` 의 최근 500 줄에서 출처 `10.20.30.202` 만 골라(`select`), 시그니처(`rule.description`)와
-        심각도(`rule.level`)를 뽑는다 — 4요소 중 출발지·시그니처·심각도를 한 번에 본다(시각은 timestamp).
 
       ## ✅ 합격 기준
-      출처 10.20.30.202 의 다단계 경보가 보이고, 발판=침투 성공을 근거로 **P1**로 판정한다(경보를 4요소로
-      트리아지하고 우선순위를 매긴다). 출처 경보가 비어 있으면 미션 2 의 재현이나 agent 연결을 점검한다.
+      `10.20.30.202` 출력 시 통과. **근거:** 출처 10.20.30.202 의 다단계 경보가 보이고 발판=침투 성공을
+      근거로 P1 로 판정하면 통과 — 출처 경보가 비면 미션 2 의 재현이나 agent 연결을 점검한다.
     hint: 'alerts.json src .202 시그니처/level'
     category: analysis
     points: 10
     answer: |
-      echo "=== 트리아지 (4요소) ==="
+      # 1) alerts.json 최근 500줄에서 출처 10.20.30.202 경보의 시그니처/심각도 추출(4요소)
       docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -c "select(.data.src_ip==\"10.20.30.202\")|{sig:.rule.description,level:.rule.level}" | tail -5'
+      # 2) 판정 — 출발지 10.20.30.202, 다단계, 발판=침투성공 → P1
       echo "→ 출발지 10.20.30.202, 다단계, 발판=침투성공 → P1"
     answer_detail: "트리아지 = 4요소(출발지 10.20.30.202 / 시그니처 / 시각 / 심각도 level) + 진행 단계로 우선순위 결정. 단발 정찰은 P3 이지만 정찰→침투→인증→발판까지 진행했고 백도어 계정(socw15bd)이 심겨 침투 성공이 확정되므로 P1 이다. 채점은 출력에 출발지 10.20.30.202 가 보이는지로 트리아지 대상이 식별됐음을 확인한다."
     verify:
@@ -173,26 +183,32 @@ steps:
       백도어 계정은 못 본다. 그래서 넷을 함께(교차) 보고 같은 출처로 묶어야 전체 사슬이 드러난다. 핵심은
       웹에 942(SQLi), 인증에 Invalid user 다발, 호스트에 백도어 계정 socw15bd 가 함께 보인다는 것.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) 웹 단면 — ModSec audit CRS 룰ID(942 SQLi 등) 추출
       docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u'
+      # 2) 인증 단면 — auth.log Invalid user 다발 건수
       grep -acE "Invalid user" /var/log/auth.log
+      # 3) 호스트 단면 — osquery로 백도어 계정 socw15bd 확인(침투 성공 증거)
+      docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="socw15bd";'
+      # 4) 종합 — 네 소스 교차 = 한 APT 캠페인
+      echo "→ 네 소스(웹/인증/호스트/네트워크) 교차 = 한 APT 캠페인"
       ```
-      - 첫 줄(웹) — ModSec audit 에서 매치된 CRS 룰 ID(9xxxxx)를 뽑는다. 942(SQLi)가 점수를 올리고
-        949110(anomaly 누적 임계 초과)이 403 차단하는 2단계가 보인다.
-      - 둘째 줄(인증) — auth.log 의 `Invalid user` 줄 수. 여러 계정에 다수면 무차별 대입(T1110).
-      - (정답 해설은 여기에 osquery 의 백도어 계정 socw15bd 확인을 더해 호스트 단면까지 교차한다.)
 
       ## ✅ 합격 기준
-      웹(942)·인증(Invalid user)·호스트(백도어 계정 socw15bd)의 흔적이 함께 보인다(웹/인증/호스트 교차).
-      호스트에 socw15bd 가 보이면 침투 성공이 확정된다. 안 보이면 미션 2 의 발판 재현을 점검한다.
+      `socw15bd` 출력 시 통과. **근거:** 웹(942)·인증(Invalid user)·호스트(백도어 계정 socw15bd)의 흔적이
+      함께 보이면 통과 — 호스트에 socw15bd 가 보이면 침투 성공이 확정된다(안 보이면 미션 2 발판 재현 점검).
     hint: 'modsec + auth.log 교차'
     category: analysis
     points: 10
     answer: |
-      echo "=== 웹(ModSec) ==="; docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u'
-      echo "=== 인증(auth.log) ==="; grep -acE "Invalid user" /var/log/auth.log
-      echo "=== 발판(osquery) ==="; docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="socw15bd";'
+      # 1) 웹 단면 — ModSec audit CRS 룰ID(942 SQLi 등) 추출
+      docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u'
+      # 2) 인증 단면 — auth.log Invalid user 다발 건수
+      grep -acE "Invalid user" /var/log/auth.log
+      # 3) 호스트 단면 — osquery로 백도어 계정 socw15bd 확인(침투 성공 증거)
+      docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="socw15bd";'
+      # 4) 종합 — 네 소스 교차 = 한 APT 캠페인
       echo "→ 네 소스(웹/인증/호스트/네트워크) 교차 = 한 APT 캠페인"
     answer_detail: "교차 분석 = 웹(ModSec 942 SQLi)+인증(auth.log Invalid user 다발)+호스트(osquery 백도어 계정 socw15bd)+네트워크. 한 소스가 못 보는 단면을 다른 소스가 보므로, 넷을 함께 펼쳐 같은 출처(10.20.30.202)의 다단계 캠페인으로 종합한다. 백도어 계정 socw15bd 의 존재가 침투 성공의 호스트 측 증거다. 채점은 출력에 'socw15bd' 가 보이는지로 호스트 단면까지 교차됐음을 확인한다."
     verify:
@@ -216,22 +232,24 @@ steps:
       백도어 계정 → **T1136**(발판/계정 생성). 좋은 서사의 조건은 넷이다 — 출처 일관(모두 10.20.30.202),
       시간순, ATT&CK 단계 일관, 단계마다 증거(앞 미션의 로그 줄)가 붙음.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      echo "정찰 T1046 → 웹침투 T1190 → 인증 T1110 → 발판 T1136"
+      # 1) ATT&CK 서사 — 4단계 기술 매핑
+      echo "T1046 정찰(스캔) → T1190 웹침투(SQLi) → T1110 인증(SSH 대입) → T1136 발판(백도어 계정)"
+      # 2) 종합 — 출처 일관·시간순·단계 일관 = 한 APT 캠페인
+      echo "→ 출처 10.20.30.202 일관, 시간순, 단계 일관 = 한 APT 캠페인"
       ```
-      - 앞 미션의 증거(eve 시그니처 / ModSec 942·403 / Invalid user 다발 / 백도어 계정)를 시간순으로
-        늘어놓고, 각 단계에 위 ATT&CK 번호를 붙여 한 문장씩 서사로 잇는다.
 
       ## ✅ 합격 기준
-      T1046 → T1190 → T1110 → T1136 이 시간순으로 일관되게 연결된 공격 서사가 만들어진다(APT 를 ATT&CK
-      서사로 종합). 단계가 빠지거나 출처가 섞이면 교차 분석(미션 4)으로 돌아가 다시 묶는다.
+      `T1190` 출력 시 통과. **근거:** T1046 → T1190 → T1110 → T1136 이 시간순으로 일관되게 연결된 공격
+      서사가 만들어지면 통과 — 단계가 빠지거나 출처가 섞이면 교차 분석(미션 4)으로 돌아가 다시 묶는다.
     hint: 'T1046→T1190→T1110→T1136'
     category: analysis
     points: 10
     answer: |
-      echo "=== APT ATT&CK 서사 ==="
+      # 1) ATT&CK 서사 — 4단계 기술 매핑
       echo "T1046 정찰(스캔) → T1190 웹침투(SQLi) → T1110 인증(SSH 대입) → T1136 발판(백도어 계정)"
+      # 2) 종합 — 출처 일관·시간순·단계 일관 = 한 APT 캠페인
       echo "→ 출처 10.20.30.202 일관, 시간순, 단계 일관 = 한 APT 캠페인"
     answer_detail: "ATT&CK 서사 = 단계별 기술(T1046 정찰 → T1190 웹침투 → T1110 인증 → T1136 발판) + 출처 일관(10.20.30.202) + 시간순 + 단계마다 증거. 전술(목적)과 기술(수법)을 표준 번호로 붙이면 보고·소통이 일관된다. APT 의 전체 그림을 한 서사로 만든 것. 채점은 출력에 'T1190' 이 보이는지로 ATT&CK 매핑을 확인한다."
     verify:
@@ -256,39 +274,39 @@ steps:
       즉시 정리**로 한다(다른 학생을 끊지 않기 위함). 룰 수명주기는 추가 → 무중단 reload → 트리거 →
       eve 확인 → sed 삭제다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) APT 출발지 격리 룰 추가(alert, sid 9515001)
       docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert ip 10.20.30.202 any -> any any (msg:\"SOC W15 APT contain\"; sid:9515001; rev:1;)
       EOF"'
+      # 2) 무중단 reload 후 출발지 트래픽 유발
       docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'; sleep 2
       docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/'; sleep 4
+      # 3) 격리 룰 트리거 횟수(출처 플래그)
       docker exec el34-ips sh -c 'sudo grep -c 9515001 /var/log/suricata/eve.json'
-      docker exec el34-ips sh -c 'sudo sed -i "/sid:9515001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+      # 4) self-clean — 격리 룰 삭제 + reload(베이스 보존)
+      docker exec el34-ips sh -c 'sudo sed -i "/sid:9515001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
       ```
-      - 1: `local.rules` 에 출발지 10.20.30.202 의 모든 IP 트래픽을 alert 하는 격리 룰(sid 9515001) 추가.
-      - 2: `suricatasc -c reload-rules` — 데몬을 멈추지 않고 룰만 다시 읽기(무중단 reload).
-      - 3: attacker 에서 한 번 트래픽을 흘려 격리 룰을 트리거.
-      - 4: `grep -c 9515001 eve.json` — 격리 룰이 출처를 플래그한 횟수 확인.
-      - 5: `sed -i "/sid:9515001/d"` 로 내 룰만 삭제 후 다시 reload(베이스 보존).
+      - `suricatasc -c reload-rules`=데몬 중단 없이 룰 재적용(무중단). SOC W15 네임스페이스 sid=9515001. 공유 인프라라 drop 대신 alert 시연 후 즉시 정리.
 
       ## ✅ 합격 기준
-      격리 룰(9515001)이 출발지를 플래그하고, 정리 후 base 룰을 보존한다(정리 후 보존). 트리거 후에도
-      안 잡히면 룰 문법·reload 를 점검한다.
-
-      ## 처음 나오는 도구 풀이
-      `suricatasc`=Suricata 소켓 클라이언트, `reload-rules`=무중단 룰 재적용. SOC W15 네임스페이스 sid=`9515001`.
+      `rule_removed` 출력 시 통과. **근거:** 격리 룰(9515001)이 출발지를 플래그하고 정리 후 base 룰을
+      보존하면 통과 — 트리거 후에도 안 잡히면 룰 문법·reload 를 점검한다.
     hint: '출발지 alert 룰(9515001) → reload → 트리거 → 삭제'
     category: manipulation
     points: 12
     answer: |
+      # 1) APT 출발지 격리 룰 추가(alert, sid 9515001)
       docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert ip 10.20.30.202 any -> any any (msg:\"SOC W15 APT contain\"; sid:9515001; rev:1;)
       EOF"'
+      # 2) 무중단 reload 후 출발지 트래픽 유발
       docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'; sleep 2
       docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/'; sleep 4
-      echo "=== 격리 룰 트리거 ==="
+      # 3) 격리 룰 트리거 횟수(출처 플래그)
       docker exec el34-ips sh -c 'sudo grep -c 9515001 /var/log/suricata/eve.json'
+      # 4) self-clean — 격리 룰 삭제 + reload(베이스 보존)
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9515001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
     answer_detail: "IR Contain(격리) = 진행 중인 APT 출발지(10.20.30.202)를 끊어 추가 침투를 막는 동작. 운영 환경은 방화벽 drop 이지만, 공유 인프라(el34)에서는 출발지를 IDS alert(sid 9515001)로 플래그하는 시연 + 즉시 정리로 한다(다른 학생을 차단하지 않기 위함). 룰 수명주기 = 추가 → 무중단 reload → 트리거 → eve 확인 → sed 삭제. 채점은 정리 단계의 'rule_removed' 출력으로 격리 시연 후 베이스가 보존됐음을 확인한다."
     verify:
@@ -312,25 +330,24 @@ steps:
       없앤다. 격리가 응급 처치라면 제거는 근본 치료다. 핵심 절차는 **확인 후 제거** — 무턱대고 지우지
       않고, osquery 로 발판(socw15bd)을 증거로 확인한 뒤 삭제한다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="socw15bd";'
+      # 1) 발판 확인 — osquery로 백도어 계정 socw15bd 존재 증거
+      docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="socw15bd";'
+      # 2) Eradicate — userdel -r로 홈 디렉터리까지 완전 제거
       docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; echo eradicated'
       ```
-      - 1: osquery 로 백도어 계정 socw15bd 가 실제 존재하는지 확인(제거 전 증거 확보).
-      - 2: `userdel -r socw15bd` — 계정을 홈 디렉터리(`-r`)까지 완전히 제거하고 `eradicated` 출력.
 
       ## ✅ 합격 기준
-      발판(socw15bd)이 확인되고 `userdel -r` 로 완전히 제거되어 `eradicated` 가 출력된다(백도어 발판을
-      제거). 빠짐없이 제거하지 않으면 공격자가 그 통로로 다시 들어온다. 계정이 안 보이면 미션 2 의 발판
-      재현을 점검한다.
+      `eradicated` 출력 시 통과. **근거:** 발판(socw15bd)이 확인되고 userdel -r 로 완전히 제거되어
+      eradicated 가 나오면 통과 — 빠짐없이 제거하지 않으면 공격자가 그 통로로 다시 들어온다.
     hint: 'osquery 확인 → userdel'
     category: response
     points: 12
     answer: |
-      echo "=== 발판 확인 ==="
+      # 1) 발판 확인 — osquery로 백도어 계정 socw15bd 존재 증거
       docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="socw15bd";'
-      echo "=== Eradicate ==="
+      # 2) Eradicate — userdel -r로 홈 디렉터리까지 완전 제거
       docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; echo eradicated'
     answer_detail: "IR Eradicate(제거) = 이미 심긴 발판을 뽑아 재진입을 막는 동작. osquery 로 백도어 계정 socw15bd 를 증거로 확인한 뒤 userdel -r 로 홈 디렉터리까지 완전히 제거한다(확인 후 제거 절차). 하나라도 남으면 공격자가 그 통로로 다시 들어오므로 빠짐없이 제거한다. 채점은 출력에 'eradicated' 가 보이는지로 발판 제거 완료를 확인한다."
     verify:
@@ -355,38 +372,11 @@ steps:
       "이 IOC 가 보이면 즉시 고위험으로 다뤄라"를 룰로 박는 것. 공유 인프라이므로 **라이브 manager 를
       재시작하지 않고** `wazuh-logtest` 로만 검증하고, 끝나면 `cp` 로 원본 룰을 복원한다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw15_lr.bak
-      sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
-      <group name="soc_w15,">
-        <rule id="101515" level="13">
-          <decoded_as>json</decoded_as>
-          <field name="apt_ioc">aptsoc</field>
-          <description>SOC W15 - APT IOC escalate</description>
-        </rule>
-      </group>
-      EOF'
-      echo '{"apt_ioc":"aptsoc","src_ip":"10.20.30.202"}' | sudo /var/ossec/bin/wazuh-logtest
-      sudo cp /tmp/socw15_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw15_lr.bak
-      ```
-      - 1: 원본 룰셋을 백업(`cp ... /tmp/socw15_lr.bak`) — 복원의 안전장치.
-      - 2: `local_rules.xml` 에 IOC 매칭 룰 추가 — `apt_ioc` 필드가 `aptsoc` 면 id 101515, level 13 발화.
-      - 3: `wazuh-logtest` 에 IOC 한 줄을 입력해 격상이 발화하는지 검증(라이브 재시작 없이).
-      - 4: 백업으로 원본 복원 + 백업 파일 삭제(베이스 보존).
-
-      ## ✅ 합격 기준
-      logtest 에 rule `101515`, level 13 이 "Alert to be generated"로 발화하고, cp 복원 후 잔재 0
-      (APT IOC 룰이 격상 발화한다, 정리 후 보존). 발화 안 하면 XML 문법·필드명(apt_ioc)을 점검한다.
-
-      ## 처음 나오는 도구 풀이
-      `wazuh-logtest`=로그 한 줄을 입력해 매치되는 디코더·룰·경보 level 을 즉석에서 보여주는 도구(라이브
-      무중단 검증). Wazuh 룰 id 네임스페이스: 사용자 룰 100000+, 본 트랙 W15=`1015xx`(W09=1009xx, W13=1013xx 와 격리).
-    hint: 'APT IOC 룰(101515) → logtest → cp 복원'
-    category: manipulation
-    points: 12
-    answer: |
+      # 1) 원본 룰셋 백업(복원 안전장치)
       docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw15_lr.bak'
+      # 2) APT IOC 격상 룰(id 101515, level 13, json + apt_ioc=aptsoc) append
       docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
       <group name=\"soc_w15,\">
         <rule id=\"101515\" level=\"13\">
@@ -396,11 +386,43 @@ steps:
         </rule>
       </group>
       EOF"'
+      # 3) IOC JSON을 임시 파일로 작성(logtest 입력)
       docker exec el34-siem sh -c 'cat > /tmp/socw15.json <<EOF
       {"apt_ioc":"aptsoc","src_ip":"10.20.30.202"}
       EOF'
-      echo "=== APT IOC 격상 logtest ==="
+      # 4) logtest로 룰 101515 level 13 격상 발화 확인 후 임시파일 삭제
       docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw15.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw15.json'
+      # 5) 백업 복원 — IOC 룰 잔재 0(베이스 보존)
+      docker exec el34-siem sh -c 'sudo cp /tmp/socw15_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw15_lr.bak; echo "복원 잔재=$(grep -c 101515 /var/ossec/etc/rules/local_rules.xml)"'
+      ```
+      - `apt_ioc` 필드가 `aptsoc` 면 id 101515/level 13 발화. `wazuh-logtest`=라이브 재시작 없이 검증. id 네임스페이스 W15=1015xx(W09=1009xx, W13=1013xx 와 격리).
+
+      ## ✅ 합격 기준
+      `101515` 출력 시 통과. **근거:** logtest 에 rule 101515(level 13)이 Alert to be generated 로 발화하고
+      cp 복원 후 잔재 0이면 통과 — 발화 안 하면 XML 문법·필드명(apt_ioc)을 점검한다.
+    hint: 'APT IOC 룰(101515) → logtest → cp 복원'
+    category: manipulation
+    points: 12
+    answer: |
+      # 1) 원본 룰셋 백업(복원 안전장치)
+      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw15_lr.bak'
+      # 2) APT IOC 격상 룰(id 101515, level 13, json + apt_ioc=aptsoc) append
+      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      <group name=\"soc_w15,\">
+        <rule id=\"101515\" level=\"13\">
+          <decoded_as>json</decoded_as>
+          <field name=\"apt_ioc\">aptsoc</field>
+          <description>SOC W15 APT IOC escalate</description>
+        </rule>
+      </group>
+      EOF"'
+      # 3) IOC JSON을 임시 파일로 작성(logtest 입력)
+      docker exec el34-siem sh -c 'cat > /tmp/socw15.json <<EOF
+      {"apt_ioc":"aptsoc","src_ip":"10.20.30.202"}
+      EOF'
+      # 4) logtest로 룰 101515 level 13 격상 발화 확인 후 임시파일 삭제
+      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw15.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw15.json'
+      # 5) 백업 복원 — IOC 룰 잔재 0(베이스 보존)
       docker exec el34-siem sh -c 'sudo cp /tmp/socw15_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw15_lr.bak; echo "복원 잔재=$(grep -c 101515 /var/ossec/etc/rules/local_rules.xml)"'
     answer_detail: "인텔 격상(예방) = 이 APT 의 IOC(공격 마커 aptsoc)를 Wazuh 룰(id 101515, level 13)로 굳혀, 같은 IOC 가 재발/변형해 오면 자동으로 고위험 경보가 뜨게 만드는 것. W13 인텔 운영을 한 캠페인에 적용. 공유 인프라이므로 라이브 manager 재시작 없이 wazuh-logtest 로만 검증하고 cp 로 원본 룰을 복원한다(베이스 보존). 채점은 출력에 '101515' 가 보이는지로 격상 룰 발화를 확인한다. APT 대응은 '막았다'를 넘어 '다음에 자동으로 잡힌다'까지여야 완결된다."
     verify:
@@ -425,23 +447,24 @@ steps:
       보존되어, 여러 소스 그룹(ids 등)이 한 출처(10.20.30.202)로 모인다 — 이것이 4 단계를 한 캠페인으로
       보는 통합 가시성의 실체다.
 
-      ## 💻 실행 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
+      # 1) 출처 10.20.30.202 경보의 rule.groups 집계 — 다소스 수렴 확인
       docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|.rule.groups" | sort | uniq -c | head'
+      # 2) 해석 — 다단계 흔적이 한 출처로 SIEM 수렴 = 한 APT 캠페인
+      echo "→ 다단계 흔적이 한 출처로 SIEM 수렴 = 한 APT 캠페인"
       ```
-      - 출처 10.20.30.202 의 경보만 골라(`select`), 각 경보의 룰 그룹(`rule.groups`)을 집계한다 — 한 출처에
-        여러 소스 그룹(`ids` 등)이 모여 있으면 다단계가 한 캠페인으로 수렴한 것이다.
 
       ## ✅ 합격 기준
-      alerts.json 에 출처 10.20.30.202 가 `ids` 등 다그룹으로 수렴한다(APT 흔적이 SIEM 으로 수렴하고
-      출처로 상관). 출처가 fw IP 로 보이면 SNAT 가 끼었거나 다른 사건 — 상관 전제를 재점검. 안 보이면
-      ips agent·analysisd 를 점검한다.
+      `ids` 출력 시 통과. **근거:** alerts.json 에 출처 10.20.30.202 가 ids 등 다그룹으로 수렴하면 통과 —
+      출처가 fw IP 로 보이면 SNAT 가 끼었거나 다른 사건(상관 전제 재점검), 안 보이면 ips agent·analysisd 점검.
     hint: 'alerts.json src .202 그룹 수렴'
     category: analysis
     points: 10
     answer: |
-      echo "=== SIEM 수렴 (출처 10.20.30.202) ==="
+      # 1) 출처 10.20.30.202 경보의 rule.groups 집계 — 다소스 수렴 확인
       docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|.rule.groups" | sort | uniq -c | head'
+      # 2) 해석 — 다단계 흔적이 한 출처로 SIEM 수렴 = 한 APT 캠페인
       echo "→ 다단계 흔적이 한 출처로 SIEM 수렴 = 한 APT 캠페인"
     answer_detail: "SIEM 수렴 + 출처 상관 = 흩어진 4 단계 흔적이 Wazuh alerts.json 한 곳으로 모이고(수렴), 모두 같은 출처(10.20.30.202)를 가리켜 한 APT 캠페인으로 확정되는 것. el34 가 SNAT 를 안 하므로 출처가 전 계층에 보존되어 여러 소스 그룹(ids 등)이 한 출처로 묶인다. 채점은 출력에 'ids' 그룹이 보이는지로 다소스 수렴을 확인한다. 이것이 4 단계를 한 캠페인으로 보는 통합 가시성의 증거다."
     verify:
@@ -466,19 +489,23 @@ steps:
       특히 마지막 "재발 방지"에 인텔 격상(id 101515)을 담는 것이 APT 대응의 특징이다 — 일반 사고는
       "막았다"로 끝나지만 APT 는 "다음에 자동으로 잡히게 했다"까지여야 완결된다.
 
-      ## 💻 보고서 양식
-      ```markdown
-      # SOC W15 APT 종합 보고서 (학번, 이름)
-      ## 1. 캠페인 (출처 10.20.30.202 / 정찰→웹침투→인증→발판 4 단계)
-      ## 2. 분석 — 트리아지(P1) + 네 소스 교차 + ATT&CK 서사(T1046→T1190→T1110→T1136)
-      ## 3. 대응(IR) — Contain(IDS 9515001) → Eradicate(socw15bd) + 인텔 격상(101515)
-      ## 4. 결론 — SIEM 수렴(한 출처) + 재발 방지(IOC 룰로 자동 재탐지)
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ```bash
+      # 1) heredoc(<<'EOF' ... EOF)으로 APT 종합 보고서 출력 — 캠페인→분석→IR→결론·재발방지
+      cat <<'EOF'
+      # SOC W15 APT 종합 보고서 (수료)
+      ## 1. 캠페인: 출처 10.20.30.202, 정찰→웹침투→인증→발판 4단계
+      ## 2. 분석: 트리아지(P1) + 네소스 교차 + ATT&CK 서사(T1046→T1190→T1110→T1136)
+      ## 3. IR: Contain(IDS 9515001) → Eradicate(socw15bd userdel) + 인텔 격상(101515)
+      ## 4. SIEM 수렴(한 출처) + 재발 방지(IOC 룰/자동화)
+      ## 결론: SOC 분석가는 흩어진 텔레메트리에서 APT 서사를 읽고 끝까지 분석·대응한다
+      EOF
       ```
-      각 절에 앞 미션의 **증거**(eve 시그니처 / ModSec 942·403 / Invalid user / 백도어 계정 / logtest level 13)를 붙인다.
+      - 각 절에 앞 미션의 증거(eve 시그니처 / ModSec 942·403 / Invalid user / 백도어 계정 / logtest level 13)를 붙인다.
 
       ## ✅ 합격 기준
-      보고서에 캠페인 개요 + 분석(트리아지·교차·서사) + 대응(격리·제거·인텔) + 재발 방지가 모두 포함된다
-      (SOC 전 역량이 보고서에 종합). 한 축이라도 빠지면 해당 미션으로 돌아가 보강한다.
+      `APT` 출력 시 통과. **근거:** 보고서에 캠페인 개요 + 분석(트리아지·교차·서사) + 대응(격리·제거·인텔)
+      + 재발 방지가 모두 담기면 통과 — 한 축이라도 빠지면 해당 미션으로 돌아가 보강한다.
     hint: '분석+트리아지+IR+인텔 종합'
     category: report
     points: 6
@@ -512,29 +539,32 @@ steps:
       이번 기말에서 심은 세 가지 흔적 — 백도어 계정(socw15bd) · IDS 격리 룰(sid 9515001) · Wazuh 인텔
       룰(id 101515) — 이 모두 사라졌는지 확인한다. 하나라도 남아 있으면 변경 관리 규율 위반이다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      docker exec el34-web sh -c 'id socw15bd 2>/dev/null && echo "잔재!" || echo "user ok"'
+      # 1) 백도어 계정 재정리 후 잔재 확인(id 실패=user ok)
+      docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; id socw15bd 2>/dev/null && echo "계정 잔재!" || echo "user ok"'
+      # 2) IDS 격리 룰(sid 9515001) 잔재 수(0이어야 정상)
       docker exec el34-ips sh -c 'sudo grep -c 9515001 /etc/suricata/rules/local.rules'
+      # 3) Wazuh 인텔 룰(id 101515) 잔재 수(0이어야 정상)
       docker exec el34-siem sh -c 'echo "101515 잔재=$(grep -c 101515 /var/ossec/etc/rules/local_rules.xml)"'
+      # 4) 점검 완료 마커
       echo "---check done---"
       ```
-      - 1: 백도어 계정 socw15bd 가 남았는지(`id` 가 실패해 "user ok" 가 떠야 정상).
-      - 2: IDS local.rules 에 sid 9515001 잔재 수(0 이어야 정상).
-      - 3: Wazuh local_rules.xml 에 룰 101515 잔재 수(0 이어야 정상).
 
       ## ✅ 합격 기준
-      계정/IDS 룰/Wazuh 룰 잔재가 모두 0 이고 `check done` 이 출력된다. 잔재가 있으면 해당 미션(7 계정·
-      6 IDS 룰·8 Wazuh 룰)의 정리 명령을 다시 실행한다.
+      `check done` 출력 시 통과. **근거:** 계정/IDS 룰/Wazuh 룰 잔재가 모두 0 이고 check done 이 나오면
+      통과 — 잔재가 있으면 해당 미션(7 계정·6 IDS 룰·8 Wazuh 룰)의 정리 명령을 다시 실행한다.
     hint: 'socw15bd/9515001/101515 잔재 0'
     category: cleanup
     points: 6
     answer: |
+      # 1) 백도어 계정 재정리 후 잔재 확인(id 실패=user ok)
       docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; id socw15bd 2>/dev/null && echo "계정 잔재!" || echo "user ok"'
-      echo "=== IDS sid 9515001 잔재 ==="
+      # 2) IDS 격리 룰(sid 9515001) 잔재 수(0이어야 정상)
       docker exec el34-ips sh -c 'sudo grep -c 9515001 /etc/suricata/rules/local.rules'
-      echo "=== Wazuh 101515 잔재 ==="
+      # 3) Wazuh 인텔 룰(id 101515) 잔재 수(0이어야 정상)
       docker exec el34-siem sh -c 'echo "101515 잔재=$(grep -c 101515 /var/ossec/etc/rules/local_rules.xml)"'
+      # 4) 점검 완료 마커
       echo "---check done---"
     answer_detail: "수료 마무리 = 기말에서 심은 흔적 세 가지(백도어 계정 socw15bd / IDS 격리 룰 sid 9515001 / Wazuh 인텔 룰 id 101515)가 모두 0 인지 점검해 공유 인프라를 베이스로 복원. '내가 심은 것은 내가 정리한다'는 변경 관리 규율. 잔재가 있으면 해당 미션의 정리 명령을 재실행한다. 채점은 출력에 'check done' 이 보이는지로 정리 점검 수행을 확인한다."
     verify:
