@@ -291,29 +291,38 @@ steps:
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
-      # 1) eve에서 alert + 출발지 10.20.30.202만 골라 signature_id/signature 집계(정찰 입증)
-      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|[.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | tail -5'
-      # 2) 해석 — signature_id/signature로 스캔(T1046) 단계 입증, flow로 세션 규모
-      echo "→ signature_id/signature로 스캔(T1046) 단계 입증, flow로 세션 규모"
+      # 1) 스캐너 트래픽 생성 — sqlmap UA 요청으로 Suricata 스캐너 시그니처를 유발(신선한 alert 확보)
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sent=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw6scan%27%20UNION%20SELECT%201--%20-'"
+      # 2) Suricata가 eve.json에 기록할 시간을 잠깐 확보
+      sleep 3
+      # 3) eve에서 alert+출발지 10.20.30.202만 골라 signature 집계(fromjson?로 깨진 JSON 줄 건너뜀, 빈도순)
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rR "fromjson? | select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\") | [.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | sort -rn | head -8'
+      # 4) 해석 — signature로 스캔/정찰(T1046) 입증, 같은 출발지가 웹·네트워크 양쪽에 = 다소스 상관
+      echo "→ signature로 스캔/정찰(T1046) 입증. 같은 출발지(10.20.30.202)가 ModSec·Suricata 양쪽에 = 다소스 상관"
       ```
 
       ## 🔧 명령 해부
-      - `tail -3000 eve.json` — alert는 flow보다 드물어 깊게 봐야 잡힌다.
-      - `select(.event_type=="alert" and .src_ip=="10.20.30.202")` — alert 이벤트 중 공격자 출발지만 고른다.
-      - `[.alert.signature_id,.alert.signature]|@tsv` → `sort | uniq -c | tail -5` — signature별 횟수를 집계해 상위 항목을 본다.
+      - 1) `-A sqlmap/1.7` — User-Agent를 sqlmap으로 위장해 Suricata 스캐너 룰(6V6 Bot UA - sqlmap)을 유발. 윈도우에 신선한 alert를 보장(재현성).
+      - 3) `jq -rR "fromjson? | …"` — 각 줄을 raw로 읽어 `fromjson?` 로 파싱하되, 깨진 JSON 줄(eve.json 절단 라인)은 `?` 로 건너뛴다(jq 중단 방지).
+      - `select(.event_type=="alert" and .src_ip=="10.20.30.202")` → `sort | uniq -c | sort -rn | head -8` — alert만 골라 signature별 횟수를 **빈도순**으로 집계(사전순 tail은 핵심 룰을 놓침).
 
       ## ✅ 합격 기준
-      `sqlmap` 출력 시 통과. **근거:** sqlmap(또는 스캔) 관련 signature 가 보이면 통과 — 같은 출발지
-      10.20.30.202 가 ModSec·Suricata 양쪽에 찍힌 것을 확인하면 다소스 상관으로 캠페인 단계가 확정된다.
+      `sqlmap` 출력 시 통과. **근거:** 방금 생성한 sqlmap UA 요청이 Suricata 의 'Bot UA - sqlmap'
+      signature로 잡혀 빈도 상위에 보이면 통과 — 같은 출발지 10.20.30.202 가 ModSec·Suricata 양쪽에
+      찍힌 것을 확인하면 다소스 상관으로 캠페인 단계가 확정된다.
     hint: 'eve alert signature_id'
     category: analysis
     points: 12
     answer: |
-      # 1) eve에서 alert + 출발지 10.20.30.202만 골라 signature_id/signature 집계(정찰 입증)
-      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|[.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | tail -5'
-      # 2) 해석 — signature_id/signature로 스캔(T1046) 단계 입증, flow로 세션 규모
-      echo "→ signature_id/signature로 스캔(T1046) 단계 입증, flow로 세션 규모"
-    answer_detail: "캠페인의 정찰 단계(T1046)를 Suricata로 입증한다. 출력에 sqlmap(또는 스캔) signature가 보이면 통과로 판정한다. signature_id로 탐지 내용을, 보존된 출발지(10.20.30.202)로 동일 공격자임을, flow로 세션 규모를 읽는다. 이 네트워크 증거가 ModSec의 웹 증거와 같은 출발지에서 만나면 다소스 상관이 완성되어 캠페인 단계가 확정된다."
+      # 1) 스캐너 트래픽 생성 — sqlmap UA 요청으로 Suricata 스캐너 시그니처를 유발(신선한 alert 확보)
+      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sent=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw6scan%27%20UNION%20SELECT%201--%20-'"
+      # 2) Suricata가 eve.json에 기록할 시간을 잠깐 확보
+      sleep 3
+      # 3) eve에서 alert+출발지 10.20.30.202만 골라 signature 집계(fromjson?로 깨진 JSON 줄 건너뜀, 빈도순)
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rR "fromjson? | select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\") | [.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | sort -rn | head -8'
+      # 4) 해석 — signature로 스캔/정찰(T1046) 입증, 같은 출발지가 웹·네트워크 양쪽에 = 다소스 상관
+      echo "→ signature로 스캔/정찰(T1046) 입증. 같은 출발지(10.20.30.202)가 ModSec·Suricata 양쪽에 = 다소스 상관"
+    answer_detail: "캠페인의 정찰/스캐너 단계를 Suricata로 입증한다. 먼저 sqlmap UA 요청을 보내 'Bot UA - sqlmap' signature를 신선하게 유발(재현성 확보)하고, eve.json을 jq -rR fromjson? 로 견고하게(절단 라인 건너뜀) 읽어 출발지 10.20.30.202의 alert signature를 빈도순으로 집계한다. 출력에 sqlmap signature가 보이면 통과. signature_id로 탐지 내용을, 보존된 출발지(10.20.30.202)로 동일 공격자임을 읽는다. 이 네트워크 증거가 ModSec의 웹 증거와 같은 출발지에서 만나면 다소스 상관이 완성된다."
     verify:
       type: output_contains
       expect: 'sqlmap'
