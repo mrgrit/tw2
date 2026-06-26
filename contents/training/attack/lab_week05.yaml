@@ -55,6 +55,9 @@ steps:
       # 2) juice(DetectionOnly, 탐지만) 도달성 — 응답코드만
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
     answer_detail: "XSS 공방 대상 두 곳의 도달성을 확인한다 — dvwa(SecRuleEngine On, 차단 모드)와 juice(DetectionOnly, 탐지만). 두 vhost가 모두 응답해야 이후 같은 payload로 '차단(403) vs 탐지만(200)'을 비교할 수 있다. 채점은 출력에 'dvwa' 문자열(도달 신호)이 보이는지로 판정한다."
+    expected_output: |
+      dvwa=302
+      juice=200
     verify:
       type: output_contains
       expect: 'dvwa'
@@ -94,6 +97,9 @@ steps:
       # 2) 해석 — <script> XSS가 941(XSS)+949110에 차단(403)
       echo "→ <script> XSS가 941(XSS)+949110에 차단(403)"
     answer_detail: "Reflected XSS는 요청 파라미터가 즉시 응답에 반사되어 실행되는 유형이다(저장되지 않으므로 공격자는 악성 링크 클릭을 유도해야 한다). 기본 payload <script>alert(1)</script>를 차단 모드 vhost(dvwa)에 보내면 CRS 941 룰군(941100 등)이 탐지해 anomaly score를 누적하고, 949110이 임계 초과로 403 차단한다. 즉 '941이 직접 막은' 것이 아니라 '941 탐지 → 누적 → 949110 차단'의 2단계다. 채점은 출력에 '403'이 보이는지로 판정한다."
+    expected_output: |
+      xss=403
+      → <script> XSS가 941(XSS)+949110에 차단(403)
     verify:
       type: output_contains
       expect: '403'
@@ -141,6 +147,10 @@ steps:
       # 3) 해석 — 태그/이벤트 다양화로 필터 우회 시도, CRS 941은 이벤트 핸들러도 잡음
       echo "→ 태그/이벤트 다양화(img/svg/onerror/onload)로 필터 우회 시도 — CRS 941은 이벤트 핸들러도 잡음"
     answer_detail: "XSS는 <script> 태그 외에도 이벤트 핸들러(img의 onerror, svg의 onload, body의 onload 등)나 스킴(javascript:)만으로 실행된다 — 그래서 '스크립트 태그만 거르기' 식 방어는 우회된다. el34에서는 payload 공백을 %20으로 인코딩해 전송해야 요청이 깨지지 않는다(%20은 우회가 아니라 전송용 표기이며 WAF는 디코드 후 검사). CRS 941 룰군은 onerror=/onload= 같은 이벤트 핸들러 패턴(941160 NoScript 등)도 탐지하므로 변형도 403으로 막힌다. 채점은 출력에 '403'이 보이는지로 판정한다."
+    expected_output: |
+      img=403
+      svg=403
+      → 태그/이벤트 다양화(img/svg/onerror/onload)로 필터 우회 시도 — CRS 941은 이벤트 핸들러도 잡음
     verify:
       type: output_contains
       expect: '403'
@@ -184,6 +194,10 @@ steps:
       # 3) 해석 — CRS는 정규화(대소문자 통일/URL 디코드) 후 검사 → 단순 우회는 여전히 403
       echo "→ CRS는 정규화(대소문자 통일/URL 디코드) 후 검사 → 단순 우회는 여전히 403"
     answer_detail: "단순 WAF 우회(대소문자 <ScRiPt>, URL 인코딩 %3Cscript%3E)는 ModSec CRS의 정규화에 무력하다 — CRS는 패턴 비교 전에 URL 디코드·대소문자 통일·엔티티 해제로 원형(<script>...)을 복원한 뒤 941 룰군과 매치하므로, 두 시도 모두 여전히 403으로 차단된다. 다만 단순 우회가 막힌다고 WAF가 만능은 아니다 — 특정 출력 컨텍스트에 맞춘 고급 우회나 서버를 안 거치는 DOM-based XSS는 WAF로 잡기 어렵다(WAF는 보조 방어선). 채점은 출력에 '403'이 보이는지로 판정한다."
+    expected_output: |
+      case=403
+      enc=403
+      → CRS는 정규화(대소문자 통일/URL 디코드) 후 검사 → 단순 우회는 여전히 403
     verify:
       type: output_contains
       expect: '403'
@@ -222,6 +236,17 @@ steps:
       # 2) 해석 — 941xxx(XSS 룰군)이 script/onerror/onload 패턴을 잡고 949110에서 차단
       echo "→ 941xxx(XSS 룰군)이 <script>/onerror/onload 패턴을 잡고, 949110에서 차단"
     answer_detail: "XSS는 CRS의 941 룰군(REQUEST-941-APPLICATION-ATTACK-XSS)이 탐지한다 — 941100(libinjection으로 <script> 탐지)/941110(스크립트 태그)/941160(NoScript, onerror=·onload= 이벤트 핸들러) 등이 변형별로 매치된다. 각 941 매치가 anomaly score를 누적하고, 임계(기본 5) 초과 시 949110이 403으로 차단한다. 즉 audit log에서 941xxx(탐지)와 949110(누적 차단)을 함께 봐야 '탐지 → 누적 → 차단'의 전 과정이 보인다. 매치된 개별 룰 ID는 vhost별 *_error.log(예: dvwa_error.log)에도 id \"941160\" 형식으로 기록된다. 채점은 출력에 '941'이 보이는지로 판정한다."
+    expected_output: |
+      12 941100
+            8 941110
+            4 941120
+           12 941160
+          156 942100
+            2 942140
+           28 942160
+           18 942190
+          300 949110
+      → 941xxx(XSS 룰군)이 <script>/onerror/onload 패턴을 잡고, 949110에서 차단
     verify:
       type: output_contains
       expect: '941'
@@ -264,6 +289,9 @@ steps:
       # 3) 해석 — dvwa=403(차단)/juice=200(DetectionOnly), WAF 정책 차이
       echo "→ dvwa=403(차단), juice=200(DetectionOnly). WAF 정책 차이"
     answer_detail: "같은 XSS payload라도 vhost의 WAF 운영 모드에 따라 결과가 다르다 — dvwa(SecRuleEngine On)는 941 탐지 + 949110 누적으로 403 차단, juice(DetectionOnly)는 941이 탐지해 로그만 남기고 차단 없이 200 통과. 이는 버그가 아니라 의도된 정책이다: DetectionOnly는 신규 룰을 운영 배포 전 차단 없이 탐지만 하며 오탐(false-positive)을 먼저 관찰하는 단계로, 안정성 확인 후 차단 모드로 전환한다. 공격자 관점에서는 juice처럼 탐지만 하는 대상은 payload가 통과해 실제 피해자 브라우저에서 실행될 수 있어 위험하다. 채점은 출력에 'juice=200'이 보이는지로 판정한다."
+    expected_output: |
+      dvwa=403 juice=200
+      → dvwa=403(차단), juice=200(DetectionOnly). WAF 정책 차이
     verify:
       type: output_contains
       expect: 'juice=200'
@@ -318,6 +346,12 @@ steps:
       # 5) 결론 — 근본은 출력 인코딩, CSP가 2차 방어선
       echo "→ 근본은 출력 인코딩. CSP가 2차 방어선"
     answer_detail: "XSS 근본 방어의 우선순위 — ① 출력 인코딩(context-aware output encoding)이 근본이다: 입력을 출력하는 위치(HTML 본문/속성값/JavaScript/URL)에 맞춰 특수문자를 이스케이프하면 브라우저가 코드가 아닌 글자로 표시해 3유형(Reflected/Stored/DOM) 공통 뿌리(입력이 코드로 해석됨)를 끊는다. ② CSP는 브라우저에 허용 스크립트 출처를 지시해 실행 자체를 막는 2차 방어선. ③ HttpOnly 쿠키는 JS의 세션 쿠키 접근을 차단해 세션 탈취 피해를 완화. ④ 입력 검증·WAF는 우회 가능하므로 보조다. 채점은 출력에 'CSP'가 보이는지로 판정한다."
+    expected_output: |
+      ① 출력 인코딩(context-aware): HTML/JS/URL 컨텍스트별 이스케이프 — 입력을 코드로 해석 안 함
+      ② CSP(Content-Security-Policy): 인라인 스크립트/외부 출처 제한
+      ③ HttpOnly 쿠키: JS의 세션 쿠키 접근 차단(탈취 방어)
+      ④ 입력 검증 + WAF(보조)
+      → 근본은 출력 인코딩. CSP가 2차 방어선
     verify:
       type: output_contains
       expect: 'CSP'
@@ -363,6 +397,13 @@ steps:
       ## 결론: XSS는 피해자 브라우저에서 실행. CRS가 잘 막으나 근본은 출력 인코딩
       EOF
     answer_detail: "XSS 공방 전체를 한 보고서로 종합한다 — 공격면(유형 Reflected/Stored/DOM, payload 변형 script→img onerror→svg onload, 단순 우회 대소문자·URL 인코딩)과 방어면(CRS 941 룰군 탐지 → 949110 누적 차단, 정규화로 단순 우회 무력, dvwa 403 vs juice 200 모드 차이)을 대응시키고, 근본 방어로 출력 인코딩(근본)+CSP(2차선)+HttpOnly(완화)를 제시한다(WAF는 보조). 결론: XSS는 피해자 브라우저에서 실행되며, CRS가 잘 막아도 근본은 애플리케이션의 출력 인코딩이다. 채점은 출력에 'XSS'가 보이는지로 판정한다."
+    expected_output: |
+      # 공격 W05 XSS 보고서
+      ## 1. 유형: Reflected(파라미터 반사)/Stored(저장,최위험)/DOM(클라). payload: script/img onerror/svg onload
+      ## 2. 우회: 대소문자/인코딩 → CRS 정규화로 여전히 403
+      ## 3. 탐지/차단: 941(XSS)→949110. dvwa 403 vs juice 200(DetectionOnly)
+      ## 4. 방어: 출력 인코딩(근본)+CSP+HttpOnly. WAF 보조
+      ## 결론: XSS는 피해자 브라우저에서 실행. CRS가 잘 막으나 근본은 출력 인코딩
     verify:
       type: output_contains
       expect: 'XSS'

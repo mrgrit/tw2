@@ -73,6 +73,14 @@ steps:
       # 2) alerts.json 에서 출발지(src_ip) 있는 최근 경보 1건을 jq로 파싱 — 4요소(출발지/시그니처/시각/심각도) 미리보기
       docker exec el34-siem sh -c 'tail -1000 /var/ossec/logs/alerts/alerts.json | grep "\"src_ip\"" | tail -1 | jq "{src:.data.src_ip, sig:.rule.description, when:.timestamp, level:.rule.level}"'
     answer_detail: "SOC 관제의 토대 = SIEM(Wazuh)의 analysisd 데몬이 소스(Suricata/ModSec/호스트 인증 로그)의 이벤트를 alerts.json 한 스트림으로 수집하는 것. 채점은 출력에 'analysisd'(running)가 포함되는지로 가용성을 확인한다. 분석가는 이 스트림에서 4요소(출발지 src_ip/시그니처 rule.description/시각 timestamp/심각도 rule.level)를 읽는다 — 이 4요소가 본 실습 전체의 분석 골격이다."
+    expected_output: |
+      wazuh-analysisd is running...
+      {
+        "src": "10.20.30.202",
+        "sig": "Suricata: Alert - 6V6 Bot UA - sqlmap",
+        "when": "2026-06-26T14:45:40.538+0000",
+        "level": 3
+      }
     verify:
       type: output_contains
       expect: 'analysisd'
@@ -135,6 +143,10 @@ steps:
       # 4) 3벡터 완료 마커
       echo "3-vector done"
     answer_detail: "한 공격자가 세 벡터로 공격하면 각각 다른 소스에 다른 경보로 흩어진다 — 스캔(Suricata eve)/인증 무차별 대입(호스트 auth.log)/웹(ModSec audit). 채점은 'vector done' 출력으로 3벡터 재현을 확인한다. 이 흩어짐이 본 실습의 핵심 난점이며, 실습 7 에서 같은 출발지로 다시 엮는다. (인증 벡터는 데모 편의상 127.0.0.1 localhost 로 생성 — 실전은 외부 IP 이지만 빈도+계정 다양성으로 무차별 대입을 판정하는 분석 기법은 완전히 동일하다.)"
+    expected_output: |
+      scanned
+      brute x8 done
+      3-vector done
     verify:
       type: output_contains
       expect: 'vector done'
@@ -183,6 +195,11 @@ steps:
       # 2) 해석 — 정찰(Recon, MITRE T1046). 단발 스캔 = 우선순위 낮음(P3)
       echo "→ 분류: 정찰(Recon, MITRE T1046). 단발 스캔 = 우선순위 낮음(P3)"
     answer_detail: "스캔 경보는 공격의 정찰 단계(T1046)다. eve.json 의 alert 에서 출발지(src_ip)·시그니처(예: ET SCAN nmap SYN scan)·심각도(severity)의 3요소를 식별한다. 채점은 출력에 'scan' 시그니처가 잡히는지로 확인. 정찰은 '곧 공격이 온다'는 신호이지만 단독·단발이면 P3(낮음)으로 내린다 — 다만 같은 출발지가 반복되거나 다른 벡터와 엮이면(실습 7) 위험도가 급등하므로 맥락으로 기록해 둔다."
+    expected_output: |
+      {"sig":"6V6 Possible nmap SYN scan","src":"10.20.30.202","sev":3}
+      {"sig":"6V6 Possible nmap SYN scan","src":"10.20.30.202","sev":3}
+      {"sig":"6V6 Possible nmap SYN scan","src":"10.20.30.202","sev":3}
+      → 분류: 정찰(Recon, MITRE T1046). 단발 스캔 = 우선순위 낮음(P3)
     verify:
       type: output_contains
       expect: 'scan'
@@ -237,6 +254,16 @@ steps:
       # 3) 판정 — 짧은 시간 다발 = SSH 무차별 대입(T1110), 진행형 → P2
       echo "→ 판정: 짧은 시간 다발 = SSH 무차별 대입(T1110). 진행형 공격 → P2(중간, 스캔보다 우선)"
     answer_detail: "인증 실패가 짧은 시간에 다발(8건+)로 여러 계정(socw1bad*)에 걸쳐 나타나면 무차별 대입(T1110)이다. 채점은 출력에 'Invalid user'(없는 계정 시도)가 잡히는지로 확인한다. 단발 실패(사용자 오타, 정상)와 구분하는 결정적 단서는 두 가지 — 빈도(grep -c 로 측정한 건수)와 계정 다양성. 무차별 대입은 '곧 침투를 시도한다'는 진행형 신호라 단발 정찰(P3)보다 우선(P2)이다. W02 에서 이 인증 로그를 성공(Accepted) 추적까지 한층 깊게 분석한다."
+    expected_output: |
+      Jun 26 23:07:17 elf4 sshd[2166924]: Invalid user socw1bad7 from 127.0.0.1 port 57056
+      Jun 26 23:07:17 elf4 sshd[2166946]: Invalid user socw1bad8 from 127.0.0.1 port 57064
+      Jun 26 23:45:50 elf4 sshd[2303433]: Invalid user socw1bad1 from 127.0.0.1 port 36620
+      Jun 26 23:45:50 elf4 sshd[2303436]: Invalid user socw1bad2 from 127.0.0.1 port 36624
+      Jun 26 23:45:50 elf4 sshd[2303439]: Invalid user socw1bad3 from 127.0.0.1 port 36640
+      Jun 26 23:45:50 elf4 sshd[2303461]: Invalid user socw1bad4 from 127.0.0.1 port 36646
+      Jun 26 23:45:50 elf4 sshd[2303466]: Invalid user socw1bad5 from 127.0.0.1 port 36656
+      Jun 26 23:45:50 elf4 sshd[2303469]: Invalid user socw1bad6 from 127.0.0.1 port 36670
+      Jun 26 23:45:50 elf4
     verify:
       type: output_contains
       expect: 'Invalid user'
@@ -293,6 +320,20 @@ steps:
       # 3) 해석 — 웹 익스플로잇(SQLi/스캐너), 출발지 remote_address 식별
       echo "→ 분류: 웹 익스플로잇(SQLi/스캐너). 출발지 remote_address 식별"
     answer_detail: "웹 공격은 ModSec audit 에 CRS 룰 ID 로 남는다 — 942=SQLi, 913=스캐너. 채점은 출력에 도구 지문 'sqlmap' 이 잡히는지로 확인한다. remote_address 가 실제 출발지(10.20.30.202)로 보존되는 점이 핵심 — el34 는 fw 가 SNAT 하지 않아 출처 IP 가 web 까지 그대로 전달된다(상관의 전제). 웹은 정찰이 아닌 침투 시도라 스캔(P3)보다 우선(P2)으로 분류한다."
+    expected_output: |
+      941100
+      941110
+      941120
+      941160
+      942100
+      942160
+      942190
+      949110
+      sqlmap
+      {
+        "status": 403,
+        "remote": "10.20.30.202"
+      … (이하 생략)
     verify:
       type: output_contains
       expect: 'sqlmap'
@@ -348,6 +389,11 @@ steps:
       # 4) 결론 — 진행형/침투(웹·인증) 먼저, 정찰(스캔)은 맥락으로 기록
       echo "→ 진행형/침투(웹·인증)을 먼저 본다. 정찰은 맥락으로 기록"
     answer_detail: "모든 경보가 같은 무게가 아니다. 정찰(스캔, P3)보다 진행형 침투 공격(무차별 대입·웹 SQLi, P2)을 먼저 본다. 빈도(다발)는 강한 우선순위 신호다 — 스캔 1회와 무차별 대입 8회는 위험도가 다르다. 채점은 출력에 'P2'(진행형/침투 분류)가 포함되는지로 확인한다. L1 은 이 줄 세우기로 한정된 분석 시간을 위험한 곳에 먼저 배분한다."
+    expected_output: |
+      스캔(정찰, 단발)        → P3 (낮음)
+      웹 SQLi(침투 시도)       → P2 (중간)
+      SSH 무차별 대입(8건 다발) → P2 (중간, 진행형 — 곧 침투 시도)
+      → 진행형/침투(웹·인증)을 먼저 본다. 정찰은 맥락으로 기록
     verify:
       type: output_contains
       expect: 'P2'
@@ -401,6 +447,10 @@ steps:
       # 3) 상관 — 스캔+웹이 같은 출발지 10.20.30.202 = 한 공격자의 단계적 캠페인(정찰→침투)
       echo "→ 스캔+웹이 같은 출발지 10.20.30.202 = 한 공격자의 단계적 캠페인(정찰→침투)"
     answer_detail: "L1 과 숙련 분석가를 가르는 능력이 상관이다. 서로 다른 소스(Suricata eve=네트워크, ModSec=웹)의 출발지를 집계해 같은 IP 10.20.30.202 로 수렴함을 확인하면 '한 공격자가 정찰 후 침투 중'이라는 서사가 잡힌다. 채점은 출력에 '10.20.30.202'(공통 출발지)가 나오는지로 확인한다. 상관 전과 후의 결론이 완전히 다르다 — 상관 없이는 별개 경보 3건, 상관하면 즉시 출발지 차단을 검토할 위급한 단일 캠페인이다. el34 의 출처 IP 보존(SNAT 없음)이 이 모든 상관의 전제다."
+    expected_output: |
+      246 10.20.30.202
+      10.20.30.202
+      → 스캔+웹이 같은 출발지 10.20.30.202 = 한 공격자의 단계적 캠페인(정찰→침투)
     verify:
       type: output_contains
       expect: '10.20.30.202'
@@ -467,6 +517,18 @@ steps:
       ## 결론: L1은 4요소로 빠르게 분류·우선순위·상관해 L2로 올린다
       EOF
     answer_detail: "L1 트리아지의 4단계(4요소 식별 → 분류 → 우선순위 → 상관)를 한 장으로 종합하는 것이 본 실습의 마무리다. 채점은 보고서에 '트리아지' 키워드와 4요소/분류/우선순위/상관 구조가 담기는지로 확인한다. L1 은 경보를 깊게 파지 않고 빠르게 줄 세워 핵심을 L2 로 올린다 — 보고서가 부실하면 L2/L3 가 처음부터 다시 분석해야 해 SOC 전체 효율이 무너진다. 이 한 장이 SOC 협업의 출발점이다."
+    expected_output: |
+      # SOC W01 L1 트리아지 보고서
+      ## 1. 경보 4요소
+      | 경보 | 출발지 | 시그니처 | 심각도 |
+      |------|--------|----------|--------|
+      | 스캔 | 10.20.30.202 | nmap SYN scan | 낮 |
+      | 인증 | (다발) | Invalid user x8 | 중 |
+      | 웹 | 10.20.30.202 | sqlmap/942 SQLi | 중 |
+      ## 2. 분류: 스캔=정찰 / 인증=무차별대입 / 웹=익스플로잇
+      ## 3. 우선순위: 웹·인증(P2) > 스캔(P3)
+      ## 4. 상관: 스캔+웹 동일 출발지 10.20.30.202 → 정찰→침투 한 캠페인
+      ## 결론: L1은 4요소로 빠르게 분류·우선순위·상관해 L2로 올린다
     verify:
       type: output_contains
       expect: '트리아지'

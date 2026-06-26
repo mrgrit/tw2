@@ -61,6 +61,10 @@ steps:
       # 3) IR 도구 요약
       echo "IR 도구: SIEM(식별) + osquery(제거) + IDS(격리)"
     answer_detail: "IR 착수 전 도구 점검. analysisd(SIEM)가 running 이면 식별(출발지·타임라인)이, osquery 가 동작하면 제거(발판 헌팅)가 가능하다. 격리는 IDS(다음 미션의 Suricata)로 한다. 셋 중 하나라도 죽어 있으면 그 단계가 막히므로 가장 먼저 확인한다."
+    expected_output: |
+      wazuh-analysisd is running...
+      osqueryi version 5.23.0
+      IR 도구: SIEM(식별) + osquery(제거) + IDS(격리)
     verify:
       type: output_contains
       expect: 'analysisd'
@@ -107,6 +111,9 @@ steps:
       sleep 5
       echo "incident done"
     answer_detail: "사고 = 침투(SQLi) + 두 발판(백도어 계정 socw9bd + 웹쉘 socw9_shell.php). 침투만이 아니라 지속성 수단을 함께 심는 것이 실제 침해의 모습이며, 이 두 발판이 이후 식별·제거 단계의 표적이다. SQLi 페이로드는 sqlmap UA 로 위장해 네트워크·웹 로그에 공격 흔적을 남긴다. 한 번의 재현이 미션 3–8 전체의 원천 데이터다."
+    expected_output: |
+      planted
+      incident done
     verify:
       type: output_contains
       expect: 'done'
@@ -150,6 +157,16 @@ steps:
       # 3) 해석 — 범위: 출발지 10.20.30.202·web 침투·백도어 발판, 심각도: 침투 성공(P1)
       echo "→ 범위: 출발지 10.20.30.202, web 호스트 침투, 백도어 계정 발판. 심각도: 침투 성공(P1)"
     answer_detail: "Identify(식별) = 무슨 일이 어디까지 일어났나를 증거로 확정. 두 축 — SIEM alerts.json 으로 출발지(10.20.30.202)·타임라인(시간순 경보)을, osquery 로 호스트에 남은 발판(백도어 계정 socw9bd)을 확인한다. 계정이 존재한다는 것은 공격자가 호스트에 계정을 만들 정도로 뚫렸다는 뜻 → 심각도는 '시도'가 아니라 '침해(P1)'. 이 범위·심각도가 이후 격리·제거의 강도와 범위를 결정한다."
+    expected_output: |
+      2026-06-26T14:46:34.598+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
+      2026-06-26T14:46:44.549+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
+      2026-06-26T14:46:44.551+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
+      2026-06-26T14:46:54.552+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
+      2026-06-26T14:46:54.589+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
+      [
+        {"uid":"1001","username":"socw9bd"}
+      ]
+      → 범위: 출발지 10.20.30.202, web 호스트 침투, 백도어 계정 발판. 심각도: 침투 성공(P1)
     verify:
       type: output_contains
       expect: 'socw9bd'
@@ -210,6 +227,10 @@ steps:
       # 5) self-clean — 격리 룰 삭제 + reload(공유 인프라 원복)
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9509001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
     answer_detail: "Contain(격리) = 제거에 걸리는 시간 동안 확산을 막는 방화문. 공격 출발지(10.20.30.202)의 모든 트래픽(ip ... any -> any any)을 플래그하는 Suricata 룰(sid 9509001)을 local.rules 에 추가 → reload-rules 로 즉시 반영 → 출발지가 보낸 트래픽이 eve.json 에 잡히는지 grep 으로 검증 → 시연이 끝나면 sed 로 룰 삭제(self-clean)해 공유 인프라를 원복한다. 운영 환경은 같은 논리를 firewall drop 으로 실제 차단하지만, 공유 실습은 다른 학생 트래픽까지 끊기지 않도록 alert 로 시연만 한다. 핵심 — 격리는 빠르되 정밀해야 한다(범위가 넓으면 정상 서비스도 차단)."
+    expected_output: |
+      {"message": "done", "return": "OK"}
+      21
+      rule_removed
     verify:
       type: output_contains
       expect: 'rule_removed'
@@ -254,6 +275,12 @@ steps:
       # 3) Eradicate — 계정(홈까지 -r) + 웹쉘 빠짐없이 제거
       docker exec el34-web sh -c 'userdel -r socw9bd 2>/dev/null; rm -f /tmp/socw9_shell.php; echo eradicated'
     answer_detail: "Eradicate(제거) = 격리로 가둔 위협의 발판을 뿌리째 삭제. 먼저 osquery(계정)·ls(웹쉘)로 발판의 존재를 확인(증적 — 실제 사고라면 법무·포렌식 증거)한 뒤, 계정은 userdel -r(홈까지), 웹쉘은 rm 으로 제거한다. '확인 → 제거' 순서가 핵심이다. 발판이 하나라도 남으면 공격자가 패치·격리를 우회해 재침투하므로, 모든 지속성 수단(계정·cron·키·웹쉘)을 빠짐없이 끊어야 한다."
+    expected_output: |
+      [
+        {"username":"socw9bd"}
+      ]
+      -rw-r--r-- 1 root root 27 Jun 26 14:46 /tmp/socw9_shell.php
+      eradicated
     verify:
       type: output_contains
       expect: 'eradicated'
@@ -297,6 +324,10 @@ steps:
       # 3) 해석 — 서비스 정상 + 발판 0 = 복구 완료
       echo "→ 서비스 정상 + 발판 0 = 복구 완료"
     answer_detail: "Recover(복구) = 정상화 검증 관문. 두 가지를 동시에 확인 — (1) 웹 헬스체크(curl -w %{http_code})로 서비스가 정상 응답하는지, (2) id 재조회로 백도어 계정이 정말 사라졌는지(clean). 제거를 했다고 끝이 아니라, 서비스 정상 + 발판 잔재 0 이 함께 충족돼야 사고가 닫힌다. 잔재가 남으면 제거(미션 5)로 돌아가고, 이후 모니터링을 강화해 재발을 감시한다."
+    expected_output: |
+      web=302
+      clean
+      → 서비스 정상 + 발판 0 = 복구 완료
     verify:
       type: output_contains
       expect: 'clean'
@@ -340,6 +371,10 @@ steps:
       # 3) 재발방지 — WAF 강화/앱 패치/탐지룰(W04)/계정 모니터링(W12)
       echo "재발방지: ① WAF 룰 강화 ② 앱 패치/입력검증 ③ 탐지룰(W04) 추가 ④ 계정 모니터링(W12)"
     answer_detail: "Lessons learned(교훈) = 사고를 끈 뒤 재발을 막는 마지막 단계. 세 묶음 — 타임라인(스캔→SQLi 침투→백도어/웹쉘 발판→IR 대응), 근본원인(왜 가능했나 = 웹앱 SQLi 취약점, '결과'가 아닌 '본질적 약점'), 재발방지(① WAF 룰 강화 ② 앱 패치/입력검증 ③ 탐지룰 W04 추가 ④ 계정 모니터링 W12). 결과만 지우고 근본원인을 두면 재침투하므로, 정리한 재발방지책이 실제 룰·패치로 이행되어야 의미가 있다."
+    expected_output: |
+      타임라인: 스캔→SQLi 침투→백도어 계정/웹쉘 발판→(IR로 격리·제거·복구)
+      근본원인: 웹앱 SQLi 취약점 악용
+      재발방지: ① WAF 룰 강화 ② 앱 패치/입력검증 ③ 탐지룰(W04) 추가 ④ 계정 모니터링(W12)
     verify:
       type: output_contains
       expect: '근본'
@@ -389,6 +424,14 @@ steps:
       ## 결론: IR은 절차 — 식별→격리→제거→복구→교훈. 첫 60분의 행동이 피해를 가른다
       EOF
     answer_detail: "IR 보고서 = 5단계 종합 산출물. 식별(출발지 10.20.30.202·SQLi 침투·백도어 발판 → P1) → 격리(IDS 룰 9509001 출발지 플래그, 운영은 firewall drop) → 제거(userdel socw9bd + rm 웹쉘, osquery 헌팅) → 복구(웹 정상 + 발판 잔재 0) → 교훈(근본원인 SQLi, 재발방지 WAF/패치/탐지룰)을 한 흐름으로 엮는다. 분석(W01–W08)을 대응(IR)으로 전환한 결과를 절차대로 빠르고 정밀하게 문서화하는 것이 핵심 — 첫 60분의 행동이 피해를 가른다."
+    expected_output: |
+      # SOC W09 IR 보고서
+      ## 1. Identify: 출발지 10.20.30.202, web SQLi 침투, 백도어 계정 socw9bd+웹쉘 (P1 침해)
+      ## 2. Contain: IDS 격리 룰(9509001) 출발지 플래그 (운영=firewall drop)
+      ## 3. Eradicate: userdel socw9bd + rm 웹쉘 (osquery 헌팅)
+      ## 4. Recover: 웹 정상 응답 + 발판 잔재 0
+      ## 5. Lessons: 근본원인 SQLi 취약점, 재발방지 WAF/패치/탐지룰
+      ## 결론: IR은 절차 — 식별→격리→제거→복구→교훈. 첫 60분의 행동이 피해를 가른다
     verify:
       type: output_contains
       expect: 'Eradicate'

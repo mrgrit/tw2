@@ -57,6 +57,10 @@ steps:
       # 1) 심화 열거 도구(nikto/gobuster/ffuf) 설치 경로 확인(없으면 빈 출력)
       docker exec el34-attacker sh -c 'command -v nikto; command -v gobuster; command -v ffuf'
     answer_detail: "심화 열거 도구 점검 — nikto(웹 취약점 자동 점검), ffuf(디렉토리 브루트포싱: gobuster 는 el34-attacker 인자 버그로 대체), nmap NSE(핑거프린팅 자동화). command -v 가 실행 파일 경로를 출력하면 설치됨. 세 도구 모두 el34-attacker 에 완비. 합격 판정은 출력에 'nikto' 가 보이는지로 한다."
+    expected_output: |
+      /usr/bin/nikto
+      /usr/bin/gobuster
+      /usr/local/bin/ffuf
     verify:
       type: output_contains
       expect: 'nikto'
@@ -93,6 +97,14 @@ steps:
       # 1) NSE(http-headers/http-title)로 HTTP 헤더·타이틀 자동 수집(수동 curl 핑거프린팅 자동화)
       docker exec el34-attacker nmap -sV --script=http-headers,http-title -p 80 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -iE "http|Server|title|open" | head
     answer_detail: "NSE(Nmap Scripting Engine) 스크립트 http-headers/http-title 가 HTTP 응답 헤더(Server 등)와 페이지 타이틀을 자동 수집 — W01 의 수동 curl 핑거프린팅을 자동화한 것. title/Server 로 대상 웹의 기술 스택·정체를 식별한다. vuln 카테고리 스크립트로 알려진 취약점까지 능동 점검 가능하나 매우 시끄러움(고급). 깊은 스캔일수록 요청이 늘어 Suricata 탐지 가능성↑. 합격은 출력에 'http' 정보가 보이는지로 판정."
+    expected_output: |
+      Starting Nmap 7.80 ( https://nmap.org ) at 2026-06-26 14:43 UTC
+      80/tcp open  http    Apache httpd 2.4.52 ((Ubuntu))
+      | http-headers:
+      |   Server: Apache/2.4.52 (Ubuntu)
+      |_http-server-header: Apache/2.4.52 (Ubuntu)
+      |_http-title: 403 Forbidden
+      Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
     verify:
       type: output_contains
       expect: 'http'
@@ -133,6 +145,20 @@ steps:
       # 2) 해석 — nikto는 알려진 취약 파일/헤더 누락 자동 점검, UA에 Nikto 노출 → WAF에 잡힘
       echo "→ nikto는 알려진 취약 파일/헤더 누락을 자동 점검. UA에 Nikto 노출 → WAF에 잡힘"
     answer_detail: "nikto = 웹 취약점 자동 스캐너. 알려진 취약 파일/위험 설정/보안 헤더 누락 수천 항목을 점검 DB 로 자동 확인. 출력 각 줄이 발견 항목(추가 조사 대상). 빠르지만 요청 UA(User-Agent)에 'Nikto' 가 박혀 WAF 의 913 scanner 룰(CRS 스캐너 탐지 룰군)에 즉시·명확히 잡히고, 단시간 다량 요청으로 IDS 에도 남는다 — 정보량은 높으나 은밀성은 최저. 합격은 출력에 'Nikto' 가 보이는지로 판정."
+    expected_output: |
+      - Nikto v2.1.5
+      ---------------------------------------------------------------------------
+      + ERROR: Host maximum execution time of 30 seconds reached
+      + Target IP:          10.20.30.1
+      + Target Hostname:    adminconsole.6v6.lab
+      + Target Port:        80
+      + Start Time:         2026-06-26 14:44:05 (GMT0)
+      ---------------------------------------------------------------------------
+      + Server: Apache/2.4.52 (Ubuntu)
+      + The anti-clickjacking X-Frame-Options header is not present.
+      + No CGI Directories found (use '-C all' to force check all possible dirs)
+      + ERROR: Host maximum execution time of 30 seconds reached
+      … (이하 생략)
     verify:
       type: output_contains
       expect: 'Nikto'
@@ -183,6 +209,17 @@ steps:
       # 4) 해석 — 매칭 상태코드=있는 경로(숨은 표면), 대량 요청이라 access.log/IDS에 폭주
       echo "→ ffuf -mc로 매칭된 상태코드(200/301/403)=있는 경로(숨은 표면). 대량 요청이라 access.log/IDS에 폭주"
     answer_detail: "디렉토리 브루트포싱 = 워드리스트의 각 단어를 URL 의 FUZZ 자리에 대입(퍼징)해 요청, 응답 상태코드로 숨은 경로(/admin,/login...)를 판별. ffuf -mc 200,301,302,403 으로 존재 경로만 필터(200=접근가능, 301/302=이동, 403=존재하나 권한차단; 404 는 제외). 403 은 실패가 아니라 '발견'이다. Host 헤더로 vhost(dvwa) 라우팅. 링크에 노출 안 된 익스플로잇 표면을 끌어낸다. 대량 요청이라 access.log/IDS 에 폭주로 남아 시끄럽다. (el34-attacker gobuster 는 인자 버그 → ffuf 사용.) 합격은 출력에 'login' 등 발견 경로가 보이는지로 판정."
+    expected_output: |
+      backup
+      login.php
+      admin
+      login
+      setup.php
+      robots.txt
+      index.php
+      config
+      api
+      → ffuf -mc로 매칭된 상태코드(200/301/403)=있는 경로(숨은 표면). 대량 요청이라 access.log/IDS에 폭주
     verify:
       type: output_contains
       expect: 'login'
@@ -228,6 +265,12 @@ steps:
       # 3) 해석 — 심화 정찰은 매우 시끄럽다(nikto UA/대량 요청이 WAF/IDS에 명확히 남음)
       echo "→ 심화 정찰은 매우 시끄럽다 — nikto UA(913)/대량 요청이 WAF/IDS에 명확히 남는다"
     answer_detail: "심화 열거의 대가 = 탐지. nikto 의 노출된 UA 가 web ModSecurity 의 913 scanner 룰(CRS 스캐너 탐지)에 명확히(다수) 매치되고, ffuf 의 대량 요청이 ips Suricata eve.json 에 출처 IP(10.20.30.202)별 alert 로 남는다. el34 는 출처 IP 를 fw→ips→web 보존하므로 흔적의 src 가 실제 공격자 그대로다. Blue Team 은 이 흔적으로 스캐닝을 탐지·차단한다 — 깊이와 은밀은 trade-off. 합격은 출력에 'nikto'(또는 913) 탐지가 보이는지로 판정."
+    expected_output: |
+      300 913100
+          141 Nikto
+          846 nikto
+          216 10.20.30.202
+      → 심화 정찰은 매우 시끄럽다 — nikto UA(913)/대량 요청이 WAF/IDS에 명확히 남는다
     verify:
       type: output_contains
       expect: 'nikto'
@@ -275,6 +318,11 @@ steps:
       # 4) 종합 — W01 기본 표면 + W02 숨은 표면 = 익스플로잇 후보 확대
       echo "→ W01 기본 표면 + W02 숨은 표면 = 익스플로잇 후보 확대"
     answer_detail: "심화 열거로 공격 표면 확장 — 숨은 경로(ffuf) + 웹 취약점(nikto) + 상세 기술 스택(NSE)을 하나로 종합. W01 기본 표면 + W02 숨은 표면 = 익스플로잇(W04+)의 표적 목록. 단순 명령 실행이 아니라 발견을 묶는 관리적 산출물. 합격은 출력에 '표면' 정리가 보이는지로 판정."
+    expected_output: |
+      숨은 경로: ffuf 발견(/admin,/api,/backup...)
+      웹 취약점: nikto findings(취약 파일/헤더 누락)
+      기술 스택: NSE(http-headers/title)
+      → W01 기본 표면 + W02 숨은 표면 = 익스플로잇 후보 확대
     verify:
       type: output_contains
       expect: '표면'
@@ -323,6 +371,11 @@ steps:
       # 4) 결론 — 깊이 vs 은밀 trade-off(정보 vs 탐지 저울질)
       echo "→ 공격자는 '얼마나 알아낼까(정보)'와 '얼마나 들킬까(탐지)'를 저울질 = 깊이 vs 은밀 trade-off"
     answer_detail: "심화 열거는 깊이(정보량)와 은밀(탐지 위험)의 trade-off. 시끄러운 도구일수록 정보가 많지만 탐지된다 — nikto(UA 노출→913), dir brute(폭주), NSE(능동 요청). 회피(UA 변조·느린 스캔·작은 워드리스트·분산)는 탐지를 줄이지만 정보 수집 속도·범위를 일부 포기한다(회피는 공짜가 아님). 실전 공격자는 대상 방어 수준에 맞춰 조절. 합격은 출력에 'trade-off'와 완화 기법이 보이는지로 판정."
+    expected_output: |
+      nikto:     정보 높음 / 탐지 매우높음(UA 노출) → 완화: UA 변조, 느린 스캔
+      dir brute: 정보 높음 / 탐지 높음(요청 폭주)   → 완화: rate-limit, 작은 wordlist
+      nmap NSE:  정보 중간 / 탐지 중간             → 완화: 스크립트 선별
+      → 공격자는 '얼마나 알아낼까(정보)'와 '얼마나 들킬까(탐지)'를 저울질 = 깊이 vs 은밀 trade-off
     verify:
       type: output_contains
       expect: 'trade-off'
@@ -371,6 +424,13 @@ steps:
       ## 결론: 심화 정찰로 표면 확장, 단 탐지 trade-off 인지
       EOF
     answer_detail: "심화 열거 종합 보고 = 깊은 정보 + 시끄러움의 기록. NSE/nikto/ffuf 결과, 확장된 공격 표면(기본+숨은), 방어 탐지(913/IDS), 깊이 vs 은밀 trade-off 4요소를 한 문서로 엮는다 — PTES 보고 단계의 축소판. 표면을 넓히되 탐지 trade-off 를 인지하는 것이 결론. 다음은 표면별 익스플로잇(W04+). 합격은 보고서에 '정찰' 종합(4요소)이 보이는지로 판정."
+    expected_output: |
+      # 공격 W02 심화 정찰 보고서
+      ## 1. 결과: NSE(헤더/타이틀), nikto(취약점), ffuf(숨은 경로)
+      ## 2. 표면: 기본(W01) + 숨은 경로/취약점 = 익스플로잇 후보 확대
+      ## 3. 방어 탐지: nikto UA(WAF 913), 대량 요청(IDS) — 매우 시끄러움
+      ## 4. trade-off: 깊이↑ = 정보↑ + 탐지↑. 은밀하려면 UA변조/느린스캔(정보 일부 포기)
+      ## 결론: 심화 정찰로 표면 확장, 단 탐지 trade-off 인지
     verify:
       type: output_contains
       expect: '정찰'

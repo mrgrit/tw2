@@ -54,6 +54,8 @@ steps:
       # 1) 차단형 dvwa 도달성 — 응답코드(우회 성공/실패를 또렷이 보려면 차단 모드 대상)
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
     answer_detail: "필터 우회 대상 = dvwa(차단 모드, ModSec CRS). 응답 코드가 출력되면 대상 도달로 판정 — 차단형 vhost 라야 평문 403 대비 우회의 성공/실패를 또렷이 측정할 수 있다."
+    expected_output: |
+      dvwa=302
     verify:
       type: output_contains
       expect: 'dvwa'
@@ -95,6 +97,9 @@ steps:
       # 2) 해석 — 평문 SQLi=403(baseline), 우회로 이걸 통과시킬 수 있나?
       echo "→ 평문 SQLi = 403(차단). 이게 baseline. 우회로 이걸 통과시킬 수 있나?"
     answer_detail: "baseline = 평문 SQLi → 403. 변형 없는 UNION SELECT 가 CRS 942 룰군에 곧장 잡혀 anomaly score 누적 → 949110 차단(403). 이후 우회 기법이 이 차단을 200 으로 통과시키는지가 본 주차의 관건."
+    expected_output: |
+      plain=403
+      → 평문 SQLi = 403(차단). 이게 baseline. 우회로 이걸 통과시킬 수 있나?
     verify:
       type: output_contains
       expect: '403'
@@ -140,6 +145,10 @@ steps:
       # 3) 해석 — CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403
       echo "→ %55=U 등 인코딩 → CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403"
     answer_detail: "인코딩 우회 = 같은 문자를 다른 표기로 적기(%55=U, %2527=이중인코딩→'). 노림수는 'WAF 가 디코드 전에 검사한다'는 가정이지만, CRS 는 t:urlDecodeUni transformation 으로 먼저 디코드한 뒤 검사하므로 원형 UNION SELECT 로 되돌아가 942 에 잡힘 → 우회 실패(대부분 403)."
+    expected_output: |
+      dbl=403
+      mix=403
+      → %55=U 등 인코딩 → CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403
     verify:
       type: output_contains
       expect: '403'
@@ -194,6 +203,11 @@ steps:
       # 4) 대조 — 탭 분할은 compressWhitespace로 복원돼 차단(403)
       echo "→ 대조: 탭 분할(tab=$T)은 t:compressWhitespace로 복원돼 차단. 변형마다 결과가 다르다"
     answer_detail: "분할/난독화 = 문자가 아니라 키워드 형태를 흐트러뜨리기. 탭(%09)은 t:compressWhitespace 가, 대소문자(UnIoN)는 t:lowercase 가 복원해 차단(403). 그러나 주석 분할(UN/**/ION)은 이 CRS 3.3.2 의 libinjection 이 토큰을 복원하지 못해 실제로 302 우회된다 — 판정은 주석분할이 차단(403)이 아닌 우회임을 게이트한다(탭 차단·주석 우회의 대조)."
+    expected_output: |
+      cmt=302
+      tab=403
+      → 주석분할 우회 성공(cmt=302): libinjection이 주석분할을 못 복원
+      → 대조: 탭 분할(tab=403)은 t:compressWhitespace로 복원돼 차단. 변형마다 결과가 다르다
     verify:
       type: output_contains
       expect: '우회 성공'
@@ -247,6 +261,12 @@ steps:
       # 5) 결론 — 정규화는 인코딩/탭/대소문자는 잡지만 주석분할은 놓침 → WAF 단독 방어 불가
       echo "→ 정규화는 인코딩/탭/대소문자는 잡지만 주석분할은 놓침. WAF 단독 방어 불가 → 코드 수정"
     answer_detail: "정규화(transformation)는 인코딩(t:urlDecodeUni)·탭/공백(t:compressWhitespace)·대소문자(t:lowercase)를 원형으로 통일해 942 로 수렴시켜 차단(403)한다. 그러나 이 CRS 3.3.2 의 libinjection 은 주석 분할(UN/**/ION)을 토큰으로 복원하지 못해 302 로 우회된다 — 정규화는 강력하나 만능이 아니며, 그래서 WAF 는 단독 방어가 될 수 없고 근본 해결은 코드 수정(파라미터 바인딩)이다."
+    expected_output: |
+      t:urlDecodeUni  → %55→U, %2527→' (인코딩 변형 차단 403)
+      t:compressWhitespace → %09/다중공백 → 단일 (탭 분할 차단 403)
+      t:lowercase → UnIoN → union (대소문자 변형 차단 403)
+      빈틈: UN/**/ION 주석분할 → libinjection 토큰 미복원 → 302 우회(정규화의 한계)
+      → 정규화는 인코딩/탭/대소문자는 잡지만 주석분할은 놓침. WAF 단독 방어 불가 → 코드 수정
     verify:
       type: output_contains
       expect: '정규화'
@@ -286,6 +306,17 @@ steps:
       # 2) 해석 — 인코딩/주석/공백 우회 모두 정규화 후 942(SQLi)에 탐지(CRS 강점)
       echo "→ 인코딩/주석/공백 우회 모두 정규화 후 942(SQLi)에 탐지. CRS의 강점"
     answer_detail: "모든 우회 시도가 정규화 후 942에 탐지된다. 표현은 달라도 정규화하면 같은 공격 — CRS가 다양한 우회를 한 룰군(942)으로 흡수하는 것이 강점이다. 출력에 942 가 보이면 통과."
+    expected_output: |
+      16 941100
+           12 941110
+            4 941120
+           16 941160
+          168 942100
+            2 942140
+           28 942160
+           28 942190
+          296 949110
+      → 인코딩/주석/공백 우회 모두 정규화 후 942(SQLi)에 탐지. CRS의 강점
     verify:
       type: output_contains
       expect: '942'
@@ -329,6 +360,10 @@ steps:
       # 3) 결론 — WAF 우회는 가능하나 어렵고 환경 특이적(WAF는 보조 방어)
       echo "→ WAF 우회는 가능하나 어렵고 환경 특이적. WAF는 시간을 벌어주는 보조 방어"
     answer_detail: "우회의 현실 = 단순 기법은 무력, 고급은 정규화-백엔드 파서 차이를 악용(환경 특이적). 정규화가 놓치는 표현(특이 charset/overlong UTF-8), WAF↔백엔드 파서 차이, HPP(파라미터 오염), 페이로드 분산/시간차가 고급 방향. WAF는 완벽하지 않지만 진입장벽을 크게 높이는 보조 방어다."
+    expected_output: |
+      단순 우회(인코딩/주석/대소문자): CRS 정규화에 무력
+      고급: 정규화가 놓치는 표현(특이 charset/overlong UTF-8), 파서 차이(WAF vs 백엔드), HPP(파라미터 오염), 페이로드 분산/시간차
+      → WAF 우회는 가능하나 어렵고 환경 특이적. WAF는 시간을 벌어주는 보조 방어
     verify:
       type: output_contains
       expect: 'HPP'
@@ -375,6 +410,12 @@ steps:
       ## 결론: 같은 공격을 다르게 표현해도 정규화가 통일 → CRS가 이긴다. 우회는 어렵다
       EOF
     answer_detail: "필터 우회 vs 정규화 = 표현 다양화 vs 표현 통일. CRS 정규화(urlDecodeUni/removeComments/compressWhitespace/lowercase)가 단순 우회를 이긴다(모두 942 수렴). 고급 우회는 파서 차이·HPP 를 악용하나 환경 특이적이라 어렵다. 출력에 '우회' 가 보이면 통과."
+    expected_output: |
+      # 공격 W10 필터 우회 보고서
+      ## 1. 기준: 평문 SQLi 403. 우회: 이중인코딩/유니코드/주석분할/탭/대소문자
+      ## 2. 정규화: CRS transformation(urlDecodeUni/removeComments/compressWhitespace/lowercase)으로 통일
+      ## 3. 탐지: 모든 우회 → 정규화 후 942. 한계: 단순 무력, 고급은 파서차이/HPP(환경특이)
+      ## 결론: 같은 공격을 다르게 표현해도 정규화가 통일 → CRS가 이긴다. 우회는 어렵다
     verify:
       type: output_contains
       expect: '우회'

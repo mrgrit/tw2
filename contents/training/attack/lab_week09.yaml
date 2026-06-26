@@ -57,6 +57,8 @@ steps:
       # 1) 패킷 크래프팅 도구 scapy 동작 확인(버전) — raw socket은 root라 가능
       docker exec el34-attacker python3 -c "import scapy; print('scapy', scapy.__version__)"
     answer_detail: "scapy = 패킷을 한 필드씩 직접 조립하는 라이브러리. raw socket(낮은 계층 패킷 전송)에 root 권한이 필요하며 attacker 컨테이너는 root 라 동작한다. 버전 문자열이 stdout 에 출력되면 가용으로 판정. el34 엔 hping3 가 없어 패킷 크래프팅은 scapy 로 한다."
+    expected_output: |
+      scapy 2.7.0
     verify:
       type: output_contains
       expect: 'scapy'
@@ -100,6 +102,9 @@ steps:
       # 2) 해석 — SYN-ACK(0x12)=open, RST(0x14)=closed, 무응답=filtered
       echo "→ SYN 보내 SYN-ACK(0x12) 받으면 open, RST(0x14) 받으면 closed"
     answer_detail: "scapy 로 SYN 을 직접 조립(IP/TCP flags='S')해 보내고, 응답 플래그로 포트 상태를 판정한다 — SYN-ACK(0x12)=open, RST(0x14)=closed, 무응답=filtered. stdout 의 'open:' 목록으로 채점한다. nmap 이 자동화하는 반열림 스캔을 패킷 한 필드씩 수동으로 한 것이며, 그래서 다음 미션의 비정상 플래그 조합도 자유롭게 만들 수 있다."
+    expected_output: |
+      open: [22, 80, 443, 8001, 8002]
+      → SYN 보내 SYN-ACK(0x12) 받으면 open, RST(0x14) 받으면 closed
     verify:
       type: output_contains
       expect: 'open:'
@@ -143,6 +148,9 @@ steps:
       # 2) 해석 — F/FPU/0로 표준 아닌 플래그 우회 시도(정상에 없는 모양이라 시그니처에 취약)
       echo "→ FIN(F)/XMAS(FPU)/NULL(0) — 표준 아닌 플래그로 일부 필터/스택 우회 시도"
     answer_detail: "비정상 스캔 = 표준 SYN 대신 FIN(F)/XMAS(FPU)/NULL(0) 플래그로 보내 일부 stateless 필터·오래된 스택의 처리 차이를 노리는 정찰. scapy 라 플래그 문자열만 바꿔 임의 조합을 조립한다(nmap 의 -sF/-sX/-sN 대응). 'sent' 출력으로 전송 성공을 채점한다. 우회를 노리지만 정상에 없는 모양이라 오히려 시그니처 탐지에 취약하다는 trade-off 가 핵심."
+    expected_output: |
+      FIN/XMAS/NULL sent
+      → FIN(F)/XMAS(FPU)/NULL(0) — 표준 아닌 플래그로 일부 필터/스택 우회 시도
     verify:
       type: output_contains
       expect: 'sent'
@@ -192,6 +200,10 @@ steps:
       # 4) 해석 — 대량 SYN(200포트)이 임계 초과 → scan 탐지, 소량은 임계 미달(은밀)
       echo "→ 대량 SYN(200포트)이 Suricata 임계 초과 → scan 탐지. 소량은 임계 미달(은밀)"
     answer_detail: "임계 기반 탐지는 빈도·규모로 잡는다 — 소량 스캔(미션 2 의 6~7개)은 임계 미달로 통과하지만 대량(1~200, 100+ 포트)은 Suricata 의 스캔 임계를 초과해 eve.json 에 'scan' 시그니처로 남는다. 출처 IP 10.20.30.202(SNAT 없어 보존) 필터로 집계한 결과에 scan 이 보이면 탐지. 공격자는 느림·소량으로 회피, 방어자는 임계 튜닝(미탐↔오탐 균형)으로 대응한다."
+    expected_output: |
+      mass scan sent
+            3 6V6 Possible nmap SYN scan
+      → 대량 SYN(200포트)이 Suricata 임계 초과 → scan 탐지. 소량은 임계 미달(은밀)
     verify:
       type: output_contains
       expect: 'scan'
@@ -234,6 +246,9 @@ steps:
       # 2) 해석 — SA(SYN-ACK)=open, RA(RST-ACK)=closed, no-resp=filtered
       echo "→ SA(SYN-ACK)=open, RA(RST-ACK)=closed, no-resp=filtered. 플래그가 포트 상태를 말한다"
     answer_detail: "응답 플래그 해석 = 패킷 분석의 핵심. sr1 로 받은 응답의 TCP 플래그를 직접 꺼내 SA(0x12)=open, RA(0x14)=closed, 무응답=filtered 로 판정한다. stdout 의 'flags' 출력으로 채점. 미션 2 가 숫자(0x12)로 걸렀다면 여기선 같은 플래그를 글자(SA)로 읽는다 — 와이어의 응답을 필드 단위로 해독하는 정찰·디버깅의 토대."
+    expected_output: |
+      port 80 응답 flags: SA
+      → SA(SYN-ACK)=open, RA(RST-ACK)=closed, no-resp=filtered. 플래그가 포트 상태를 말한다
     verify:
       type: output_contains
       expect: 'flags'
@@ -297,6 +312,12 @@ steps:
       # 5) self-clean — 룰 삭제 + reload + 잔재 0 확인(base 보존)
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "rule_removed (잔재=$(grep -c 9409001 /etc/suricata/rules/local.rules))"'
     answer_detail: "비정상 스캔은 시그니처로 잡는다 — NULL 스캔(flags:0)은 정상 트래픽엔 없어 명확한 탐지 대상. Suricata flags:0 룰(9409001) 작성→문법검증(suricata -T, successfully loaded)→reload→NULL 트리거→eve 확인. 끝나면 sed 삭제로 base 보존. 임계로는 단발을 못 잡지만 시그니처는 정상에 없는 모양 하나만으로 잡는다는 게 핵심."
+    expected_output: |
+      26/6/2026 -- 14:45:15 - <Warning> - [ERRCODE: SC_ERR_EVENT_ENGINE(210)] - can't suppress sid 9005011, gid 1: unknown rule
+      26/6/2026 -- 14:45:15 - <Notice> - Configuration provided was successfully loaded. Exiting.
+      null sent
+      0
+      rule_removed (잔재=0)
     verify:
       type: output_contains
       expect: 'successfully'
@@ -345,6 +366,11 @@ steps:
       # 4) 결론 — 공격자는 속도/은밀 trade-off, 방어자는 임계 튜닝+비정상 플래그 룰
       echo "→ 공격자는 속도/은밀 trade-off. 방어자는 임계 튜닝 + 비정상 플래그 룰"
     answer_detail: "스캔의 은밀-탐지 trade-off — 소량/느림은 은밀하나 비효율, 대량은 빠르나 탐지. 비정상 플래그는 우회 시도지만 정상에 없는 모양이라 시그니처로 잡힌다. 공격자는 속도/은밀을 저울질하고 방어자는 임계 튜닝 + 비정상 플래그 룰로 대응한다."
+    expected_output: |
+      소량/느린 SYN 스캔: 임계 미달 → 은밀(but 느림)
+      대량/빠른 스캔: 빠르나 Suricata scan 임계 초과 → 탐지
+      비정상 플래그(NULL/XMAS): 일부 필터 우회하나 명확한 시그니처라 탐지 쉬움
+      → 공격자는 속도/은밀 trade-off. 방어자는 임계 튜닝 + 비정상 플래그 룰
     verify:
       type: output_contains
       expect: '은밀'
@@ -393,6 +419,13 @@ steps:
       ## 결론: 패킷 직접 조립(scapy)으로 유연한 스캔, 단 비정상/대량은 탐지된다
       EOF
     answer_detail: "scapy = 패킷 수준 제어. 크래프팅(SYN→open 식별)/비정상 스캔(FIN/XMAS/NULL)의 유연성 vs 탐지(임계 기반 scan + 시그니처 flags:0)를 종합한다. 네트워크 계층 공격의 기초이며, 출력에 'scapy' 가 보이면 통과."
+    expected_output: |
+      # 공격 W09 scapy 보고서
+      ## 1. SYN 크래프팅: sr(TCP flags=S) → SYN-ACK(0x12)=open 식별
+      ## 2. 비정상 스캔: FIN(F)/XMAS(FPU)/NULL(0) — 필터 우회 시도
+      ## 3. 탐지: 대량 SYN(200포트)→Suricata scan, NULL 스캔→flags:0 룰(9409001)
+      ## 4. trade-off: 소량 은밀 vs 대량 탐지. 비정상 플래그는 시그니처로 잡힘
+      ## 결론: 패킷 직접 조립(scapy)으로 유연한 스캔, 단 비정상/대량은 탐지된다
     verify:
       type: output_contains
       expect: 'scapy'

@@ -58,6 +58,10 @@ steps:
       # 3) 최근 sshd 이벤트 1건 미리보기
       grep -a sshd /var/log/auth.log | tail -1
     answer_detail: "호스트 /var/log/auth.log 가 sshd 인증 분석의 원천이다. 계정 ccc 는 adm 그룹이라 sudo 없이 이 파일을 읽는다. 컨테이너(el34-web 등) 안에는 auth.log 가 없으므로, 인증 분석은 컨테이너가 아니라 반드시 호스트에서 한다. grep -ac 가 0보다 큰 값을 내면 sshd 이벤트가 쌓여 있다는 뜻이다."
+    expected_output: |
+      -rw-r----- 1 syslog adm 809432  6월 26 23:45 /var/log/auth.log
+      4373
+      Jun 26 23:45:50 elf4 sshd[2303494]: Connection closed by invalid user socw1bad8 127.0.0.1 port 36684 [preauth]
     verify:
       type: output_contains
       expect: 'sshd'
@@ -108,6 +112,9 @@ steps:
       # 3) 완료 마커
       echo "brute+scan done"
     answer_detail: "wordlist 공격은 여러 계정(root/admin/oracle…)을 차례로 시도하므로 auth.log 에 Invalid user(없는 계정)·Failed(존재 계정) 다발로 남는다. 그리고 실전에서 대입 직전에는 보통 포트 스캔(정찰)이 선행한다 — 공격자가 SSH 포트(22)가 열렸는지 먼저 확인하기 때문. 이 step 은 그 두 단계(스캔+대입)를 통제된 환경에서 함께 생성해, 이후 분석 step 들이 읽을 흔적을 만든다."
+    expected_output: |
+      scanned
+      brute+scan done
     verify:
       type: output_contains
       expect: 'done'
@@ -151,6 +158,16 @@ steps:
       # 3) 해석 — 짧은 시간 다발 = 자동화 무차별 대입(정상 오타는 하루 2~3건)
       echo "→ 짧은 시간 다발 = 자동화 무차별 대입(정상 오타는 하루 2~3건)"
     answer_detail: "실패 빈도가 핵심 1차 신호다 — 1분에 수십 건이면 자동화 공격(임계 기반 판단). 정상 사용자의 오타는 드물고 산발적(하루 2~3건). 빈도만으로 공격/정상을 1차로 가른다. 다만 공격자가 시도 간격을 늘려(low-and-slow) 임계 아래로 깔면 빈도만으로는 놓치므로, 다음 step 의 계정 분포·성공 여부와 함께 봐야 한다."
+    expected_output: |
+      Jun 26 23:45:50 elf4 sshd[2303433]: Invalid user socw1bad1 from 127.0.0.1 port 36620
+      Jun 26 23:45:50 elf4 sshd[2303436]: Invalid user socw1bad2 from 127.0.0.1 port 36624
+      Jun 26 23:45:50 elf4 sshd[2303439]: Invalid user socw1bad3 from 127.0.0.1 port 36640
+      Jun 26 23:45:50 elf4 sshd[2303461]: Invalid user socw1bad4 from 127.0.0.1 port 36646
+      Jun 26 23:45:50 elf4 sshd[2303466]: Invalid user socw1bad5 from 127.0.0.1 port 36656
+      Jun 26 23:45:50 elf4 sshd[2303469]: Invalid user socw1bad6 from 127.0.0.1 port 36670
+      Jun 26 23:45:50 elf4 sshd[2303472]: Invalid user socw1bad7 from 127.0.0.1 port 36674
+      Jun 26 23:45:50 elf4 sshd[2303494]: Invalid user socw1bad8 from 127.0.0.1 port 36684
+      Jun 26 23:45:52 elf4
     verify:
       type: output_contains
       expect: 'Invalid user'
@@ -194,6 +211,19 @@ steps:
       # 3) 해석 — root/admin/oracle 등 여러 계정 = 사전(wordlist) 기반 무차별 대입
       echo "→ root/admin/oracle 등 여러 계정 = 사전(wordlist) 기반 무차별 대입"
     answer_detail: "노린 계정 분포가 공격 성격을 드러낸다. 여러 계정(root/admin/oracle/test…)을 차례로 시도 = 사전(wordlist) 기반 무차별 대입. 반대로 한 계정만 집요하게 반복 = 특정 계정 표적(성격이 다른 공격). Invalid user(없는 계정) 다수는 '아무 계정이나 찔러보는' 강한 자동화 신호다."
+    expected_output: |
+      26 Invalid user oracle
+           26 Invalid user admin
+           18 Invalid user test
+           10 Invalid user socw1bad8
+           10 Invalid user socw1bad7
+           10 Invalid user socw1bad6
+           10 Invalid user socw1bad5
+           10 Invalid user socw1bad4
+           10 Invalid user socw1bad3
+           10 Invalid user socw1bad2
+      0
+      → root/admin/oracle 등 여러 계정 = 사전(wordlist) 기반 무차별 대입
     verify:
       type: output_contains
       expect: 'root'
@@ -241,6 +271,14 @@ steps:
       # 3) 판정 — Accepted가 공격 출발지에서 나오면 침투 성공(P1!)
       echo "→ Accepted는 정상 계정(예: ccc) 로그인. 공격 출발지에서 Accepted가 나오면 침투 성공(P1!)"
     answer_detail: "사건 심각도의 분기점 — 공격(다발 Failed/Invalid)과 별개로, Accepted 가 공격 출발지에서 나오면 침투 성공이므로 즉시 P1(최우선)로 격상한다. 반대로 정상 계정(ccc 등)의 Accepted 는 합법적 로그인이다. 따라서 'Accepted 가 있다'만으로 판단하지 말고, 그 출발지 IP 와 계정을 공격 흔적과 대조해 성공이 공격인지 정상인지 판별해야 한다. 이것이 IR 의 핵심 질문 '들어왔나?'에 답하는 단계다."
+    expected_output: |
+      Jun 26 23:25:30 elf4 sshd[2230352]: Accepted password for ccc from 192.168.0.107 port 51238 ssh2
+      Jun 26 23:42:06 elf4 sshd[2285015]: Accepted password for ccc from 192.168.0.107 port 39098 ssh2
+      Jun 26 23:43:17 elf4 sshd[2289181]: Accepted password for ccc from 192.168.0.107 port 51036 ssh2
+      Jun 26 23:43:43 elf4 sshd[2290937]: Accepted password for ccc from 192.168.0.107 port 43214 ssh2
+      Jun 26 23:45:49 elf4 sshd[2303209]: Accepted password for ccc from 192.168.0.107 port 60350 ssh2
+      219
+      → Accepted는 정상 계정(예: ccc) 로그인. 공격 출발지에서 Accepted가 나오면 침투 성공(P1!)
     verify:
       type: output_contains
       expect: 'Accepted'
@@ -286,6 +324,10 @@ steps:
       # 3) 주의 — 이 데모는 인증=127.0.0.1 localhost, 스캔=10.20.30.202(실전은 같은 외부 IP로 상관)
       echo "  (이 데모는 인증이 127.0.0.1 localhost, 스캔이 10.20.30.202 — 실전은 같은 외부 IP로 상관)"
     answer_detail: "무차별 대입 전엔 보통 SSH 포트(22)를 찾는 스캔이 선행한다. Suricata 가 그 스캔을 eve.json 에 event_type=alert 의 스캔 시그니처로 남기므로, jq 로 그 출발지(src_ip)를 뽑는다. 스캔 출발지 = 인증 공격 출발지면 한 공격자의 '정찰→대입' 단계로 판정한다. 이 상관이 성립하려면 인프라가 공격의 출처 IP 를 보존해야 하는데(el34 는 외부 출처 IP 를 Suricata·ModSec·Wazuh 에 보존), 이 데모는 스캔이 attacker(10.20.30.202)·대입이 호스트 localhost(127.0.0.1)라 출발지가 다르게 보일 뿐 기법은 동일하다."
+    expected_output: |
+      3 10.20.30.202
+      → 분석가는 스캔 출발지와 인증 공격 출발지를 매칭해 '정찰→대입'이 같은 공격자인지 판정
+        (이 데모는 인증이 127.0.0.1 localhost, 스캔이 10.20.30.202 — 실전은 같은 외부 IP로 상관)
     verify:
       type: output_contains
       expect: '10.20.30.202'
@@ -326,6 +368,15 @@ steps:
       # 2) 재구성 — T0 스캔(정찰)→T1 무차별 대입 다발→T2 Accepted 여부(침투!)
       echo "→ T0 스캔(정찰) → T1 무차별 대입 다발 → T2 Accepted 여부(침투!) 순으로 재구성"
     answer_detail: "사건 추적의 마무리 = 시간순 재구성. T0 스캔(정찰) → T1 무차별 대입 다발 → T2 Accepted 여부(침투!) → T3 로그인 후 행위(후속 IR) 순으로 늘어놓는다. preauth(인증 전 연결 끊김) 줄이 많으면 사람이 아니라 스크립트가 자동으로 두드린 정황이다. Accepted 가 공격 구간 안에 있으면 그 시각이 침투 성공 시점이다. 타임라인으로 사건의 시작·전개·결과를 한눈에 본다."
+    expected_output: |
+      Jun 26 23:45:52 elf4 sshd[2303812]: Invalid user test from 127.0.0.1 port 36732
+      Jun 26 23:45:52 elf4 sshd[2303812]: Connection closed by invalid user test 127.0.0.1 port 36732 [preauth]
+      Jun 26 23:45:52 elf4 sshd[2303834]: Invalid user ubuntu from 127.0.0.1 port 36740
+      Jun 26 23:45:52 elf4 sshd[2303834]: Connection closed by invalid user ubuntu 127.0.0.1 port 36740 [preauth]
+      Jun 26 23:45:52 elf4 sshd[2303837]: Invalid user postgres from 127.0.0.1 port 36742
+      Jun 26 23:45:52 elf4 sshd[2303837]: Connection closed by invalid user postgres 127.0.0.1 port 36742 [preauth]
+      Jun 26 23:45:53 elf4 sshd[2303840]: Invalid user git from 127.0.0.1 port 36748
+      Jun 26 23:45:53 elf4 sshd[2303840]: Connection clos
     verify:
       type: output_contains
       expect: 'preauth'
@@ -376,6 +427,14 @@ steps:
       ## 결론: 인증 로그는 빈도+계정+성공여부로 공격/정상을 판별하는 1차 증거
       EOF
     answer_detail: "sshd 분석 종합 = 빈도(자동화) + 계정 분포(wordlist) + Accepted(침투 여부) + 스캔 출발지 상관 + 타임라인. 성공 흔적 유무가 사건을 '시도(차단)'와 '침해(침투 성공)'로 가른다. 무차별 대입은 MITRE ATT&CK T1110 으로 분류한다. 보고서는 판정뿐 아니라 그 근거(어느 step 의 무엇)와 후속 조치까지 담아야 분석으로서 가치가 있다."
+    expected_output: |
+      # SOC W02 sshd 인증 분석 보고서
+      ## 1. 실패 패턴: 짧은 시간 다발(자동화 무차별 대입)
+      ## 2. 표적 계정: root/admin/oracle/test 등 여러 계정 → wordlist 공격
+      ## 3. Accepted vs 공격: 정상(ccc) Accepted만 / 공격 출발지 Accepted 없음 → 침투 미성공(시도 차단)
+      ## 4. 정찰 상관: 스캔 선행 + 타임라인(정찰→대입)
+      ## 5. 판정: SSH 무차별 대입(T1110), 성공 흔적 없음 → "시도(차단)". (Accepted 발견 시 "침해"로 격상)
+      ## 결론: 인증 로그는 빈도+계정+성공여부로 공격/정상을 판별하는 1차 증거
     verify:
       type: output_contains
       expect: '무차별'

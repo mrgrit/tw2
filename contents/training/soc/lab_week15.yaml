@@ -64,6 +64,10 @@ steps:
       # 3) 네트워크 IDS Suricata 버전
       docker exec el34-ips sh -c 'suricata -V 2>/dev/null | head -1'
     answer_detail: "SOC 전 도구 점검 — SIEM(Wazuh analysisd) 분석/평결, osquery 호스트 헌팅, Suricata 네트워크. APT 4 단계를 끊을 도구가 전부 살아 있어야 분석·대응이 가능하다. 채점은 osquery 버전 문자열(5.23)이 출력에 보이는지로 도구 가용을 확인한다."
+    expected_output: |
+      wazuh-analysisd is running...
+      osqueryi version 5.23.0
+      This is Suricata version 6.0.4 RELEASE
     verify:
       type: output_contains
       expect: '5.23'
@@ -120,6 +124,10 @@ steps:
       sleep 6
       echo "apt campaign done"
     answer_detail: "APT 4 단계 재현 — 정찰(nmap, T1046) → 웹침투(sqlmap UA + SQLi, T1190) → 인증(SSH 무차별 대입, T1110) → 발판(백도어 계정 socw15bd, T1136). 한 출처(10.20.30.202)가 네 소스(네트워크·웹·인증·호스트)에 흔적을 남긴다. 끝에 sleep 6 은 SIEM(Wazuh)이 경보를 적재할 시간을 준 뒤 done 을 출력하기 위함. 채점은 출력에 'done' 이 보이는지로 4 단계 재현 완료를 확인한다. 이 흔적들이 이후 트리아지·교차 분석·격리·제거의 원천이다."
+    expected_output: |
+      scanned
+      planted
+      apt campaign done
     verify:
       type: output_contains
       expect: 'done'
@@ -162,6 +170,13 @@ steps:
       # 2) 판정 — 출발지 10.20.30.202, 다단계, 발판=침투성공 → P1
       echo "→ 출발지 10.20.30.202, 다단계, 발판=침투성공 → P1"
     answer_detail: "트리아지 = 4요소(출발지 10.20.30.202 / 시그니처 / 시각 / 심각도 level) + 진행 단계로 우선순위 결정. 단발 정찰은 P3 이지만 정찰→침투→인증→발판까지 진행했고 백도어 계정(socw15bd)이 심겨 침투 성공이 확정되므로 P1 이다. 채점은 출력에 출발지 10.20.30.202 가 보이는지로 트리아지 대상이 식별됐음을 확인한다."
+    expected_output: |
+      {"sig":"Suricata: Alert - 6V6 SQL Injection - UNION SELECT","level":3}
+      {"sig":"Suricata: Alert - 6V6 Bot UA - sqlmap","level":3}
+      {"sig":"Suricata: Alert - 6V6 SQL Injection - UNION SELECT","level":3}
+      {"sig":"Suricata: Alert - 6V6 Bot UA - sqlmap","level":3}
+      {"sig":"Suricata: Alert - 6V6 SQL Injection - UNION SELECT","level":3}
+      → 출발지 10.20.30.202, 다단계, 발판=침투성공 → P1
     verify:
       type: output_contains
       expect: '10.20.30.202'
@@ -211,6 +226,20 @@ steps:
       # 4) 종합 — 네 소스 교차 = 한 APT 캠페인
       echo "→ 네 소스(웹/인증/호스트/네트워크) 교차 = 한 APT 캠페인"
     answer_detail: "교차 분석 = 웹(ModSec 942 SQLi)+인증(auth.log Invalid user 다발)+호스트(osquery 백도어 계정 socw15bd)+네트워크. 한 소스가 못 보는 단면을 다른 소스가 보므로, 넷을 함께 펼쳐 같은 출처(10.20.30.202)의 다단계 캠페인으로 종합한다. 백도어 계정 socw15bd 의 존재가 침투 성공의 호스트 측 증거다. 채점은 출력에 'socw15bd' 가 보이는지로 호스트 단면까지 교차됐음을 확인한다."
+    expected_output: |
+      901960
+      910360
+      913100
+      923076
+      923077
+      926725
+      926829
+      930100
+      930110
+      930120
+      931100
+      932160
+      … (이하 생략)
     verify:
       type: output_contains
       expect: 'socw15bd'
@@ -252,6 +281,9 @@ steps:
       # 2) 종합 — 출처 일관·시간순·단계 일관 = 한 APT 캠페인
       echo "→ 출처 10.20.30.202 일관, 시간순, 단계 일관 = 한 APT 캠페인"
     answer_detail: "ATT&CK 서사 = 단계별 기술(T1046 정찰 → T1190 웹침투 → T1110 인증 → T1136 발판) + 출처 일관(10.20.30.202) + 시간순 + 단계마다 증거. 전술(목적)과 기술(수법)을 표준 번호로 붙이면 보고·소통이 일관된다. APT 의 전체 그림을 한 서사로 만든 것. 채점은 출력에 'T1190' 이 보이는지로 ATT&CK 매핑을 확인한다."
+    expected_output: |
+      T1046 정찰(스캔) → T1190 웹침투(SQLi) → T1110 인증(SSH 대입) → T1136 발판(백도어 계정)
+      → 출처 10.20.30.202 일관, 시간순, 단계 일관 = 한 APT 캠페인
     verify:
       type: output_contains
       expect: 'T1190'
@@ -309,6 +341,10 @@ steps:
       # 4) self-clean — 격리 룰 삭제 + reload(베이스 보존)
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9515001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
     answer_detail: "IR Contain(격리) = 진행 중인 APT 출발지(10.20.30.202)를 끊어 추가 침투를 막는 동작. 운영 환경은 방화벽 drop 이지만, 공유 인프라(el34)에서는 출발지를 IDS alert(sid 9515001)로 플래그하는 시연 + 즉시 정리로 한다(다른 학생을 차단하지 않기 위함). 룰 수명주기 = 추가 → 무중단 reload → 트리거 → eve 확인 → sed 삭제. 채점은 정리 단계의 'rule_removed' 출력으로 격리 시연 후 베이스가 보존됐음을 확인한다."
+    expected_output: |
+      {"message": "done", "return": "OK"}
+      370
+      rule_removed
     verify:
       type: output_contains
       expect: 'rule_removed'
@@ -350,6 +386,11 @@ steps:
       # 2) Eradicate — userdel -r로 홈 디렉터리까지 완전 제거
       docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; echo eradicated'
     answer_detail: "IR Eradicate(제거) = 이미 심긴 발판을 뽑아 재진입을 막는 동작. osquery 로 백도어 계정 socw15bd 를 증거로 확인한 뒤 userdel -r 로 홈 디렉터리까지 완전히 제거한다(확인 후 제거 절차). 하나라도 남으면 공격자가 그 통로로 다시 들어오므로 빠짐없이 제거한다. 채점은 출력에 'eradicated' 가 보이는지로 발판 제거 완료를 확인한다."
+    expected_output: |
+      [
+        {"uid":"1001","username":"socw15bd"}
+      ]
+      eradicated
     verify:
       type: output_contains
       expect: 'eradicated'
@@ -425,6 +466,11 @@ steps:
       # 5) 백업 복원 — IOC 룰 잔재 0(베이스 보존)
       docker exec el34-siem sh -c 'sudo cp /tmp/socw15_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw15_lr.bak; echo "복원 잔재=$(grep -c 101515 /var/ossec/etc/rules/local_rules.xml)"'
     answer_detail: "인텔 격상(예방) = 이 APT 의 IOC(공격 마커 aptsoc)를 Wazuh 룰(id 101515, level 13)로 굳혀, 같은 IOC 가 재발/변형해 오면 자동으로 고위험 경보가 뜨게 만드는 것. W13 인텔 운영을 한 캠페인에 적용. 공유 인프라이므로 라이브 manager 재시작 없이 wazuh-logtest 로만 검증하고 cp 로 원본 룰을 복원한다(베이스 보존). 채점은 출력에 '101515' 가 보이는지로 격상 룰 발화를 확인한다. APT 대응은 '막았다'를 넘어 '다음에 자동으로 잡힌다'까지여야 완결된다."
+    expected_output: |
+      id: '101515'
+      	level: '13'
+      **Alert to be generated.
+      복원 잔재=0
     verify:
       type: output_contains
       expect: '101515'
@@ -467,6 +513,9 @@ steps:
       # 2) 해석 — 다단계 흔적이 한 출처로 SIEM 수렴 = 한 APT 캠페인
       echo "→ 다단계 흔적이 한 출처로 SIEM 수렴 = 한 APT 캠페인"
     answer_detail: "SIEM 수렴 + 출처 상관 = 흩어진 4 단계 흔적이 Wazuh alerts.json 한 곳으로 모이고(수렴), 모두 같은 출처(10.20.30.202)를 가리켜 한 APT 캠페인으로 확정되는 것. el34 가 SNAT 를 안 하므로 출처가 전 계층에 보존되어 여러 소스 그룹(ids 등)이 한 출처로 묶인다. 채점은 출력에 'ids' 그룹이 보이는지로 다소스 수렴을 확인한다. 이것이 4 단계를 한 캠페인으로 보는 통합 가시성의 증거다."
+    expected_output: |
+      454 ["ids","suricata"]
+      → 다단계 흔적이 한 출처로 SIEM 수렴 = 한 APT 캠페인
     verify:
       type: output_contains
       expect: 'ids'
@@ -519,6 +568,13 @@ steps:
       ## 결론: SOC 분석가는 흩어진 텔레메트리에서 APT 서사를 읽고 끝까지 분석·대응한다
       EOF
     answer_detail: "APT 종합 보고서 = 분석(트리아지 P1 / 네 소스 교차 / ATT&CK 서사 T1046→T1190→T1110→T1136) + 대응(IR 격리 9515001·제거 socw15bd / 인텔 격상 101515) + 재발 방지(SIEM 수렴·IOC 룰). 구조는 개요 → 분석 → 대응 → 결론·재발 방지이며 각 절에 증거를 첨부한다. SOC 분석가의 통합 능력 — 흩어진 텔레메트리에서 APT 서사를 읽어 끝까지 분석·대응하고 재발까지 막는 것 — 의 종합 = 수료. 채점은 보고서에 'APT' 가 보이는지로 종합 산출을 확인한다."
+    expected_output: |
+      # SOC W15 APT 종합 보고서 (수료)
+      ## 1. 캠페인: 출처 10.20.30.202, 정찰→웹침투→인증→발판 4단계
+      ## 2. 분석: 트리아지(P1) + 네소스 교차 + ATT&CK 서사(T1046→T1190→T1110→T1136)
+      ## 3. IR: Contain(IDS 9515001) → Eradicate(socw15bd userdel) + 인텔 격상(101515)
+      ## 4. SIEM 수렴(한 출처) + 재발 방지(IOC 룰/자동화)
+      ## 결론: SOC 분석가는 흩어진 텔레메트리에서 APT 서사를 읽고 끝까지 분석·대응한다
     verify:
       type: output_contains
       expect: 'APT'
@@ -567,6 +623,11 @@ steps:
       # 4) 점검 완료 마커
       echo "---check done---"
     answer_detail: "수료 마무리 = 기말에서 심은 흔적 세 가지(백도어 계정 socw15bd / IDS 격리 룰 sid 9515001 / Wazuh 인텔 룰 id 101515)가 모두 0 인지 점검해 공유 인프라를 베이스로 복원. '내가 심은 것은 내가 정리한다'는 변경 관리 규율. 잔재가 있으면 해당 미션의 정리 명령을 재실행한다. 채점은 출력에 'check done' 이 보이는지로 정리 점검 수행을 확인한다."
+    expected_output: |
+      user ok
+      0
+      101515 잔재=0
+      ---check done---
     verify:
       type: output_contains
       expect: 'check done'

@@ -54,6 +54,9 @@ steps:
       # 2) 최근 2000줄 중 "rule" 키 든 줄 수 = 최근 경보 건수(폭주의 척도)
       docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c "\"rule\""'
     answer_detail: "경보량이 곧 폭주의 척도다. analysisd 가 running 이어야 경보가 생성되고, 그 다수 경보를 분류 없이 그대로 보면 alert fatigue(둔감)에 빠진다 — 이번 주 내내 이 더미를 level/groups/빈도로 분류하고 오탐을 억제해 진짜만 남긴다. 채점은 analysisd 가동을 확인."
+    expected_output: |
+      wazuh-analysisd is running...
+      941
     verify:
       type: output_contains
       expect: 'analysisd'
@@ -101,6 +104,9 @@ steps:
       sleep 6
       echo "flood done"
     answer_detail: "반복 공격이 Suricata(ids)·ModSec(web) 경보 다발을 만든다 — 실제 SOC의 폭주 상황을 통제된 형태로 재현(Purple Team 의 공격 주입 기법). 출처 IP 10.20.30.202 가 보존돼 뒤에서 top talker 로 묶인다. 채점은 flood done 출력으로 재현 완료를 확인."
+    expected_output: |
+      scanned
+      flood done
     verify:
       type: output_contains
       expect: 'done'
@@ -141,6 +147,13 @@ steps:
       # 2) 해석 — 폭주의 대부분은 낮은 level. 높은 level(12+)부터 본다
       echo "→ 폭주의 대부분은 낮은 level. 높은 level(12+)부터 본다"
     answer_detail: "level로 첫 칼질 — 0~4 정보성(대부분 무시), 7+ 주목, 12+ 고위험. 폭주의 대부분이 낮은 level이라 높은 것부터 보면 효율적."
+    expected_output: |
+      875 level=3
+           62 level=10
+           24 level=7
+            1 level=5
+            1 level=4
+      → 폭주의 대부분은 낮은 level. 높은 level(12+)부터 본다
     verify:
       type: output_contains
       expect: 'level='
@@ -182,6 +195,16 @@ steps:
       # 2) 해석 — 압도적 그룹(ids/syscheck 등)이 폭주의 원인 소스
       echo "→ 압도적 그룹(ids/syscheck 등)이 폭주의 원인 소스"
     answer_detail: "그룹 분포로 '무엇이 폭주의 원인인가'를 본다. 한 그룹(ids/syscheck)이 압도적이면 그 소스에 노이즈가 있다는 신호."
+    expected_output: |
+      875 ["ids","suricata"]
+           62 ["sigma","el34","sigma","apache","webserver"]
+           20 ["ossec","syscheck","syscheck_entry_modified","syscheck_file"]
+            2 ["ossec","rootcheck"]
+            1 ["stats"]
+            1 ["sigma","el34","sigma","linux","process_creation"]
+            1 ["ossec","syscheck","syscheck_entry_deleted","syscheck_file"]
+            1 ["ossec","syscheck","syscheck_entry_added","syscheck_file"]
+      → 압도적 그룹(ids/syscheck 등)이 폭주의 원인 소스
     verify:
       type: output_contains
       expect: 'ids'
@@ -227,6 +250,18 @@ steps:
       # 3) 해석 — 한 rule/출발지가 폭주 대부분 = 오탐 후보 or 집중 공격
       echo "→ 한 rule/출발지가 폭주 대부분 = 오탐 후보 or 집중 공격"
     answer_detail: "빈도로 노이즈의 정체를 찾는다 — 한 rule이 폭주의 대부분이면 그 rule을 의심(오탐 or 진행형 공격), 한 출발지가 폭주면 집중 공격 or 노이즈 소스."
+    expected_output: |
+      875 id=86601
+           62 id=200002
+           20 id=550
+            2 id=510
+            1 id=554
+            1 id=553
+            1 id=200003
+            1 id=11
+          875 10.20.30.202
+            1 10.20.32.80
+      → 한 rule/출발지가 폭주 대부분 = 오탐 후보 or 집중 공격
     verify:
       type: output_contains
       expect: 'id='
@@ -279,6 +314,11 @@ steps:
       # 4) 결론 — 오탐이면 억제(suppress), 진짜면 격상(W04 커스텀 룰)
       echo "→ 오탐이면 억제(suppress), 진짜면 격상(W04 커스텀 룰)"
     answer_detail: "폭주 경보가 오탐인지 판정 — 정상 업무/양성 맥락/규칙적 빈도면 오탐. 판정 결과로 억제(노이즈) or 격상(진짜)을 가른다."
+    expected_output: |
+      ① 정상 업무인가? — healthcheck 봇, 정기 취약점 스캔 = 오탐
+      ② 맥락이 양성인가? — 내부 모니터링 자산의 정상 동작 = 오탐
+      ③ 빈도가 규칙적인가? — 자동화 정상작업=규칙적 / 공격=불규칙 버스트
+      → 오탐이면 억제(suppress), 진짜면 격상(W04 커스텀 룰)
     verify:
       type: output_contains
       expect: '오탐'
@@ -357,6 +397,10 @@ steps:
       # 5) 백업 복원 — 억제 룰 잔재 0(공유 SIEM 베이스 보존)
       docker exec el34-siem sh -c 'sudo cp /tmp/socw5_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw5_lr.bak; echo "복원 잔재=$(grep -c 100450 /var/ossec/etc/rules/local_rules.xml)"'
     answer_detail: "억제 = 노이즈 rule을 level 0(미기록)으로. healthcheck 같은 정상 패턴만 좁게 매치(너무 넓으면 진짜를 놓침). logtest에서 rule 100450이 level 0으로 매치 = alert 안 만듦. cp 복원으로 보존."
+    expected_output: |
+      id: '100450'
+      	level: '0'
+      복원 잔재=0
     verify:
       type: output_contains
       expect: '100450'
@@ -407,6 +451,13 @@ steps:
       ## 결론: 분류(level/groups/빈도)→판정→억제로 alert fatigue 해소, 진짜 위협에 집중
       EOF
     answer_detail: "경보 관리 = 분류 3축(level/groups/빈도) → 오탐 판정 → 억제. SOC의 지속가능성은 폭주를 다스리는 데 달렸다."
+    expected_output: |
+      # SOC W05 경보 관리 보고서
+      ## 1. 폭주 현황: level 분포(대부분 저level), groups(ids/syscheck 압도), 빈도 top rule
+      ## 2. 원인: 반복 공격(진짜) + 모니터링 노이즈(오탐) 혼재
+      ## 3. 오탐 판정: healthcheck/정기스캔=오탐, 불규칙 버스트=진짜
+      ## 4. 억제: 오탐 노이즈를 level 0(좁은 조건)으로 suppress → 화면에 진짜만
+      ## 결론: 분류(level/groups/빈도)→판정→억제로 alert fatigue 해소, 진짜 위협에 집중
     verify:
       type: output_contains
       expect: '억제'

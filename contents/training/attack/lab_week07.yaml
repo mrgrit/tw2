@@ -54,6 +54,8 @@ steps:
       # 1) 차단형 dvwa 도달성 — 응답코드만(페이로드 발사 전 표적 생존 확인)
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
     answer_detail: "입력 기반 공격의 대상 = dvwa(차단 모드 vhost, ModSec CRS 930/932/933 탐지). 페이로드 발사 전 표적 생존·도달성을 확인하는 정찰 마무리 단계. HTTP 응답 코드가 돌아오면(코드 종류 무관) 도달 정상으로 판정한다."
+    expected_output: |
+      dvwa=302
     verify:
       type: output_contains
       expect: 'dvwa'
@@ -98,6 +100,10 @@ steps:
       # 3) 해석 — ../ 탈출을 ModSec 930(LFI)이 잡아 403, 인코딩해도 정규화로 차단
       echo "→ ../로 경로 탈출 시도 → ModSec 930(LFI)이 잡아 403. 인코딩해도 정규화로 차단"
     answer_detail: "경로순회(Path Traversal, A03/A05) = ../로 의도된 디렉토리를 탈출해 임의 파일(/etc/passwd 등)을 읽는 공격. el34 dvwa(차단 모드)에서 ModSec CRS 930xxx(LFI/Path Traversal) 룰군이 ../, /etc/passwd 패턴을 잡아 403. 평문이든 URL 인코딩(%2e%2e%2f)이든 ModSec 이 검사 전 정규화(canonicalization)하므로 같은 룰에 걸려 둘 다 403 — 인코딩 우회 무력화 확인이 본 step 의 핵심."
+    expected_output: |
+      pt=403
+      enc=403
+      → ../로 경로 탈출 시도 → ModSec 930(LFI)이 잡아 403. 인코딩해도 정규화로 차단
     verify:
       type: output_contains
       expect: '403'
@@ -141,6 +147,10 @@ steps:
       # 3) 해석 — 서버가 대신 내부에 요청 = SSRF, 위험 URL 패턴 탐지(정상 요청과 비슷해 확정 403 아님)
       echo "→ 서버가 대신 내부(메타데이터/localhost)에 요청하게 유도 = SSRF. 위험 URL 패턴 탐지"
     answer_detail: "SSRF(A10) = 사용자가 준 URL로 서버가 대신 요청 → 공격자가 직접 못 닿는 내부망/클라우드 메타데이터(169.254.169.254 = IAM 키)/로컬 관리포트에 접근. 요청 주체가 내부 서버라 방화벽을 무력화한다. el34 ModSec/CRS 는 내부 IP·위험 스킴 패턴을 일부 탐지하나 정상 요청과 비슷해 확정 403 은 아니다 → 판정은 'SSRF 시도 발사'로 한다. 근본 방어 = URL allowlist + 내부/링크-로컬 IP(127/10.x/169.254) 차단 + 해석된 최종 IP 기준 검사."
+    expected_output: |
+      ssrf=403
+      localhost=403
+      → 서버가 대신 내부(메타데이터/localhost)에 요청하게 유도 = SSRF. 위험 URL 패턴 탐지
     verify:
       type: output_contains
       expect: 'ssrf'
@@ -181,6 +191,9 @@ steps:
       # 2) 해석 — ModSec 933(PHP)이 <?php/system( 패턴 탐지 → 403(코드 미실행)
       echo "→ <?php system('id');?> 주입 = webshell/RCE 시도. ModSec 933(PHP)이 <?php/system( 탐지 → 403"
     answer_detail: "악성 콘텐츠/업로드(A03) = webshell(PHP) 코드(<?php system('id'); ?>)를 입력·파일로 서버에 심어 실행 → RCE/서버 장악. el34 dvwa 에서 ModSec CRS 933xxx(PHP Injection)이 <?php, system( 패턴을 잡아 403 차단 → 코드 미실행(id 출력 없음이 정상). 우회=확장자(.phtml/.php5)·MIME 위조·polyglot(고급). 방어=확장자/MIME allowlist + 업로드 디렉토리 실행권한 제거 + 디렉토리 분리."
+    expected_output: |
+      php=403
+      → <?php system('id');?> 주입 = webshell/RCE 시도. ModSec 933(PHP)이 <?php/system( 탐지 → 403
     verify:
       type: output_contains
       expect: '403'
@@ -220,6 +233,20 @@ steps:
       # 2) 해석 — 930(LFI/path traversal)/931(RFI)/932(RCE)/933(PHP) 룰군이 입력 기반 공격 탐지
       echo "→ 930(LFI/path traversal), 931(RFI), 932(RCE), 933(PHP) 룰군이 입력 기반 공격을 탐지"
     answer_detail: "입력 기반 공격 탐지 = ModSec CRS 930(LFI/경로순회)/931(RFI)/932(RCE·명령주입)/933(PHP 주입) 룰군. anomaly scoring 으로 매치 점수가 누적되면 949110(Inbound Anomaly Score Exceeded)이 최종 403 차단. 보낸 페이로드에 따라 뜨는 룰 ID 가 달라지며, 본 lab 은 직전 step 2(경로순회)로 인해 930 이 반드시 보이는 것을 합격 기준으로 한다."
+    expected_output: |
+      930100
+      930110
+      930120
+      930500
+      931100
+      932115
+      932160
+      932920
+      933100
+      933160
+      933210
+      934888
+      … (이하 생략)
     verify:
       type: output_contains
       expect: '930'
@@ -266,6 +293,11 @@ steps:
       # 4) 결론 — 모두 사용자 입력을 신뢰한 결과, 영향이 크다(정보~RCE)
       echo "→ 모두 사용자 입력을 신뢰한 결과. 영향이 크다(정보~RCE)"
     answer_detail: "영향의 사슬 = 파일 읽기(경로순회: /etc/passwd·설정·키) → 내부망/클라우드 키(SSRF: 169.254.169.254 IAM 키, 내부 서비스) → RCE/완전 장악(업로드·PHP 주입: webshell). 셋 다 입력을 신뢰한 대가이며 영향 범위가 정보 노출~서버 장악으로 넓다. 한 침해 안에서 서로 발판이 되어 W08 CTF 익스플로잇 체인으로 이어진다."
+    expected_output: |
+      Path Traversal: /etc/passwd, 설정파일, 소스, 키 읽기 → 정보 노출
+      SSRF: 클라우드 메타데이터(IAM 키 탈취), 내부 서비스 접근, 내부망 스캔 → 측면 이동
+      악성 업로드: webshell → RCE → 완전 장악
+      → 모두 사용자 입력을 신뢰한 결과. 영향이 크다(정보~RCE)
     verify:
       type: output_contains
       expect: 'SSRF'
@@ -311,6 +343,11 @@ steps:
       # 4) 공통 — 사용자 입력을 신뢰 말 것, allowlist(deny by default)
       echo "→ 공통: 사용자 입력을 신뢰 말 것. allowlist(deny by default)"
     answer_detail: "방어 공통 원칙 = 입력 불신 + allowlist(deny by default). 경로순회=경로 정규화(canonicalize)+허용 경로 allowlist(입력으로 경로 구성 금지, ID 간접참조 권장); SSRF=URL allowlist+사설/링크-로컬 IP(127/10.x/169.254) 차단+해석된 최종 IP 검사; 업로드=확장자/MIME allowlist+업로드 디렉토리 실행권한 제거·분리. WAF(CRS 930/932/933)는 그 위에 더해지는 보조 한 겹일 뿐 근본이 아니다."
+    expected_output: |
+      Path Traversal: 경로 정규화(canonicalize)+allowlist, 사용자 입력으로 경로 구성 금지
+      SSRF: URL allowlist, 내부 IP(169.254/127/10.x) 차단, 메타데이터 엔드포인트 차단
+      업로드: 확장자/MIME allowlist, 업로드 디렉토리 실행권한 제거+분리, 콘텐츠 검사
+      → 공통: 사용자 입력을 신뢰 말 것. allowlist(deny by default)
     verify:
       type: output_contains
       expect: 'allowlist'
@@ -357,6 +394,13 @@ steps:
       ## 결론: 입력으로 경계를 넘는 세 공격. 영향 큼(파일~RCE). 방어=입력 불신+allowlist
       EOF
     answer_detail: "W07 종합 = 입력으로 경계를 넘는 세 공격(경로순회·SSRF·악성 업로드/PHP 주입). 공통 원인은 신뢰 경계의 입력 검증 누락. ModSec CRS 930/932/933 으로 탐지, 근본 방어는 입력 불신+allowlist. 영향이 정보 노출~RCE 로 넓어 중요하며, 이 영향의 사슬이 W08 CTF 익스플로잇 체인으로 이어진다."
+    expected_output: |
+      # 공격 W07 SSRF/Path Traversal/업로드 보고서
+      ## 1. Path Traversal: ../../etc/passwd → 403(930), 인코딩도 정규화로 차단
+      ## 2. SSRF: 169.254.169.254 메타데이터/localhost 요청 유도 → 위험 URL 탐지
+      ## 3. 악성 콘텐츠: <?php system('id')?> → 403(933)
+      ## 4. 탐지: ModSec 930/931/932/933 룰군. 방어: 정규화+allowlist+내부IP차단
+      ## 결론: 입력으로 경계를 넘는 세 공격. 영향 큼(파일~RCE). 방어=입력 불신+allowlist
     verify:
       type: output_contains
       expect: 'SSRF'

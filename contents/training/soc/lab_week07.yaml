@@ -60,6 +60,14 @@ steps:
       # 2) Wazuh에 적용된 sigma 룰 개수(<rule 카운트) — 변환·적용 확인
       docker exec el34-siem sh -c 'grep -c "<rule " /var/ossec/etc/rules/sigma_rules.xml'
     answer_detail: "SIGMA 설정 = 룰(rules/*.yml) + 컨버터(sigma2wazuh.py) + 적용(Wazuh sigma_rules.xml id 200001-3)."
+    expected_output: |
+      /home/ccc/el34/sigma/sigma2wazuh.py
+
+      /home/ccc/el34/sigma/rules/:
+      0001-ssh-bruteforce.yml
+      0002-web-sqli.yml
+      0003-linux-suspicious-cmd.yml
+      3
     verify:
       type: output_contains
       expect: 'sigma2wazuh'
@@ -102,6 +110,20 @@ steps:
       # 2) 해석 — logsource(어디에)/detection(무엇을)/tags(ATT&CK) 표준 YAML
       echo "→ logsource(어디에)/detection(무엇을)/tags(ATT&CK) — 표준 YAML"
     answer_detail: "SIGMA 룰 = logsource(apache/webserver) + detection(union select 등 keywords) + condition + tags(attack.t1190). 벤더 무관 표준."
+    expected_output: |
+      title: Web SQL Injection Pattern in Access Log
+      id: el34-0002-web-sqli
+      status: experimental
+      description: Apache/ModSec 접근 로그에서 전형적인 SQLi 패턴 — union select / or 1=1 등
+      logsource:
+          product: apache
+          category: webserver
+      detection:
+          selection:
+              keywords:
+                  - 'union select'
+                  - 'OR 1=1'
+      … (이하 생략)
     verify:
       type: output_contains
       expect: 'detection'
@@ -144,6 +166,13 @@ steps:
       # 2) 해석 — keywords→<regex>, level/tags→level/group (stdout만, 라이브 sigma_rules.xml 미변경)
       echo "→ SIGMA keywords → Wazuh <regex>, level/tags → Wazuh level/group (stdout, 라이브 미변경)"
     answer_detail: "sigma2wazuh.py가 SIGMA YAML → Wazuh 룰. keywords가 pcre2 regex로, tags가 group으로. stdout 출력이라 라이브 sigma_rules.xml은 안 건드린다(운영은 > 리다이렉트 + restart)."
+    expected_output: |
+      <rule id="200002" level="10">
+          <regex type="pcre2">(union select|OR 1=1|' OR '|information_schema|sleep\()</regex>
+          <description>[Sigma] Apache/ModSec 접근 로그에서 전형적인 SQLi 패턴 — union select / or 1=1 등</description>
+          <group>sigma,apache,webserver,</group>
+        </rule>
+      → SIGMA keywords → Wazuh <regex>, level/tags → Wazuh level/group (stdout, 라이브 미변경)
     verify:
       type: output_contains
       expect: '200002'
@@ -190,6 +219,11 @@ steps:
       # 2) logtest로 변환 룰 200002 발화(id/level/sigma group/Alert) 확인 후 임시파일 삭제
       docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw7.log 2>&1 | grep -aE "id:|level:|sigma|Alert to be" | head -5; rm -f /tmp/socw7.log'
     answer_detail: "변환된 SIGMA 룰(200002)이 union select 로그에 실제 발화 — SIGMA 한 줄이 Wazuh 경보가 된다. 라이브 sigma_rules.xml은 이미 적용돼 있어 logtest가 그대로 검증."
+    expected_output: |
+      id: '200002'
+      	level: '10'
+      	groups: '['sigma', 'el34', 'sigma', 'apache', 'webserver']'
+      **Alert to be generated.
     verify:
       type: output_contains
       expect: '200002'
@@ -237,6 +271,10 @@ steps:
       # 3) 결론 — 네트워크(Suricata)+로그(Wazuh) 양쪽에서 같은 탐지, 벤더 종속 없이 자산 관리
       echo "→ 네트워크(Suricata) + 로그(Wazuh) 양쪽에서 같은 탐지. 벤더 종속 없이 탐지 자산 관리"
     answer_detail: "SIGMA는 Suricata 백엔드도 지원(sigma-cli). 같은 web-sqli SIGMA가 Suricata 룰로도 변환돼 네트워크/로그 양쪽 탐지. '한 번 쓰고 어디서나'."
+    expected_output: |
+      web-sqli.yml ─┬─ sigma2wazuh.py    → Wazuh <regex> 룰 (호스트/로그 탐지)
+                    └─ sigma -t suricata → Suricata content 룰 (네트워크 탐지)
+      → 네트워크(Suricata) + 로그(Wazuh) 양쪽에서 같은 탐지. 벤더 종속 없이 탐지 자산 관리
     verify:
       type: output_contains
       expect: 'Suricata'
@@ -290,6 +328,12 @@ steps:
       # 5) 해석 — 변환된 SIGMA 룰이 실제 SQLi를 sigma 그룹 경보로 탐지(룰 200002 적용)
       echo "→ 변환된 SIGMA 룰이 실제 SQLi를 sigma 그룹 경보로 탐지(룰 200002 적용)"
     answer_detail: "SIGMA에서 변환된 Wazuh 룰이 실제 SQLi 공격을 sigma 그룹 경보로 잡는다. 표준 한 줄이 라이브 탐지가 되는 전 과정의 마무리. (juice는 DetectionOnly라 차단 검증엔 dvwa 사용.)"
+    expected_output: |
+      {"r":"200002","d":"[Sigma] Apache/ModSec 접근 로그에서 전형적인 SQLi 패턴 — union select / or 1=1 등"}
+      {"r":"200002","d":"[Sigma] Apache/ModSec 접근 로그에서 전형적인 SQLi 패턴 — union select / or 1=1 등"}
+      {"r":"200002","d":"[Sigma] Apache/ModSec 접근 로그에서 전형적인 SQLi 패턴 — union select / or 1=1 등"}
+      8
+      → 변환된 SIGMA 룰이 실제 SQLi를 sigma 그룹 경보로 탐지(룰 200002 적용)
     verify:
       type: output_contains
       expect: 'sigma'
@@ -331,6 +375,9 @@ steps:
       # 2) 가치 — 벤더 무관 재사용 + 커뮤니티 룰 즉시 이식 + 탐지 표준화
       echo "→ 벤더 바뀌어도 SIGMA 자산 재사용. 커뮤니티 SIGMA 룰(수천개) 즉시 이식. 탐지 표준화"
     answer_detail: "SIGMA의 가치 = 탐지 자산을 한 벌로 관리하고 N 플랫폼에 이식. 벤더 종속 탈피 + 커뮤니티 룰 재사용. SOC의 탐지 표준화."
+    expected_output: |
+      탐지 1개를 SIGMA로 작성 → sigma2wazuh(Wazuh) / sigma -t suricata(Suricata) / sigma -t splunk(SPL)...
+      → 벤더 바뀌어도 SIGMA 자산 재사용. 커뮤니티 SIGMA 룰(수천개) 즉시 이식. 탐지 표준화
     verify:
       type: output_contains
       expect: 'SIGMA'
@@ -380,6 +427,13 @@ steps:
       ## 결론: 탐지를 SIGMA 표준으로 한 번 쓰고 N 플랫폼에 이식 — 벤더 무관 탐지 자산
       EOF
     answer_detail: "SIGMA 종합 = 표준 작성 → 변환 → 검증 → 다중 이식. 탐지 자산을 벤더 종속 없이 관리하는 SOC의 성숙."
+    expected_output: |
+      # SOC W07 SIGMA 보고서
+      ## 1. SIGMA: web-sqli.yml (logsource apache, detection union select 등, tags t1190)
+      ## 2. 변환: sigma2wazuh.py → Wazuh rule 200002 (<regex> pcre2)
+      ## 3. 검증: logtest 200002 발화 + 실제 SQLi → sigma 그룹 경보
+      ## 4. 이식: 같은 SIGMA → Suricata 백엔드도 (네트워크+로그 양쪽 탐지)
+      ## 결론: 탐지를 SIGMA 표준으로 한 번 쓰고 N 플랫폼에 이식 — 벤더 무관 탐지 자산
     verify:
       type: output_contains
       expect: 'SIGMA'

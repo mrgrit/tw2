@@ -40,6 +40,9 @@ steps:
       # 1) el34-web 상태 확인 → 끝에 target_ok(시크릿 점검 대상 가동 확인)
       docker inspect el34-web --format 'state={{.State.Status}}'; echo target_ok
     answer_detail: "시크릿 점검 대상 = el34-web. 시크릿=노출 시 즉시 침해되는 비밀값(비번/키/토큰)."
+    expected_output: |
+      state=running
+      target_ok
     verify:
       type: output_contains
       expect: 'target_ok'
@@ -77,6 +80,16 @@ steps:
       # 2) 해석 — env 는 inspect/proc/자식 프로세스로 노출, 비밀을 두기 가장 나쁜 곳
       echo "→ env 는 docker inspect/proc/자식프로세스로 노출. 비밀을 두기 가장 나쁜 곳"
     answer_detail: "env 덤프 = Config.Env 전체. env 는 inspect/proc/자식 프로세스로 새어 비밀 저장처로 부적합."
+    expected_output: |
+      SSH_USER=ccc
+      SSH_PASS=ccc
+      WAZUH_MANAGER=10.20.32.100
+      DEFAULT_GW=10.20.32.1
+      PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      DEBIAN_FRONTEND=noninteractive
+
+      env_dumped
+      → env 는 docker inspect/proc/자식프로세스로 노출. 비밀을 두기 가장 나쁜 곳
     verify:
       type: output_contains
       expect: 'env_dumped'
@@ -116,6 +129,10 @@ steps:
       # 3) 해석 — env에 비밀(예: SSH_PASS) 노출 = 시크릿 관리 갭(inspect 한 번에 평문 유출)
       echo "→ env 에 비밀(예: SSH_PASS) 노출 = 시크릿 관리 갭. inspect 한 번에 평문 유출"
     answer_detail: "비밀 탐지 = env 변수명 패턴(pass/key/token) 매칭. el34-web 은 env 에 비밀 노출 → gap=secret_in_env. docker inspect 권한만 있으면 평문 탈취."
+    expected_output: |
+      SSH_PASS=ccc
+      gap=secret_in_env
+      → env 에 비밀(예: SSH_PASS) 노출 = 시크릿 관리 갭. inspect 한 번에 평문 유출
     verify:
       type: output_contains
       expect: 'gap=secret_in_env'
@@ -157,6 +174,11 @@ steps:
       # 4) 결론 — 비밀은 구워 넣으면 회수 불가, 런타임에 외부 주입
       echo "→ 비밀은 '구워 넣으면' 회수 불가. 런타임에 외부에서 주입해야"
     answer_detail: "위험 경로 = env(inspect/proc/자식) + 이미지 레이어 잔존(history) + 로그 유출. 비밀을 이미지/env 에 구우면 회수 불가."
+    expected_output: |
+      1) env: docker inspect 한 번/proc/자식 프로세스 상속으로 평문 노출
+      2) 이미지 레이어: Dockerfile 에 ENV/COPY 로 구우면 삭제해도 이전 레이어에 잔존(history)
+      3) 로그·에러 메시지에 env 가 덤프되며 유출
+      → 비밀은 '구워 넣으면' 회수 불가. 런타임에 외부에서 주입해야
     verify:
       type: output_contains
       expect: '레이어'
@@ -204,6 +226,12 @@ steps:
       # 5) 핵심 — 이미지/env가 아니라 런타임 외부 주입 + 메모리에서만 사용
       echo "→ 핵심: 이미지/env 가 아니라 런타임 외부 주입 + 메모리에서만 사용"
     answer_detail: "올바른 시크릿 = Vault/K8s Secret/docker secret + tmpfs 마운트 + 빌드 시 비주입 + rotation. env/이미지에 굽지 않기."
+    expected_output: |
+      1) 시크릿 매니저: HashiCorp Vault / Kubernetes Secret / docker secret
+      2) 파일 마운트: 비밀을 런타임에 tmpfs 파일로 마운트(이미지에 안 구움)
+      3) 빌드 시 비밀 주입 금지(--secret 마운트, 레이어에 안 남게)
+      4) 최소 권한 + 짧은 수명(rotation) + 접근 감사
+      → 핵심: 이미지/env 가 아니라 런타임 외부 주입 + 메모리에서만 사용
     verify:
       type: output_contains
       expect: 'Vault'
@@ -245,6 +273,11 @@ steps:
       # 4) 결론 — 비밀은 '안 두기'가 최선, 그래도 새는지 자동 탐지로 이중 안전망
       echo "→ 비밀은 '안 두기'가 최선, 그래도 새는지 자동 탐지로 이중 안전망"
     answer_detail: "탐지 = trivy secret 스캔/gitleaks + CI 게이트 + env 정기 점검. 예방(안 두기)+탐지(이중 안전망)."
+    expected_output: |
+      1) 이미지 비밀 스캔: trivy(--scanners secret), gitleaks(리포지토리)
+      2) env/설정 비밀 점검을 CI 게이트로(발견 시 배포 차단)
+      3) docker inspect env 정기 점검(이번 실습 방식)
+      → 비밀은 '안 두기'가 최선, 그래도 새는지 자동 탐지로 이중 안전망
     verify:
       type: output_contains
       expect: 'gitleaks'
@@ -294,6 +327,13 @@ steps:
       # 6) 조치 — 노출된 SSH_PASS 같은 기존 비밀은 즉시 rotation
       echo "→ 노출된 SSH_PASS 같은 기존 비밀은 즉시 rotation"
     answer_detail: "방어 = 예방(안 굽기)+주입(매니저)+rotation+탐지(스캐너)+감사. 이미 노출된 비밀은 즉시 교체."
+    expected_output: |
+      1) 예방: env/이미지 레이어에 비밀 절대 금지
+      2) 주입: 시크릿 매니저(Vault/Secret)로 런타임 외부 주입
+      3) 수명: 주기적 rotation + 짧은 TTL
+      4) 탐지: 비밀 스캐너 CI 게이트
+      5) 감사: 비밀 접근 로깅
+      → 노출된 SSH_PASS 같은 기존 비밀은 즉시 rotation
     verify:
       type: output_contains
       expect: 'rotation'
@@ -334,6 +374,12 @@ steps:
       ## 결론: 비밀은 이미지/env 가 아니라 런타임 외부에서 주입. 노출된 SSH_PASS 는 즉시 rotation 필요
       EOF
     answer_detail: "시크릿 보고 = env 비밀 노출(SSH_PASS)+노출경로+방어(매니저/rotation/스캔). 런타임 외부 주입이 근본."
+    expected_output: |
+      # 클라우드·컨테이너 W06 시크릿 관리 보고서
+      ## 1. 발견: el34-web env 에 비밀(SSH_PASS) 평문 노출 → docker inspect 권한만으로 탈취 가능(갭)
+      ## 2. 위험: env(inspect/proc/자식)+이미지 레이어 잔존(history)+로그 유출. 구우면 회수 불가
+      ## 3. 방어: 시크릿 매니저(Vault/Secret) 런타임 주입 + rotation + 비밀 스캐너 CI 게이트 + 노출 비밀 즉시 교체
+      ## 결론: 비밀은 이미지/env 가 아니라 런타임 외부에서 주입. 노출된 SSH_PASS 는 즉시 rotation 필요
     verify:
       type: output_contains
       expect: 'rotation'

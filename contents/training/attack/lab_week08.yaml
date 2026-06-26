@@ -62,6 +62,10 @@ steps:
       # 3) 대상 vhost(dvwa) 도달성 — 응답코드
       docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "dvwa=%{http_code}\n" -H "Host: dvwa.el34.lab" http://10.20.30.1/'
     answer_detail: "CTF 착수 점검 — 공격 도구(nmap 정찰 / sqlmap SQLi)와 대상(dvwa vhost) 도달성을 확인. nmap 경로가 출력되면 도구 준비 완료로 판정. 도구·대상이 갖춰져야 정찰→침투→셸의 익스플로잇 체인을 시작할 수 있다."
+    expected_output: |
+      /usr/bin/nmap
+      /usr/bin/sqlmap
+      dvwa=302
     verify:
       type: output_contains
       expect: 'nmap'
@@ -98,6 +102,17 @@ steps:
       # 1) ① 정찰 — fw DNAT 공개 포트 스캔(open/PORT 줄만), 익스플로잇 후보 표면 매핑
       docker exec el34-attacker nmap -p 80,443,8001-8007 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -E "open|PORT"
     answer_detail: "익스플로잇 체인 1단계(정찰, PTES 1단계) — nmap 으로 대상 표면(열린 포트·서비스)을 매핑. open 포트가 출력되면 성공. 열린 포트·웹 vhost 가 다음 침투 단계의 익스플로잇 후보다. 빠른 스캔(-T4)은 그만큼 IDS 에 시끄럽게 잡힌다."
+    expected_output: |
+      PORT     STATE SERVICE
+      80/tcp   open  http
+      443/tcp  open  https
+      8001/tcp open  vcom-tunnel
+      8002/tcp open  teradataordbms
+      8003/tcp open  mcreport
+      8004/tcp open  p2pevolvenet
+      8005/tcp open  mxi
+      8006/tcp open  wpl-analytics
+      8007/tcp open  ajp12
     verify:
       type: output_contains
       expect: 'open'
@@ -139,6 +154,9 @@ steps:
       # 2) 해석 — 침투 시도, dvwa 차단 모드면 403(탐지), 실전 CTF는 취약 vhost/엔드포인트 선택
       echo "→ 침투 시도. dvwa 차단 모드면 403(탐지). 실제 CTF는 취약 vhost/엔드포인트 선택"
     answer_detail: "익스플로잇 체인 2단계(침투, PTES 4단계) — 정찰로 찾은 입력점에 가장 효과적인 취약점(SQLi UNION SELECT)을 스캐너 UA 와 함께 시도. dvwa 차단 모드라 WAF 가 942→949110 으로 403 차단(탐지 성공). exploit= 출력이 보이면 침투 시도 입증. 실전 CTF 는 403 신호를 읽고 차단 안 되는 경로/취약점으로 방향을 튼다."
+    expected_output: |
+      exploit=403
+      → 침투 시도. dvwa 차단 모드면 403(탐지). 실제 CTF는 취약 vhost/엔드포인트 선택
     verify:
       type: output_contains
       expect: 'exploit'
@@ -192,6 +210,13 @@ steps:
       # 5) 플래그 캡처 마커
       echo "flag captured (48008)"
     answer_detail: "익스플로잇 체인 3단계 = 플래그 캡처(PTES 5단계의 첫 발). CTF 플래그는 코드 실행을 증명하는 것 — 비표준 포트 48008 리스너로 코드 실행 거점(셸)을 모사·확보. osquery listening_ports 결과에 48008 이 보이면 플래그 캡처 입증 = 체인 완성. 출력에 48008 이 포함되면 통과. 공유 인프라 보존을 위해 확인 즉시 pkill 로 self-clean."
+    expected_output: |
+      shell_captured
+      [
+        {"pid":"53649","port":"48008"},
+        {"pid":"53649","port":"48008"}
+      ]
+      flag captured (48008)
     verify:
       type: output_contains
       expect: '48008'
@@ -247,6 +272,12 @@ steps:
       # 4) self-clean — 룰 삭제 + reload(베이스 보존)
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9408001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
     answer_detail: "방어자 관점 — 익스플로잇 체인의 정찰(sqlmap UA)을 IDS 룰(sid 9408001)로 네트워크 계층에서 탐지. 룰 수명주기 전체(작성→무중단 reload→트리거→eve 확인→sed 삭제) 수행. eve.json 에 'CTF8 sqlmap' 시그니처가 잡히면 탐지 성공. 같은 sqlmap UA 를 WAF 는 HTTP 의미(913)로, IDS 는 네트워크 UA 문자열로 본다는 교차 학습. 끝나면 sid 로 삭제해 base 룰 보존(공유 인프라)."
+    expected_output: |
+      {"message": "done", "return": "OK"}
+      {
+        "sig": "CTF8 sqlmap recon"
+      }
+      rule_removed
     verify:
       type: output_contains
       expect: 'CTF8 sqlmap'
@@ -288,6 +319,18 @@ steps:
       # 2) 역재구성 — 정찰(913)→침투(942)→셸(48008), 같은 출처 10.20.30.202 = 한 공격자 체인
       echo "→ 정찰(913 scanner) → 침투(942 SQLi) → 셸(호스트 포트 48008). 한 공격자의 체인으로 종합"
     answer_detail: "방어자 관점 — 흩어진 흔적(WAF 913 정찰 / 942 SQLi 침투 + IDS sid 9408001 + 호스트 포트 48008 셸)을 출처 IP(10.20.30.202)로 묶어 한 익스플로잇 체인으로 역재구성. modsec_audit 에서 룰 ID(942 등)가 추출되면 통과. 정찰→침투→셸 경로를 복원하고, 방어는 어느 단계에서든 체인을 끊으면 막는다는 것을 입증."
+    expected_output: |
+      901960
+      910360
+      913100
+      923076
+      923077
+      926725
+      926829
+      930100
+      930110
+      930120
+      → 정찰(913 scanner) → 침투(942 SQLi) → 셸(호스트 포트 48008). 한 공격자의 체인으로 종합
     verify:
       type: output_contains
       expect: '942'
@@ -332,6 +375,10 @@ steps:
       # 3) 마무리 — 플래그 캡처 + self-clean
       echo "CTF flag(48008) 캡처 완료 + self-clean"
     answer_detail: "CTF 마무리 = 플래그(48008) 캡처 입증 + 셸/IDS룰 self-clean 검증. 셸 리스너가 정리됐으면 'shell clean', IDS 룰(9408001) 잔재 카운트가 0 이면 베이스 보존 완료. 'shell clean' 출력이 보이면 통과. 공유 인프라에서 변경분(발판·룰)을 추적·원복하는 변경 관리 규율."
+    expected_output: |
+      shell clean
+      9408001 잔재=0
+      CTF flag(48008) 캡처 완료 + self-clean
     verify:
       type: output_contains
       expect: 'shell clean'
@@ -381,6 +428,13 @@ steps:
       ## 결론: 개별 취약점을 체인으로 엮어 코드 실행까지. 방어는 체인 역재구성으로 끊기
       EOF
     answer_detail: "CTF 보고서(PTES 6단계 보고) = 개별 기법(W01–W07)을 익스플로잇 체인으로 종합. 정찰→침투(SQLi 942)→셸(플래그 48008)의 경로를 증거와 함께 정리하고, 방어자 관점으로 흩어진 흔적(WAF 913/942 + IDS 9408001 + 호스트 포트)을 역재구성해 어느 단계서든 체인을 끊는다는 결론. 출력에 '체인' 키워드가 포함되면 통과. 발견을 단일 취약점 나열이 아닌 경로로 설명하는 것이 핵심."
+    expected_output: |
+      # 공격 W08 CTF 보고서
+      ## 1. 정찰: nmap으로 표면(포트/vhost) 식별
+      ## 2. 익스플로잇 체인: 정찰→웹 익스플로잇(SQLi 942)→발판→셸
+      ## 3. 플래그: 셸 캡처(리스너 48008 = 코드 실행 거점)
+      ## 4. 방어자: WAF(913/942)+IDS(9408001)+호스트(48008) 흔적으로 체인 역재구성
+      ## 결론: 개별 취약점을 체인으로 엮어 코드 실행까지. 방어는 체인 역재구성으로 끊기
     verify:
       type: output_contains
       expect: '체인'

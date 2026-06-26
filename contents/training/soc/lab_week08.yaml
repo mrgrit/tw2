@@ -62,6 +62,11 @@ steps:
       # 4) 네 소스 요약
       echo "4소스 준비: auth.log(인증)/eve(네트워크)/modsec(웹)/alerts.json(SIEM)"
     answer_detail: "교차 분석의 네 소스 점검 — 인증(auth.log)·웹(ModSec/access)·네트워크(eve)·통합(alerts.json). 채점은 SIEM 분석 데몬(analysisd)이 running 이고 인증·네트워크 로그가 존재함을 확인한다. 이 가용성 점검이 통과해야 이후 단면 분석이 의미가 있다."
+    expected_output: |
+      wazuh-analysisd is running...
+      /var/log/auth.log
+      /var/log/suricata/eve.json
+      4소스 준비: auth.log(인증)/eve(네트워크)/modsec(웹)/alerts.json(SIEM)
     verify:
       type: output_contains
       expect: 'analysisd'
@@ -109,6 +114,9 @@ steps:
       sleep 6
       echo "multi-stage done"
     answer_detail: "한 공격자의 다단계 공격 — 정찰(nmap 스캔)→웹 침투(sqlmap UA + UNION SELECT SQLi)→자격증명(SSH 무차별 대입) — 을 재현해 네 소스(eve/ModSec/auth.log/alerts.json)에 흩어진 흔적을 만든다. 채점은 세 단계가 모두 실행되고 done 이 출력됨을 확인한다. 이 흔적들이 이후 교차 분석·상관·서사의 원천이다."
+    expected_output: |
+      scanned
+      multi-stage done
     verify:
       type: output_contains
       expect: 'done'
@@ -146,6 +154,13 @@ steps:
       # 2) 같은 공격자의 alert 시그니처 종류 집계(스캔/SQLi)
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.alert.signature" | sort | uniq -c | tail -5'
     answer_detail: "네트워크 단면 — 출발지 10.20.30.202 의 alert(스캔/SQLi 시그니처)가 eve.json 에 다수 남는다. event_type=='alert' + src_ip 로 한 공격자만 골라낸 것이 핵심이다. 채점은 출력에 출발지 10.20.30.202 가 보임을 확인한다. 이 시그니처들이 이후 ATT&CK 매핑에서 T1046(정찰)/T1190(침투)의 네트워크 측 증거가 된다."
+    expected_output: |
+      255 10.20.30.202
+           52 6V6 Path Traversal Attempt
+            3 6V6 Possible nmap SYN scan
+           25 6V6 SQL Injection - UNION SELECT
+           84 6V6 XSS - script tag
+            1 CTF8 sqlmap recon
     verify:
       type: output_contains
       expect: '10.20.30.202'
@@ -183,6 +198,20 @@ steps:
       # 2) dvwa access 응답코드 분포(요청 전체상 보강)
       docker exec el34-web sh -c 'sudo tail -30 /var/log/apache2/dvwa_access.log | grep -oE "\" [0-9]{3} " | sort | uniq -c'
     answer_detail: "웹 단면 — 942(SQLi)가 anomaly score 를 올리고 949110(누적 임계 초과)이 403 으로 차단한다. 즉 '942 가 직접 막은' 것이 아니라 누적의 결과라는 2단계 메커니즘이 핵심이다. access 로그(응답코드)로 요청 전체상을 보강한다. 채점은 출력에 942 가 보임을 확인한다. 이 룰들이 ATT&CK T1190(웹 침투)의 증거다."
+    expected_output: |
+      2 901960
+            1 910360
+          116 913100
+            6 923076
+            2 923077
+            1 926725
+            2 926829
+            8 930100
+           16 930110
+            4 930120
+            4 931100
+           30 932115
+      … (이하 생략)
     verify:
       type: output_contains
       expect: '942'
@@ -223,6 +252,18 @@ steps:
       # 3) 해석 — Invalid user 다발=무차별 대입(T1110), Accepted로 침투 여부 판정
       echo "→ Invalid user 다발 = 무차별 대입(T1110), Accepted로 침투 여부 판정"
     answer_detail: "인증 단면 — Invalid user 가 여러 계정(root/admin/oracle/test)에 다수면 무차별 대입(T1110)이고, Accepted 줄의 유무가 침투 성공 여부를 가른다. 두 가지(무차별 대입 패턴 + 성공 여부)를 인증 로그 한 곳에서 동시에 읽는 것이 핵심이다. 채점은 출력에 'Invalid user' 가 보임을 확인한다. Accepted 판정은 미션 9 로 이어진다."
+    expected_output: |
+      80 Invalid user socw
+           27 Invalid user oracle
+           27 Invalid user admin
+           19 Invalid user test
+            9 Invalid user ubuntu
+            9 Invalid user postgres
+            9 Invalid user mysql
+            9 Invalid user git
+            5 Invalid user socbad
+      1302
+      → Invalid user 다발 = 무차별 대입(T1110), Accepted로 침투 여부 판정
     verify:
       type: output_contains
       expect: 'Invalid user'
@@ -260,6 +301,9 @@ steps:
       # 2) 해석 — ids/web 등 다소스 그룹이 한 manager로 수렴
       echo "→ ids/web 등 다소스 그룹이 한 manager로 수렴"
     answer_detail: "네 소스가 Wazuh 한 manager 로 수렴 — 출발지 10.20.30.202 로 묶으면 다단계 경보가 한 곳에 모인다. rule.groups 분포에 ids 등 다소스가 보이는 것이 수렴의 증거다. 채점은 출력에 'ids' 그룹이 보임을 확인한다. 수렴이 성립해야 한 화면에서 교차 분석이 가능하다."
+    expected_output: |
+      464 ["ids","suricata"]
+      → ids/web 등 다소스 그룹이 한 manager로 수렴
     verify:
       type: output_contains
       expect: 'ids'
@@ -297,6 +341,16 @@ steps:
       # 2) 해석 — 같은 출처 10.20.30.202 + 시간순 = 한 공격자의 단계적 체인
       echo "→ 같은 출처 10.20.30.202 + 시간순 = 한 공격자의 단계적 체인"
     answer_detail: "교차 상관 — 네 소스를 두 키(출발지 IP 10.20.30.202 + 시각)로 묶으면 흩어진 단편이 한 공격자의 시간순 체인이 된다. 출처 보존(SNAT 없음) 덕에 같은 IP 로 묶이는 것이 전제다. 채점은 출력에 출발지 10.20.30.202 가 보임을 확인한다. 이 타임라인이 미션 8 ATT&CK 서사의 뼈대다."
+    expected_output: |
+      2026-06-26T14:46:14.551+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
+      2026-06-26T14:46:22.533+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
+      2026-06-26T14:46:22.536+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
+      2026-06-26T14:46:30.534+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
+      2026-06-26T14:46:30.534+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
+      2026-06-26T14:46:34.598+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
+      2026-06-26T14:46:44.549+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
+      2026-06-26T14:46:44.551+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
+      → 같은 출처 10.20.30.202 + 시간순 = 한 공격자의 단계적 체인
     verify:
       type: output_contains
       expect: '10.20.30.202'
@@ -345,6 +399,12 @@ steps:
       # 5) 결론 — 한 공격자가 정찰→웹침투→인증공격, ATT&CK 단계 일관
       echo "→ 한 공격자가 정찰→웹침투→인증공격. ATT&CK 단계 일관"
     answer_detail: "공격 서사 = 시간순 + ATT&CK 단계 + 출처 일관 + 증거. T1046(정찰)→T1190(웹 침투)→T1110(자격증명)을 '한 공격자가 무엇을 했나'로 한 문장씩 잇는다. 전술(목적)과 기술(수법)을 표준 번호로 붙이면 보고·소통이 일관된다. 채점은 출력에 T1190 이 보임을 확인한다."
+    expected_output: |
+      T0 포트 스캔(10.20.30.202)  → TA0043 정찰 / T1046
+      T1 SQLi 침투(같은 출처)      → TA0001 초기침투 / T1190
+      T2 SSH 무차별 대입(다발)     → TA0006 자격증명 / T1110
+      T3 Accepted 유무            → 침투 성공 판정
+      → 한 공격자가 정찰→웹침투→인증공격. ATT&CK 단계 일관
     verify:
       type: output_contains
       expect: 'T1190'
@@ -386,6 +446,10 @@ steps:
       # 3) 격상 규칙 — 공격 출처 Accepted 발견 시 = P1 침해(즉시 IR)
       echo "공격 출처에서 Accepted 발견 시 = P1 침해(즉시 IR)"
     answer_detail: "판정 = 체인 깊이 + 침투 여부, 모두 증거 기반. 공격 출처(10.20.30.202/192.168.0.202)의 Accepted 수가 0 이면 '시도(P2)', 1 이상이면 '침해(P1)'. 본 시나리오는 웹 403 차단 + Invalid user 다발만 있고 성공 흔적이 없어 시도(P2)이며, 진행형이라 L2/IR 로 에스컬레이션한다. 채점은 출력에 P2 가 보임을 확인한다. '위험해 보인다'가 아니라 Accepted 수로 판정하는 것이 핵심이다."
+    expected_output: |
+      0
+      정찰→침투 체인 진행(성공 흔적 없음) = P2 에스컬레이션(L2/IR로)
+      공격 출처에서 Accepted 발견 시 = P1 침해(즉시 IR)
     verify:
       type: output_contains
       expect: 'P2'
@@ -431,6 +495,13 @@ steps:
       ## 결론: 한 로그는 단편, 교차로 봐야 한 공격자의 서사가 보인다
       EOF
     answer_detail: "중간고사의 최종 산출물 = 네 소스 교차 분석 → 출처/시간 상관 → ATT&CK 서사(T1046→T1190→T1110) → 우선순위/침투 판정, 모두 증거 첨부. SOC 분석가의 종합 능력 = 흩어진 단편을 한 공격자의 한 서사로 엮는 능력이다. 채점은 보고서에 '서사' 가 포함됨을 확인한다. '한 로그는 단편, 교차로 봐야 서사' 라는 결론이 본 시험의 핵심 메시지다."
+    expected_output: |
+      # SOC W08 중간고사 보고서
+      ## 1. 네 소스: eve(스캔/sqlmap)+ModSec(942/949110)+auth.log(Invalid user 다발)+alerts.json 수렴
+      ## 2. 교차 상관: 모두 출처 10.20.30.202(웹/네트워크), 시간순 체인
+      ## 3. ATT&CK 서사: T1046 정찰 → T1190 웹침투 → T1110 인증공격
+      ## 4. 판정: 정찰→침투 체인 진행, 공격출처 Accepted 없음 → P2 에스컬레이션(시도/차단)
+      ## 결론: 한 로그는 단편, 교차로 봐야 한 공격자의 서사가 보인다
     verify:
       type: output_contains
       expect: '서사'

@@ -50,6 +50,8 @@ steps:
       # 1) 내부 발판(attacker)에서 dvwa vhost 도달 확인 — Host 헤더로 vhost 지정, 본문 버리고 응답코드만 dvwa= 형식으로
       docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
     answer_detail: "XSS·CSRF 점검 대상 = web 컨테이너의 dvwa vhost(차단 모드). `Host: dvwa.el34.lab` 헤더로 라우팅된 정상 응답 코드가 나오면 대상 도달 = 점검 시작 준비 완료. 판정은 출력에 `dvwa=`(응답 코드)가 포함되는지로 한다."
+    expected_output: |
+      dvwa=302
     verify:
       type: output_contains
       expect: 'dvwa'
@@ -88,6 +90,9 @@ steps:
       # 2) 해석 — <script> 주입이 941에 탐지되어 403 차단
       echo "→ <script> 주입 → 941 탐지 → 403"
     answer_detail: "Reflected XSS = 요청 파라미터(?q=)가 응답에 즉시 반사되어 피해자 브라우저에서 실행되는 XSS. `<script>alert(1)</script>` 가 ModSec 941 룰군에 매치 → anomaly score 누적 → 949110 발동 → dvwa(차단 모드)에서 403. 판정은 출력에 `403` 이 포함되는지로 한다."
+    expected_output: |
+      xss=403
+      → <script> 주입 → 941 탐지 → 403
     verify:
       type: output_contains
       expect: '403'
@@ -132,6 +137,10 @@ steps:
       # 3) 해석 — 이벤트 핸들러(onerror/onload)도 941이 탐지(403)
       echo "→ 이벤트 핸들러(onerror/onload)도 941이 탐지"
     answer_detail: "XSS 변형 = `<script>` 외에 `<img onerror>`·`<svg onload>` 같은 이벤트 핸들러로 스크립트를 실행시키는 우회. ModSec 941 룰군(libinjection 기반)이 이런 변형까지 폭넓게 커버해 dvwa 에서 403 으로 차단. URL 의 공백은 반드시 %20 으로 인코딩해야 페이로드가 잘리지 않는다(필수). 판정은 출력에 `403` 이 포함되는지로 한다. 교훈: XSS 방어는 특정 단어 차단이 아니라 출력 인코딩이라는 근본 처리여야 한다."
+    expected_output: |
+      img=403
+      svg=403
+      → 이벤트 핸들러(onerror/onload)도 941이 탐지
     verify:
       type: output_contains
       expect: '403'
@@ -170,6 +179,9 @@ steps:
       # 2) 해석 — 상태 변경 요청에 예측 불가 CSRF 토큰이 없으면 피해자 세션으로 위조 가능
       echo "→ 상태 변경 요청에 예측 불가 CSRF 토큰 없으면 위조 가능(피해자 세션 악용)"
     answer_detail: "CSRF 점검 = 상태 변경 폼/요청에 예측 불가능한 CSRF 토큰(예: dvwa 의 user_token)이 포함되는지 확인. 없으면 공격자 페이지가 피해자의 인증된 세션으로 위조 요청(비밀번호·이메일 변경 등)을 전송할 수 있다. 단, XSS 가 가능하면 같은 페이지에서 토큰이 읽혀 이 방어도 무력화됨(XSS 방어가 전제). 판정은 출력에 `CSRF` 가 포함되는지로 한다."
+    expected_output: |
+      CSRF 토큰 미발견 → 위조 가능
+      → 상태 변경 요청에 예측 불가 CSRF 토큰 없으면 위조 가능(피해자 세션 악용)
     verify:
       type: output_contains
       expect: 'CSRF'
@@ -208,6 +220,12 @@ steps:
       # 2) 해석 — 941100(script)/941160(이벤트핸들러) 등 XSS 전담 룰군
       echo "→ 941100(script)/941160(이벤트핸들러) 등 XSS 룰군"
     answer_detail: "XSS 탐지 = ModSec audit 로그에 남은 941 룰군 시그니처 ID(예: 941100=script, 941160=이벤트 핸들러). script/이벤트/속성 변형을 폭넓게 커버한다. 응답 코드(403)와 로그 룰 ID 를 함께 묶어야 탐지 증거의 신뢰도가 높다. 판정은 출력에 `941` 이 포함되는지로 한다."
+    expected_output: |
+      6 941100
+            2 941110
+            4 941120
+            6 941160
+      → 941100(script)/941160(이벤트핸들러) 등 XSS 룰군
     verify:
       type: output_contains
       expect: '941'
@@ -247,6 +265,10 @@ steps:
       # 2) 해석 — juice는 X-Frame-Options(SAMEORIGIN)는 있으나 CSP 미설정 = XSS 2차 방어선 부재
       echo "→ juice: X-Frame-Options 있음 / CSP 없음 → XSS 출력인코딩 한 곳만 뚫려도 막을 2차 방어선 부재"
     answer_detail: "CSP 점검 = 응답 헤더의 Content-Security-Policy 유무. 실측상 juice 는 X-Frame-Options: SAMEORIGIN(클릭재킹 완화)은 설정돼 있으나 CSP 는 없다 → XSS 의 2차 방어선이 부재. CSP 는 출력 인코딩이 한 군데서 빠져도 브라우저가 인라인/외부 스크립트 실행을 거부해 피해를 완화하는데, 없으면 XSS 방어가 출력 인코딩 하나에만 의존한다. 판정은 'CSP=미설정' 출력(마커 CSP)으로 한다."
+    expected_output: |
+      X-Frame-Options: SAMEORIGIN
+      CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)
+      → juice: X-Frame-Options 있음 / CSP 없음 → XSS 출력인코딩 한 곳만 뚫려도 막을 2차 방어선 부재
     verify:
       type: output_contains
       expect: 'CSP'
@@ -288,6 +310,10 @@ steps:
       # 3) 결론 — XSS는 인코딩+CSP, CSRF는 토큰+SameSite(HttpOnly·SameSite가 둘을 함께 보완)
       echo "→ XSS는 인코딩+CSP, CSRF는 토큰+SameSite"
     answer_detail: "XSS 방어 = 출력 인코딩(context-aware, 근본) + CSP(2차) + HttpOnly 쿠키(뚫려도 세션 쿠키 탈취 차단). CSRF 방어 = CSRF 토큰(근본) + SameSite 쿠키 + 민감 작업 재인증. HttpOnly·SameSite 한 쌍이 양쪽을 동시에 보완하고, XSS 를 근본에서 막으면 CSRF 토큰 탈취도 막힌다. 판정은 출력에 `CSP` 가 포함되는지로 한다."
+    expected_output: |
+      XSS: ① 출력 인코딩(context-aware, 근본) ② CSP(2차) ③ HttpOnly 쿠키(탈취 차단)
+      CSRF: ① CSRF 토큰(동기화) ② SameSite 쿠키 ③ 민감 작업 재인증
+      → XSS는 인코딩+CSP, CSRF는 토큰+SameSite
     verify:
       type: output_contains
       expect: 'CSP'
@@ -330,6 +356,12 @@ steps:
       ## 결론: 둘 다 브라우저 악용. XSS는 인코딩/CSP, CSRF는 토큰으로 방어
       EOF
     answer_detail: "XSS·CSRF 종합 = 둘 다 피해자의 브라우저(XSS)·인증된 세션(CSRF)을 악용하는 클라이언트 측 공격(WSTG-CLNT). XSS 는 941 탐지/출력 인코딩/CSP 로, CSRF 는 토큰/SameSite 로 방어하며, HttpOnly 가 둘의 세션 탈취를 함께 보완한다. 판정은 출력에 `CSRF` 가 포함되는지로 한다."
+    expected_output: |
+      # 웹취약점 W06 XSS/CSRF 보고서
+      ## 1. XSS: Reflected/변형(img/svg) → 941 탐지, dvwa 403
+      ## 2. CSRF: 토큰 유무 점검. CSP 헤더 점검(2차 방어선)
+      ## 3. 방어: XSS=출력 인코딩+CSP+HttpOnly, CSRF=토큰+SameSite
+      ## 결론: 둘 다 브라우저 악용. XSS는 인코딩/CSP, CSRF는 토큰으로 방어
     verify:
       type: output_contains
       expect: 'CSRF'
