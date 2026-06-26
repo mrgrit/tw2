@@ -588,7 +588,7 @@ graph TB
 | **fw (ext↔pipe)** | `el34-fw` | 10.20.30.1 / 10.20.31.1 | nftables (`six_filter` + `six_nat` DNAT) + iptables-translate + conntrack | W02 |
 | **ips (pipe↔dmz)** | `el34-ips` | 10.20.31.2 / 10.20.32.1 | Suricata 6.0.4 + nftables masq + Wazuh agent | W03–W04 |
 | **dmz** | `el34-web` | 10.20.32.80 / 10.20.40.80 | Apache 2.4 + ModSecurity v2 + CRS + 11 vhost + Wazuh agent + osquery | W05 |
-| **dmz** | `el34-siem` | 10.20.32.100 | Wazuh manager (11 daemon) + 1514/1515/55000 listen | W09–W10 |
+| **dmz** | `el34-siem` | 10.20.32.100 | Wazuh manager (10 daemon) + 1514/1515/55000 listen | W09–W10 |
 | **dmz** | `el34-wazuh-indexer` | 10.20.32.110 | OpenSearch (9200) | W09 |
 | **dmz** | `el34-wazuh-dashboard` | 10.20.32.120 | Wazuh Web UI (HTTPS 5601) | W09 |
 | **dmz** | `el34-portal` | 10.20.32.50 | 운영 포털 (FastAPI + HTMX) | W01 |
@@ -1122,19 +1122,19 @@ XSS attempt: 403
 > 생성되지 않고, agent 가 disconnect 면 source 가 사라진다.
 >
 > **이걸 하면 무엇을 알 수 있는가?**
-> - Wazuh manager 의 11 daemon (default-on) 가동
+> - Wazuh manager 의 10 daemon (default-on) 가동
 > - agent (ips / web) Active — el34 는 현재 2개 agent 활성
 > - 1514/1515/55000 3 listening port
 > - cluster status green
 >
 > **결과 해석**
-> 정상: 11 daemon running + agent(ips, web) Active. 비정상: analysisd / remoted stopped 또는
+> 정상: 10 daemon running + agent(ips, web) Active. 비정상: analysisd / remoted stopped 또는
 > agent Never connected.
 >
 > **실전 활용**
 > SIEM 운영자가 매일 아침 1순위로 확인.
 
-**Step 5.1 — manager 11 daemon**
+**Step 5.1 — manager 10 daemon**
 
 ```bash
 docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-control status'
