@@ -17,7 +17,7 @@ prerequisites:
   - 컨테이너 작업은 호스트에서 `docker exec el34-<name>` 로 수행 (컨테이너 내부 root)
 
 objectives:
-  - 4-tier 토폴로지의 16 컨테이너 가시화 + 4 bridge 분리 검증
+  - 4-tier 토폴로지의 보안 핵심 16 컨테이너 가시화(el34 전체 40여 개) + 4 bridge 분리 검증
   - 5종 보안 솔루션 (방화벽/IPS/WAF/SIEM/호스트 가시화) 가동 상태 확인
   - el34 접근 모델 (호스트 SSH + docker exec) 로 컨테이너 진입 + 외부 직접 IP 접속 차단 검증
   - web Apache 의 11 vhost 라우팅 (host header 별) + 운영/학생 트래픽의 ModSec 적용 차이
@@ -28,25 +28,26 @@ pass_threshold: 0.7
 steps:
 
   # ============================================================
-  # STEP 1 — bastion 점프 호스트 + 16 컨테이너 가시화
+  # STEP 1 — bastion 점프 호스트 + 보안 핵심 16 컨테이너 가시화
   # ============================================================
   - order: 1
     instruction: |
       ## 🎯 MISSION
 
-      el34 호스트에서 `docker ps` 로 보안 핵심 **16개 컨테이너**가 모두
-      `Up` 상태인지 확인한다. (bastion 컨테이너도 docker 소켓을 가지므로 `docker exec el34-bastion docker ps` 로 동일하게 확인 가능)
+      el34 호스트에서 `docker ps` 로 **보안 핵심 16개 컨테이너**가 모두 `Up` 상태인지 확인한다.
+      (el34 전체는 OpenCTI/MISP·Wazuh 스택까지 포함해 40여 개가 돌지만, 본 주차 보안 운영 대상은
+      그중 핵심 16개다.) bastion 컨테이너도 docker 소켓을 가지므로 `docker exec el34-bastion docker ps` 로 동일하게 확인 가능.
 
       ## 💻 실행 명령
 
       el34 호스트(`ssh ccc@192.168.0.151`)에서 정확히 다음 3 명령을 순서대로 실행:
 
       ```bash
-      # 1. 16 컨테이너 가시화
+      # 1. 전체 컨테이너 가시화 (핵심 16 + OpenCTI/MISP·Wazuh 스택 = 40여 개)
       docker exec el34-bastion sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
 
-      # 2. 컨테이너 수 카운트 (16 이어야 정상)
-      docker exec el34-bastion sh -c 'docker ps --format "{{.Names}}" | wc -l'
+      # 2. 보안 핵심 16개만 카운트 (전체 수가 아니라 핵심 셋 → 16 이어야 정상)
+      docker exec el34-bastion sh -c 'docker ps --format "{{.Names}}" | grep -cE "el34-(bastion|attacker|fw|ips|web|siem|wazuh-indexer|wazuh-dashboard|portal|juiceshop|dvwa|neobank|govportal|mediforum|adminconsole|aicompanion)$"'
 
       # 3. 비정상 컨테이너 (Restarting / Exited) 만 추출 (없어야 정상)
       docker exec el34-bastion sh -c 'docker ps -a --format "{{.Names}} {{.Status}}" | grep -vE "Up|^$"'
@@ -54,43 +55,44 @@ steps:
 
       ## 📋 확인 사항
 
-      - 컨테이너 16개 모두 출력 (bastion, attacker, fw, ips, web, siem, wazuh-indexer,
-        wazuh-dashboard, portal, juiceshop, dvwa, neobank, govportal, mediforum,
-        adminconsole, aicompanion)
-      - 모든 라인의 상태가 `Up` 으로 시작
+      - 명령 1: 전체 40여 개 컨테이너 출력 (보안 핵심 16 + OpenCTI/MISP·Wazuh 스택)
+      - 명령 2: 보안 핵심 16개 카운트 = `16` (bastion, attacker, fw, ips, web, siem,
+        wazuh-indexer, wazuh-dashboard, portal, juiceshop, dvwa, neobank, govportal,
+        mediforum, adminconsole, aicompanion)
+      - 핵심 컨테이너 라인의 상태가 모두 `Up` 으로 시작
       - 3번 명령 결과가 빈 결과 (= 비정상 0건)
 
       ## 💡 왜 이걸 하는가?
 
       보안 운영자는 인프라 인수 시 첫 30초 안에 자산 인벤토리를 확보해야 한다. el34 는
-      16개 컨테이너의 단일 진입점 (bastion) 을 두어 ISMS-P 2.5 (인증·권한관리) 의
+      보안 핵심 컨테이너의 단일 진입점 (bastion) 을 두어 ISMS-P 2.5 (인증·권한관리) 의
       single point of access 원칙을 모사한다.
 
       ## 🔍 결과 해석
 
-      - **정상**: 16개 모두 `Up` + 비정상 0건
+      - **정상**: 핵심 16개 모두 `Up` + 비정상 0건 (전체 40여 개 중)
       - **비정상**: `Restarting` / `Exited` 1개라도 있으면 즉시 `docker logs <name>` 로 원인 파악
     hint: docker exec el34-bastion sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
     category: survey
     points: 8
     answer: |
       docker exec el34-bastion sh -c 'docker ps --format "{{.Names}} {{.Status}}"' | tee /tmp/w01s1.txt
-      echo "--- 컨테이너 수 ---"
-      wc -l < /tmp/w01s1.txt
+      echo "--- 보안 핵심 16개 수 (el34 전체는 40여 개) ---"
+      grep -cE "el34-(bastion|attacker|fw|ips|web|siem|wazuh-indexer|wazuh-dashboard|portal|juiceshop|dvwa|neobank|govportal|mediforum|adminconsole|aicompanion)( |$)" /tmp/w01s1.txt
       echo "--- 비정상 컨테이너 ---"
       grep -vE "Up|^$" /tmp/w01s1.txt || echo "(없음 — 모두 Up)"
     answer_detail: |
-      16 컨테이너 모두 Up 출력 + 비정상 0건. 출력 시점에 컨테이너 수가 15 이하면
-      `docker compose ps -a` 로 Exited 컨테이너 확인 후 `docker compose up -d
-      <name>` 으로 복구.
+      보안 핵심 16개 컨테이너 모두 Up + 비정상 0건(el34 전체는 OpenCTI/MISP·Wazuh 스택
+      포함 40여 개). 핵심 수가 16 미만이면 `docker compose ps -a` 로 Exited 컨테이너
+      확인 후 `docker compose up -d <name>` 으로 복구.
     verify:
       type: output_contains
       expect: el34-
       field: stdout
       semantic:
         intent: |
-          bastion 컨테이너에 SSH 진입 후 docker ps 로 16 컨테이너 가시화. 16 컨테이너
-          모두 Up 상태. ISMS-P 2.5 + NIST CSF Identify (자산 인벤토리) 의 첫 단계.
+          bastion 의 docker 소켓으로 docker ps 가시화. 보안 핵심 16개 컨테이너 모두 Up
+          (el34 전체 40여 개 중). ISMS-P 2.5 + NIST CSF Identify (자산 인벤토리) 의 첫 단계.
         success_criteria:
           - el34- prefix 컨테이너 15+ 출력
           - Up 키워드
@@ -100,10 +102,10 @@ steps:
           - |
             **[OSS] docker ps 표준** — 가장 자주.
               docker exec el34-bastion sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
-              # 컨테이너 수
-              docker exec el34-bastion sh -c 'docker ps --format "{{.Names}}" | wc -l'
-            예상 출력 `el34-bastion Up X seconds / el34-attacker Up 2 days / ... / 16`.
-            운영 해석: 16 컨테이너 가시화. 결과가 15 이하면 Exited 점검.
+              # 보안 핵심 16개 수 (el34 전체는 40여 개)
+              docker exec el34-bastion sh -c 'docker ps --format "{{.Names}}" | grep -cE "el34-(bastion|attacker|fw|ips|web|siem|wazuh-indexer|wazuh-dashboard|portal|juiceshop|dvwa|neobank|govportal|mediforum|adminconsole|aicompanion)$"'
+            예상 출력 `el34-bastion Up … / el34-attacker Up … / …(전체 40여 개) / 핵심 16`.
+            운영 해석: 보안 핵심 16개가 모두 Up 인지 확인. 핵심 수가 16 미만이면 Exited 점검.
           - |
             **[OSS] docker compose ps (호스트 측)** — 강사용.
               cd ~/el34 && docker compose ps
@@ -153,7 +155,7 @@ steps:
             운영 해석: 학습 환경만 NOPASSWD. production 절대 금지.
         negative_signs:
           - SSH 접속 실패
-          - 컨테이너 16개 미만
+          - 보안 핵심 16개 미만
           - Restarting 상태
     target_vm: bastion
 
@@ -1440,7 +1442,7 @@ steps:
       ## 1. 인프라 헬스 표
       | Step | 영역 | 결과 | 근거 |
       |------|------|------|------|
-      | 1 | bastion + 16 컨테이너 | pass | docker ps 16건 Up |
+      | 1 | bastion + 보안 핵심 16 컨테이너 | pass | docker ps 핵심 16건 Up(전체 40여 개) |
       | 2 | 접근 4 노드 (docker exec) | pass | fw/ips/web/siem hostname 응답 |
       | 3 | fw nft + six_nat | pass | 3 table + DNAT + 4 라우팅 |
       | 4 | ips Suricata 2 NIC | pass | -i eth0 -i eth1 + drops 0 |
