@@ -51,6 +51,25 @@ function Mermaid({ code }: { code: string }): React.ReactElement {
   )
 }
 
+// 코드 블록 — 우상단 '복사' 버튼으로 명령을 그대로 클립보드에 담는다(따라하기 핵심).
+function CodeBlock({ code }: { code: string }): React.ReactElement {
+  const [copied, setCopied] = React.useState(false)
+  const copy = (): void => {
+    const done = (): void => { setCopied(true); setTimeout(() => setCopied(false), 1200) }
+    if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(code).then(done).catch(() => undefined)
+  }
+  return (
+    <div style={{ position: 'relative', margin: '12px 0' }}>
+      <button onClick={copy} aria-label="복사" style={{
+        position: 'absolute', top: 6, right: 6, fontSize: 12, padding: '2px 9px', lineHeight: 1.6,
+        background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 6,
+        color: copied ? '#3fb950' : 'var(--fg-dim)', cursor: 'pointer', zIndex: 1,
+      }}>{copied ? '복사됨 ✓' : '복사'}</button>
+      <pre style={{ ...preStyle, margin: 0 }}><code>{code}</code></pre>
+    </div>
+  )
+}
+
 function inline(s: string): React.ReactNode[] {
   const out: React.ReactNode[] = []
   const re = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g
@@ -120,7 +139,7 @@ export default function Markdown({ text }: { text: string }): React.ReactElement
       while (i < lines.length && !lines[i].trimStart().startsWith('```')) { code.push(lines[i]); i++ }
       i++
       if (lang === 'mermaid') blocks.push(<Mermaid key={key++} code={code.join('\n')} />)
-      else blocks.push(<pre key={key++} style={preStyle}><code>{code.join('\n')}</code></pre>)
+      else blocks.push(<CodeBlock key={key++} code={code.join('\n')} />)
       continue
     }
     // 표 (| ... | 다음 줄이 |---| 구분자) — 넓으면 가로 스크롤 + 줄무늬

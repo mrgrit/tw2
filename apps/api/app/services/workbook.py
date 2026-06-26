@@ -271,10 +271,12 @@ def build_doc(scn: dict, prefill: dict | None = None) -> Document:
 
 # ── training 실습(lab) → 학생 워크북 ──
 def build_lab_doc(lab: dict, track_label: str = "", week: int | None = None) -> Document:
-    """training lab(yaml dict) → 학생 워크북 1부. 각 step 의 instruction + 붙여넣기 3칸(명령/결과/분석).
+    """training lab(yaml dict) → 학생 워크북 1부(따라하기 형식).
 
-    배틀 워크북과 동일 렌더러(render_md/paste_box)를 공유하되 RED/BLUE 대신 '실습 STEP' 으로 낸다.
-    답안(answer)은 싣지 않는다 — 학생이 채우는 빈 워크북(E.G/정답은 별도)."""
+    각 step = instruction(목표·명령) + ✅이렇게 나오면 정상(expected_output) + 💡결과 해석
+    (answer_detail) 참고 + 붙여넣기 3칸(학생이 직접 실행한 명령/결과/분석 기록).
+    배틀 워크북과 동일 렌더러(render_md/paste_box) 공유. 명령은 instruction 의 💻 블록에 있으므로
+    answer 를 따로 싣지 않고, 숨어 있던 정상 출력·해석을 표면화해 '시험지'가 아닌 '따라하기'로 만든다."""
     doc = Document()
     normal = doc.styles["Normal"]
     normal.font.name = KFONT
@@ -326,6 +328,21 @@ def build_lab_doc(lab: dict, track_label: str = "", week: int | None = None) -> 
         _kfont(hr)
 
         render_md(doc, st.get("instruction", ""))
+
+        # ── 따라하기 참고: ✅ 정상 출력(expected_output) + 💡 결과 해석(answer_detail) 표면화 ──
+        eo = str(st.get("expected_output") or "").strip()
+        if eo:
+            lp = doc.add_paragraph(); lp.paragraph_format.space_before = Pt(6)
+            lr = lp.add_run("✅ 이렇게 나오면 정상 (실측 예 — 숫자·시간은 환경마다 다름)")
+            lr.bold = True; lr.font.size = Pt(11); lr.font.color.rgb = RGBColor(0x1F, 0x6F, 0x3C); _kfont(lr)
+            cp = doc.add_paragraph(); _shade(cp, "EAF5EA")
+            cr = cp.add_run(eo); cr.font.name = MONO; cr.font.size = Pt(9.5)
+        ad = str(st.get("answer_detail") or "").strip()
+        if ad:
+            lp = doc.add_paragraph(); lp.paragraph_format.space_before = Pt(6)
+            lr = lp.add_run("💡 결과 해석")
+            lr.bold = True; lr.font.size = Pt(11); lr.font.color.rgb = RGBColor(0x1F, 0x6F, 0x3C); _kfont(lr)
+            render_md(doc, ad)
 
         doc.add_paragraph()
         boxes = [
