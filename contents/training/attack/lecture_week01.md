@@ -414,11 +414,14 @@ docker exec el34-attacker nmap -sV -p 80,443,8001-8007,9100 10.20.30.1 -T4 --max
 PORT     STATE    SERVICE  VERSION
 80/tcp   open     http     Apache httpd 2.4.x
 443/tcp  open     ssl/http Apache httpd 2.4.x
-9100/tcp open     ...
+8001/tcp open     ...
+9100/tcp filtered jetdirect
 ```
 
-- `open` — **열린 포트**. 들어갈 수 있는 입구 후보. 공격 표면.
-- `filtered` — 방화벽이 응답을 막아 열림/닫힘 판단 불가. (fw 정책의 흔적)
+- `open` — **열린 포트**. 들어갈 수 있는 입구 후보. 공격 표면(여기선 80/443/8001-8007).
+- `filtered` — 방화벽이 응답을 막아 열림/닫힘 판단 불가. (fw 정책의 흔적) — el34 에서 9100(Bastion
+  API)은 fw 가 DNAT 하지만 외부 attacker 시점에선 **filtered** 로 나온다(내부에서만 도달). "DNAT
+  되어 있다 ≠ 외부에서 열려 있다"의 좋은 예.
 - `closed` — 포트는 도달하지만 서비스 없음.
 - `VERSION` 열 — 이 버전 정보가 곧 CVE 검색의 키워드가 된다.
 
@@ -537,7 +540,7 @@ docker exec el34-ips sh -c 'tail -2000 /var/log/suricata/eve.json | jq -rc "sele
 ```mermaid
 graph TD
     SCAN["정찰 결과"]
-    SCAN --> PORTS["열린 포트<br/>80/443(웹)<br/>8001-8007(앱)<br/>9100(API)"]
+    SCAN --> PORTS["열린 포트<br/>80/443(웹)<br/>8001-8007(앱)<br/>(9100 API=filtered)"]
     SCAN --> VHOSTS["vhost(앱)<br/>dvwa/juice/neobank<br/>govportal/mediforum/admin"]
     PORTS --> SURFACE["공격 표면<br/>= 익스플로잇 후보 목록"]
     VHOSTS --> SURFACE
@@ -584,8 +587,9 @@ graph TD
 > **결과 해석.** `open` 으로 표시된 포트가 공격 표면. `filtered` 는 방화벽이 응답을
 > 막은 것(fw 정책의 흔적), `closed` 는 서비스 없음.
 >
-> **실전 활용.** 외부 자산 점검의 1순위. 의외로 열려 있는 관리 포트(예: 9100 API)가
-> 곧 침입 경로가 되는 경우가 많다.
+> **실전 활용.** 외부 자산 점검의 1순위. 의외로 열려 있는 관리 포트가 곧 침입 경로가 되는
+> 경우가 많다(반대로 el34 의 9100 API 처럼 DNAT 돼 있어도 외부엔 filtered 인 포트도 있으니,
+> "노출 설정"과 "실제 도달성"을 구분해 확인한다).
 
 ### 실습 3 — 서비스 버전 식별 (nmap -sV)
 
