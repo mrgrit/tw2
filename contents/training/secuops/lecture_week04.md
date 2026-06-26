@@ -38,23 +38,6 @@
 
 ---
 
-## 강의 시간 배분 (3시간 40분)
-
-| 시간      | 내용                                                                  | 유형     |
-|-----------|----------------------------------------------------------------------|----------|
-| 0:00–0:25 | 이론 — 룰 구조 심층 + content modifier 5 + HTTP buffer 9             | 강의     |
-| 0:25–0:55 | 이론 — pcre 정규식 + 6 modifier + content prefilter 패턴              | 강의     |
-| 0:55–1:05 | 휴식                                                                  | —        |
-| 1:05–1:30 | 이론 — fast_pattern 의 hyperscan 효과 + flowbits 다단계 추적          | 강의/토론 |
-| 1:30–2:00 | 실습 1, 2 — pcre RRN / SQL UNION + http.uri modifier 결합              | 실습     |
-| 2:00–2:30 | 실습 3, 4 — flowbits 다단계 + fast_pattern 명시 비교                   | 실습     |
-| 2:30–2:40 | 휴식                                                                  | —        |
-| 2:40–3:10 | 실습 5, 6 — threshold rate-limit + threshold.config suppression        | 실습     |
-| 3:10–3:30 | 실습 7 — **R/B/P** 다단계 + 종합 룰 (5 기술 결합)                      | 실습     |
-| 3:30–3:40 | 정리 + W05 (ModSecurity WAF) 예고                                     | 정리     |
-
----
-
 ## 0. 용어 해설
 
 | 용어 | 영문 | 뜻 |

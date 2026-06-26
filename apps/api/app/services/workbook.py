@@ -289,9 +289,7 @@ def build_lab_doc(lab: dict, track_label: str = "", week: int | None = None) -> 
     _kfont(tr)
 
     meta = doc.add_paragraph()
-    mins = lab.get("duration_minutes", 0)
-    mr = meta.add_run(f"{track_label or lab.get('course','-')}  ·  난이도 {lab.get('difficulty','-')}"
-                      f"  ·  제한 {mins}분  ·  합격선 {int((lab.get('pass_threshold',0) or 0)*100)}%")
+    mr = meta.add_run(f"{track_label or lab.get('course','-')}  ·  난이도 {lab.get('difficulty','-')}")
     mr.italic = True
     mr.font.size = Pt(9.5)
     mr.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
