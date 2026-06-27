@@ -12,7 +12,7 @@ description: |
   저속) ↔ 탐지(대량·고속)의 trade-off 를 정리한다. 공격은 el34-attacker(scapy 2.7, root → raw
   socket 가능, hping3 없음), 방어는 el34-ips 의 Suricata. 작성한 IDS 룰은 sid(9409xxx)로
   self-clean 해 베이스 룰을 보존한다. 인가된 실습 환경(el34)에서만 수행하며, 모든 명령은 el34
-  호스트(ssh ccc@192.168.0.151)에서 docker exec 로 실행한다.
+  호스트(ssh ccc@192.168.0.151)에서 실행하고, 컨테이너 작업은 docker exec -it <컨테이너> bash 로 접속해 수행한다.
 difficulty: hard
 duration_minutes: 180
 prerequisites:
@@ -42,9 +42,12 @@ steps:
       쓴다.)
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 패킷 크래프팅 도구 scapy 동작 확인(버전) — raw socket은 root라 가능
-      docker exec el34-attacker python3 -c "import scapy; print('scapy', scapy.__version__)"
+      python3 -c "import scapy; print('scapy', scapy.__version__)"
       ```
 
       ## ✅ 합격 기준
@@ -82,9 +85,12 @@ steps:
       안 보내 연결을 끝까지 안 맺는 "반열림 스캔"이다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) scapy로 SYN(flags='S') 패킷을 여러 포트에 조립·전송 → SYN-ACK(0x12) 응답 포트=open
-      docker exec el34-attacker python3 -c "from scapy.all import *; ans,u=sr(IP(dst='10.20.30.1')/TCP(dport=[22,80,443,8001,8002,3306,5432],flags='S'),timeout=4,verbose=0); print('open:', sorted(p[1].sport for p in ans if p[1][TCP].flags==0x12))"
+      python3 -c "from scapy.all import *; ans,u=sr(IP(dst='10.20.30.1')/TCP(dport=[22,80,443,8001,8002,3306,5432],flags='S'),timeout=4,verbose=0); print('open:', sorted(p[1].sport for p in ans if p[1][TCP].flags==0x12))"
       # 2) 해석 — SYN-ACK(0x12)=open, RST(0x14)=closed, 무응답=filtered
       echo "→ SYN 보내 SYN-ACK(0x12) 받으면 open, RST(0x14) 받으면 closed"
       ```
@@ -128,9 +134,12 @@ steps:
       결코 없는 모양).
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 비정상 플래그 3종(FIN=F/XMAS=FPU/NULL=0) 패킷을 차례로 전송 — 일부 필터/스택 우회 시도
-      docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='F'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='FPU'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags=0),timeout=2,verbose=0); print('FIN/XMAS/NULL sent')"
+      python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='F'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags='FPU'),timeout=2,verbose=0); sr(IP(dst='10.20.30.1')/TCP(dport=80,flags=0),timeout=2,verbose=0); print('FIN/XMAS/NULL sent')"
       # 2) 해석 — F/FPU/0로 표준 아닌 플래그 우회 시도(정상에 없는 모양이라 시그니처에 취약)
       echo "→ FIN(F)/XMAS(FPU)/NULL(0) — 표준 아닌 플래그로 일부 필터/스택 우회 시도"
       ```
@@ -173,13 +182,18 @@ steps:
       빠져나가고, **대량(100+ 포트)** 이라야 탐지된다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** 대량 스캔 발사는 `el34-attacker`, 탐지 집계는 `el34-ips`.
+
       ```bash
+      # ── el34-attacker 에서: 대규모 스캔 발사 ──
       # 1) 대규모 SYN 스캔(포트 1~200 범위) — 임계 초과 유발(scapy 튜플=범위)
-      docker exec el34-attacker python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=(1,200),flags='S'),timeout=6,verbose=0); print('mass scan sent')"
+      python3 -c "from scapy.all import *; sr(IP(dst='10.20.30.1')/TCP(dport=(1,200),flags='S'),timeout=6,verbose=0); print('mass scan sent')"
       # 2) 탐지 전파 대기
       sleep 5
+      # ── el34-ips 에서: scan 시그니처 집계 ──
       # 3) eve.json에서 출처 10.20.30.202의 scan 시그니처 집계(SNAT 없어 출처 보존)
-      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
+      tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.event_type=="alert" and .src_ip=="10.20.30.202" and (.alert.signature|test("scan";"i")))|.alert.signature' | sort | uniq -c | tail -2
       # 4) 해석 — 대량 SYN(200포트)이 임계 초과 → scan 탐지, 소량은 임계 미달(은밀)
       echo "→ 대량 SYN(200포트)이 Suricata 임계 초과 → scan 탐지. 소량은 임계 미달(은밀)"
       ```
@@ -227,9 +241,12 @@ steps:
       정보의 다른 표현.)
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) sr1로 포트 80에 SYN 하나 보내고 응답 패킷의 TCP 플래그를 직접 해석
-      docker exec el34-attacker python3 -c "from scapy.all import *; a=sr1(IP(dst='10.20.30.1')/TCP(dport=80,flags='S'),timeout=3,verbose=0); print('port 80 응답 flags:', str(a[TCP].flags) if a else 'no-resp')"
+      python3 -c "from scapy.all import *; a=sr1(IP(dst='10.20.30.1')/TCP(dport=80,flags='S'),timeout=3,verbose=0); print('port 80 응답 flags:', str(a[TCP].flags) if a else 'no-resp')"
       # 2) 해석 — SA(SYN-ACK)=open, RA(RST-ACK)=closed, no-resp=filtered
       echo "→ SA(SYN-ACK)=open, RA(RST-ACK)=closed, no-resp=filtered. 플래그가 포트 상태를 말한다"
       ```
@@ -272,21 +289,27 @@ steps:
       베이스 룰을 보존한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** 룰 작성·검증·reload·확인·정리는 `el34-ips`, NULL 패킷 트리거만 `el34-attacker`.
+
       ```bash
+      # ── el34-ips 에서: 룰 추가 + 문법검증 + reload ──
       # 1) NULL 스캔(flags:0) 탐지룰 추가 — 정상엔 없는 모양이라 단발도 잡힘(sid 9409001)
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert tcp any any -> any any (msg:\"W9 NULL scan detected\"; flags:0; sid:9409001; rev:1;)
-      EOF"'
+      EOF"
       # 2) 적용 전 룰 문법 검증(-T) — "successfully loaded" 확인
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -2'
-      # 3) 무중단 reload 후 NULL 패킷 트리거(여러 포트)
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules >/dev/null'; sleep 2
-      docker exec el34-attacker python3 -c "from scapy.all import *; [sr(IP(dst='10.20.30.1')/TCP(dport=p,flags=0),timeout=1,verbose=0) for p in (80,443,22,8001)]; print('null sent')"
+      sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -2
+      # 3) 무중단 reload
+      sudo suricatasc -c reload-rules >/dev/null; sleep 2
+      # ── el34-attacker 에서: NULL 패킷 트리거(여러 포트) ──
+      python3 -c "from scapy.all import *; [sr(IP(dst='10.20.30.1')/TCP(dport=p,flags=0),timeout=1,verbose=0) for p in (80,443,22,8001)]; print('null sent')"
       sleep 4
+      # ── el34-ips 에서: eve 확인 + self-clean ──
       # 4) eve.json에서 9409001 매치 수(베스트에포트)
-      docker exec el34-ips sh -c 'sudo grep -c "9409001" /var/log/suricata/eve.json'
+      sudo grep -c "9409001" /var/log/suricata/eve.json
       # 5) self-clean — 룰 삭제 + reload + 잔재 0 확인(base 보존)
-      docker exec el34-ips sh -c 'sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "rule_removed (잔재=$(grep -c 9409001 /etc/suricata/rules/local.rules))"'
+      sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "rule_removed (잔재=$(grep -c 9409001 /etc/suricata/rules/local.rules))"
       ```
       - 룰 핵심: `flags:0`(NULL 패킷 조건), `sid:9409001`(내 네임스페이스). `suricata -T`(문법 검증, "successfully loaded"), `suricatasc -c reload-rules`(무중단), 끝나면 sed 삭제→reload(base 보존).
 
