@@ -13,8 +13,8 @@ description: |
   격상해 재발을 자동 탐지하게 만든다. 마지막으로 4 단계가 SIEM(alerts.json) 한 곳으로 수렴함을 출처 상관으로
   증명하고 APT 종합 보고서로 마무리한다. el34 는 SNAT 를 하지 않아 출처 IP 가 전 계층에 보존되므로 이 상관이
   가능하다. 공유 인프라이므로 심은 흔적(계정/IDS 룰/Wazuh 룰)은 각 미션에서 self-clean 하고 baseline 은
-  절대 바꾸지 않는다. 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에서 docker exec 로,
-  인증 로그는 호스트 /var/log/auth.log 를 본다.
+  절대 바꾸지 않는다. 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에서 실행하며,
+  컨테이너 작업은 docker exec -it <컨테이너> bash 로 접속해 수행하고, 인증 로그는 호스트 /var/log/auth.log 를 본다.
 difficulty: hard
 duration_minutes: 280
 prerequisites:
@@ -41,13 +41,19 @@ steps:
       애초에 분석 범위에서 빠지므로, 시작부터 무엇을 볼 수 있고 없는지 정확히 알아야 한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** 세 컨테이너에 각각 접속해 실행 — `docker exec -it el34-siem|el34-web|el34-ips bash`.
+
       ```bash
+      # ── el34-siem 에서: SIEM 평결 엔진 ──
       # 1) SIEM 평결 엔진 analysisd 가동(심장)
-      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      /var/ossec/bin/wazuh-control status | grep analysisd
+      # ── el34-web 에서: 호스트 헌팅 도구 ──
       # 2) 호스트 헌팅 도구 osquery 버전(가동 여부)
-      docker exec el34-web osqueryi --version
+      osqueryi --version
+      # ── el34-ips 에서: 네트워크 IDS ──
       # 3) 네트워크 IDS Suricata 버전
-      docker exec el34-ips sh -c 'suricata -V 2>/dev/null | head -1'
+      suricata -V 2>/dev/null | head -1
       ```
 
       ## ✅ 합격 기준
@@ -90,15 +96,24 @@ steps:
       10.20.30.202 로 보존된다(이것이 뒤의 교차 상관을 가능하게 한다).
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** ①② 정찰·웹은 `el34-attacker`, ③ 인증은 el34 호스트(127.0.0.1), ④ 발판은 `el34-web`.
+
       ```bash
+      # ── el34-attacker 에서: ① 정찰 + ② 웹 익스플로잇 ──
       # 1) ① 정찰 — SYN 포트 스캔(T1046)
-      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned
       # 2) ② 웹 익스플로잇 — sqlmap UA + SQLi(T1190, 공격 마커 aptsoc)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=aptsoc%27%20UNION%20SELECT%201--%20-\""
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=aptsoc%27%20UNION%20SELECT%201--%20-"
+      # ── el34 호스트에서: ③ 인증 공격(SSH 무차별 대입, 127.0.0.1) ──
       # 3) ③ 인증 공격 — 여러 계정 SSH 무차별 대입(T1110)
-      for u in root admin oracle; do ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 $u@127.0.0.1 exit 2>/dev/null; done
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@127.0.0.1 exit 2>/dev/null
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 admin@127.0.0.1 exit 2>/dev/null
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 oracle@127.0.0.1 exit 2>/dev/null
+      # ── el34-web 에서: ④ 호스트 발판 ──
       # 4) ④ 호스트 발판 — 백도어 계정 socw15bd 생성(T1136, 침투 성공 흔적)
-      docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; useradd -m -s /bin/bash socw15bd; echo planted'
+      userdel -r socw15bd 2>/dev/null; useradd -m -s /bin/bash socw15bd; echo planted
+      # ── el34 호스트에서: 완료 마커 ──
       # 5) SIEM 적재 대기 후 완료 마커
       sleep 6
       echo "apt campaign done"
@@ -117,7 +132,9 @@ steps:
       # 2) ② 웹 익스플로잇 — sqlmap UA + SQLi(T1190, 공격 마커 aptsoc)
       docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=aptsoc%27%20UNION%20SELECT%201--%20-\""
       # 3) ③ 인증 공격 — 여러 계정 SSH 무차별 대입(T1110)
-      for u in root admin oracle; do ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 $u@127.0.0.1 exit 2>/dev/null; done
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@127.0.0.1 exit 2>/dev/null
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 admin@127.0.0.1 exit 2>/dev/null
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 oracle@127.0.0.1 exit 2>/dev/null
       # 4) ④ 호스트 발판 — 백도어 계정 socw15bd 생성(T1136, 침투 성공 흔적)
       docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; useradd -m -s /bin/bash socw15bd; echo planted'
       # 5) SIEM 적재 대기 후 완료 마커
@@ -151,9 +168,12 @@ steps:
       (socw15bd)이 심겼다는 것은 **침투 성공의 확정 증거**이므로 이 캠페인은 **P1**이다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
       # 1) alerts.json 최근 500줄에서 출처 10.20.30.202 경보의 시그니처/심각도 추출(4요소)
-      docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -c "select(.data.src_ip==\"10.20.30.202\")|{sig:.rule.description,level:.rule.level}" | tail -5'
+      tail -500 /var/ossec/logs/alerts/alerts.json | jq -c 'select(.data.src_ip=="10.20.30.202")|{sig:.rule.description,level:.rule.level}' | tail -5
       # 2) 판정 — 출발지 10.20.30.202, 다단계, 발판=침투성공 → P1
       echo "→ 출발지 10.20.30.202, 다단계, 발판=침투성공 → P1"
       ```
@@ -199,13 +219,19 @@ steps:
       웹에 942(SQLi), 인증에 Invalid user 다발, 호스트에 백도어 계정 socw15bd 가 함께 보인다는 것.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** 웹/호스트 단면은 `el34-web`(`docker exec -it el34-web bash`), 인증 단면은 el34 호스트.
+
       ```bash
+      # ── el34-web 에서: 웹 단면 ──
       # 1) 웹 단면 — ModSec audit CRS 룰ID(942 SQLi 등) 추출
-      docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u'
+      sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u
+      # ── el34 호스트에서: 인증 단면 ──
       # 2) 인증 단면 — auth.log Invalid user 다발 건수
       grep -acE "Invalid user" /var/log/auth.log
+      # ── el34-web 에서: 호스트 단면 ──
       # 3) 호스트 단면 — osquery로 백도어 계정 socw15bd 확인(침투 성공 증거)
-      docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="socw15bd";'
+      osqueryi --json 'SELECT username FROM users WHERE username="socw15bd";'
       # 4) 종합 — 네 소스 교차 = 한 APT 캠페인
       echo "→ 네 소스(웹/인증/호스트/네트워크) 교차 = 한 APT 캠페인"
       ```
@@ -307,18 +333,24 @@ steps:
       eve 확인 → sed 삭제다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** 격리 룰·트리거 확인·정리는 `el34-ips`, 출발지 트래픽 유발만 `el34-attacker`.
+
       ```bash
+      # ── el34-ips 에서: 격리 룰 추가 + reload ──
       # 1) APT 출발지 격리 룰 추가(alert, sid 9515001)
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert ip 10.20.30.202 any -> any any (msg:\"SOC W15 APT contain\"; sid:9515001; rev:1;)
-      EOF"'
-      # 2) 무중단 reload 후 출발지 트래픽 유발
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'; sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/'; sleep 4
+      EOF"
+      # 2) 무중단 reload
+      sudo suricatasc -c reload-rules; sleep 2
+      # ── el34-attacker 에서: 출발지 트래픽 유발 ──
+      curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/; sleep 4
+      # ── el34-ips 에서: 트리거 확인 + self-clean ──
       # 3) 격리 룰 트리거 횟수(출처 플래그)
-      docker exec el34-ips sh -c 'sudo grep -c 9515001 /var/log/suricata/eve.json'
+      sudo grep -c 9515001 /var/log/suricata/eve.json
       # 4) self-clean — 격리 룰 삭제 + reload(베이스 보존)
-      docker exec el34-ips sh -c 'sudo sed -i "/sid:9515001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
+      sudo sed -i "/sid:9515001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed
       ```
       - `suricatasc -c reload-rules`=데몬 중단 없이 룰 재적용(무중단). SOC W15 네임스페이스 sid=9515001. 공유 인프라라 drop 대신 alert 시연 후 즉시 정리.
 
@@ -367,11 +399,14 @@ steps:
       않고, osquery 로 발판(socw15bd)을 증거로 확인한 뒤 삭제한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 발판 확인 — osquery로 백도어 계정 socw15bd 존재 증거
-      docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="socw15bd";'
+      osqueryi --json 'SELECT username,uid FROM users WHERE username="socw15bd";'
       # 2) Eradicate — userdel -r로 홈 디렉터리까지 완전 제거
-      docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; echo eradicated'
+      userdel -r socw15bd 2>/dev/null; echo eradicated
       ```
 
       ## ✅ 합격 기준
@@ -414,11 +449,14 @@ steps:
       재시작하지 않고** `wazuh-logtest` 로만 검증하고, 끝나면 `cp` 로 원본 룰을 복원한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 원본 룰셋 백업(복원 안전장치)
-      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw15_lr.bak'
+      sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/socw15_lr.bak
       # 2) APT IOC 격상 룰(id 101515, level 13, json + apt_ioc=aptsoc) append
-      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
       <group name=\"soc_w15,\">
         <rule id=\"101515\" level=\"13\">
           <decoded_as>json</decoded_as>
@@ -426,15 +464,15 @@ steps:
           <description>SOC W15 APT IOC escalate</description>
         </rule>
       </group>
-      EOF"'
+      EOF"
       # 3) IOC JSON을 임시 파일로 작성(logtest 입력)
-      docker exec el34-siem sh -c 'cat > /tmp/socw15.json <<EOF
+      cat > /tmp/socw15.json <<EOF
       {"apt_ioc":"aptsoc","src_ip":"10.20.30.202"}
-      EOF'
+      EOF
       # 4) logtest로 룰 101515 level 13 격상 발화 확인 후 임시파일 삭제
-      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw15.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw15.json'
+      sudo /var/ossec/bin/wazuh-logtest < /tmp/socw15.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/socw15.json
       # 5) 백업 복원 — IOC 룰 잔재 0(베이스 보존)
-      docker exec el34-siem sh -c 'sudo cp /tmp/socw15_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw15_lr.bak; echo "복원 잔재=$(grep -c 101515 /var/ossec/etc/rules/local_rules.xml)"'
+      sudo cp /tmp/socw15_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/socw15_lr.bak; echo "복원 잔재=$(grep -c 101515 /var/ossec/etc/rules/local_rules.xml)"
       ```
       - `apt_ioc` 필드가 `aptsoc` 면 id 101515/level 13 발화. `wazuh-logtest`=라이브 재시작 없이 검증. id 네임스페이스 W15=1015xx(W09=1009xx, W13=1013xx 와 격리).
 
@@ -494,9 +532,12 @@ steps:
       보는 통합 가시성의 실체다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 출처 10.20.30.202 경보의 rule.groups 집계 — 다소스 수렴 확인
-      docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|.rule.groups" | sort | uniq -c | head'
+      tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="10.20.30.202")|.rule.groups' | sort | uniq -c | head
       # 2) 해석 — 다단계 흔적이 한 출처로 SIEM 수렴 = 한 APT 캠페인
       echo "→ 다단계 흔적이 한 출처로 SIEM 수렴 = 한 APT 캠페인"
       ```
@@ -596,13 +637,19 @@ steps:
       룰(id 101515) — 이 모두 사라졌는지 확인한다. 하나라도 남아 있으면 변경 관리 규율 위반이다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** 계정은 `el34-web`, IDS 룰은 `el34-ips`, Wazuh 룰은 `el34-siem` 에서 확인.
+
       ```bash
+      # ── el34-web 에서: 백도어 계정 잔재 ──
       # 1) 백도어 계정 재정리 후 잔재 확인(id 실패=user ok)
-      docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; id socw15bd 2>/dev/null && echo "계정 잔재!" || echo "user ok"'
+      userdel -r socw15bd 2>/dev/null; id socw15bd 2>/dev/null && echo "계정 잔재!" || echo "user ok"
+      # ── el34-ips 에서: IDS 격리 룰 잔재 ──
       # 2) IDS 격리 룰(sid 9515001) 잔재 수(0이어야 정상)
-      docker exec el34-ips sh -c 'sudo grep -c 9515001 /etc/suricata/rules/local.rules'
+      sudo grep -c 9515001 /etc/suricata/rules/local.rules
+      # ── el34-siem 에서: Wazuh 인텔 룰 잔재 ──
       # 3) Wazuh 인텔 룰(id 101515) 잔재 수(0이어야 정상)
-      docker exec el34-siem sh -c 'echo "101515 잔재=$(grep -c 101515 /var/ossec/etc/rules/local_rules.xml)"'
+      echo "101515 잔재=$(grep -c 101515 /var/ossec/etc/rules/local_rules.xml)"
       # 4) 점검 완료 마커
       echo "---check done---"
       ```
