@@ -146,12 +146,18 @@ steps:
       - **단명 프로세스**: 아주 짧게 실행되고 즉시 종료되는 프로세스 — 스냅샷의 사각.
 
       ## 💻 실행 명령
+
+      **실행 위치:** 단명 프로세스 실행·osquery 는 `el34-web`(`docker exec -it el34-web bash`),
+      sysmon syslog 관측은 **el34 호스트**(컨테이너 아님)에서.
+
       ```bash
-      docker exec el34-web python3 -c "import base64; base64.b64decode('aGk=')  # w11 revshell sim"
-      sleep 2
-      echo "[osquery 스냅샷 — 이미 종료 → 못 찾음]"
-      docker exec el34-web osqueryi --json 'SELECT pid,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
-      echo "[sysmon — 생성 순간이 syslog에 남음]"
+      # ── el34-web 에서: 단명 인코딩 프로세스 실행(곧 종료) ──
+      python3 -c "import base64; base64.b64decode('aGk=')  # w11 revshell sim"
+
+      # ── el34-web 에서: osquery 스냅샷 (이미 종료 → 못 찾음, 빈 배열이 정상) ──
+      osqueryi --json 'SELECT pid,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
+
+      # ── el34 호스트에서: sysmon ProcessCreate (생성 순간이 syslog에 남음) ──
       grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -ao "CommandLine>[^<]*"
       ```
       - 1행: el34-web 에서 b64decode 를 부르는 단명 프로세스 실행(곧 종료).
@@ -249,11 +255,18 @@ steps:
         이벤트. Wazuh FIM realtime(W10)과 같은 발상(파일 변화 포착)이되, 출처가 eBPF 라는 다른 소스.
 
       ## 💻 실행 명령
+
+      **실행 위치:** 페이로드 drop/정리는 `el34-web`, sysmon syslog 관측은 **el34 호스트**.
+
       ```bash
-      docker exec el34-web sh -c 'echo payload > /tmp/w11_payload.b64'
-      sleep 2
+      # ── el34-web 에서: 페이로드 파일 drop ──
+      echo payload > /tmp/w11_payload.b64
+
+      # ── el34 호스트에서: sysmon FileCreate (w11_payload, 생성 2초 후) ──
       grep -a "Linux-Sysmon" /var/log/syslog | grep -a "<EventID>11<" | grep -a "w11_payload" | tail -1 | cut -c1-160
-      docker exec el34-web sh -c 'rm -f /tmp/w11_payload.b64'
+
+      # ── el34-web 에서: 파일 정리(self-clean) — 그래도 생성 event 는 syslog 에 남음 ──
+      rm -f /tmp/w11_payload.b64
       ```
       - 1행: el34-web 에 페이로드 파일을 떨어뜨림(drop).
       - sysmon grep: `<EventID>11<` + `w11_payload` 의 FileCreate 한 줄을 확인.
@@ -297,10 +310,13 @@ steps:
         무조건 보이는' 상태라 스냅샷(osquery)의 강점 영역.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-web sh -c 'userdel -r smonbd 2>/dev/null; useradd -m -s /bin/bash smonbd && echo created'
-      docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="smonbd";'
-      docker exec el34-web sh -c 'userdel -r smonbd 2>/dev/null; echo removed'
+      userdel -r smonbd 2>/dev/null; useradd -m -s /bin/bash smonbd && echo created
+      osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="smonbd";'
+      userdel -r smonbd 2>/dev/null; echo removed
       ```
       - 1행: 백도어 계정 smonbd 생성(기존 잔재 먼저 제거 후).
       - osquery `users` 쿼리: 계정은 지속 상태라 스냅샷에 즉시 잡힘.
@@ -431,8 +447,14 @@ steps:
       인프라이므로 그대로 유지한다 — '내가 만든 흔적은 지우되, 운영 인프라는 건드리지 않는다'의 균형.
 
       ## 💻 확인 명령
+
+      **실행 위치:** 계정/payload 잔재는 `el34-web`, 리스너·sysmon 은 **el34 호스트**에서.
+
       ```bash
-      docker exec el34-web sh -c 'id smonbd 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 2>/dev/null && echo "payload 잔재!" || echo "file ok"'
+      # ── el34-web 에서: 계정/payload 잔재 ──
+      id smonbd 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 2>/dev/null && echo "payload 잔재!" || echo "file ok"
+
+      # ── el34 호스트에서: 리스너 잔재 + sysmon 유지 ──
       pgrep -f "http.server 53666" && echo "리스너 잔재!" || echo "listener ok"
       echo "sysmon(유지): $(systemctl is-active sysmon)"
       echo "---check done---"
