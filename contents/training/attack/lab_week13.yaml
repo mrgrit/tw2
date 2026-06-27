@@ -11,7 +11,8 @@ description: |
   직접 한 번씩 실행해 — discovery(T1082/T1087/T1083), persistence(T1136), execution(T1059) — 각 기법을
   Wazuh/sysmon/osquery 탐지에 매핑하고, 상태를 바꾸는 기법(잘 잡힘)과 읽기 기반 discovery(시그니처
   약함=갭)를 구분해 커버리지 갭을 찾는다. 갭은 W14 에서 룰로 보강·재검증한다(purple team). 심은 계정
-  흔적(atkw13)은 self-clean. 인가된 실습 환경(el34)에서만. 모든 명령은 el34 호스트에서.
+  흔적(atkw13)은 self-clean. 인가된 실습 환경(el34)에서만. 모든 명령은 el34 호스트에서 실행하며, 컨테이너
+  작업은 docker exec -it <컨테이너> bash 로 접속해 수행한다(Caldera 는 호스트 ~/caldera-src).
 difficulty: hard
 duration_minutes: 180
 prerequisites:
@@ -39,11 +40,16 @@ steps:
       죽어 있으면 "탐지됨/안 됨" 결과 자체를 믿을 수 없다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** Caldera 확인은 el34 호스트(`~/caldera-src`), Wazuh 점검은 `el34-siem` 안.
+
       ```bash
+      # ── el34 호스트에서: Caldera 설치 확인 ──
       # 1) Caldera 설치 확인 — 진입점 server.py 존재 여부(에뮬레이션 자동화 도구)
       ls ~/caldera-src/server.py 2>/dev/null && echo "caldera 설치됨" || echo "caldera 미설치"
+      # ── el34-siem 에서: Wazuh 두뇌 점검 (docker exec -it el34-siem bash) ──
       # 2) Wazuh 탐지 두뇌(analysisd) 가동 확인 — 측정 도구가 살아 있어야 결과를 신뢰
-      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      /var/ossec/bin/wazuh-control status | grep analysisd
       ```
 
       ## 🧩 처음 나오는 것
@@ -89,9 +95,12 @@ steps:
       세 기법 모두 **읽기 명령**이라는 공통점이 미션 6(갭)의 복선이다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
-      # 1) discovery 3종 atomic — T1082(uname)·T1087(passwd)·T1083(find)을 한 docker exec로 에뮬레이션
-      docker exec el34-web sh -c 'echo "[T1082 System Info]"; uname -a; echo "[T1087 Account]"; head -3 /etc/passwd; echo "[T1083 File/Dir]"; find /etc -name "*.conf" 2>/dev/null | head -3'
+      # 1) discovery 3종 atomic — T1082(uname)·T1087(passwd)·T1083(find)을 한 번에 에뮬레이션
+      echo "[T1082 System Info]"; uname -a; echo "[T1087 Account]"; head -3 /etc/passwd; echo "[T1083 File/Dir]"; find /etc -name "*.conf" 2>/dev/null | head -3
       # 2) 해석 — Caldera ability가 자동화하는 discovery. 셋 다 읽기 명령(미션 6 갭의 복선)
       echo "→ Caldera ability가 자동화하는 discovery 기법. 일관·반복 가능"
       ```
@@ -196,9 +205,12 @@ steps:
       띄우므로** sysmon ProcessCreate 에 잡힌다 — 읽기뿐인 discovery 와 달리 execution 은 행위 흔적을 남긴다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) T1059 Command Interpreter — python3로 b64decode 실행(인코딩 명령 에뮬레이션)
-      docker exec el34-web python3 -c "import base64; base64.b64decode('aGk=')  # atkw13 b64decode T1059" 2>/dev/null
+      python3 -c "import base64; base64.b64decode('aGk=')  # atkw13 b64decode T1059" 2>/dev/null
       # 2) sysmon이 ProcessCreate 이벤트를 기록할 시간을 잠깐 확보
       sleep 2
       # 3) 실행 완료 표지
@@ -241,9 +253,14 @@ steps:
       실행)는 sysmon ProcessCreate 가 잡는다 — 어떤 소스가 어떤 기법을 보는지 알아야 커버리지를 측정한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** T1136 탐지는 `el34-web`(osquery), T1059 탐지는 el34 호스트(sysmon→syslog).
+
       ```bash
+      # ── el34-web 에서: T1136(계정) 탐지 ──
       # 1) T1136(계정) 탐지 — osquery users 테이블에서 백도어 계정 atkw13 조회
-      echo "[T1136 Create Account → osquery]"; docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="atkw13";'
+      echo "[T1136 Create Account → osquery]"; osqueryi --json 'SELECT username,uid FROM users WHERE username="atkw13";'
+      # ── el34 호스트에서: T1059(실행) 탐지 ──
       # 2) T1059(인코딩 실행) 탐지 — sysmon 로그에서 b64decode ProcessCreate 흔적 추출
       echo "[T1059 Encoded Exec → sysmon]"; grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -oaE "b64decode[^<]{0,30}" | head -1
       # 3) 해석 — 기법별 탐지 소스 매핑: T1136=osquery users, T1059=sysmon ProcessCreate
@@ -342,13 +359,18 @@ steps:
       자동·일관 실행한다. 실습 흔적(계정 atkw13)은 공유 인프라 보존을 위해 전수 제거한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실행 위치:** Caldera 구조 확인은 el34 호스트(`~/caldera-src`), 흔적 정리는 `el34-web`.
+
       ```bash
+      # ── el34 호스트에서: Caldera 자동화 구조 확인 ──
       # 1) Caldera 자동화 구조 — 서버→adversary(ability 묶음)→agent(sandcat) 자동 실행
       echo "서버(UI/API) → adversary(ability 묶음) → agent(sandcat)가 타깃에서 ability 자동 실행"
       # 2) 설치 구조 확인 — server.py/plugins/conf 존재
       ls ~/caldera-src/ | grep -E "server.py|plugins|conf" | head
+      # ── el34-web 에서: atomic 흔적 정리(self-clean) ──
       # 3) atomic 흔적 정리(self-clean) — 백도어 계정 atkw13 제거 후 잔재 확인
-      docker exec el34-web sh -c 'userdel -r atkw13 2>/dev/null; id atkw13 2>/dev/null && echo "계정 잔재!" || echo clean'
+      userdel -r atkw13 2>/dev/null; id atkw13 2>/dev/null && echo "계정 잔재!" || echo clean
       ```
 
       ## ✅ 합격 기준
