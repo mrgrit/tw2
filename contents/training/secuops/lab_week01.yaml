@@ -40,17 +40,18 @@ steps:
 
       ## 💻 실행 명령
 
-      el34 호스트(`ssh ccc@192.168.0.151`)에서 정확히 다음 3 명령을 순서대로 실행:
+      **실습 컨테이너:** `el34-bastion` — 호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에서
+      `docker exec -it el34-bastion bash` 로 접속한 뒤 아래를 한 줄씩 실행한다.
 
       ```bash
       # 1. 전체 컨테이너 가시화 (핵심 16 + OpenCTI/MISP·Wazuh 스택 = 40여 개)
-      docker exec el34-bastion sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
+      docker ps --format "{{.Names}} {{.Status}}"
 
       # 2. 보안 핵심 16개만 카운트 (전체 수가 아니라 핵심 셋 → 16 이어야 정상)
-      docker exec el34-bastion sh -c 'docker ps --format "{{.Names}}" | grep -cE "el34-(bastion|attacker|fw|ips|web|siem|wazuh-indexer|wazuh-dashboard|portal|juiceshop|dvwa|neobank|govportal|mediforum|adminconsole|aicompanion)$"'
+      docker ps --format "{{.Names}}" | grep -cE "el34-(bastion|attacker|fw|ips|web|siem|wazuh-indexer|wazuh-dashboard|portal|juiceshop|dvwa|neobank|govportal|mediforum|adminconsole|aicompanion)$"
 
       # 3. 비정상 컨테이너 (Restarting / Exited) 만 추출 (없어야 정상)
-      docker exec el34-bastion sh -c 'docker ps -a --format "{{.Names}} {{.Status}}" | grep -vE "Up|^$"'
+      docker ps -a --format "{{.Names}} {{.Status}}" | grep -vE "Up|^$"
       ```
 
       ## 📋 확인 사항
@@ -175,21 +176,22 @@ steps:
 
       ## 💻 실행 명령
 
-      el34 호스트(`ssh ccc@192.168.0.151`)에서:
+      여러 컨테이너를 확인하는 단계라 호스트(`ssh ccc@192.168.0.151`)에서 컨테이너마다 `docker exec` 한다(for문 없이 한 줄씩).
 
       ```bash
-      for h in fw ips web siem; do
-        echo "=== el34-$h ==="
-        docker exec el34-$h hostname
-      done
+      # fw / ips / web / siem 각 컨테이너의 hostname 을 한 줄씩 질의
+      docker exec el34-fw hostname
+      docker exec el34-ips hostname
+      docker exec el34-web hostname
+      docker exec el34-siem hostname        # 출력: wazuh.manager (siem 컨테이너 hostname)
       ```
 
       ## 📋 확인 사항
 
-      - `=== el34-fw ===` 다음 줄에 `fw` 출력
-      - `=== el34-ips ===` 다음 줄에 `ips` 출력
-      - `=== el34-web ===` 다음 줄에 `web` 출력
-      - `=== el34-siem ===` 다음 줄에 `wazuh.manager` 출력 (siem 컨테이너 hostname)
+      - `docker exec el34-fw hostname` → `fw`
+      - `docker exec el34-ips hostname` → `ips`
+      - `docker exec el34-web hostname` → `web`
+      - `docker exec el34-siem hostname` → `wazuh.manager` (siem 컨테이너 hostname)
       - 4 hostname 모두 응답이 나와야 정상
 
       ## 💡 왜 이걸 하는가?
@@ -205,14 +207,14 @@ steps:
       - **비정상 1**: 1+ 컨테이너 오류 → 해당 컨테이너 상태(`docker ps -a`) 점검
       - **비정상 2**: docker 명령 자체 실패 → 호스트에서 ccc 의 docker 권한(그룹) 점검
     hint: |
-      for h in fw ips web siem; do echo "--- $h ---"; docker exec el34-$h hostname; done
+      docker exec el34-fw hostname  (fw/ips/web/siem 각각 한 줄씩)
     category: survey
     points: 8
     answer: |
-      for h in fw ips web siem; do
-        echo "=== el34-$h ==="
-        docker exec el34-$h hostname
-      done
+      docker exec el34-fw hostname
+      docker exec el34-ips hostname
+      docker exec el34-web hostname
+      docker exec el34-siem hostname
     answer_detail: |
       4 컨테이너 모두 hostname 응답 — 예상: `fw / ips / web / wazuh.manager`. siem 의
       hostname 은 컨테이너 안에서 `wazuh.manager`. 오류 발생 시 `docker ps -a` 로 해당
@@ -289,21 +291,24 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** nftables 점검은 `el34-fw`, 라우팅 실측은 `el34-attacker`. 각 컨테이너에
+      `docker exec -it el34-<name> bash` 로 접속해 아래를 실행한다.
+
       ```bash
+      # ── el34-fw 에서: nftables 정책 점검 ──
       # 1. nftables 3 table 가시화
-      docker exec el34-fw sh -c 'nft list tables'
-
+      nft list tables
       # 2. forward chain 정책
-      docker exec el34-fw sh -c 'nft list chain inet six_filter forward'
-
+      nft list chain inet six_filter forward
       # 3. six_nat DNAT 규칙 (공인 .161 → 내부)
-      docker exec el34-fw sh -c 'nft list table ip six_nat'
+      nft list table ip six_nat
 
-      # 4. 4 host header 라우팅 실측 (attacker 에서, fw→ips→web Apache vhost)
-      for h in juice.el34.lab siem.el34.lab portal.el34.lab bastion.el34.lab; do
-        code=$(docker exec el34-attacker sh -c "curl -sk -o /dev/null -w '%{http_code}' -H 'Host: $h' http://10.20.30.1/")
-        echo "$h: $code"
-      done
+      # ── el34-attacker 에서: 4 host header 라우팅 실측 (for문 대신 4줄) ──
+      # 4. fw→ips→web Apache vhost 응답코드
+      curl -sk -o /dev/null -w 'juice.el34.lab: %{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/
+      curl -sk -o /dev/null -w 'siem.el34.lab: %{http_code}\n' -H 'Host: siem.el34.lab' http://10.20.30.1/
+      curl -sk -o /dev/null -w 'portal.el34.lab: %{http_code}\n' -H 'Host: portal.el34.lab' http://10.20.30.1/
+      curl -sk -o /dev/null -w 'bastion.el34.lab: %{http_code}\n' -H 'Host: bastion.el34.lab' http://10.20.30.1/
       ```
 
       ## 📋 확인 사항
@@ -327,21 +332,21 @@ steps:
         적용 실패 → `docker logs el34-fw` 확인
       - **비정상 2**: `six_nat` DNAT 규칙 없음 → 공인 포트가 내부로 전달 안 됨 → nftables.conf 점검
       - **비정상 3**: 4 라우팅 중 `503` → 해당 backend(web/dmz 컨테이너) 다운 → 점검
-    hint: docker exec el34-fw sh -c 'nft list tables; nft list table ip six_nat'
+    hint: 'el34-fw 접속 후 — nft list tables; nft list table ip six_nat'
     category: configuration
     points: 10
     answer: |
-      echo "=== nft tables ==="
+      echo "=== nft tables (el34-fw) ==="
       docker exec el34-fw sh -c 'nft list tables'
       echo "=== forward chain ==="
       docker exec el34-fw sh -c 'nft list chain inet six_filter forward'
       echo "=== six_nat DNAT ==="
       docker exec el34-fw sh -c 'nft list table ip six_nat'
-      echo "=== 4 host header 라우팅 ==="
-      for h in juice.el34.lab siem.el34.lab portal.el34.lab bastion.el34.lab; do
-        code=$(docker exec el34-attacker sh -c "curl -sk -o /dev/null -w '%{http_code}' -H 'Host: $h' http://10.20.30.1/")
-        echo "$h: $code"
-      done
+      echo "=== 4 host header 라우팅 (el34-attacker) ==="
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice.el34.lab: %{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'siem.el34.lab: %{http_code}\n' -H 'Host: siem.el34.lab' http://10.20.30.1/"
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'portal.el34.lab: %{http_code}\n' -H 'Host: portal.el34.lab' http://10.20.30.1/"
+      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'bastion.el34.lab: %{http_code}\n' -H 'Host: bastion.el34.lab' http://10.20.30.1/"
     answer_detail: |
       table 3 (`ip nat / inet six_filter / ip six_nat`) + chain forward 의 default
       policy accept + `six_nat` prerouting 의 DNAT 규칙(80/443/9100 → 내부). 4 host header
