@@ -1377,7 +1377,7 @@ osquery 는 **OS 를 SQL 로 질의하는 스냅샷(pull)** 가시화다. 같은
 ## 19. 다음 주차 (W08 중간고사) + W09-11 (Wazuh + sysmon) 예고
 
 - **W08 중간고사**: W01-W06 통합 — fw / ips / web / host 4 도구 + R/B/P
-- **W09**: Wazuh manager 도입 + agent 등록 + 11 daemon
+- **W09**: Wazuh manager 도입 + agent 등록 + 10 daemon
 - **W10**: dashboard + osquery + ModSec audit 통합 + sysmon 1차
 - **W11**: sysmon-for-linux 본격 + osquery 와 비교 + event-driven 헌팅
 

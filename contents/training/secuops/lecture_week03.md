@@ -878,7 +878,7 @@ echo | openssl s_client -connect 10.20.30.1:443 -servername malicious-c2.example
 - `-servername malicious-c2.example` — SNI 에 의심 도메인을 명시한다. 정상 운영 목록에 없는 임의의 이름이다.
 - `-verify_return_error` — 인증서 검증 실패 시 즉시 종료.
 
-학습 환경 web 의 정상 SNI 는 `juice.el34.lab`, `dvwa.el34.lab` 같은 6v6 내부 도메인이다. `malicious-c2.example` 은 그 목록에 없다.
+학습 환경 web 의 정상 SNI 는 `juice.el34.lab`, `dvwa.el34.lab` 같은 el34 내부 도메인이다. `malicious-c2.example` 은 그 목록에 없다.
 
 **2. 발생하는 로그/아티팩트.**
 
