@@ -40,11 +40,14 @@ steps:
       않으므로, 이후의 매핑·재구성·심층 분석이 전부 무의미해진다. 그래서 가장 먼저 확인한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
       # 1) Wazuh 분석 엔진 analysisd 가동 확인
-      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      /var/ossec/bin/wazuh-control status | grep analysisd
       # 2) alerts.json 최신 1건의 출발지/룰 설명 미리보기(적재 확인)
-      docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json | jq "{src:.data.src_ip,sig:.rule.description}"'
+      tail -1 /var/ossec/logs/alerts/alerts.json | jq '{src:.data.src_ip,sig:.rule.description}'
       ```
 
       ## 🔧 처음 나오는 도구/옵션
@@ -92,11 +95,14 @@ steps:
       체인을 재현해야 Blue(분석)가 탐지·재구성을 검증할 수 있다 — Purple Team의 표준 절차다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 정찰 — SYN 포트 스캔(T1046, 연결 안 맺는 은밀한 스캔)
-      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned
       # 2) 초기침투 — sqlmap UA로 SQLi 주입(T1190, 차단형 dvwa)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw6%27%20UNION%20SELECT%201--%20-\""
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=socw6%27%20UNION%20SELECT%201--%20-"
       # 3) 경보 전파 대기 후 완료 마커
       sleep 6
       echo "chain done"
@@ -209,9 +215,12 @@ steps:
       el34는 fw가 SNAT를 하지 않아 출처 IP가 전 계층에 보존되므로 10.20.30.202로 정확히 묶인다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 출발지 10.20.30.202 경보만 골라 [시각, 룰설명] 시간순 최근 10건 — 캠페인 타임라인
-      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -10'
+      tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="10.20.30.202")|[.timestamp,.rule.description]|@tsv' | tail -10
       # 2) 해석 — 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인
       echo "→ 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인"
       ```
@@ -268,9 +277,12 @@ steps:
       T1190의 직접 증거다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) modsec_audit 최근 80줄에서 CRS 룰ID(9xxxxx)만 추출해 룰별 횟수 집계
-      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c
       # 2) 해석 — 942(SQLi)가 anomaly score 누적 → 949110 차단. T1190 단계의 증거
       echo "→ 942(SQLi) payload가 anomaly score 누적 → 949110 차단. T1190 단계의 증거"
       ```
@@ -329,14 +341,18 @@ steps:
       스캔(T1046)의 전형이다. signature로 "무엇을 탐지했나", flow로 "얼마나 광범위했나"를 읽는다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** 스캐너 트래픽은 `el34-attacker`, eve 분석은 `el34-ips`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      # 1) 스캐너 트래픽 생성 — sqlmap UA 요청으로 Suricata 스캐너 시그니처를 유발(신선한 alert 확보)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sent=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw6scan%27%20UNION%20SELECT%201--%20-'"
-      # 2) Suricata가 eve.json에 기록할 시간을 잠깐 확보
-      sleep 3
-      # 3) eve에서 alert+출발지 10.20.30.202만 골라 signature 집계(fromjson?로 깨진 JSON 줄 건너뜀, 빈도순)
-      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rR "fromjson? | select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\") | [.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | sort -rn | head -8'
-      # 4) 해석 — signature로 스캔/정찰(T1046) 입증, 같은 출발지가 웹·네트워크 양쪽에 = 다소스 상관
+      # ── el34-attacker 에서: 스캐너 트래픽 생성 (sqlmap UA → Suricata 스캐너 시그니처 유발) ──
+      curl -s -o /dev/null -w 'sent=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw6scan%27%20UNION%20SELECT%201--%20-'
+
+      # ── el34-ips 에서: eve 의 alert+출발지 10.20.30.202 signature 집계 (트래픽 3초 후) ──
+      tail -3000 /var/log/suricata/eve.json | jq -rR 'fromjson? | select(.event_type=="alert" and .src_ip=="10.20.30.202") | [.alert.signature_id,.alert.signature]|@tsv' | sort | uniq -c | sort -rn | head -8
+
+      # 해석 — signature로 스캔/정찰(T1046) 입증. 같은 출발지가 ModSec·Suricata 양쪽에 = 다소스 상관
       echo "→ signature로 스캔/정찰(T1046) 입증. 같은 출발지(10.20.30.202)가 ModSec·Suricata 양쪽에 = 다소스 상관"
       ```
 
