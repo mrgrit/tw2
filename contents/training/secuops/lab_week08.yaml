@@ -51,12 +51,19 @@ steps:
       **SIEM(el34-siem / Wazuh manager + web·ips agent)** 다. 각 컨테이너에 버전/상태를 물어 응답을 본다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** 5종 장비를 각 컨테이너에서 점검(주석의 `el34-<host>` 에 접속해 실행).
+
       ```bash
-      echo "=== fw nftables ==="; docker exec el34-fw sh -c 'sudo nft list ruleset 2>/dev/null | wc -l'
-      echo "=== ips suricata ==="; docker exec el34-ips sh -c 'suricata -V 2>/dev/null'
-      echo "=== web modsec ==="; docker exec el34-web sh -c 'sudo apache2ctl -M 2>/dev/null | grep -i security'
-      echo "=== host osquery ==="; docker exec el34-web osqueryi --version
-      echo "=== siem agents ==="; docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips,"
+      # ── el34-fw: nftables 정책 줄 수 ──
+      sudo nft list ruleset 2>/dev/null | wc -l
+      # ── el34-ips: Suricata 버전 ──
+      suricata -V 2>/dev/null
+      # ── el34-web: ModSec 모듈 + osquery 버전 ──
+      sudo apache2ctl -M 2>/dev/null | grep -i security
+      osqueryi --version
+      # ── el34-siem: web/ips agent ──
+      /var/ossec/bin/agent_control -l | grep -E "web,|ips,"
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -112,11 +119,17 @@ steps:
       다음 미션에서 학생이 만들 IDS 룰로 IPS 에도 잡힌다 — **한 사건을 두 장비가 다른 층위로 본다.**
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** 정찰은 `el34-attacker`, audit 확인은 `el34-web`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "정찰 응답:%{http_code}\n" -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=w08mt1"'
-      sleep 3
-      docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -c "913"'
-      docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -o "sqlmap" | head -1'
+      # ── el34-attacker 에서: sqlmap UA 정찰 ──
+      curl -s -o /dev/null -w "정찰 응답:%{http_code}\n" -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=w08mt1"
+
+      # ── el34-web 에서: WAF audit 의 913 scanner (정찰 3초 후) ──
+      sudo tail -60 /var/log/apache2/modsec_audit.log | grep -c "913"
+      sudo tail -60 /var/log/apache2/modsec_audit.log | grep -o "sqlmap" | head -1
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -166,17 +179,24 @@ steps:
       룰(sid 1000001–1000005)은 절대 건드리지 않는다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** IDS 룰 작성·reload·검증·정리는 `el34-ips`, 트리거는 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 룰 작성 + 문법검사(-T) + 무중단 reload ──
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"el34 W08 sqlmap scanner UA\"; http.user_agent; content:\"sqlmap\"; nocase; fast_pattern; classtype:web-application-attack; sid:9008001; rev:1;)
-      EOF"'
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -2'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=w08mt3"'
-      sleep 4
-      docker exec el34-ips sh -c 'sudo grep "9008001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature, src:.src_ip}"'
-      docker exec el34-ips sh -c 'sudo sed -i "/sid:9008001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+      EOF"
+      sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -2
+      sudo suricatasc -c reload-rules
+
+      # ── el34-attacker 에서: 트리거 (sqlmap UA) ──
+      curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=w08mt3"
+
+      # ── el34-ips 에서: eve.json 확인 + 정리(sid 삭제, 베이스 보존) (트리거 4초 후) ──
+      sudo grep "9008001" /var/log/suricata/eve.json | tail -1 | jq '{sig:.alert.signature, src:.src_ip}'
+      sudo sed -i "/sid:9008001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null
       ```
 
       ## 🔍 룰·옵션 풀이
@@ -236,8 +256,11 @@ steps:
       WAF(ModSecurity/CRS)가 이 SQLi 를 잡아 **403(Forbidden)** 으로 막는다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '침투 응답:%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=w08mt4%27%20UNION%20SELECT%20user,password%20FROM%20users\""
+      curl -s -o /dev/null -w '침투 응답:%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=w08mt4%27%20UNION%20SELECT%20user,password%20FROM%20users"
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -282,11 +305,17 @@ steps:
       그리고 출처가 보존된 `remote_address` 를 확인한다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** SQLi 재현은 `el34-attacker`, audit 확인은 `el34-web`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=w08mt5%27%20UNION%20SELECT%201,2--%20-\""
-      sleep 3
-      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "94[29]1[0-9]{2}" | sort -u'
-      docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{status:.response.status, remote:.transaction.remote_address}"'
+      # ── el34-attacker 에서: SQLi 재현 ──
+      curl -s -o /dev/null -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=w08mt5%27%20UNION%20SELECT%201,2--%20-"
+
+      # ── el34-web 에서: audit 의 942/949 + 응답/출처 (3초 후) ──
+      sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "94[29]1[0-9]{2}" | sort -u
+      sudo tail -1 /var/log/apache2/modsec_audit.log | jq '{status:.response.status, remote:.transaction.remote_address}'
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -340,9 +369,12 @@ steps:
       > **정책은 수정 금지(점검만)** — 공유 인프라이기 때문.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-fw` — `docker exec -it el34-fw bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-fw sh -c 'sudo nft list table ip six_nat 2>/dev/null | grep -iE "dnat|10.20.32.80" | head'
-      docker exec el34-fw sh -c 'sudo nft list ruleset 2>/dev/null | grep -ciE "dnat"'
+      sudo nft list table ip six_nat 2>/dev/null | grep -iE "dnat|10.20.32.80" | head
+      sudo nft list ruleset 2>/dev/null | grep -ciE "dnat"
       echo "L7 라우팅/WAF = el34-web Apache vhost (HAProxy 없음, 출처 IP SNAT 없이 보존)"
       ```
 
@@ -390,11 +422,14 @@ steps:
       공유 인프라이므로 심자마자 정리한다(self-clean).
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-web sh -c 'nohup python3 -m http.server 38088 >/dev/null 2>&1 & echo listener_started'
+      nohup python3 -m http.server 38088 >/dev/null 2>&1 & echo listener_started
       sleep 1
-      docker exec el34-web osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=38088;'
-      docker exec el34-web sh -c 'pkill -f "http.server 38088"; echo killed'
+      osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=38088;'
+      pkill -f "http.server 38088"; echo killed
       ```
 
       ## 🔍 도구·쿼리 풀이
@@ -444,12 +479,15 @@ steps:
       **베이스 계정·cron 은 보존**한다(self-clean).
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-web sh -c 'userdel -r w08user 2>/dev/null; useradd -m -s /bin/bash -u 1098 w08user && echo account_created'
-      docker exec el34-web sh -c 'echo "* * * * * root /tmp/.w08.sh" > /etc/cron.d/w08_backdoor'
-      docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w08user";'
-      docker exec el34-web osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%w08_backdoor%";'
-      docker exec el34-web sh -c 'userdel -r w08user 2>/dev/null; rm -f /etc/cron.d/w08_backdoor; echo cleaned'
+      userdel -r w08user 2>/dev/null; useradd -m -s /bin/bash -u 1098 w08user && echo account_created
+      echo "* * * * * root /tmp/.w08.sh" > /etc/cron.d/w08_backdoor
+      osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w08user";'
+      osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%w08_backdoor%";'
+      userdel -r w08user 2>/dev/null; rm -f /etc/cron.d/w08_backdoor; echo cleaned
       ```
 
       ## 🔍 도구·쿼리 풀이
@@ -503,9 +541,12 @@ steps:
       다계층 경보(suricata/modsec/syscheck 등)가 한 manager 의 alerts.json 에 수집되는지 확인한다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "web,|ips,"
-      docker exec el34-siem sh -c 'tail -n 400 /var/ossec/logs/alerts/alerts.json | grep -iE "suricata|modsec|sql|integrity|syscheck" | tail -4'
+      /var/ossec/bin/agent_control -l | grep -E "web,|ips,"
+      tail -n 400 /var/ossec/logs/alerts/alerts.json | grep -iE "suricata|modsec|sql|integrity|syscheck" | tail -4
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -553,9 +594,16 @@ steps:
       타임라인이 된다).
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** IDS 출처는 `el34-ips`, WAF 출처는 `el34-web`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      echo "=== IDS 가 본 출처 ==="; docker exec el34-ips sh -c 'sudo grep -E "\"event_type\":\"alert\"" /var/log/suricata/eve.json | tail -1 | jq -c "{src:.src_ip,sig:.alert.signature}"'
-      echo "=== WAF 가 본 출처 ==="; docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "10\.20\.30\.202" | head -1'
+      # ── el34-ips 에서: IDS 가 본 출처 ──
+      sudo grep -E '"event_type":"alert"' /var/log/suricata/eve.json | tail -1 | jq -c '{src:.src_ip,sig:.alert.signature}'
+
+      # ── el34-web 에서: WAF 가 본 출처 ──
+      sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "10\.20\.30\.202" | head -1
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -660,9 +708,17 @@ steps:
       있지 않아야 한다. 변경분을 추적·원복하는 변경 관리 규율을 마지막에 검증한다.
 
       ## 💻 확인 명령
+
+      **실습 컨테이너:** 호스트 잔재는 `el34-web`, IDS 룰 잔재는 `el34-ips`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-web sh -c 'id w08user 2>/dev/null && echo "USER 잔재!" || echo "user ok"; ls /etc/cron.d/w08_backdoor 2>/dev/null && echo "cron 잔재!" || echo "cron ok"; pgrep -f "http.server 38088" && echo "리스너 잔재!" || echo "listener ok"'
-      docker exec el34-ips sh -c 'sudo grep -c "9008001" /etc/suricata/rules/local.rules'
+      # ── el34-web 에서: 계정/cron/리스너 잔재 ──
+      id w08user 2>/dev/null && echo "USER 잔재!" || echo "user ok"; ls /etc/cron.d/w08_backdoor 2>/dev/null && echo "cron 잔재!" || echo "cron ok"; pgrep -f "http.server 38088" && echo "리스너 잔재!" || echo "listener ok"
+
+      # ── el34-ips 에서: IDS local.rules 의 9008001 잔재 수 (0 이어야 base 보존) ──
+      sudo grep -c "9008001" /etc/suricata/rules/local.rules
+
       echo "---check done---"
       ```
 
