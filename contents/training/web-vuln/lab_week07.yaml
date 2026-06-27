@@ -9,7 +9,8 @@ description: |
   반입). 셋의 공통 뿌리는 "사용자 입력을 그대로 믿은 것"이다. el34 의 dvwa(차단 모드) 대상에 세 페이로드를 보내고,
   ModSecurity 가 각 유형을 930(LFI/경로순회)·932(RCE/명령주입)·933(PHP) 의 전용 룰군으로 탐지함을 audit 로그로
   확인한 뒤, 근본 방어(경로 정규화·OS 호출 회피·확장자/MIME allowlist)를 정리한다. 공격 발생은 el34-attacker,
-  탐지 확인은 el34-web. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 docker exec 로. 인가된 실습만.
+  탐지 확인은 el34-web. 모든 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 실행하며, 컨테이너 작업은
+  docker exec -it <컨테이너> bash 로 접속해 수행한다. 인가된 실습만.
 difficulty: hard
 duration_minutes: 170
 prerequisites:
@@ -30,9 +31,12 @@ steps:
       의미가 없다. 본 주차의 점검 대상은 el34 의 **`dvwa.el34.lab`** vhost 다 — ModSec **차단 모드**
       (`SecRuleEngine On`)라서, 뒤 미션에서 보낼 공격 페이로드가 실제로 403 으로 막히는 것을 관찰할 수 있다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 내부 발판(attacker)에서 dvwa(차단 모드) vhost 도달 확인 — Host 헤더로 vhost 지정, 응답코드만 dvwa= 형식으로
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/
       ```
       - `el34-attacker` = el34 내부 발판 공격자 컨테이너. 여기서 fw 게이트웨이(`10.20.30.1`)로 요청을 보낸다.
       - `-H 'Host: dvwa.el34.lab'` = web 의 Apache 가 vhost 를 고르는 기준. 이 헤더가 dvwa 로 라우팅한다.
@@ -66,11 +70,14 @@ steps:
       파일까지 읽는 공격이다. `../` 를 충분히 반복하면 파일 시스템 최상위(`/`)까지 거슬러 올라가 `/etc/passwd`
       (리눅스 사용자 계정 목록 파일 — 경로순회 성공 확인용 표준 표적)에 도달한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 경로순회 평문(?q=../../etc/passwd)을 dvwa에 전송 → pt= 응답코드(폴더 탈출 시도)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pt=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=../../etc/passwd'"
+      curl -s -o /dev/null -w 'pt=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=../../etc/passwd'
       # 2) 같은 페이로드를 URL 인코딩(%2e%2e%2f)해 전송 → enc= 응답코드(ModSec이 인코딩 우회도 정규화로 막는지 확인)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'enc=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd'"
+      curl -s -o /dev/null -w 'enc=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd'
       # 3) 해석 — ../ 경로 탈출이 930(LFI)에 403 차단, 인코딩도 정규화로 동일 차단
       echo "→ ../ 경로 탈출 → 930(LFI) 403. 인코딩도 정규화로 차단"
       ```
@@ -112,11 +119,14 @@ steps:
       `|` 파이프, `&` `&&`, `$( )` `` ` ` ``)를 끼워 **별도의 OS 명령을 추가 실행**시키는 공격이다. 성공하면
       곧바로 **RCE(원격 코드 실행)** = 서버 완전 장악으로, 본 주차 취약점 중 최고 심각도다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 명령주입 세미콜론 변형(?q=1;cat /etc/passwd)을 dvwa에 전송 → cmdi= 응답코드(; 로 OS 명령 추가)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'cmdi=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'"
+      curl -s -o /dev/null -w 'cmdi=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'
       # 2) 파이프 변형(?q=1|id)도 전송 → pipe= 응답코드
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'pipe=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1|id'"
+      curl -s -o /dev/null -w 'pipe=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1|id'
       # 3) 해석 — ;/| 로 OS 명령 연결 → 932(RCE) 탐지, 성공 시 완전 장악
       echo "→ ;/| 로 OS 명령 연결 → 932(RCE) 탐지. 성공 시 완전 장악"
       ```
@@ -157,9 +167,12 @@ steps:
       그 전형이 `<?php system($_GET['c']); ?>` 같은 PHP 한 줄이다. 본 미션은 실제 업로드 폼 대신, **webshell 의
       시그니처인 `<?php ... ?>` 코드 자체**가 ModSec 에 어떻게 잡히는지를 점검한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) webshell 시그니처 <?php system('id'); ?> 를 URL 인코딩(%3C%3Fphp ... %3F%3E)해 dvwa에 전송 → php= 응답코드
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'php=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'"
+      curl -s -o /dev/null -w 'php=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'
       # 2) 해석 — <?php ... ?> 위험 콘텐츠가 933(PHP)에 403 차단
       echo "→ <?php system('id')?> = webshell 콘텐츠 → 933(PHP) 403"
       ```
@@ -197,9 +210,12 @@ steps:
       아니라 "탐지됐다"를 증거로 보인다. 앞 미션 2~4 의 공격(경로순회·명령주입·PHP주입)이 web 컨테이너의
       ModSec audit 로그에 각각 **전용 룰군**으로 기록된다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) web의 ModSec audit 로그 최근 250줄에서 6자리 CRS 룰ID(9xxxxx)만 뽑아 중복 제거 후 93으로 시작하는 룰만 남김
-      docker exec el34-web sh -c 'sudo tail -250 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | grep -E "^93"'
+      sudo tail -250 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | grep -E "^93"
       # 2) 해석 — 930(LFI/경로순회), 932(RCE/명령주입), 933(PHP) 전용 룰군으로 유형 식별
       echo "→ 930(LFI/경로순회), 932(RCE/명령주입), 933(PHP)"
       ```
