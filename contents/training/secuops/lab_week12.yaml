@@ -53,8 +53,14 @@ steps:
       - `docker ps` 의 `healthy`: 컨테이너 자체 헬스체크 통과 상태.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** analysisd 는 `el34-siem`, `docker ps` 는 el34 호스트에서.
+
       ```bash
-      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      # ── el34-siem 에서: manager 심장(analysisd) ──
+      /var/ossec/bin/wazuh-control status | grep analysisd
+
+      # ── el34 호스트에서: OpenCTI/MISP 컨테이너 상태 ──
       docker ps --format '{{.Names}}\t{{.Status}}' | grep -iE 'opencti|misp' | head
       ```
       ## ✅ 합격 기준
@@ -97,10 +103,16 @@ steps:
         룰군(자동화 도구·스캐너 식별).
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** 공격은 `el34-attacker`, audit 확인은 `el34-web`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=ct12-1"'
-      sleep 3
-      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -o "sqlmap" | head -1'
+      # ── el34-attacker 에서: sqlmap UA 공격(IOC) ──
+      curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=ct12-1"
+
+      # ── el34-web 에서: modsec audit 의 IOC(sqlmap UA) (공격 3초 후) ──
+      sudo tail -80 /var/log/apache2/modsec_audit.log | grep -o "sqlmap" | head -1
       ```
       ## ✅ 합격 기준
       WAF audit에 IOC(`sqlmap` UA) 흔적이 남는다(보강 답안은 913 scanner 룰 매치도 함께 확인).
@@ -144,6 +156,10 @@ steps:
         `<list lookup>` 조회. **공유 el34는 restart 금지**라 여기선 형식만 작성·확인 후 삭제한다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+      (이 단계는 이미 bare — el34-siem 안에서 그대로 실행한다.)
+
       ```bash
       sudo bash -c 'printf "sqlmap:known-bad-tool\nnikto:known-bad-tool\n" > /var/ossec/etc/lists/edu-w12-ioc'
       cat /var/ossec/etc/lists/edu-w12-ioc
@@ -195,6 +211,10 @@ steps:
       - 절차: (1) cp 백업 → (2) 룰 추가 → (3) logtest 검증 → (4) cp 복원(self-clean).
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+      (이 단계는 이미 bare — el34-siem 안에서 그대로 실행한다.)
+
       ```bash
       sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w12_lr.bak
       sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
@@ -353,10 +373,16 @@ steps:
       - `sleep 8`: 공격이 eve.json을 거쳐 alerts.json에 반영되기까지의 파이프라인 지연을 기다림.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** IOC 공격은 `el34-attacker`, 수렴 확인은 `el34-siem`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=ct12-7%27%20UNION%20SELECT%201--%20-\""
-      sleep 8
-      docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,s:.data.src_ip}" | tail -2'
+      # ── el34-attacker 에서: IOC 공격(sqlmap UA + SQLi) ──
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=ct12-7%27%20UNION%20SELECT%201--%20-"
+
+      # ── el34-siem 에서: alerts.json IOC 공격 경보 (공격 8초 후, 출처 보존) ──
+      tail -300 /var/ossec/logs/alerts/alerts.json | jq -c 'select(.rule.groups|index("ids"))|{r:.rule.id,s:.data.src_ip}' | tail -2
       ```
       ## ✅ 합격 기준
       alerts.json 에 출처 `10.20.30.202` 의 IOC 공격 경보가 적재된다.
@@ -443,8 +469,11 @@ steps:
       - 점검 대상: 룰 잔재(local_rules.xml) + CDB list 파일(edu-w12-ioc) + 백업(/tmp/w12_lr.bak).
 
       ## 💻 확인 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-siem sh -c 'echo "101210 잔재=$(grep -c 101210 /var/ossec/etc/rules/local_rules.xml)"; ls /var/ossec/etc/lists/edu-w12-ioc 2>/dev/null && echo "list 잔재!" || echo "list ok"; ls /tmp/w12_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      echo "101210 잔재=$(grep -c 101210 /var/ossec/etc/rules/local_rules.xml)"; ls /var/ossec/etc/lists/edu-w12-ioc 2>/dev/null && echo "list 잔재!" || echo "list ok"; ls /tmp/w12_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"
       echo "---check done---"
       ```
       ## ✅ 합격 기준
