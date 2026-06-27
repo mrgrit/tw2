@@ -50,9 +50,12 @@ steps:
       등록 agent(`000`=manager 자신 / `003`=ips / `004`=web) 중 ips·web 두 개가 두 ingest 소스다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted|logcollector"
-      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "ips,|web,"
+      /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted|logcollector"
+      /var/ossec/bin/agent_control -l | grep -E "ips,|web,"
       ```
       - `wazuh-control` : manager daemon 들의 상태/시작/정지를 다루는 제어 명령(`status` 로 가용성 조회).
       - `agent_control -l` : manager 에 등록된 agent 목록과 연결 상태(Active/Disconnected)를 출력.
@@ -96,8 +99,11 @@ steps:
       `sca`(보안설정점검)가 섞인다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc .rule.groups 2>/dev/null | sort | uniq -c | sort -rn | head -10'
+      tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc .rule.groups 2>/dev/null | sort | uniq -c | sort -rn | head -10
       ```
       - `jq -rc .rule.groups` : 각 평결(JSON 라인)의 `rule.groups` 배열만 뽑는다(`-r` raw, `-c` compact).
       - `sort | uniq -c | sort -rn` : 같은 그룹 조합을 빈도순으로 집계 — 어느 소스가 많은지 즉시 보인다.
@@ -141,9 +147,11 @@ steps:
       핵심은 Phase2(무엇을 뽑았나=decoder)와 Phase3(어떻게 판결했나=rule)의 구분이다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
-      echo 'Jan  1 00:00:00 web sshd[1]: Failed password for root from 9.9.9.9 port 22 ssh2' \
-        | docker exec -i el34-siem /var/ossec/bin/wazuh-logtest
+      echo 'Jan  1 00:00:00 web sshd[1]: Failed password for root from 9.9.9.9 port 22 ssh2' | sudo /var/ossec/bin/wazuh-logtest
       ```
       - `wazuh-logtest` : 표준입력으로 받은 로그 한 줄을 decoder→rule 로 시험 판결하는 디버그 도구.
 
@@ -189,6 +197,10 @@ steps:
       ingest 가 끊기므로 logtest(모의재판)로만 검증한다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+      (이 단계는 이미 bare — el34-siem 안에서 그대로 실행한다.)
+
       ```bash
       sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w09_lr.bak    # 백업
       sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
@@ -259,10 +271,16 @@ steps:
       5계층 상관과 그대로 이어진다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** 웹공격은 `el34-attacker`, ingest 확인은 `el34-siem`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=wz9%27%20UNION%20SELECT%201,2--%20-\""
-      sleep 8
-      docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,d:.rule.description,s:.data.src_ip}" | tail -2'
+      # ── el34-attacker 에서: 웹공격 재현 (sqlmap UA + SQLi) ──
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=wz9%27%20UNION%20SELECT%201,2--%20-"
+
+      # ── el34-siem 에서: alerts.json ids 그룹 ingest (공격 8초 후, 출처 보존) ──
+      tail -300 /var/ossec/logs/alerts/alerts.json | jq -c 'select(.rule.groups|index("ids"))|{r:.rule.id,d:.rule.description,s:.data.src_ip}' | tail -2
       ```
       - `curl -A sqlmap/1.7 ... UNION SELECT` : sqlmap UA + SQLi 페이로드로 dvwa vhost 를 두드린다.
       - `sleep 8` : 공격이 Suricata eve → ips agent → manager → alerts.json 에 반영되기까지의 파이프라인 지연 대기.
@@ -306,9 +324,17 @@ steps:
       (apache/json/syslog)은 manager 가 어느 decoder 로 잡을지의 1차 힌트이기도 하다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** 두 agent 각각 — `el34-web`, `el34-ips`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      echo "=== web agent ==="; docker exec el34-web sh -c 'grep -c localfile /var/ossec/etc/ossec.conf; grep -A1 localfile /var/ossec/etc/ossec.conf | grep log_format | sort | uniq -c'
-      echo "=== ips agent ==="; docker exec el34-ips sh -c 'grep -A1 localfile /var/ossec/etc/ossec.conf | grep log_format | sort | uniq -c'
+      # ── el34-web 에서: localfile 수집 소스 (modsec=apache) ──
+      grep -c localfile /var/ossec/etc/ossec.conf
+      grep -A1 localfile /var/ossec/etc/ossec.conf | grep log_format | sort | uniq -c
+
+      # ── el34-ips 에서: localfile 수집 소스 (eve=json) ──
+      grep -A1 localfile /var/ossec/etc/ossec.conf | grep log_format | sort | uniq -c
       ```
       - `grep -c localfile` : localfile 블록이 몇 개 정의됐는지(수집 소스 개수의 대략치).
       - `grep -A1 localfile | grep log_format | sort | uniq -c` : 각 localfile 의 log_format 을 형식별로 집계.
@@ -348,14 +374,21 @@ steps:
       획득" 같은 복합 공격을 한 타임라인으로 잇는다. W08 의 5계층 수렴이 여기서 SIEM 데이터로 재확인된다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** canary 생성/삭제는 `el34-web`, 수렴 집계는 `el34-siem`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      # 1) 호스트 계층(FIM) 이벤트를 보장: /home/ccc(realtime 감시)에 canary 생성 → syscheck 유발
-      docker exec el34-web sh -c 'echo w09 > /home/ccc/w09_canary.txt; echo canary_created'
-      # 2) FIM은 syscheck→analysisd→alerts.json 지연이 있어 최대 ~45초 폴링(부하 시 alerts가 빨리 흘러 큰 윈도우 사용)
-      for i in $(seq 1 15); do sleep 3; docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -q w09_canary' && break; done
-      docker exec el34-web sh -c 'rm -f /home/ccc/w09_canary.txt'
-      # 3) 소스(그룹)별 집계 — 네트워크(ids)+호스트(syscheck)+인증(pam)+설정(sca)이 한 스트림에 공존
-      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck|pam|sca" | sort | uniq -c'
+      # ── el34-web 에서: 호스트(FIM) 이벤트 보장 — /home/ccc(realtime 감시)에 canary 생성 ──
+      echo w09 > /home/ccc/w09_canary.txt; echo canary_created
+
+      # FIM(syscheck→analysisd→alerts.json)은 지연이 있어 ~45초 대기 후 el34-siem 에서 확인한다
+
+      # ── el34-siem 에서: 소스(그룹)별 집계 — 네트워크(ids)+호스트(syscheck)+인증(pam)+설정(sca) 공존 ──
+      tail -2000 /var/ossec/logs/alerts/alerts.json | jq -r '(.rule.groups|join(","))' 2>/dev/null | grep -oE "ids|syscheck|pam|sca" | sort | uniq -c
+
+      # ── el34-web 에서: canary 정리 ──
+      rm -f /home/ccc/w09_canary.txt
       ```
       - 1): canary로 FIM 이벤트를 확실히 만들어 `syscheck` 그룹이 집계에 포함되도록 한다(데이터 의존성 제거).
       - 3) `grep -oE "ids|syscheck|pam|sca"` : 관심 소스 키워드만 추출 → `sort | uniq -c` 로 소스별 건수 집계.
@@ -450,8 +483,11 @@ steps:
       상태를 모두 원래대로 보존하는 것이 공유 SIEM 운영의 기본 의무다.
 
       ## 💻 확인 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-siem sh -c 'echo "100909 잔재=$(grep -c 100909 /var/ossec/etc/rules/local_rules.xml)"; echo "edu_w09 잔재=$(grep -c edu_w09 /var/ossec/etc/rules/local_rules.xml)"; ls /tmp/w09_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
+      echo "100909 잔재=$(grep -c 100909 /var/ossec/etc/rules/local_rules.xml)"; echo "edu_w09 잔재=$(grep -c edu_w09 /var/ossec/etc/rules/local_rules.xml)"; ls /tmp/w09_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"
       echo "---check done---"
       ```
       - `grep -c 100909 / edu_w09` : 베이스 파일에 커스텀 룰 id/그룹 잔재 줄 수(0 이어야 정상).
