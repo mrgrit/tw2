@@ -55,10 +55,19 @@ steps:
       백엔드부터 본다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** analysisd 는 `el34-siem`, indexer 응답은 `el34-wazuh-indexer`.
+      `docker ps` 는 el34 호스트에서 직접 실행한다.
+
       ```bash
-      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      # ── el34-siem 에서: manager 심장(analysisd) ──
+      /var/ossec/bin/wazuh-control status | grep analysisd
+
+      # ── el34 호스트에서: indexer/dashboard 컨테이너 Up 확인 ──
       docker ps --format '{{.Names}}\t{{.Status}}' | grep -iE 'indexer|dashboard'
-      docker exec el34-wazuh-indexer sh -c 'curl -sk -o /dev/null -w "indexer https=%{http_code}\n" https://localhost:9200/'
+
+      # ── el34-wazuh-indexer 에서: 생존(401=인증보호된 채 살아있음) ──
+      curl -sk -o /dev/null -w "indexer https=%{http_code}\n" https://localhost:9200/
       ```
       - `wazuh-control status` : manager daemon 들의 가용성 조회(여기선 평결 엔진 analysisd).
       - `docker ps ... grep indexer|dashboard` : 두 별도 컨테이너가 `Up` 인지 확인.
@@ -108,8 +117,11 @@ steps:
       /home/ccc`=realtime(+report_changes=무엇이 바뀌었나 diff, +whodata=누가 바꿨나)로 나눠 둔다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-web sh -c 'grep -E "directories|frequency" /var/ossec/etc/ossec.conf | head -12'
+      grep -E "directories|frequency" /var/ossec/etc/ossec.conf | head -12
       ```
       - `grep -E "directories|frequency"` : ossec.conf 의 `<directories ...>` 감시 경로 줄과 `frequency`
         주기 설정을 함께 뽑아 realtime/주기 구분이 한눈에 보이게 한다.
@@ -148,19 +160,21 @@ steps:
       확인 후 rm 으로 정리(self-clean)한다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** canary 생성/삭제는 `el34-web`, 탐지 확인은 `el34-siem`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      # 1) realtime 감시 경로(/home/ccc)에 카나리 파일 생성 → 변경 유발
-      docker exec el34-web sh -c 'echo "w10-fim-test" > /home/ccc/w10_canary.txt; echo created'
-      # 2) syscheck→analysisd→alerts.json 지연이 있고 부하 시 alerts가 빨리 흘러가므로, 큰 윈도우(tail -2000)로 최대 ~45초 폴링
-      R=""
-      for i in $(seq 1 15); do
-        sleep 3
-        R=$(docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep w10_canary | tail -1')
-        [ -n "$R" ] && { echo "탐지: $(echo "$R" | grep -oE 'w10_canary[^\"]*' | head -1) (rule 554 File added)"; break; }
-      done
-      [ -z "$R" ] && echo "(45초 내 미탐 — web wazuh-control restart로 realtime watch 재확립)"
-      # 3) 카나리 정리(self-clean)
-      docker exec el34-web sh -c 'rm -f /home/ccc/w10_canary.txt; echo cleaned'
+      # ── el34-web 에서: realtime 감시 경로(/home/ccc)에 canary 생성 → 변경 유발 ──
+      echo "w10-fim-test" > /home/ccc/w10_canary.txt; echo created
+
+      # FIM(syscheck→analysisd→alerts.json)은 지연이 있어 ~45초 대기 후 el34-siem 에서 확인한다
+
+      # ── el34-siem 에서: alerts.json 에서 canary 의 syscheck added(rule 554) 탐지 ──
+      tail -2000 /var/ossec/logs/alerts/alerts.json | grep w10_canary | tail -1
+
+      # ── el34-web 에서: canary 정리(self-clean) ──
+      rm -f /home/ccc/w10_canary.txt; echo cleaned
       ```
       - 카나리 생성 → realtime syscheck delta → analysisd → alerts.json(rule 554 'File added').
       - 고정 sleep 대신 폴링: FIM 지연·alert 부하에 견고. 미탐 시 web 에이전트 realtime watch 점검.
@@ -213,6 +227,10 @@ steps:
       라이브 analysisd 는 건드리지 않는다(공유 인프라 무중단). id 는 1010xx(100000 미만은 Wazuh 예약).
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+      (이 단계는 이미 bare — el34-siem 안에서 그대로 실행한다.)
+
       ```bash
       sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w10_lr.bak
       sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
@@ -288,9 +306,12 @@ steps:
       **실제 활성/트리거 금지** — 설정 점검 + 설계 서술(왜 timeout/예외가 필요한가)까지만 한다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-siem sh -c 'grep -nE "active-response|firewall-drop|command" /var/ossec/etc/ossec.conf | head'
-      docker exec el34-siem sh -c 'ls -la /var/ossec/logs/active-responses.log 2>/dev/null || echo "(AR 로그 — 트리거 시 기록)"'
+      grep -nE "active-response|firewall-drop|command" /var/ossec/etc/ossec.conf | head
+      ls -la /var/ossec/logs/active-responses.log 2>/dev/null || echo "(AR 로그 — 트리거 시 기록)"
       ```
       - `grep -nE "active-response|firewall-drop|command"` : ossec.conf 에서 AR 설계 블록(템플릿)을
         줄번호와 함께 확인(`-n` 줄번호).
@@ -336,10 +357,16 @@ steps:
       두 소스를 출처 IP 라는 공통 키로 한 사건에 묶을 수 있다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** 웹공격은 `el34-attacker`, 수렴 집계는 `el34-siem`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=w10%27%20UNION%20SELECT%201--%20-\""
-      sleep 8
-      docker exec el34-siem sh -c 'tail -600 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck" | sort | uniq -c'
+      # ── el34-attacker 에서: SQLi 웹공격(네트워크 소스) 재현 ──
+      curl -s -o /dev/null -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=w10%27%20UNION%20SELECT%201--%20-"
+
+      # ── el34-siem 에서: alerts.json 다소스 집계 (ids + syscheck) (공격 8초 후) ──
+      tail -600 /var/ossec/logs/alerts/alerts.json | jq -r '(.rule.groups|join(","))' 2>/dev/null | grep -oE "ids|syscheck" | sort | uniq -c
       ```
       - `curl -H 'Host: dvwa.el34.lab' ".../?id=...UNION SELECT..."` : SQLi 웹공격(네트워크 소스)을 재현해
         Suricata 탐지를 유발(`%27`=`'`, `%20`=공백 URL 인코딩).
@@ -386,8 +413,11 @@ steps:
       이 agent 가 down 이면 그 호스트의 소스가 조종석에서 통째로 사라진다 — 통합 가시성의 전제다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-web sh -c '/var/ossec/bin/wazuh-control status 2>/dev/null | grep -E "agentd|modulesd|syscheckd"'
+      /var/ossec/bin/wazuh-control status 2>/dev/null | grep -E "agentd|modulesd|syscheckd"
       ```
       - `wazuh-control status | grep -E "agentd|modulesd|syscheckd"` : web agent 측 핵심 데몬(ship/FIM/
         모듈)의 running 여부만 추려 확인.
@@ -472,9 +502,17 @@ steps:
       는 무활성. 잔재가 발견되면 즉시 cp 복원/rm 으로 제거한다.
 
       ## 💻 확인 명령
+
+      **실습 컨테이너:** 룰/백업 잔재는 `el34-siem`, canary 잔재는 `el34-web`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-siem sh -c 'echo "101010 잔재=$(grep -c 101010 /var/ossec/etc/rules/local_rules.xml)"; ls /tmp/w10_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"'
-      docker exec el34-web sh -c 'ls /home/ccc/w10_canary.txt 2>/dev/null && echo "canary 잔재!" || echo "canary ok"'
+      # ── el34-siem 에서: 커스텀 룰/백업 잔재 ──
+      echo "101010 잔재=$(grep -c 101010 /var/ossec/etc/rules/local_rules.xml)"; ls /tmp/w10_lr.bak 2>/dev/null && echo "백업 잔재!" || echo "tmp ok"
+
+      # ── el34-web 에서: canary 잔재 ──
+      ls /home/ccc/w10_canary.txt 2>/dev/null && echo "canary 잔재!" || echo "canary ok"
+
       echo "---check done---"
       ```
       ## ✅ 합격 기준
