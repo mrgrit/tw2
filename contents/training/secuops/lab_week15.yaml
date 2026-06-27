@@ -44,12 +44,20 @@ steps:
       쓴다. 각 무기에 버전/상태를 물어 응답을 본다.
 
       ## 💻 실행 명령
+
+      **실행 위치:** fw/ips/web(osquery)/siem 는 각 컨테이너, sysmon 은 el34 호스트.
+
       ```bash
-      docker exec el34-fw sh -c 'sudo nft list ruleset 2>/dev/null | grep -c dnat'
-      docker exec el34-ips sh -c 'suricata -V 2>/dev/null | head -1'
-      docker exec el34-web osqueryi --version
+      # ── el34-fw: nftables DNAT 수 ──
+      sudo nft list ruleset 2>/dev/null | grep -c dnat
+      # ── el34-ips: Suricata 버전 ──
+      suricata -V 2>/dev/null | head -1
+      # ── el34-web: osquery 버전 ──
+      osqueryi --version
+      # ── el34 호스트: sysmon ──
       systemctl is-active sysmon
-      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      # ── el34-siem: Wazuh analysisd ──
+      /var/ossec/bin/wazuh-control status | grep analysisd
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -100,10 +108,16 @@ steps:
       무기가 다른 층위로 본다.**
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** 정찰은 `el34-attacker`, audit 확인은 `el34-web`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=apt15-1"'
-      sleep 3
-      docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "913[0-9]{3}" | sort -u'
+      # ── el34-attacker 에서: sqlmap UA 정찰 ──
+      curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=apt15-1"
+
+      # ── el34-web 에서: WAF scanner 탐지(913) (정찰 3초 후) ──
+      sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "913[0-9]{3}" | sort -u
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -151,16 +165,23 @@ steps:
       `http.user_agent; content:"sqlmap"; fast_pattern` — UA 안의 `sqlmap` 문자열을 빠르게 거른다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** IDS 룰 작성·reload·검증·정리는 `el34-ips`, 트리거는 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 룰 작성 + 무중단 reload ──
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"APT15 sqlmap recon UA\"; http.user_agent; content:\"sqlmap\"; nocase; fast_pattern; sid:9015001; rev:1;)
-      EOF"'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=apt15-3"'
-      sleep 4
-      docker exec el34-ips sh -c 'sudo grep "9015001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature,src:.src_ip}"'
-      docker exec el34-ips sh -c 'sudo sed -i "/sid:9015001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+      EOF"
+      sudo suricatasc -c reload-rules
+
+      # ── el34-attacker 에서: 트리거 (sqlmap UA) ──
+      curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=apt15-3"
+
+      # ── el34-ips 에서: eve.json 확인 + 정리(sid 삭제, 베이스 보존) (트리거 4초 후) ──
+      sudo grep "9015001" /var/log/suricata/eve.json | tail -1 | jq '{sig:.alert.signature,src:.src_ip}'
+      sudo sed -i "/sid:9015001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -216,8 +237,11 @@ steps:
       이 침투를 잡아 **403(Forbidden)** 으로 응답한다. 정찰(IDS/WAF)에 이은 실제 침투를 WAF 가 막는다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '침투 응답:%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=apt15-4%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
+      curl -s -o /dev/null -w '침투 응답:%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=apt15-4%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-"
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -261,10 +285,16 @@ steps:
       이 아니라 "942 가 점수를 올리고 949110 이 누적 초과로 차단" 하는 2단계 메커니즘이다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** SQLi 재현은 `el34-attacker`, audit 확인은 `el34-web`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=apt15-5%27%20UNION%20SELECT%201,2--%20-\""
-      sleep 3
-      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "94[29]1[0-9]{2}" | sort -u'
+      # ── el34-attacker 에서: SQLi 재현 ──
+      curl -s -o /dev/null -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=apt15-5%27%20UNION%20SELECT%201,2--%20-"
+
+      # ── el34-web 에서: audit 의 942/949 (3초 후) ──
+      sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "94[29]1[0-9]{2}" | sort -u
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -310,12 +340,15 @@ steps:
       (방화벽·IDS·WAF)가 못 보는 **호스트 내부** 흔적이다. 계정은 다음 헌팅 미션(STEP 7)을 위해 남긴다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-web sh -c 'nohup python3 -m http.server 61515 >/dev/null 2>&1 & echo c2_started'
-      docker exec el34-web sh -c 'userdel -r w15ghost 2>/dev/null; useradd -m -s /bin/bash w15ghost && echo account_created'
+      nohup python3 -m http.server 61515 >/dev/null 2>&1 & echo c2_started
+      userdel -r w15ghost 2>/dev/null; useradd -m -s /bin/bash w15ghost && echo account_created
       sleep 1
-      docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=61515;'
-      docker exec el34-web sh -c 'pkill -f "http.server 61515"'
+      osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=61515;'
+      pkill -f "http.server 61515"
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -364,11 +397,14 @@ steps:
       모르지만, JOIN 으로 **그 포트를 연 프로세스** 까지 식별하는 것이 헌팅의 핵심이다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-web sh -c 'nohup python3 -m http.server 61515 >/dev/null 2>&1 & sleep 1'
-      docker exec el34-web osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=61515;'
-      docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w15ghost";'
-      docker exec el34-web sh -c 'pkill -f "http.server 61515"'
+      nohup python3 -m http.server 61515 >/dev/null 2>&1 & sleep 1
+      osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=61515;'
+      osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w15ghost";'
+      pkill -f "http.server 61515"
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -420,9 +456,14 @@ steps:
       까지 호스트 `/var/log/syslog` 에 포착된다. 그래서 이 미션의 관측은 컨테이너가 아닌 **호스트 syslog** 다.
 
       ## 💻 실행 명령
+
+      **실행 위치:** 인코딩 명령 실행은 `el34-web`, sysmon syslog 관측은 **el34 호스트**.
+
       ```bash
-      docker exec el34-web python3 -c "import base64; base64.b64decode('YzI=')  # apt15 c2 sim"
-      sleep 5
+      # ── el34-web 에서: 인코딩 C2 명령(단명) ──
+      python3 -c "import base64; base64.b64decode('YzI=')  # apt15 c2 sim"
+
+      # ── el34 호스트에서: sysmon ProcessCreate 헌팅 (5초 후) ──
       grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -oaE "b64decode[^<]{0,60}" | head -1
       ```
 
@@ -472,6 +513,10 @@ steps:
       재시작은 금지 — logtest 로만 검증한다(W09 §0.5.3).
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+      (이 단계는 이미 bare — el34-siem 안에서 그대로 실행한다.)
+
       ```bash
       sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w15_lr.bak
       sudo bash -c 'cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
@@ -545,10 +590,16 @@ steps:
       했을 것이다. 여기서는 새 SQLi 한 번을 더 흘려 보내 수렴을 확인한다.
 
       ## 💻 실행 명령
+
+      **실습 컨테이너:** 공격은 `el34-attacker`, 수렴 확인은 `el34-siem`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=apt15-10%27%20UNION%20SELECT%201--%20-\""
-      sleep 8
-      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.rule.groups|index(\"ids\"))|.data.src_ip" | sort | uniq -c | tail -3'
+      # ── el34-attacker 에서: SQLi 한 번 더(수렴 확인용) ──
+      curl -s -o /dev/null -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=apt15-10%27%20UNION%20SELECT%201--%20-"
+
+      # ── el34-siem 에서: alerts.json 출처별 수렴 (공격 8초 후, 한 APT 캠페인) ──
+      tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.rule.groups|index("ids"))|.data.src_ip' | sort | uniq -c | tail -3
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -657,10 +708,20 @@ steps:
       잔재 0 을 보장한다.
 
       ## 💻 확인 명령
+
+      **실습 컨테이너:** 계정/리스너는 `el34-web`, IDS 룰은 `el34-ips`, Wazuh 룰은 `el34-siem`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-web sh -c 'userdel -r w15ghost 2>/dev/null; id w15ghost 2>/dev/null && echo "계정 잔재!" || echo "user ok"; pgrep -f "http.server 61515" && echo "리스너 잔재!" || echo "listener ok"'
-      docker exec el34-ips sh -c 'sudo grep -c "9015001" /etc/suricata/rules/local.rules'
-      docker exec el34-siem sh -c 'echo "101510 잔재=$(grep -c 101510 /var/ossec/etc/rules/local_rules.xml)"'
+      # ── el34-web 에서: 계정/리스너 잔재 ──
+      userdel -r w15ghost 2>/dev/null; id w15ghost 2>/dev/null && echo "계정 잔재!" || echo "user ok"; pgrep -f "http.server 61515" && echo "리스너 잔재!" || echo "listener ok"
+
+      # ── el34-ips 에서: IDS sid 9015001 잔재 ──
+      sudo grep -c "9015001" /etc/suricata/rules/local.rules
+
+      # ── el34-siem 에서: Wazuh rule 101510 잔재 ──
+      echo "101510 잔재=$(grep -c 101510 /var/ossec/etc/rules/local_rules.xml)"
+
       echo "---check done---"
       ```
 
