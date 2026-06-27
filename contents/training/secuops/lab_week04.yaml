@@ -37,30 +37,29 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** 룰 작성·검증은 `el34-ips`, 트리거는 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
+      # ── el34-ips 에서: 룰 작성 + 검증 + reload ──
       # 1. 룰 작성 (heredoc 사용 — escape 단순화)
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"el34 admin path access\"; http.uri; content:\"/admin\"; depth:6; nocase; fast_pattern; classtype:attempted-recon; priority:2; sid:9005041; rev:1;)
-      EOF"'
-
+      EOF"
       # 2. syntax 검증
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3'
-
+      sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3
       # 3. rule-files 등록 확인 (suricata.yaml 이미 local.rules 포함)
-      docker exec el34-ips sh -c 'sudo grep "local.rules" /etc/suricata/suricata.yaml'
-
+      sudo grep "local.rules" /etc/suricata/suricata.yaml
       # 4. reload
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
+      sudo suricatasc -c reload-rules
 
-      # 5. 트리거 — /admin 으로 GET (대소문자 변형도 매치)
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: juice.el34.lab" http://10.20.30.1/admin'
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: juice.el34.lab" http://10.20.30.1/ADMIN'    # nocase 검증
-      sleep 4
+      # ── el34-attacker 에서: 5. 트리거 — /admin + /ADMIN (nocase 검증) ──
+      curl -s -o /dev/null -H "Host: juice.el34.lab" http://10.20.30.1/admin
+      curl -s -o /dev/null -H "Host: juice.el34.lab" http://10.20.30.1/ADMIN
 
-      # 6. alert 검증
-      docker exec el34-ips sh -c 'sudo grep -c "9005041" /var/log/suricata/eve.json 2>/dev/null'
-      docker exec el34-ips sh -c 'sudo grep "9005041" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature, severity:.alert.severity, url:.http.url}"'
+      # ── el34-ips 에서: 6. alert 검증 (트리거 4초 후) ──
+      sudo grep -c "9005041" /var/log/suricata/eve.json 2>/dev/null
+      sudo grep "9005041" /var/log/suricata/eve.json | tail -1 | jq '{sig:.alert.signature, severity:.alert.severity, url:.http.url}'
       ```
 
       ## 📋 확인 사항
@@ -82,7 +81,7 @@ steps:
       - **비정상 2**: alert 0 → http.uri sticky buffer 5.x 후위 문법 사용했는지 점검 (6v6
         은 6.0.4 → 전위 문법)
       - **비정상 3**: ADMIN 만 매치 안 됨 → nocase 누락
-    hint: 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF\nalert http any any -> any any (msg:\"...\"; http.uri; content:\"/admin\"; depth:6; nocase; fast_pattern; sid:9005041;)\nEOF"'
+    hint: 'el34-ips 접속 후 — local.rules 에 http.uri + content:"/admin" + depth:6 + nocase + fast_pattern 룰(sid 9005041) append → suricatasc -c reload-rules'
     category: manipulation
     points: 15
     answer: |
@@ -135,24 +134,25 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** 룰 작성·검증은 `el34-ips`, 트리거는 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
+      # ── el34-ips 에서: 룰 작성 + reload ──
       # 1. 룰 작성 — content prefilter + pcre
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"el34 RRN in POST body\"; flow:to_server,established; http.request_body; content:\"|2d|\"; nocase; pcre:\"/\\\\d{6}-[1-4]\\\\d{6}/\"; classtype:policy-violation; priority:2; sid:9005002; rev:1;)
-      EOF"'
+      EOF"
+      # 2. 검증 + reload
+      sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3
+      sudo suricatasc -c reload-rules
 
-      # 2. 검증
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
+      # ── el34-attacker 에서: 3. 트리거 (POST body 에 가짜 RRN) ──
+      curl -s -o /dev/null -X POST -d "name=hong&rrn=901231-1234567&email=h@a.com" -H "Host: juice.el34.lab" http://10.20.30.1/
 
-      # 3. 트리거 (POST body 에 가짜 RRN)
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -X POST -d "name=hong&rrn=901231-1234567&email=h@a.com" -H "Host: juice.el34.lab" http://10.20.30.1/'
-      sleep 4
-
-      # 4. alert 검증
-      docker exec el34-ips sh -c 'sudo grep -c "9005002" /var/log/suricata/eve.json 2>/dev/null'
-      docker exec el34-ips sh -c 'sudo grep "9005002" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature, classtype:.alert.category, method:.http.http_method, url:.http.url}"'
+      # ── el34-ips 에서: 4. alert 검증 (트리거 4초 후) ──
+      sudo grep -c "9005002" /var/log/suricata/eve.json 2>/dev/null
+      sudo grep "9005002" /var/log/suricata/eve.json | tail -1 | jq '{sig:.alert.signature, classtype:.alert.category, method:.http.http_method, url:.http.url}'
       ```
 
       ## 📋 확인 사항
@@ -231,32 +231,30 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** 룰 작성·검증은 `el34-ips`, 트리거는 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
+      # ── el34-ips 에서: 2 룰 작성 + reload ──
       # 1. 2 룰 작성
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"step1 FlowbitTest UA\"; http.user_agent; content:\"FlowbitTest\"; flowbits:set,fb_test_step1; flowbits:noalert; sid:9005010; rev:1;)
       alert http any any -> any any (msg:\"step2 admin after step1\"; http.uri; content:\"/admin\"; flowbits:isset,fb_test_step1; classtype:successful-recon; priority:1; sid:9005011; rev:1;)
-      EOF"'
-
+      EOF"
       # 2. 검증 + reload
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
+      sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3
+      sudo suricatasc -c reload-rules
 
-      # 3. step1 트리거 (UA 만, state set, alert 없음)
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/1.0" -H "Host: juice.el34.lab" http://10.20.30.1/'
-      sleep 1
+      # ── el34-attacker 에서: step1(UA, state set, alert 없음) → step2(같은 conn 의 /admin, alert 발생) ──
+      curl -s -o /dev/null -A "FlowbitTest/1.0" -H "Host: juice.el34.lab" http://10.20.30.1/
+      curl -s -o /dev/null -A "FlowbitTest/1.0" -H "Host: juice.el34.lab" http://10.20.30.1/admin
 
-      # 4. step2 트리거 (같은 conn 의 /admin 접근, alert 발생)
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/1.0" -H "Host: juice.el34.lab" http://10.20.30.1/admin'
-      sleep 4
-
-      # 5. alert 검증
-      echo "step1 alert (noalert 이므로 0 이거나 alert event 없음):"
-      docker exec el34-ips sh -c 'sudo grep "9005010" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""'
+      # ── el34-ips 에서: alert 검증 (트리거 4초 후) ──
+      echo "step1 alert (noalert 이므로 0):"
+      sudo grep "9005010" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
       echo "step2 alert (양 NIC sniff 라 2):"
-      docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""'
-      docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature, sev:.alert.severity, url:.http.url}"'
+      sudo grep "9005011" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+      sudo grep "9005011" /var/log/suricata/eve.json | tail -1 | jq '{sig:.alert.signature, sev:.alert.severity, url:.http.url}'
       ```
 
       ## 📋 확인 사항 (실측 2026-05-12)
@@ -342,31 +340,27 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** 룰 작성·카운트는 `el34-ips`, burst 는 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      # 1. 3 sid (limit / threshold / both) 작성
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 3 sid (limit / threshold / both) 작성 + reload ──
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"thr_limit 10s 5\"; http.user_agent; content:\"ThreshLimit\"; nocase; threshold:type limit, track by_src, count 5, seconds 10; sid:9005020; rev:1;)
       alert http any any -> any any (msg:\"thr_thresh 10s 5\"; http.user_agent; content:\"ThreshThr\"; nocase; threshold:type threshold, track by_src, count 5, seconds 10; sid:9005021; rev:1;)
       alert http any any -> any any (msg:\"thr_both 10s 5\"; http.user_agent; content:\"ThreshBoth\"; nocase; threshold:type both, track by_src, count 5, seconds 10; sid:9005022; rev:1;)
-      EOF"'
+      EOF"
+      sudo suricatasc -c reload-rules
 
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
+      # ── el34-attacker 에서: 각 mode 별 10 burst (한 src; 10회는 ≥10 이라 루프 유지) ──
+      for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -A "ThreshLimit/$i" -H "Host: juice.el34.lab" http://10.20.30.1/; done
+      for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -A "ThreshThr/$i" -H "Host: juice.el34.lab" http://10.20.30.1/; done
+      for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -A "ThreshBoth/$i" -H "Host: juice.el34.lab" http://10.20.30.1/; done
 
-      # 2. 10 burst per sid (총 30 packets, 한 src 에서)
-      for sid_ua in "9005020:ThreshLimit" "9005021:ThreshThr" "9005022:ThreshBoth"; do
-        UA="${sid_ua##*:}"
-        docker exec el34-attacker sh -c "for i in 1 2 3 4 5 6 7 8 9 10; do
-          curl -s -o /dev/null -A \"$UA/\$i\" -H \"Host: juice.el34.lab\" http://10.20.30.1/
-        done"
-      done
-      sleep 5
-
-      # 3. 각 sid 의 alert count
-      for sid in 9005020 9005021 9005022; do
-        CNT=$(docker exec el34-ips sh -c "sudo grep $sid /var/log/suricata/eve.json | grep -c \"\\\"event_type\\\":\\\"alert\\\"\"")
-        echo "sid $sid alert count: $CNT"
-      done
+      # ── el34-ips 에서: 각 sid 의 alert count ──
+      echo "sid 9005020 (limit) alert count:"; sudo grep 9005020 /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+      echo "sid 9005021 (threshold) alert count:"; sudo grep 9005021 /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+      echo "sid 9005022 (both) alert count:"; sudo grep 9005022 /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
       ```
 
       ## 📋 확인 사항 (이론값 — 한 NIC 기준, 실측은 × 2)
@@ -405,17 +399,13 @@ steps:
       EOF"'
       docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
       sleep 2
-      for sid_ua in "9005020:ThreshLimit" "9005021:ThreshThr" "9005022:ThreshBoth"; do
-        UA="${sid_ua##*:}"
-        docker exec el34-attacker sh -c "for i in 1 2 3 4 5 6 7 8 9 10; do
-          curl -s -o /dev/null -A \"$UA/\$i\" -H \"Host: juice.el34.lab\" http://10.20.30.1/
-        done"
-      done
+      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -A "ThreshLimit/$i" -H "Host: juice.el34.lab" http://10.20.30.1/; done'
+      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -A "ThreshThr/$i" -H "Host: juice.el34.lab" http://10.20.30.1/; done'
+      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -A "ThreshBoth/$i" -H "Host: juice.el34.lab" http://10.20.30.1/; done'
       sleep 5
-      for sid in 9005020 9005021 9005022; do
-        CNT=$(docker exec el34-ips sh -c "sudo grep $sid /var/log/suricata/eve.json | grep -c \"\\\"event_type\\\":\\\"alert\\\"\"")
-        echo "sid $sid alert count: $CNT"
-      done
+      echo "sid 9005020 alert count: $(docker exec el34-ips sh -c 'sudo grep 9005020 /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')"
+      echo "sid 9005021 alert count: $(docker exec el34-ips sh -c 'sudo grep 9005021 /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')"
+      echo "sid 9005022 alert count: $(docker exec el34-ips sh -c 'sudo grep 9005022 /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')"
     answer_detail: |
       3 mode 비교 — limit (첫 N만) / threshold (N 마다 1) / both (limit + threshold).
       production 권장 both (짧은 burst 무시 + 지속 공격 sparse).
@@ -452,44 +442,41 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** 룰·suppress·검증은 `el34-ips`, 트리거는 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      (baseline → 적용 후 카운트는 눈으로 비교한다.)
+
       ```bash
-      # 1. 활성 룰 (sid 9005030) 작성
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 1-2. 활성 룰(9005030) 작성 + reload ──
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"el34 suppress test UA\"; http.user_agent; content:\"SuppTest\"; nocase; sid:9005030; rev:1;)
-      EOF"'
+      EOF"
+      sudo suricatasc -c reload-rules
 
-      # 2. baseline — suppress 없이 alert
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "SuppTest/1.0" -H "Host: juice.el34.lab" http://10.20.30.1/'
-      sleep 4
-      echo "baseline alert (suppress 없음):"
-      docker exec el34-ips sh -c 'sudo grep "9005030" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""'
+      # ── el34-attacker 에서: baseline 트리거 ──
+      curl -s -o /dev/null -A "SuppTest/1.0" -H "Host: juice.el34.lab" http://10.20.30.1/
 
-      # 3. threshold.config 에 suppress 추가 (attacker IP 만 차단)
-      docker exec el34-ips sh -c 'sudo bash -c "cat > /etc/suricata/threshold.config <<EOF
+      # ── el34-ips 에서: baseline alert 카운트 (suppress 없음) ──
+      sudo grep "9005030" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+
+      # ── el34-ips 에서: 3-4. threshold.config 에 suppress 추가 (attacker IP 만) + 활성화 ──
+      sudo bash -c "cat > /etc/suricata/threshold.config <<EOF
       suppress gen_id 1, sig_id 9005030, track by_src, ip 10.20.31.1
-      EOF"'
+      EOF"
+      sudo grep "threshold-file" /etc/suricata/suricata.yaml | head -2
+      # 주석 처리되어 있다면 활성화:
+      sudo sed -i "s|^# threshold-file:|threshold-file:|" /etc/suricata/suricata.yaml 2>/dev/null
 
-      # 4. threshold-file 활성화 (suricata.yaml — 이미 활성이거나 아닐 수 있음)
-      docker exec el34-ips sh -c 'sudo grep "threshold-file" /etc/suricata/suricata.yaml | head -2'
-      # 만약 주석 처리되어 있다면:
-      docker exec el34-ips sh -c 'sudo sed -i "s|^# threshold-file:|threshold-file:|" /etc/suricata/suricata.yaml' 2>/dev/null
+      # ── el34-ips 에서: 5. reload ──
+      sudo suricatasc -c reload-rules
 
-      # 5. reload + 재트리거
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "SuppTest/1.0" -H "Host: juice.el34.lab" http://10.20.30.1/'
-      sleep 4
-      echo "suppress 적용 후 alert (attacker IP 라 0 예상):"
-      docker exec el34-ips sh -c 'sudo grep "9005030" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""'
+      # ── el34-attacker 에서: 재트리거 ──
+      curl -s -o /dev/null -A "SuppTest/1.0" -H "Host: juice.el34.lab" http://10.20.30.1/
 
-      # 6. 다른 src 시뮬 — fw 컨테이너에서 curl (allowlist 동작 확인)
-      # (실제로는 fw 가 curl 안 함 — 시뮬용)
-
-      # Cleanup
-      docker exec el34-ips sh -c 'sudo rm -f /etc/suricata/threshold.config; sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      # ── el34-ips 에서: suppress 적용 후 alert (attacker IP 라 추가 0 예상) + cleanup ──
+      sudo grep "9005030" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+      sudo rm -f /etc/suricata/threshold.config; sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules
+      sudo suricatasc -c reload-rules
       ```
 
       ## 📋 확인 사항
@@ -576,27 +563,27 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** 룰 작성·검증은 `el34-ips`, 트리거는 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      # 1. 종합 룰 작성 (5 기술 결합)
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 종합 룰(5 기술 결합) 작성 + 검증 + reload ──
+      # 1. 종합 룰 작성
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"el34 sqlmap UNION SELECT (rate-limited)\"; flow:to_server,established; http.user_agent; content:\"sqlmap\"; fast_pattern; nocase; http.request_body; content:\"union\"; nocase; pcre:\"/\\\\bunion\\\\b\\\\s+\\\\bselect\\\\b/i\"; threshold:type limit, track by_src, count 1, seconds 60; classtype:web-application-attack; priority:1; sid:9005099; rev:1; metadata:created_at 2026_05_11, mitre_tactic_id TA0001;)
-      EOF"'
-
+      EOF"
       # 2. syntax 검증
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3'
-
+      sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3
       # 3. reload
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
+      sudo suricatasc -c reload-rules
 
-      # 4. 트리거 — sqlmap UA + UNION SELECT body
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/'
-      sleep 4
+      # ── el34-attacker 에서: 4. 트리거 — sqlmap UA + UNION SELECT body ──
+      curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/
 
-      # 5. alert 검증
+      # ── el34-ips 에서: 5. alert 검증 (트리거 4초 후) ──
       echo "9005099 alert count:"
-      docker exec el34-ips sh -c 'sudo grep "9005099" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""'
-      docker exec el34-ips sh -c 'sudo grep "9005099" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature, sev:.alert.severity, ua:.http.http_user_agent, body:.http.request_body[:80], meta:.alert.metadata}"'
+      sudo grep "9005099" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+      sudo grep "9005099" /var/log/suricata/eve.json | tail -1 | jq '{sig:.alert.signature, sev:.alert.severity, ua:.http.http_user_agent, body:.http.request_body[:80], meta:.alert.metadata}'
       ```
 
       ## 📋 확인 사항
@@ -676,50 +663,42 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** 룰·카운트·정리는 `el34-ips`, 다단계 공격은 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      (baseline → after 카운트는 눈으로 비교해 delta 를 구한다.)
+
       ```bash
-      # 0. STEP 3 의 flowbits 룰 (9005010 / 9005011) 재활성
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 0. STEP 3 의 flowbits 룰(9005010/9005011) 재활성 + reload ──
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"step1 FlowbitTest UA\"; http.user_agent; content:\"FlowbitTest\"; flowbits:set,fb_test_step1; flowbits:noalert; sid:9005010; rev:1;)
       alert http any any -> any any (msg:\"step2 admin after step1\"; http.uri; content:\"/admin\"; flowbits:isset,fb_test_step1; classtype:successful-recon; priority:1; sid:9005011; rev:1;)
-      EOF"'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
+      EOF"
+      sudo suricatasc -c reload-rules
 
-      # 1. baseline
-      BEFORE=$(docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
-      echo "baseline 9005011: $BEFORE"
+      # ── el34-ips 에서: 1. baseline (이 숫자를 적어둔다) ──
+      sudo grep "9005011" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
 
-      # 2. Red — 다단계 공격 5 cycle
-      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do
-        # step1 — 같은 conn 으로 UA 매치
-        curl -s -o /dev/null -A "FlowbitTest/$i" -H "Host: juice.el34.lab" http://10.20.30.1/
-        sleep 1
-        # step2 — admin 접근 (새 conn 이지만 같은 src)
-        curl -s -o /dev/null -A "FlowbitTest/$i" -H "Host: juice.el34.lab" http://10.20.30.1/admin
-      done'
-      sleep 6
+      # ── el34-attacker 에서: 2. Red — 다단계 공격 5 cycle (step1 UA → step2 /admin) ──
+      curl -s -o /dev/null -A "FlowbitTest/1" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/1" -H "Host: juice.el34.lab" http://10.20.30.1/admin
+      curl -s -o /dev/null -A "FlowbitTest/2" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/2" -H "Host: juice.el34.lab" http://10.20.30.1/admin
+      curl -s -o /dev/null -A "FlowbitTest/3" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/3" -H "Host: juice.el34.lab" http://10.20.30.1/admin
+      curl -s -o /dev/null -A "FlowbitTest/4" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/4" -H "Host: juice.el34.lab" http://10.20.30.1/admin
+      curl -s -o /dev/null -A "FlowbitTest/5" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/5" -H "Host: juice.el34.lab" http://10.20.30.1/admin
 
-      # 3. Blue — 9005011 alert delta
-      AFTER=$(docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
-      echo "after: $AFTER  delta: $((AFTER - BEFORE))"
+      # ── el34-ips 에서: 3-4. after 카운트(delta = after - baseline, 5~10) + severity 분포 ──
+      sudo grep "9005011" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+      sudo grep "9005011" /var/log/suricata/eve.json | tail -10 | jq -r .alert.severity | sort | uniq -c
 
-      # 4. Purple — alert context (severity 분포)
-      docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | tail -10 | jq -r .alert.severity | sort | uniq -c'
-
-      # 5. Purple — suppression 권장
-      echo "권장 suppression (alert flood 환경):"
+      # 5. Purple — suppression 권장 (시뮬, 본 공격이 known false-positive 였을 때)
       cat <<'EOF'
       # /etc/suricata/threshold.config
-      # 시나리오: 본 공격이 known false-positive 였을 때
       suppress gen_id 1, sig_id 9005011, track by_src, ip 10.20.31.1
-
-      # 또는 rate-limit
       event_filter gen_id 1, sig_id 9005011, type limit, track by_src, count 1, seconds 60
       EOF
 
-      # Cleanup
-      docker exec el34-ips sh -c 'sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      # ── el34-ips 에서: Cleanup ──
+      sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules
+      sudo suricatasc -c reload-rules
       ```
 
       ## 📋 확인 사항
@@ -757,11 +736,11 @@ steps:
       sleep 2
       BEFORE=$(docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
       echo "baseline: $BEFORE"
-      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do
-        curl -s -o /dev/null -A "FlowbitTest/$i" -H "Host: juice.el34.lab" http://10.20.30.1/
-        sleep 1
-        curl -s -o /dev/null -A "FlowbitTest/$i" -H "Host: juice.el34.lab" http://10.20.30.1/admin
-      done'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/1" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/1" -H "Host: juice.el34.lab" http://10.20.30.1/admin'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/2" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/2" -H "Host: juice.el34.lab" http://10.20.30.1/admin'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/3" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/3" -H "Host: juice.el34.lab" http://10.20.30.1/admin'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/4" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/4" -H "Host: juice.el34.lab" http://10.20.30.1/admin'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/5" -H "Host: juice.el34.lab" http://10.20.30.1/; sleep 1; curl -s -o /dev/null -A "FlowbitTest/5" -H "Host: juice.el34.lab" http://10.20.30.1/admin'
       sleep 6
       AFTER=$(docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
       echo "after: $AFTER  delta: $((AFTER - BEFORE))"
@@ -809,46 +788,47 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** 룰·진단·정리는 `el34-ips`, 트리거는 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      # === 실수 1: 5.x 후위 문법 (Suricata 6 에서 silent fail) ===
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 실수 1 — 5.x 후위 문법 (Suricata 6 에서 silent fail) 작성 + reload ──
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"el34 5x 후위 문법 silent fail\"; content:\"sqlmap\"; http_user_agent; nocase; sid:9005091; rev:1;)
-      EOF"'
-
+      EOF"
       # syntax 검증 (silent OK — Suricata 가 무시 가능)
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3'
+      sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3
+      sudo suricatasc -c reload-rules
 
-      # reload + 트리거
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.el34.lab" http://10.20.30.1/'
-      sleep 4
-      echo "5.x 후위 문법 alert (0 또는 매우 적음 예상):"
-      docker exec el34-ips sh -c 'sudo grep "9005091" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""'
+      # ── el34-attacker 에서: 트리거 ──
+      curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.el34.lab" http://10.20.30.1/
 
-      # === 복구: 6.x 전위 문법 ===
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 5.x 후위 문법 alert (0 또는 매우 적음 예상) ──
+      echo "5.x 후위 문법 alert:"
+      sudo grep "9005091" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+
+      # ── el34-ips 에서: 복구 — 6.x 전위 문법 작성 + reload ──
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"el34 6x 전위 문법 correct\"; http.user_agent; content:\"sqlmap\"; nocase; sid:9005091; rev:2;)
-      EOF"'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.el34.lab" http://10.20.30.1/'
-      sleep 4
-      echo "6.x 전위 문법 alert (1+ 정상):"
-      docker exec el34-ips sh -c 'sudo grep "9005091" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""'
+      EOF"
+      sudo suricatasc -c reload-rules
 
-      # === 실수 2: pcre 단독 (성능 부담) ===
-      # 시뮬만 — 실제 적용하면 drop_rate 증가 위험
+      # ── el34-attacker 에서: 재트리거 ──
+      curl -s -o /dev/null -A "sqlmap/1.5" -H "Host: juice.el34.lab" http://10.20.30.1/
+
+      # ── el34-ips 에서: 6.x 전위 문법 alert (1+ 정상) ──
+      echo "6.x 전위 문법 alert:"
+      sudo grep "9005091" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+
+      # 실수 2: pcre 단독 (성능 부담) — 시뮬만 (실제 적용하면 drop_rate 증가 위험)
       echo "권장 (성능):"
       echo "  부적합: pcre:\"/\\\\bunion\\\\b/i\""
       echo "  적합:  content:\"union\"; nocase; pcre:\"/\\\\bunion\\\\b/i\";"
 
-      # === dump-counters 의 drop rate 확인 ===
-      docker exec el34-ips sh -c 'sudo suricatasc -c dump-counters 2>&1 | jq -c "{drops: .message.\"capture.kernel_drops\", pkts: .message.\"decoder.pkts\"}"'
-
-      # Cleanup
-      docker exec el34-ips sh -c 'sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      # ── el34-ips 에서: dump-counters 의 drop rate 확인 + cleanup ──
+      sudo suricatasc -c dump-counters 2>&1 | jq -c '{drops: .message."capture.kernel_drops", pkts: .message."decoder.pkts"}'
+      sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules
+      sudo suricatasc -c reload-rules
       ```
 
       ## 📋 확인 사항
@@ -938,55 +918,42 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** 룰·config·카운트는 `el34-ips`, 다단계 공격은 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      (baseline → after 카운트는 눈으로 비교해 delta 를 구한다.)
+
       ```bash
-      # 1. 3 룰 + 1 suppress 동시 작성
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 1-3. 3 룰 + event_filter 작성 + 활성화 + reload ──
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"step1 FlowbitTest UA\"; http.user_agent; content:\"FlowbitTest\"; flowbits:set,fb_test_step1; flowbits:noalert; sid:9005010; rev:1;)
       alert http any any -> any any (msg:\"step2 admin after step1\"; http.uri; content:\"/admin\"; flowbits:isset,fb_test_step1; classtype:successful-recon; priority:1; sid:9005011; rev:1;)
       alert http any any -> any any (msg:\"el34 sqlmap UNION (rate-limited)\"; flow:to_server,established; http.user_agent; content:\"sqlmap\"; fast_pattern; nocase; http.request_body; content:\"union\"; nocase; pcre:\"/\\\\bunion\\\\b\\\\s+\\\\bselect\\\\b/i\"; threshold:type limit, track by_src, count 1, seconds 60; classtype:web-application-attack; priority:1; sid:9005099; rev:1;)
-      EOF"'
-
-      # 2. threshold.config — 9005011 의 alert flood 차단
-      docker exec el34-ips sh -c 'sudo bash -c "cat > /etc/suricata/threshold.config <<EOF
+      EOF"
+      sudo bash -c "cat > /etc/suricata/threshold.config <<EOF
       event_filter gen_id 1, sig_id 9005011, type limit, track by_src, count 1, seconds 30
-      EOF"'
+      EOF"
+      sudo sed -i "s|^# threshold-file:|threshold-file:|" /etc/suricata/suricata.yaml 2>/dev/null
+      sudo suricatasc -c reload-rules
 
-      # 3. activate
-      docker exec el34-ips sh -c 'sudo sed -i "s|^# threshold-file:|threshold-file:|" /etc/suricata/suricata.yaml' 2>/dev/null
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
-      sleep 2
+      # ── el34-ips 에서: 4. baseline (9005011 / 9005099 카운트를 적어둔다) ──
+      sudo grep "9005011" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
+      sudo grep "9005099" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
 
-      # 4. baseline
-      BEFORE_11=$(docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
-      BEFORE_99=$(docker exec el34-ips sh -c 'sudo grep "9005099" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
-      echo "baseline 9005011: $BEFORE_11 / 9005099: $BEFORE_99"
+      # ── el34-attacker 에서: 5. Red — 5 burst 다단계(step1 → step2 → sqlmap) ──
+      curl -s -o /dev/null -A "FlowbitTest/1" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/1" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/
+      curl -s -o /dev/null -A "FlowbitTest/2" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/2" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/
+      curl -s -o /dev/null -A "FlowbitTest/3" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/3" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/
+      curl -s -o /dev/null -A "FlowbitTest/4" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/4" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/
+      curl -s -o /dev/null -A "FlowbitTest/5" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/5" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/
 
-      # 5. Red — 5 burst 다단계 + sqlmap
-      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do
-        curl -s -o /dev/null -A "FlowbitTest/$i" -H "Host: juice.el34.lab" http://10.20.30.1/
-        curl -s -o /dev/null -A "FlowbitTest/$i" -H "Host: juice.el34.lab" http://10.20.30.1/admin
-        curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/
-      done'
-      sleep 6
+      # ── el34-ips 에서: 6-7. after 카운트 + flood 차단 판정 ──
+      sudo grep "9005011" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'    # delta 1~4 (event_filter limit 1/30s)
+      sudo grep "9005099" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'    # delta 1~2 (룰 threshold limit 1/60s)
+      # 두 delta 가 각각 ≤4 / ≤2 면 alert flood 차단 성공
 
-      # 6. delta
-      AFTER_11=$(docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
-      AFTER_99=$(docker exec el34-ips sh -c 'sudo grep "9005099" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
-      D11=$((AFTER_11 - BEFORE_11))
-      D99=$((AFTER_99 - BEFORE_99))
-      echo "9005011 delta: $D11 (event_filter limit 1/30s 라 1~2 예상)"
-      echo "9005099 delta: $D99 (룰 자체 threshold limit 1/60s 라 1~2 예상)"
-
-      # 7. 운영 효과 — alert flood 차단 검증
-      if [ "$D11" -le 4 ] && [ "$D99" -le 2 ]; then
-        echo "✓ alert flood 차단 성공"
-      else
-        echo "✗ alert flood 발생 - threshold 검토"
-      fi
-
-      # Cleanup
-      docker exec el34-ips sh -c 'sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules /etc/suricata/threshold.config'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      # ── el34-ips 에서: Cleanup ──
+      sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules /etc/suricata/threshold.config
+      sudo suricatasc -c reload-rules
       ```
 
       ## 📋 확인 사항
@@ -1023,11 +990,11 @@ steps:
       BEFORE_11=$(docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
       BEFORE_99=$(docker exec el34-ips sh -c 'sudo grep "9005099" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
       echo "baseline 11: $BEFORE_11 / 99: $BEFORE_99"
-      docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do
-        curl -s -o /dev/null -A "FlowbitTest/$i" -H "Host: juice.el34.lab" http://10.20.30.1/
-        curl -s -o /dev/null -A "FlowbitTest/$i" -H "Host: juice.el34.lab" http://10.20.30.1/admin
-        curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/
-      done'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/1" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/1" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/2" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/2" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/3" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/3" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/4" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/4" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/'
+      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "FlowbitTest/5" -H "Host: juice.el34.lab" http://10.20.30.1/; curl -s -o /dev/null -A "FlowbitTest/5" -H "Host: juice.el34.lab" http://10.20.30.1/admin; curl -s -o /dev/null -X POST -A "sqlmap/1.5" -d "q=1 UNION SELECT password FROM users" -H "Host: juice.el34.lab" http://10.20.30.1/'
       sleep 6
       AFTER_11=$(docker exec el34-ips sh -c 'sudo grep "9005011" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
       AFTER_99=$(docker exec el34-ips sh -c 'sudo grep "9005099" /var/log/suricata/eve.json | grep -c "\"event_type\":\"alert\""')
