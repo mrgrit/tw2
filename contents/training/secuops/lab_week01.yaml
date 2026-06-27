@@ -673,18 +673,21 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** Wazuh manager 점검은 `el34-siem`, cluster health 는 `el34-wazuh-indexer`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
+      # ── el34-siem 에서: Wazuh manager 점검 ──
       # 1. wazuh-control 의 10 daemon 상태
-      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-control status'
-
+      sudo /var/ossec/bin/wazuh-control status
       # 2. 등록된 agent 목록 (2 agent + server)
-      docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -l'
+      sudo /var/ossec/bin/agent_control -l
+      # 3. 3 listening port (1514/1515/55000)
+      sudo ss -tlnp | grep -E ":(1514|1515|55000)"
 
-      # 3. 3 listening port
-      docker exec el34-siem sh -c 'sudo ss -tlnp | grep -E ":(1514|1515|55000)"'
-
-      # 4. wazuh-indexer cluster health
-      docker exec el34-bastion sh -c 'docker exec el34-wazuh-indexer curl -sk -u admin:SecretPassword https://localhost:9200/_cluster/health | jq'
+      # ── el34-wazuh-indexer 에서: cluster health ──
+      # 4. OpenSearch cluster health
+      curl -sk -u admin:SecretPassword https://localhost:9200/_cluster/health | jq
       ```
 
       ## 📋 확인 사항
@@ -708,7 +711,7 @@ steps:
       - **비정상 2**: agent `Never connected` → 해당 agent 컨테이너의 wazuh-agent
         service 또는 1514 통신 점검
       - **비정상 3**: cluster `red` → wazuh-* 인덱스 손실 → indexer recovery 필요
-    hint: docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-control status'
+    hint: 'el34-siem 접속 후 — sudo /var/ossec/bin/wazuh-control status'
     category: monitoring
     points: 12
     answer: |
@@ -799,14 +802,16 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # Red 공격 — sqlmap UA + XSS + SQLi UNION SELECT 결합. 대상 vhost = dvwa
       # (전역 SecRuleEngine On 적용). juice 는 per-vhost DetectionOnly 라 200 통과
       # → W02 SQLi / W03 XSS 학생 학습용. W01 의 차단 검증은 dvwa/neobank 등 사용.
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code} 시간: %{time_total}s\n" \
+      curl -s -o /dev/null -w "응답: %{http_code} 시간: %{time_total}s\n" \
           -A "sqlmap/1.5" \
           -H "Host: dvwa.el34.lab" \
-          "http://10.20.30.1/?q=<script>alert(1)</script>&id=1+UNION+SELECT"'
+          "http://10.20.30.1/?q=<script>alert(1)</script>&id=1+UNION+SELECT"
 
       # 공격 시각 기록 (Blue/Purple step 에서 timestamp 매칭에 사용)
       ATTACK_TS=$(date -u +%Y-%m-%dT%H:%M:%S)
@@ -832,7 +837,7 @@ steps:
       - **비정상 2**: 응답 `5xx` → backend(web) 다운 또는 라우팅 오류 → STEP 3 재점검
       - **비정상 3**: 응답 `000` (timeout) → fw 의 input chain drop 또는 attacker 컨테이너
         다운
-    hint: 'curl -A "sqlmap/1.5" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>"  # juice 는 DetectionOnly (W02 용), 차단 검증은 dvwa/neobank/...'
+    hint: 'el34-attacker 접속 후 — curl -A "sqlmap/1.5" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>"  # juice 는 DetectionOnly (W02 용), 차단 검증은 dvwa/neobank/...'
     category: redteam
     points: 8
     answer: |
@@ -919,12 +924,15 @@ steps:
 
       ## 💻 실행 명령
 
-      ```bash
-      # 1. fw conntrack — 공격 흐름의 L3/L4 추적 (fw 는 payload 를 못 봄)
-      docker exec el34-fw sh -c 'conntrack -L 2>/dev/null | grep -E "dport=80|10.20.32.80" | tail -3'
+      **실습 컨테이너:** L3/L4 흐름은 `el34-fw`, L7 event 는 `el34-ips`. 각 컨테이너에
+      `docker exec -it el34-<name> bash` 로 접속해 실행한다.
 
-      # 2. ips Suricata eve.json 의 HTTP event (dvwa.el34.lab 매칭) — http event 는 드물어 깊게 tail
-      docker exec el34-ips sh -c 'tail -5000 /var/log/suricata/eve.json | jq -c "select(.event_type==\"http\" and .http.hostname==\"dvwa.el34.lab\") | {ts:.timestamp, src:.src_ip, url:.http.url, status:.http.status}" | tail -2'
+      ```bash
+      # ── el34-fw 에서: conntrack (L3/L4 흐름, payload 는 못 봄) ──
+      conntrack -L 2>/dev/null | grep -E "dport=80|10.20.32.80" | tail -3
+
+      # ── el34-ips 에서: Suricata eve.json 의 HTTP event (http event 는 드물어 깊게 tail) ──
+      tail -5000 /var/log/suricata/eve.json | jq -c 'select(.event_type=="http" and .http.hostname=="dvwa.el34.lab") | {ts:.timestamp, src:.src_ip, url:.http.url, status:.http.status}' | tail -2
       ```
 
       ## 📋 확인 사항
@@ -1017,15 +1025,17 @@ steps:
 
       ## 💻 실행 명령
 
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1. ModSec audit log 의 dvwa 403 transaction (audit JSON: status / client / UA)
-      docker exec el34-web sh -c 'tail -500 /var/log/apache2/modsec_audit.log | jq -c "select(.response.status==403 and .request.headers.Host==\"dvwa.el34.lab\") | {client:.transaction.remote_address, status:.response.status, ua:.request.headers.\"User-Agent\"}" | tail -1'
+      tail -500 /var/log/apache2/modsec_audit.log | jq -c 'select(.response.status==403 and .request.headers.Host=="dvwa.el34.lab") | {client:.transaction.remote_address, status:.response.status, ua:.request.headers."User-Agent"}' | tail -1
 
       # 2. vhost 별 access.log 의 403 (dvwa_access.log)
-      docker exec el34-web sh -c 'grep " 403 " /var/log/apache2/dvwa_access.log | tail -3'
+      grep " 403 " /var/log/apache2/dvwa_access.log | tail -3
 
       # 3. vhost 별 error.log 의 매치 룰 ID (ModSec Warning)
-      docker exec el34-web sh -c 'grep -oE "id \"[0-9]{6}\"" /var/log/apache2/dvwa_error.log 2>/dev/null | tail -6'
+      grep -oE 'id "[0-9]{6}"' /var/log/apache2/dvwa_error.log 2>/dev/null | tail -6
       ```
 
       ## 📋 확인 사항
@@ -1132,10 +1142,11 @@ steps:
 
       ## 💻 실행 명령
 
-      siem 컨테이너에 jq 가 없어 python3 으로 파싱:
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+      siem 컨테이너엔 jq 가 없어 python3 으로 파싱한다.
 
       ```bash
-      docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | grep -E "web|10.20.30.202" | tail -2 | head -1' \
+      tail -500 /var/ossec/logs/alerts/alerts.json | grep -E "web|10.20.30.202" | tail -2 | head -1 \
         | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); \
           print(json.dumps({'agent':d.get('agent',{}).get('name'), \
                             'rule_id':d.get('rule',{}).get('id'), \
@@ -1470,7 +1481,7 @@ steps:
       | 3 | fw nft + six_nat | pass | 3 table + DNAT + 4 라우팅 |
       | 4 | ips Suricata 2 NIC | pass | -i eth0 -i eth1 + drops 0 |
       | 5 | web Apache + ModSec | pass | security2 + SecRuleEngine On + 403 차단 |
-      | 6 | siem 11 daemon + agent | pass | wazuh-control + ips·web Active |
+      | 6 | siem 10 daemon + agent | pass | wazuh-control + ips·web Active |
 
       ## 2. R/B/P 시나리오
       | Step | 팀 | 결과 |
