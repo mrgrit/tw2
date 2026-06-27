@@ -36,11 +36,14 @@ steps:
       포렌식의 무대인 **웹 로그**(access.log·ModSec audit)와 헌팅의 무대인 **osquery**가
       둘 다 가용한지부터 확인한다 — 도구가 없으면 그 단면은 못 본다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 웹 로그(access + modsec audit) 존재 확인 — 포렌식 무대
-      docker exec el34-web sh -c 'sudo ls /var/log/apache2/dvwa_access.log /var/log/apache2/modsec_audit.log'
+      sudo ls /var/log/apache2/dvwa_access.log /var/log/apache2/modsec_audit.log
       # 2) osquery 동작 확인(버전) — 헌팅 무대
-      docker exec el34-web osqueryi --version
+      osqueryi --version
       ```
       - `dvwa_access.log`=요청 전체상, `modsec_audit.log`=WAF가 왜 막았나(매치 룰·anomaly). `osqueryi --version` 이 찍히면 file·listening_ports 질의가 가능.
       ## ✅ 합격 기준
@@ -77,12 +80,16 @@ steps:
       (디스크에 떨어진 .php) + **콜백 리스너**(외부 통신 채널). 이 셋을 통제된 환경에서 재현해,
       이후 포렌식·헌팅이 읽어낼 흔적(로그)과 실체(파일·포트)를 만든다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** 침투는 `el34-attacker`, 웹쉘·리스너는 `el34-web`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      # 1) SQLi 침투 — sqlmap UA로 주입(ModSec 942 탐지)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw10%27%20UNION%20SELECT%201--%20-\""
-      # 2) 웹쉘 파일 배치 + 콜백 리스너(비표준 포트 44410) 상주
-      docker exec el34-web sh -c 'echo "<?php system(\$_GET[c]); ?>" > /tmp/socw10_shell.php; nohup python3 -m http.server 44410 >/dev/null 2>&1 & echo planted'
-      # 3) 로그 수렴 대기 후 완료 마커
+      # ── el34-attacker 에서: SQLi 침투 — sqlmap UA 주입(ModSec 942 탐지) ──
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=socw10%27%20UNION%20SELECT%201--%20-"
+      # ── el34-web 에서: 웹쉘 파일 배치 + 콜백 리스너(비표준 포트 44410) 상주 ──
+      echo "<?php system(\$_GET[c]); ?>" > /tmp/socw10_shell.php; nohup python3 -m http.server 44410 >/dev/null 2>&1 & echo planted
+      # 로그 수렴 대기 후 완료 마커
       sleep 5
       echo "webshell incident done"
       ```
@@ -124,11 +131,14 @@ steps:
       요청을 **다른 관점**으로 본다 — **ModSec audit**는 "왜 막혔나"(매치 룰·anomaly), **access.log**
       는 "무엇이 들어왔나"(요청 전체상 + 웹쉘 사용 패턴).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) ModSec audit 최근 80줄 CRS 룰ID 분포 — 942(SQLi)→949110(anomaly 누적 차단)
-      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+      sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c
       # 2) dvwa access 최근 10줄 — 같은 요청의 전체상 + 웹쉘 사용 패턴(.php?c=)
-      docker exec el34-web sh -c 'sudo tail -10 /var/log/apache2/dvwa_access.log'
+      sudo tail -10 /var/log/apache2/dvwa_access.log
       # 3) 해석 — SQLi(942) 침투 후 웹쉘 작성, 웹쉘 접근 패턴(.php?c=)이 핵심 단서
       echo "→ SQLi(942) 침투 후 웹쉘 작성. 웹쉘 접근 패턴(.php?c=)이 핵심 단서"
       ```
@@ -180,11 +190,14 @@ steps:
       확정한다 — 로그만으로는 파일을 지울 수 없기 때문이다. osquery는 OS 상태를 SQL 테이블로 조회하는
       호스트 가시화 도구다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) file 테이블로 웹쉘 파일 헌팅(path/size/mtime) — 최근 mtime의 .php가 의심
-      docker exec el34-web osqueryi --json 'SELECT path,size,mtime FROM file WHERE path="/tmp/socw10_shell.php";'
+      osqueryi --json 'SELECT path,size,mtime FROM file WHERE path="/tmp/socw10_shell.php";'
       # 2) listening_ports로 콜백 채널 헌팅(비표준 포트 44410의 pid/port)
-      docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=44410;'
+      osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=44410;'
       ```
       - 1) 결과가 한 행이면 그 파일이 디스크에 실재(mtime 이 방금이면 막 심긴 의심). 실전은 `WHERE path LIKE "/tmp/%shell%"` 로 넓게 훑는다. 2) 비표준 고포트 리스너의 `pid` 가 미션 6 에서 종료할 콜백 프로세스.
 
@@ -226,18 +239,23 @@ steps:
       (`10.20.30.202`)를 IDS로 플래그한다. **공유 인프라이므로 drop이 아니라 alert로 격리를 시연**
       하고 직후 self-clean으로 룰을 되돌린다(운영은 firewall drop).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** 격리 룰·검증·정리는 `el34-ips`, 테스트 트래픽은 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      # 1) 격리 룰 추가 — 출발지 10.20.30.202 모든 트래픽 플래그(alert, sid 9510001)
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      # ── el34-ips 에서: 격리 룰 추가(출발지 10.20.30.202 플래그, sid 9510001) + reload ──
+      sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert ip 10.20.30.202 any -> any any (msg:\"SOC W10 contain webshell attacker\"; sid:9510001; rev:1;)
-      EOF"'
-      # 2) 룰 즉시 반영 후 출발지 트래픽 유발
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'; sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/'; sleep 4
-      # 3) 격리 룰 트리거 횟수(1+ = 출발지 포착)
-      docker exec el34-ips sh -c 'sudo grep -c 9510001 /var/log/suricata/eve.json'
-      # 4) self-clean — 격리 룰 삭제 + reload(공유 인프라 원복)
-      docker exec el34-ips sh -c 'sudo sed -i "/sid:9510001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
+      EOF"
+      sudo suricatasc -c reload-rules
+
+      # ── el34-attacker 에서: 출발지 트래픽 유발 ──
+      curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/
+
+      # ── el34-ips 에서: 격리 룰 트리거 횟수(1+) + self-clean(룰 삭제 + reload) (4초 후) ──
+      sudo grep -c 9510001 /var/log/suricata/eve.json
+      sudo sed -i "/sid:9510001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed
       ```
       - `alert ip <출발지> ... sid:9510001` 은 그 IP 모든 패킷을 플래그, `suricatasc -c reload-rules` 는 재시작 없이 로드, `sed`+reload 가 self-clean(원상복구).
 
@@ -282,13 +300,16 @@ steps:
       남고, 프로세스만 죽이면 다음에 다시 실행**되므로 둘을 함께 제거한다. 그리고 osquery로 다른
       웹쉘이 더 없는지 재확인한다 — 하나라도 놓치면 재침투한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) Eradicate — 웹쉘 파일 rm + 콜백 프로세스 kill([h]ttp 브래킷으로 자기매치 방지)
-      docker exec el34-web sh -c 'rm -f /tmp/socw10_shell.php; pkill -f "[h]ttp.server 44410" 2>/dev/null; true'
+      rm -f /tmp/socw10_shell.php; pkill -f "[h]ttp.server 44410" 2>/dev/null; true
       # 2) 완료 마커
       echo "eradicated (웹쉘 rm + 콜백 kill)"
       # 3) 제거 확인 — file 질의가 빈 결과여야 함
-      docker exec el34-web osqueryi --json 'SELECT path FROM file WHERE path="/tmp/socw10_shell.php";'
+      osqueryi --json 'SELECT path FROM file WHERE path="/tmp/socw10_shell.php";'
       ```
       - 웹쉘 파일(`rm -f`) + 콜백 프로세스(`pkill -f`)를 함께 제거(파일만 지우면 콜백이 살고 프로세스만 죽이면 파일이 다시 실행됨). `[h]ttp` 브래킷 트릭으로 pkill 이 자기 자신을 죽이지 않게 한다. 같은 file 질의가 빈 결과면 제거 완료.
 
@@ -329,11 +350,14 @@ steps:
       (제거가 서비스를 망가뜨리지 않았나)와 **위협의 잔재가 0인가**(웹쉘 파일·콜백이 둘 다
       사라졌나). 둘 다 충족돼야 복구 완료다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) Recover — 웹 서비스 헬스체크(응답코드만)
-      docker exec el34-web sh -c 'curl -s -o /dev/null -w "web=%{http_code}\n" -H "Host: dvwa.el34.lab" http://localhost/'
+      curl -s -o /dev/null -w "web=%{http_code}\n" -H "Host: dvwa.el34.lab" http://localhost/
       # 2) 잔재 점검 — 웹쉘 파일(ls)·콜백 리스너(pgrep) 둘 다 없으면 clean
-      docker exec el34-web sh -c 'ls /tmp/socw10_shell.php 2>/dev/null && echo "웹쉘 잔재!" || echo clean; pgrep -f "[h]ttp.server 44410" && echo "리스너 잔재!" || echo "listener clean"'
+      ls /tmp/socw10_shell.php 2>/dev/null && echo "웹쉘 잔재!" || echo clean; pgrep -f "[h]ttp.server 44410" && echo "리스너 잔재!" || echo "listener clean"
       # 3) 해석 — 서비스 정상 + 잔재 0 = 복구 완료, 취약점 패치 권고
       echo "→ 서비스 정상 + 잔재 0 = 복구 완료. 취약점 패치 권고"
       ```
