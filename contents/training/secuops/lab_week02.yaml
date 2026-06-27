@@ -7,7 +7,8 @@ description: |
   el34 의 fw 컨테이너에서 `nft` CLI 로 방화벽을 운영하는 실습. 룰 작성·객체(set)·NAT·conntrack·카운터를
   직접 다루고, 침해대응 7 시나리오(R/B/P)를 풀어 카운터로 효과를 증명한다. el34 fw 는 공유 인프라이므로
   각 시나리오는 **룰 추가 → 효과 증명 → 자기 룰 삭제(self-clean)** 로 마무리해 베이스 정책을 보존한다.
-  모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec el34-fw` / `docker exec el34-attacker` 로 실행.
+  각 단계의 **실습 컨테이너** 헤더를 보고 `docker exec -it el34-<name> bash` 로 접속한 뒤 bare 명령을 실행한다
+  (el34 호스트: `ssh ccc@192.168.0.151`).
 difficulty: intermediate
 duration_minutes: 150
 audience: 보안솔루션 운영 실무 학습자 (정규 secuops 2주차)
@@ -32,13 +33,16 @@ steps:
       **우리가 만지는 것은 six_filter/six_nat 두 테이블뿐**, Docker `ip nat` 은 건드리지 않는다.
 
       ## 💻 확인 명령
+
+      **실습 컨테이너:** `el34-fw` — `docker exec -it el34-fw bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-fw nft list tables
-      docker exec el34-fw ip -br a
+      nft list tables
+      ip -br a
       ```
       ## ✅ 합격 기준
       tables 에 `six_filter` 가 보인다 (편집 대상).
-    hint: 'docker exec el34-fw nft list tables — six_filter 가 보여야 함'
+    hint: 'el34-fw 접속 후 — nft list tables (six_filter 보여야 함)'
     category: survey
     points: 10
     answer: |
@@ -107,15 +111,21 @@ steps:
       Purple — 다시 시도 → **카운터 packets** 가 올라가면 차단 작동 증명. 검증 후 **자기 룰 삭제**.
 
       ## 💻 단계 명령
+
+      **실습 컨테이너:** 차단 룰·카운터·정리는 `el34-fw`, 공격 재현은 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      # Blue — 차단 룰 적용
-      docker exec el34-fw nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop
-      # Red — 공격 재현
-      docker exec el34-attacker sh -c 'for i in $(seq 1 20); do curl -s -m1 -H "Host: juice.el34.lab" http://10.20.30.1/ >/dev/null; done'
-      # Purple — 카운터 확인
-      docker exec el34-fw nft -a list chain inet six_filter forward | grep '10.20.30.202'
+      # ── el34-fw 에서: Blue — 차단 룰 적용 ──
+      nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop
+
+      # ── el34-attacker 에서: Red — 공격 재현 (20회) ──
+      for i in $(seq 1 20); do curl -s -m1 -H "Host: juice.el34.lab" http://10.20.30.1/ >/dev/null; done
+
+      # ── el34-fw 에서: Purple — 카운터 확인 + self-clean ──
+      nft -a list chain inet six_filter forward | grep '10.20.30.202'
       # self-clean — 이 룰만 삭제 (베이스 보존)
-      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter forward" | grep '10.20.30.202' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule inet six_filter forward handle $h; done
+      H=$(nft -a list chain inet six_filter forward | grep '10.20.30.202' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do nft delete rule inet six_filter forward handle $h; done
       ```
       ## ✅ 합격 기준
       카운터 라인에 `packets` 가 보인다.
@@ -154,11 +164,14 @@ steps:
       `tcp dport 22 ct state new limit rate over 10/minute drop`. 폭주만 잡고 정상은 통과. (검증 후 self-clean)
 
       ## 💻 단계 명령
+
+      **실습 컨테이너:** `el34-fw` — `docker exec -it el34-fw bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-fw nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop
-      docker exec el34-fw nft list chain inet six_filter input | grep -E '10/minute'
+      nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop
+      nft list chain inet six_filter input | grep -E '10/minute'
       # self-clean
-      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter input" | grep '10/minute' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule inet six_filter input handle $h; done
+      H=$(nft -a list chain inet six_filter input | grep '10/minute' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do nft delete rule inet six_filter input handle $h; done
       ```
       ## ✅ 합격 기준
       룰에 `10/minute` 가 보인다.
@@ -196,12 +209,15 @@ steps:
       **순서가 핵심** — accept(좁은 범위)가 위(insert), drop(전부)이 아래(add). (검증 후 self-clean)
 
       ## 💻 단계 명령
+
+      **실습 컨테이너:** `el34-fw` — `docker exec -it el34-fw bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-fw nft insert rule inet six_filter input ip saddr 10.20.31.0/24 tcp dport 9100 counter accept
-      docker exec el34-fw nft add rule inet six_filter input tcp dport 9100 counter drop
-      docker exec el34-fw nft list chain inet six_filter input | grep -c 'dport 9100'
+      nft insert rule inet six_filter input ip saddr 10.20.31.0/24 tcp dport 9100 counter accept
+      nft add rule inet six_filter input tcp dport 9100 counter drop
+      nft list chain inet six_filter input | grep -c 'dport 9100'
       # self-clean (9100 매처 룰 모두 삭제)
-      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter input" | grep 'dport 9100' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule inet six_filter input handle $h; done
+      H=$(nft -a list chain inet six_filter input | grep 'dport 9100' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do nft delete rule inet six_filter input handle $h; done
       ```
       ## ✅ 합격 기준
       `dport 9100` 매처가 2회 이상 등장한다(accept + drop).
@@ -240,12 +256,19 @@ steps:
       외부에서 8088 접속이 도달하면 성공. (검증 후 self-clean)
 
       ## 💻 단계 명령
+
+      **실습 컨테이너:** DNAT 룰·정리는 `el34-fw`, 8088 접속 검증은 `el34-attacker`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-fw nft add rule ip six_nat prerouting iifname "eth0" tcp dport 8088 counter dnat to 10.20.32.80:80
-      sleep 1
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "code=%{http_code}\n" -m 3 http://10.20.30.1:8088/'
-      # self-clean (8088 DNAT 삭제)
-      H=$(docker exec el34-fw sh -c "nft -a list chain ip six_nat prerouting" | grep '8088' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule ip six_nat prerouting handle $h; done
+      # ── el34-fw 에서: DNAT 룰 추가 ──
+      nft add rule ip six_nat prerouting iifname "eth0" tcp dport 8088 counter dnat to 10.20.32.80:80
+
+      # ── el34-attacker 에서: 8088 접속 (도달하면 성공) ──
+      curl -s -o /dev/null -w "code=%{http_code}\n" -m 3 http://10.20.30.1:8088/
+
+      # ── el34-fw 에서: self-clean (8088 DNAT 삭제) ──
+      H=$(nft -a list chain ip six_nat prerouting | grep '8088' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do nft delete rule ip six_nat prerouting handle $h; done
       ```
       ## ✅ 합격 기준
       8088 응답 코드가 000 이 아니다(도달함). 적용 전엔 connection refused/000.
@@ -284,14 +307,17 @@ steps:
       새 악성 IP 가 오면 **룰은 그대로 두고** set 에만 추가. (검증 후 self-clean: 룰 + set 삭제)
 
       ## 💻 단계 명령
+
+      **실습 컨테이너:** `el34-fw` — `docker exec -it el34-fw bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-fw nft add set inet six_filter blocklist '{ type ipv4_addr ; }'
-      docker exec el34-fw nft add element inet six_filter blocklist '{ 10.20.30.200, 10.20.30.201, 10.20.30.203, 10.20.30.204, 10.20.30.250 }'
-      docker exec el34-fw nft insert rule inet six_filter forward ip saddr @blocklist counter drop
-      docker exec el34-fw nft list chain inet six_filter forward | grep -c 'blocklist'
+      nft add set inet six_filter blocklist '{ type ipv4_addr ; }'
+      nft add element inet six_filter blocklist '{ 10.20.30.200, 10.20.30.201, 10.20.30.203, 10.20.30.204, 10.20.30.250 }'
+      nft insert rule inet six_filter forward ip saddr @blocklist counter drop
+      nft list chain inet six_filter forward | grep -c 'blocklist'
       # self-clean (룰 먼저, set 나중)
-      H=$(docker exec el34-fw sh -c "nft -a list chain inet six_filter forward" | grep '@blocklist' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do docker exec el34-fw nft delete rule inet six_filter forward handle $h; done
-      docker exec el34-fw nft delete set inet six_filter blocklist
+      H=$(nft -a list chain inet six_filter forward | grep '@blocklist' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do nft delete rule inet six_filter forward handle $h; done
+      nft delete set inet six_filter blocklist
       ```
       ## ✅ 합격 기준
       forward 체인에 `blocklist` 참조가 보인다.
@@ -332,10 +358,17 @@ steps:
       `[UNREPLIED]` 비중을 살펴 NAT 비대칭/SYN flood 의 조기 신호로 쓴다.
 
       ## 💻 확인 명령
+
+      **실습 컨테이너:** 트래픽 발생은 `el34-attacker`, conntrack 표 확인은 `el34-fw`.
+      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-attacker sh -c 'curl -s -m 3 -H "Host: juice.el34.lab" http://10.20.30.1/ >/dev/null'
-      docker exec el34-fw sh -c 'conntrack -L 2>/dev/null | grep -c "dport=80"'
-      docker exec el34-fw sh -c 'conntrack -L 2>/dev/null | grep "10.20.30.202" | head -2'
+      # ── el34-attacker 에서: 연결 1건 발생 ──
+      curl -s -m 3 -H "Host: juice.el34.lab" http://10.20.30.1/ >/dev/null
+
+      # ── el34-fw 에서: conntrack 표 읽기 ──
+      conntrack -L 2>/dev/null | grep -c "dport=80"
+      conntrack -L 2>/dev/null | grep "10.20.30.202" | head -2
       ```
       ## ✅ 합격 기준
       conntrack 표에 80 으로의 연결(`dport=80`)이 1개 이상 보인다.
@@ -374,8 +407,11 @@ steps:
       에서 다룬다.
 
       ## 💻 확인 명령
+
+      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+
       ```bash
-      docker exec el34-siem /var/ossec/bin/agent_control -l
+      /var/ossec/bin/agent_control -l
       ```
       ## ✅ 합격 기준
       agent 목록에 `web` (또는 ips)가 Active 로 보인다.
@@ -410,9 +446,12 @@ steps:
       운영에서도 임시 룰은 반드시 정리한다 (룰 누적이 가장 흔한 장애 원인).
 
       ## 💻 확인 명령
+
+      **실습 컨테이너:** `el34-fw` — `docker exec -it el34-fw bash` 로 접속해 실행한다.
+
       ```bash
       # 실습 룰 잔재 검색 (0 이어야 정상) — 베이스(six_nat 9100 dnat 등)와 안 겹치게 lab 시그니처만
-      docker exec el34-fw sh -c 'nft list ruleset | grep -cE "10.20.30.202|10/minute|dport 9100 counter|dport 8088|blocklist"'
+      nft list ruleset | grep -cE "10.20.30.202|10/minute|dport 9100 counter|dport 8088|blocklist"
       ```
       ## ✅ 합격 기준
       잔재 카운트가 0 이고 `clean` 이 출력된다. (남아 있으면 해당 핸들을 찾아 삭제)
