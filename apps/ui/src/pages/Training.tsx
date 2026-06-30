@@ -3,7 +3,7 @@ import { api } from '../api.ts'
 import { getToken } from '../auth.ts'
 import Markdown from '../components/Markdown.tsx'
 
-interface WeekInfo { week: number; lecture: boolean; lab: boolean }
+interface WeekInfo { week: number; lecture: boolean; lab: boolean; title?: string; summary?: string }
 interface TrackInfo { track: string; label: string; weeks: WeekInfo[] }
 interface LabStep {
   order: number; instruction?: string
@@ -48,6 +48,11 @@ const GROUP_ORDER: { name: string; color: string }[] = [
 const cardStyle: React.CSSProperties = {
   textAlign: 'left', padding: '12px 14px', background: 'var(--bg-2)',
   border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer', color: 'var(--fg)',
+}
+// 주차 카드의 학습 개요(한 줄 요약) — 3줄 클램프
+const weekSummary: React.CSSProperties = {
+  fontSize: 12.5, color: 'var(--fg-dim)', marginTop: 5, lineHeight: 1.5,
+  display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
 }
 // 따라하기 표시용 스타일
 const accessBanner: React.CSSProperties = {
@@ -194,8 +199,12 @@ export default function Training(): React.ReactElement {
           {track.weeks.map(w => (
             <button key={w.week} onClick={() => void openWeek(track, w)}
               style={{ ...cardStyle, borderLeft: `3px solid ${accent}` }}>
-              <div style={{ fontWeight: 700, fontSize: 15 }}>Week {w2(w.week)}</div>
-              <div className="row" style={{ gap: 6, marginTop: 6 }}>
+              <div style={{ fontWeight: 700, fontSize: 14.5, lineHeight: 1.4 }}>
+                <span style={{ color: accent }}>Week {w2(w.week)}</span>
+                {w.title ? <span style={{ color: 'var(--fg)' }}> · {w.title}</span> : null}
+              </div>
+              {w.summary ? <div style={weekSummary}>{w.summary}</div> : null}
+              <div className="row" style={{ gap: 6, marginTop: 8 }}>
                 {w.lecture && <span className="badge blue" style={{ fontSize: 11 }}>📖 강의</span>}
                 {w.lab && <span className="badge green" style={{ fontSize: 11 }}>🧪 실습</span>}
               </div>

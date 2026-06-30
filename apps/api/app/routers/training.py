@@ -51,6 +51,56 @@ def _weeks(d: Path) -> list[int]:
     return sorted(ws)
 
 
+# 주차 제목 앞의 "Week 01 —" / "W01 —" / "W01:" 접두 제거용
+_WEEK_PREFIX = re.compile(r"^(특강\s*)?(week\s*\d+|w\d+)\s*[—:．.\-]+\s*", re.IGNORECASE)
+# "(본 주차의) 한 줄 요약" 라벨 제거용
+_SUMMARY_LABEL = re.compile(r"^.*?한\s*줄\s*요약\**\s*[—:\-]?\s*")
+
+
+def _md_title_summary(path: Path) -> tuple[str, str]:
+    """강의 .md 에서 제목(첫 # 헤딩, 주차접두 제거)과 한 줄 요약(첫 인용블록)을 추출."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return "", ""
+    title, start = "", 0
+    for idx, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith("# "):
+            title = _WEEK_PREFIX.sub("", s[2:].strip()).strip()
+            start = idx + 1
+            break
+    buf: list[str] = []
+    started = False
+    for ln in lines[start:]:
+        s = ln.strip()
+        if s.startswith(">"):
+            started = True
+            c = s.lstrip(">").strip()
+            if c:
+                buf.append(c)
+        elif started:
+            break
+    summary = _SUMMARY_LABEL.sub("", " ".join(buf)).replace("**", "").strip()
+    return title, summary
+
+
+def _week_meta(d: Path, w: int) -> tuple[str, str]:
+    """주차의 제목 + 요약. 강의 우선, 없으면 실습 yaml(title/description) 폴백."""
+    lec = d / f"lecture_week{w:02d}.md"
+    title, summary = _md_title_summary(lec) if lec.exists() else ("", "")
+    if (not title or not summary):
+        lab = d / f"lab_week{w:02d}.yaml"
+        if lab.exists():
+            try:
+                y = yaml.safe_load(lab.read_text(encoding="utf-8")) or {}
+                title = title or _WEEK_PREFIX.sub("", str(y.get("title", "")).strip()).strip()
+                summary = summary or " ".join(str(y.get("description", "")).split())
+            except (yaml.YAMLError, OSError):
+                pass
+    return title, summary[:180]
+
+
 @router.get("")
 async def list_training(user: User = Depends(get_current_user)):
     """트랙별 보유 주차 목록 + 각 주차의 강의/실습 존재 여부."""
@@ -61,10 +111,13 @@ async def list_training(user: User = Depends(get_current_user)):
                 continue
             weeks = []
             for w in _weeks(d):
+                title, summary = _week_meta(d, w)
                 weeks.append({
                     "week": w,
                     "lecture": (d / f"lecture_week{w:02d}.md").exists(),
                     "lab": (d / f"lab_week{w:02d}.yaml").exists(),
+                    "title": title,
+                    "summary": summary,
                 })
             if weeks:
                 out.append({"track": d.name, "label": TRACK_LABEL.get(d.name, d.name), "weeks": weeks})
