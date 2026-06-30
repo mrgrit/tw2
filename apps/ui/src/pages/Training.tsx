@@ -25,6 +25,13 @@ const TRACK_META: Record<string, TrackMeta> = {
   'cloud-container': { icon: '☁️', blurb: 'Docker/K8s 보안·CIS·이미지 스캔·런타임 탐지', group: '인프라·거버넌스' },
   compliance: { icon: '📋', blurb: 'ISMS-P·ISO27001·PCI-DSS·CIS·감사·증적', group: '인프라·거버넌스' },
   'wazuh-special': { icon: '🦅', blurb: 'Wazuh Dashboard·KQL·4대 보안시스템·자율 에이전트 로그 분석 (특강)', group: '방어·관제' },
+  'ai-agent': { icon: '🤖', blurb: 'LLM 에이전트 구조·툴 사용·RAG·가드레일 (Ollama 실습)', group: 'AI·보안' },
+  'ai-safety': { icon: '🛟', blurb: '프롬프트 인젝션·탈옥·모델 레드팀 (취약 모델 공격)', group: 'AI·보안' },
+  'ai-safety-adv': { icon: '🧨', blurb: 'AI 안전 심화 — 고급 탈옥·정렬 우회·방어 한계', group: 'AI·보안', adv: true },
+  'ai-security': { icon: '🔐', blurb: 'AI 시스템 공급망·데이터·모델 보안 위협과 방어', group: 'AI·보안' },
+  aisec: { icon: '🧠', blurb: 'AI 보안 종합 — 공격·방어·거버넌스 통합', group: 'AI·보안' },
+  'agent-ir': { icon: '🚨', blurb: 'AI 에이전트 사고대응 — 행위 로그·탐지·격리', group: 'AI·보안' },
+  'agent-ir-adv': { icon: '🛰️', blurb: 'AI 에이전트 사고대응 심화 — 자율 위협 헌팅·포렌식', group: 'AI·보안', adv: true },
 }
 const FALLBACK_META: TrackMeta = { icon: '📚', blurb: 'el34 인프라 기반 보안 트레이닝', group: '기타' }
 const metaOf = (slug: string): TrackMeta => TRACK_META[slug] ?? FALLBACK_META
@@ -34,6 +41,7 @@ const GROUP_ORDER: { name: string; color: string }[] = [
   { name: '공격·모의침투', color: 'var(--red)' },
   { name: '웹·애플리케이션', color: 'var(--yellow)' },
   { name: '인프라·거버넌스', color: 'var(--accent)' },
+  { name: 'AI·보안', color: 'var(--primary)' },
   { name: '기타', color: 'var(--fg-dim)' },
 ]
 

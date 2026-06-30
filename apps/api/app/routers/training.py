@@ -29,6 +29,9 @@ TRACK_LABEL = {
     "soc-adv": "SOC 관제 심화", "attack": "공격기법", "attack-adv": "공격기법 심화",
     "web-vuln": "웹 취약점", "cloud-container": "클라우드·컨테이너", "compliance": "컴플라이언스",
     "wazuh-special": "Wazuh 특강",
+    "ai-agent": "AI 에이전트", "ai-safety": "AI 안전(레드팀)", "ai-safety-adv": "AI 안전 심화",
+    "ai-security": "AI 시스템 보안", "aisec": "AI 보안 종합",
+    "agent-ir": "AI 에이전트 사고대응", "agent-ir-adv": "AI 에이전트 사고대응 심화",
 }
 
 
