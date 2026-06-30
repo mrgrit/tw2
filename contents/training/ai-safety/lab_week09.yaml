@@ -1,0 +1,293 @@
+lab_id: ai-safety-week09
+title: "W09 — 모델 보안: 추출·멤버십 추론과 질의 예산·출력 최소화"
+version: ai
+course: ai-safety
+week: 9
+description: |
+  el34 GPU Ollama 로 모델 자산 위협을 실습한다. 대량 질의로 입출력 쌍을 수집해 모델 추출을
+  시뮬레이션하고(EXTRACTED), 신뢰도 기반 멤버십 추론을 재현하며(INFERRED), 질의 예산으로 추출을
+  차단(BLOCKED)하고 출력 최소화(MINIMIZED)를 적용한다.
+difficulty: medium
+duration_minutes: 120
+audience: AI Safety (9주차)
+prerequisites:
+  - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - el34 호스트에서 GPU Ollama 도달 (ccc-unsafe:2b, gemma3:4b)
+  - W09 강의안 정독 — 추출, 멤버십 추론, 역전, 질의 제한
+objectives:
+  - "대량 질의로 모델 추출을 시뮬레이션한다"
+  - "신뢰도 기반 멤버십 추론을 재현한다"
+  - "질의 예산으로 추출을 차단한다"
+  - "출력 최소화로 단서 노출을 줄인다"
+  - "모델 노출 설계를 감사하고 보고서를 만든다"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 모델 가동 확인
+      ## 💻 실행 명령
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"ccc-unsafe:2b","prompt":"What is model extraction in one sentence?","stream":false,"options":{"num_predict":50}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ## ✅ 합격 기준
+      `GEN_OK` 가 출력된다.
+    hint: 'curl /api/generate'
+    answer: |
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"ccc-unsafe:2b","prompt":"What is model extraction in one sentence?","stream":false,"options":{"num_predict":50}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+    answer_detail: "모델 추출 = 질의로 모델 복제."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+      semantic: {intent: "도입", success_criteria: ["호출 성공"]}
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 모델 추출 시나리오
+      ## 💻 실행 명령
+      ```bash
+      curl -s http://211.170.162.139:10934/api/chat \
+        -d '{"model":"gemma3:4b","messages":[{"role":"system","content":"You are a cybersecurity scenario generator."},{"role":"user","content":"Scenario: an attacker extracts a model by mass API queries. Attack vector, impact, mitigation."}],"stream":false,"options":{"num_predict":120}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin)['message']['content']; print(r); print('CHAT_OK' if r.strip() else 'CHAT_EMPTY')"
+      ```
+      ## ✅ 합격 기준
+      `CHAT_OK` 가 출력된다.
+    hint: 'curl /api/chat'
+    answer: |
+      curl -s http://211.170.162.139:10934/api/chat \
+        -d '{"model":"gemma3:4b","messages":[{"role":"system","content":"You are a cybersecurity scenario generator."},{"role":"user","content":"Scenario: an attacker extracts a model by mass API queries. Attack vector, impact, mitigation."}],"stream":false,"options":{"num_predict":120}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin)['message']['content']; print(r); print('CHAT_OK' if r.strip() else 'CHAT_EMPTY')"
+    answer_detail: "대량 질의 추출 시나리오."
+    verify:
+      type: output_contains
+      expect: CHAT_OK
+      field: stdout
+      semantic: {intent: "시나리오", success_criteria: ["시나리오"]}
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — 모델 추출 시뮬레이션 (EXTRACTED)
+
+      대량 질의로 입출력 쌍을 수집한다(대체 모델 학습용). 여기선 소량으로 원리를 보인다.
+
+      ## 💻 실행 명령
+      ```bash
+      python3 -c "import json, urllib.request
+      def gen(p):
+          data=json.dumps({'model':'ccc-unsafe:2b','prompt':p,'stream':False,'options':{'num_predict':20}}).encode()
+          req=urllib.request.Request('http://211.170.162.139:10934/api/generate',data=data,headers={'Content-Type':'application/json'})
+          return json.loads(urllib.request.urlopen(req).read())['response']
+      probes=['define firewall','define malware','define phishing']
+      pairs=[(p, gen(p)[:30]) for p in probes]
+      print('=== Extraction (collected I/O pairs) ===')
+      for i,o in pairs: print(f'  {i} -> {o!r}')
+      print(f'EXTRACTED: {len(pairs)} I/O pairs harvested (would train surrogate)')"
+      ```
+      ## ✅ 합격 기준
+      입출력 쌍이 수집돼 `EXTRACTED` 가 출력된다.
+    hint: '여러 질의로 입출력 쌍 수집'
+    answer: |
+      python3 -c "import json, urllib.request
+      def gen(p):
+          data=json.dumps({'model':'ccc-unsafe:2b','prompt':p,'stream':False,'options':{'num_predict':20}}).encode()
+          req=urllib.request.Request('http://211.170.162.139:10934/api/generate',data=data,headers={'Content-Type':'application/json'})
+          return json.loads(urllib.request.urlopen(req).read())['response']
+      probes=['define firewall','define malware','define phishing']
+      pairs=[(p, gen(p)[:30]) for p in probes]
+      print('=== Extraction (collected I/O pairs) ===')
+      for i,o in pairs: print(f'  {i} -> {o!r}')
+      print(f'EXTRACTED: {len(pairs)} I/O pairs harvested (would train surrogate)')"
+    answer_detail: "입출력 쌍을 대량 수집하면 대체 모델 학습 가능(추출). 실제론 수만~수십만 질의."
+    verify:
+      type: output_contains
+      expect: EXTRACTED
+      field: stdout
+      semantic: {intent: "모델 추출 시뮬", success_criteria: ["I/O 수집"]}
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — 멤버십 추론 시뮬레이션 (INFERRED)
+
+      모델 신뢰도로 "이 샘플이 학습에 쓰였나"를 판별한다(학습 샘플은 보통 더 확신).
+
+      ## 💻 실행 명령
+      ```bash
+      python3 -c "
+      conf={'patient_record_42':0.97,'random_text':0.55,'patient_record_99':0.96}
+      THRESH=0.9
+      print('=== Membership Inference ===')
+      members=[]
+      for s,c in conf.items():
+          m=c>=THRESH
+          if m: members.append(s)
+          print(f'  conf={c} -> {\"MEMBER\" if m else \"non-member\"} ({s})')
+      print(f'INFERRED: {len(members)} likely training members by confidence')"
+      ```
+      ## ✅ 합격 기준
+      높은 신뢰도 샘플이 학습 멤버로 `INFERRED` 된다.
+    hint: '높은 신뢰도 = 학습 멤버 추론'
+    answer: |
+      python3 -c "
+      conf={'patient_record_42':0.97,'random_text':0.55,'patient_record_99':0.96}
+      THRESH=0.9
+      print('=== Membership Inference ===')
+      members=[]
+      for s,c in conf.items():
+          m=c>=THRESH
+          if m: members.append(s)
+          print(f'  conf={c} -> {\"MEMBER\" if m else \"non-member\"} ({s})')
+      print(f'INFERRED: {len(members)} likely training members by confidence')"
+    answer_detail: "학습 샘플은 신뢰도가 높음(과적합) → 멤버십 추론. 프라이버시 침해(누가 학습됐나). 신뢰도 노출이 단서."
+    verify:
+      type: output_contains
+      expect: INFERRED
+      field: stdout
+      semantic: {intent: "멤버십 추론", success_criteria: ["신뢰도 기반 판별"]}
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 질의 예산 방어 (BLOCKED)
+
+      사용자당 질의 예산을 두어 대량 추출 질의를 차단한다.
+
+      ## 💻 실행 명령
+      ```bash
+      python3 -c "
+      BUDGET=10
+      used=0; blocked=0
+      print('=== Query Budget ===')
+      for i in range(1,16):
+          if used<BUDGET: used+=1; status='ok'
+          else: blocked+=1; status='BLOCKED'
+          if i in (10,11,15): print(f'  query {i}: {status}')
+      print(f'BLOCKED {blocked} extraction queries beyond budget {BUDGET}')"
+      ```
+      ## ✅ 합격 기준
+      예산 초과 질의가 `BLOCKED` 된다.
+    hint: '사용자당 질의 예산 초과 차단'
+    answer: |
+      python3 -c "
+      BUDGET=10
+      used=0; blocked=0
+      print('=== Query Budget ===')
+      for i in range(1,16):
+          if used<BUDGET: used+=1; status='ok'
+          else: blocked+=1; status='BLOCKED'
+          if i in (10,11,15): print(f'  query {i}: {status}')
+      print(f'BLOCKED {blocked} extraction queries beyond budget {BUDGET}')"
+    answer_detail: "질의 예산(10) 초과 질의 BLOCKED → 대량 추출 차단. rate limit·이상 패턴 탐지와 함께."
+    verify:
+      type: output_contains
+      expect: BLOCKED
+      field: stdout
+      semantic: {intent: "질의 예산 방어", success_criteria: ["초과 차단"]}
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 모델 노출 감사
+      ## 💻 실행 명령
+      ```bash
+      python3 -c "import json, urllib.request
+      design='Model API returns full token logprobs, no rate limit, no auth, unlimited queries per user.'
+      data=json.dumps({'model':'gemma3:4b','messages':[{'role':'system','content':'You are an AI safety auditor. Find model-theft risks.'},{'role':'user','content':'Analyze this model API: '+design}],'stream':False,'options':{'num_predict':100}}).encode()
+      req=urllib.request.Request('http://211.170.162.139:10934/api/chat',data=data,headers={'Content-Type':'application/json'})
+      print('Analysis:', json.loads(urllib.request.urlopen(req).read())['message']['content'][:200])"
+      ```
+      ## ✅ 합격 기준
+      `Analysis:` 와 분석이 출력된다.
+    hint: '감사자로 모델 API 노출 분석'
+    answer: |
+      python3 -c "import json, urllib.request
+      design='Model API returns full token logprobs, no rate limit, no auth, unlimited queries per user.'
+      data=json.dumps({'model':'gemma3:4b','messages':[{'role':'system','content':'You are an AI safety auditor. Find model-theft risks.'},{'role':'user','content':'Analyze this model API: '+design}],'stream':False,'options':{'num_predict':100}}).encode()
+      req=urllib.request.Request('http://211.170.162.139:10934/api/chat',data=data,headers={'Content-Type':'application/json'})
+      print('Analysis:', json.loads(urllib.request.urlopen(req).read())['message']['content'][:200])"
+    answer_detail: "logprobs 노출 + 무제한 질의 + 무인증 = 추출·추론 위험. LLM 감사로 식별."
+    verify:
+      type: output_contains
+      expect: "Analysis:"
+      field: stdout
+      semantic: {intent: "모델 노출 감사", success_criteria: ["위험 식별"]}
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — 출력 최소화 (MINIMIZED)
+
+      확률/로짓 등 단서를 제거하고 최종 답만 반환해 추출/추론 단서를 줄인다.
+
+      ## 💻 실행 명령
+      ```bash
+      python3 -c "
+      raw={'answer':'positive','confidence':0.973,'logprobs':[-0.01,-3.2,-5.1],'top_tokens':['pos','neg']}
+      minimized={'answer': raw['answer']}
+      print('=== Output Minimization ===')
+      print('raw exposes:', list(raw.keys()))
+      print('minimized exposes:', list(minimized.keys()))
+      print('MINIMIZED' if 'confidence' not in minimized and 'logprobs' not in minimized else 'EXPOSED')"
+      ```
+      ## ✅ 합격 기준
+      단서가 제거돼 `MINIMIZED` 가 출력된다.
+    hint: '확률/로짓 숨기고 최종 답만'
+    answer: |
+      python3 -c "
+      raw={'answer':'positive','confidence':0.973,'logprobs':[-0.01,-3.2,-5.1],'top_tokens':['pos','neg']}
+      minimized={'answer': raw['answer']}
+      print('=== Output Minimization ===')
+      print('raw exposes:', list(raw.keys()))
+      print('minimized exposes:', list(minimized.keys()))
+      print('MINIMIZED' if 'confidence' not in minimized and 'logprobs' not in minimized else 'EXPOSED')"
+    answer_detail: "confidence/logprobs 제거하고 answer 만 반환 → 추출·멤버십 단서 차단(MINIMIZED)."
+    verify:
+      type: output_contains
+      expect: MINIMIZED
+      field: stdout
+      semantic: {intent: "출력 최소화", success_criteria: ["단서 제거"]}
+
+  - order: 8
+    instruction: |
+      ## 🎯 미션 — 평가 보고서
+      ## 💻 실행 명령
+      ```bash
+      python3 -c "print('='*50)
+      print('  Model Security Assessment (W09)')
+      print('='*50)
+      print('\\n[Findings]')
+      print('  1. I/O pairs harvestable -> extraction')
+      print('  2. Confidence enables membership inference')
+      print('  3. Query budget blocks mass queries')
+      print('  4. Output minimization removes clues')
+      print('\\n[Recommendations]')
+      print('  1. Rate limit + query budget + auth')
+      print('  2. Hide logprobs/confidence')
+      print('  3. Differential privacy; monitor anomalous querying')
+      print('='*50)"
+      ```
+      ## ✅ 합격 기준
+      보고서가 `Assessment` 와 함께 출력된다.
+    hint: '발견·권고 보고서'
+    answer: |
+      python3 -c "print('='*50)
+      print('  Model Security Assessment (W09)')
+      print('='*50)
+      print('\\n[Findings]')
+      print('  1. I/O pairs harvestable -> extraction')
+      print('  2. Confidence enables membership inference')
+      print('  3. Query budget blocks mass queries')
+      print('  4. Output minimization removes clues')
+      print('\\n[Recommendations]')
+      print('  1. Rate limit + query budget + auth')
+      print('  2. Hide logprobs/confidence')
+      print('  3. Differential privacy; monitor anomalous querying')
+      print('='*50)"
+    answer_detail: "모델 보안 종합: 추출/추론 위협 + 질의제한·출력최소화·DP 방어."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout
+      semantic: {intent: "모델 보안 종합", success_criteria: ["발견","권고"]}
