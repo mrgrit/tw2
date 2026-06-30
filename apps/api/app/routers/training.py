@@ -28,6 +28,7 @@ TRACK_LABEL = {
     "secuops": "보안운영", "secuops-easy": "보안운영 입문", "soc": "SOC 관제",
     "soc-adv": "SOC 관제 심화", "attack": "공격기법", "attack-adv": "공격기법 심화",
     "web-vuln": "웹 취약점", "cloud-container": "클라우드·컨테이너", "compliance": "컴플라이언스",
+    "wazuh-special": "Wazuh 특강",
 }
 
 

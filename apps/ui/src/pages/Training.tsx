@@ -24,6 +24,7 @@ const TRACK_META: Record<string, TrackMeta> = {
   'web-vuln': { icon: '🕸️', blurb: 'OWASP·SQLi·XSS·인증·API 보안 (WSTG 방법론)', group: '웹·애플리케이션' },
   'cloud-container': { icon: '☁️', blurb: 'Docker/K8s 보안·CIS·이미지 스캔·런타임 탐지', group: '인프라·거버넌스' },
   compliance: { icon: '📋', blurb: 'ISMS-P·ISO27001·PCI-DSS·CIS·감사·증적', group: '인프라·거버넌스' },
+  'wazuh-special': { icon: '🦅', blurb: 'Wazuh Dashboard·KQL·4대 보안시스템·자율 에이전트 로그 분석 (특강)', group: '방어·관제' },
 }
 const FALLBACK_META: TrackMeta = { icon: '📚', blurb: 'el34 인프라 기반 보안 트레이닝', group: '기타' }
 const metaOf = (slug: string): TrackMeta => TRACK_META[slug] ?? FALLBACK_META

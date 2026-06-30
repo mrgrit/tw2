@@ -1,0 +1,436 @@
+lab_id: wazuh-special-week02
+title: 특강 W02 — 자율 에이전트(bastion) lifecycle 로그 추적·상관·위험 통제
+version: standalone-non-ai
+course: wazuh-special
+week: 2
+description: |
+  el34-bastion(KG-LLM 자율 보안 에이전트, Manager=gpt-oss:120b / SubAgent=qwen3:8b)에
+  /chat API로 미션을 던져 lifecycle 경보(rule.id 100210-100218)와 audit 요약(100200-100204)을
+  발생시키고, request_id로 한 미션의 단계를 시간순 상관한다. 미션은 완료까지 수백 초가 걸리므로
+  백그라운드로 보내고(즉시 로깅되는 request.received부터 검증), 분석은 이미 쌓인 경보를 대상으로
+  한다. KG 결정·재시도·위험 미션(100204) 탐지까지 Wazuh 한 곳에서 수행.
+difficulty: hard
+duration_minutes: 120
+audience: SIEM/관제 + 자율 에이전트 운영 입문 (Wazuh 특강 2주차)
+prerequisites:
+  - el34 호스트 SSH 접속 가능 (`ssh ccc@192.168.0.80`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
+  - el34-bastion API 가용 (`docker exec el34-bastion curl -s http://127.0.0.1:9100/health` → 200), GPU LLM(211.170.162.139:10934) 도달
+  - 특강 W01 lab 통과 (KQL 12 문법 + agent/decoder/rule.id 읽기)
+  - lecture_week02.md 정독 (lifecycle 8단계 + rule.id 100200-100218)
+objectives:
+  - "/chat API로 미션을 백그라운드 구동해 lifecycle 경보(100211~)를 발생"
+  - "request_id로 한 미션의 전 단계를 시간순 상관(received→...→completed)"
+  - "KG 결정(new/reuse/adapt)·skill 재시도 패턴 식별"
+  - "위험 키워드 미션의 고위험 경보(100204, level 10) 탐지"
+  - "완료/느린/위험 미션 운영 집계"
+pass_threshold: 0.6
+
+steps:
+
+  # ============================================================
+  # STEP 1 — 미션 1건 백그라운드 구동 + lifecycle 시작 확인
+  # ============================================================
+  - order: 1
+    instruction: |
+      ## 🎯 MISSION
+
+      el34-bastion에 미션 1건을 던져 lifecycle을 시작시킨다. 미션은 Manager LLM 계획에 수백 초가
+      걸리므로 **완료를 기다리지 않고 백그라운드로** 보낸다. 제출 직후 즉시 로깅되는
+      `bastion.request.received`(rule.id 100211)로 "미션이 접수되어 lifecycle이 시작됐다"를 확인한다.
+
+      ## 🖥️ Dashboard에서
+
+      ```kql
+      decoder.name:bastion-lifecycle AND @timestamp:>now-5m
+      ```
+      → `data.stage`·`data.request_id`·`data.user_prompt` 컬럼 추가.
+
+      ## 💻 실행 명령 (CLI 검증)
+
+      페이로드는 한글이 깨지지 않도록 base64로 안전하게 전달한다.
+
+      ```bash
+      P=$(printf %s '{"message":"web 컨테이너의 hostname과 시간을 확인해줘","auto_approve":true,"stream":false,"course":"wazuh-special","step_order":1}' | base64 -w0)
+      docker exec el34-bastion sh -c "echo $P | base64 -d > /tmp/lab_m1.json"
+      # 백그라운드(-d) 구동: 완료를 기다리지 않음
+      docker exec -d el34-bastion sh -c "curl -s -m 300 -X POST http://127.0.0.1:9100/chat -H 'X-API-Key: ccc-api-key-2026' -H 'content-type: application/json' --data @/tmp/lab_m1.json > /tmp/lab_m1.out 2>&1"
+      sleep 8
+      N=$(docker exec el34-siem grep -c bastion.request.received /var/ossec/logs/alerts/alerts.json)
+      [ "$N" -gt 0 ] && echo "REQ_RECEIVED n=$N"
+      ```
+
+      ## 📋 확인 사항
+
+      - `REQ_RECEIVED n=...` (request.received 경보 1건 이상).
+      - 완료(100218)는 수백 초 뒤 — 지금은 뜨지 않는 것이 정상.
+    hint: docker exec el34-siem grep -c bastion.request.received /var/ossec/logs/alerts/alerts.json
+    answer: |
+      P=$(printf %s '{"message":"web 컨테이너의 hostname과 시간을 확인해줘","auto_approve":true,"stream":false,"course":"wazuh-special","step_order":1}' | base64 -w0)
+      docker exec el34-bastion sh -c "echo $P | base64 -d > /tmp/lab_m1.json"
+      docker exec -d el34-bastion sh -c "curl -s -m 300 -X POST http://127.0.0.1:9100/chat -H 'X-API-Key: ccc-api-key-2026' -H 'content-type: application/json' --data @/tmp/lab_m1.json > /tmp/lab_m1.out 2>&1"
+      sleep 8
+      N=$(docker exec el34-siem grep -c bastion.request.received /var/ossec/logs/alerts/alerts.json)
+      [ "$N" -gt 0 ] && echo "REQ_RECEIVED n=$N"
+    answer_detail: |
+      /chat에 미션을 POST하면 백엔드가 request_id를 만들고 즉시 bastion.request.received(100211)를
+      syslog로 manager에 보낸다. docker exec -d 로 백그라운드 구동하므로 미션의 긴 계획 시간과
+      무관하게 명령이 바로 끝난다. request.received 가 1건 이상이면 lifecycle이 시작된 것.
+      이 경보는 syslog 경유라 agent.name 이 wazuh.manager 로 찍힘에 유의.
+    verify:
+      type: output_contains
+      expect: REQ_RECEIVED
+      field: stdout
+      semantic:
+        intent: |
+          /chat API로 미션을 백그라운드 구동하면 즉시 bastion.request.received(100211) lifecycle
+          경보가 SIEM에 수집됨을 확인.
+        success_criteria:
+          - "bastion.request.received 경보 1건 이상(REQ_RECEIVED)"
+
+  # ============================================================
+  # STEP 2 — request_id로 한 미션의 timeline 상관
+  # ============================================================
+  - order: 2
+    instruction: |
+      ## 🎯 MISSION
+
+      한 미션의 모든 단계는 같은 `request_id`를 공유한다. 가장 최근 **완료된**(100218) 미션의
+      request_id를 찾아, 그 미션의 단계를 시간순으로 묶어 timeline을 재구성한다(강의 §2-3의 실측
+      timeline과 같은 형태).
+
+      ## 🖥️ Dashboard에서
+
+      완료 미션 한 건의 request_id를 복사해:
+      ```kql
+      data.request_id:"<복사한값>"
+      ```
+      → `@timestamp`·`rule.id`·`data.stage`·`data.skill`·`data.success` 컬럼 + 시간 오름차순 정렬.
+
+      ## 💻 실행 명령 (CLI 검증)
+
+      ```bash
+      docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | python3 -c '
+      import sys, json
+      ev = []
+      for l in sys.stdin:
+          try: a = json.loads(l)
+          except: continue
+          d = a.get("data", {}); r = d.get("request_id", "")
+          if r: ev.append((a["rule"]["id"], r, a["timestamp"], d.get("stage", "-")))
+      done = [e for e in ev if e[0] == "100218"]
+      if not done:
+          print("NO_COMPLETED"); sys.exit()
+      rid = done[-1][1]
+      grp = sorted([e for e in ev if e[1] == rid], key=lambda x: x[2])
+      for e in grp: print(e[2][11:23], e[0], e[3])
+      ids = [e[0] for e in grp]
+      if len(grp) >= 3 and "100211" in ids and "100218" in ids: print("TIMELINE_OK")
+      '
+      ```
+
+      ## 📋 확인 사항
+
+      - 한 request_id의 단계가 시간순으로 출력(received → lookup_decision → skill_* → completed).
+      - `TIMELINE_OK` — 같은 미션의 단계 3개 이상 + received·completed 모두 존재.
+    hint: docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | grep -oE '"request_id":"[0-9a-f]+"' | sort | uniq -c | sort -rn | head
+    answer: |
+      docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | python3 -c '
+      import sys, json
+      ev = []
+      for l in sys.stdin:
+          try: a = json.loads(l)
+          except: continue
+          d = a.get("data", {}); r = d.get("request_id", "")
+          if r: ev.append((a["rule"]["id"], r, a["timestamp"], d.get("stage", "-")))
+      done = [e for e in ev if e[0] == "100218"]
+      if not done:
+          print("NO_COMPLETED"); sys.exit()
+      rid = done[-1][1]
+      grp = sorted([e for e in ev if e[1] == rid], key=lambda x: x[2])
+      for e in grp: print(e[2][11:23], e[0], e[3])
+      ids = [e[0] for e in grp]
+      if len(grp) >= 3 and "100211" in ids and "100218" in ids: print("TIMELINE_OK")
+      '
+    answer_detail: |
+      완료(100218) 미션 중 가장 최근 것의 request_id를 잡아, 같은 request_id를 가진 모든 lifecycle
+      경보를 timestamp로 정렬한다. 이것이 Dashboard에서 data.request_id 필터 + 시간 정렬로 보는
+      timeline과 동일. received(100211)와 completed(100218)가 한 미션 안에 모두 있으면 상관 성공.
+    verify:
+      type: output_contains
+      expect: TIMELINE_OK
+      field: stdout
+      semantic:
+        intent: |
+          한 미션의 전 단계를 request_id로 묶어 시간순 timeline을 재구성(received~completed)함을 확인.
+        success_criteria:
+          - "한 request_id에 단계 3개 이상 + 100211·100218 동시 존재"
+
+  # ============================================================
+  # STEP 3 — KG 결정(new/reuse/adapt) 식별
+  # ============================================================
+  - order: 3
+    instruction: |
+      ## 🎯 MISSION
+
+      bastion은 미션마다 KG(경험 그래프)를 조회해 **new/reuse/adapt** 중 하나로 처리 방식을
+      정한다(rule.id 100213, `data.decision`). 그 결정 분포를 집계한다 — 같은 미션을 반복할수록
+      reuse가 늘면 학습 효과의 증거다.
+
+      ## 🖥️ Dashboard에서
+
+      ```kql
+      rule.id:100213
+      ```
+      → `data.decision`·`data.confidence` 컬럼. Visualize Pie(terms `data.decision`)로 비율 시각화.
+
+      ## 💻 실행 명령 (CLI 검증)
+
+      ```bash
+      docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | python3 -c '
+      import sys, json
+      from collections import Counter
+      dec = Counter()
+      for l in sys.stdin:
+          try: a = json.loads(l)
+          except: continue
+          if a["rule"]["id"] == "100213":
+              dec[a.get("data", {}).get("decision", "?")] += 1
+      print("decisions", dict(dec))
+      if sum(dec.values()) >= 1: print("KG_DECISION_OK")
+      '
+      ```
+
+      ## 📋 확인 사항
+
+      - `decisions {...}` — new/reuse/adapt 별 건수.
+      - `KG_DECISION_OK` — KG 결정(100213) 경보 1건 이상.
+    hint: docker exec el34-siem grep '"id":"100213"' /var/ossec/logs/alerts/alerts.json | grep -oE '"decision":"[a-z]+"' | sort | uniq -c
+    answer: |
+      docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | python3 -c '
+      import sys, json
+      from collections import Counter
+      dec = Counter()
+      for l in sys.stdin:
+          try: a = json.loads(l)
+          except: continue
+          if a["rule"]["id"] == "100213":
+              dec[a.get("data", {}).get("decision", "?")] += 1
+      print("decisions", dict(dec))
+      if sum(dec.values()) >= 1: print("KG_DECISION_OK")
+      '
+    answer_detail: |
+      rule.id 100213(lookup_decision)의 data.decision 을 집계한다. 처음 보는 미션은 new,
+      반복되면 reuse/adapt. 분포가 1건 이상이면 KG 결정 단계가 실제로 동작 중. Dashboard의
+      Pie(terms data.decision)와 같은 집계의 CLI 버전.
+    verify:
+      type: output_contains
+      expect: KG_DECISION_OK
+      field: stdout
+      semantic:
+        intent: |
+          미션의 KG 결정 단계(100213, new/reuse/adapt)가 기록되고 집계됨을 확인.
+        success_criteria:
+          - "rule.id 100213 경보 1건 이상 + decision 값 집계"
+
+  # ============================================================
+  # STEP 4 — skill 실행/재시도 패턴
+  # ============================================================
+  - order: 4
+    instruction: |
+      ## 🎯 MISSION
+
+      Manager가 SubAgent에 skill을 지시(100214)하고 결과(100215)를 받는다. 한 미션에서 skill
+      지시가 **여러 번**이면 재시도/다단계 실행(자가 수정 패턴, 강의 §2-2의 100217)이다. 한
+      미션의 최대 skill_start 횟수와 재시도(100217)를 확인한다.
+
+      ## 🖥️ Dashboard에서
+
+      ```kql
+      rule.id:100214 OR rule.id:100217
+      ```
+      → `data.request_id`·`data.skill`·`data.attempt` 컬럼. 같은 request_id의 100214가 2회 이상이면 재시도.
+
+      ## 💻 실행 명령 (CLI 검증)
+
+      ```bash
+      docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | python3 -c '
+      import sys, json
+      from collections import Counter
+      starts = Counter(); retry = 0
+      for l in sys.stdin:
+          try: a = json.loads(l)
+          except: continue
+          rid = a.get("data", {}).get("request_id", "")
+          if a["rule"]["id"] == "100214" and rid: starts[rid] += 1
+          if a["rule"]["id"] == "100217": retry += 1
+      mx = max(starts.values()) if starts else 0
+      print("max_skill_start_per_mission", mx, "retry_events(100217)", retry)
+      if mx >= 2 or retry >= 1: print("RETRY_OK")
+      '
+      ```
+
+      ## 📋 확인 사항
+
+      - `max_skill_start_per_mission ... retry_events ...`.
+      - `RETRY_OK` — 한 미션에서 skill 지시 2회 이상(다단계/재시도) 또는 100217 발생.
+    hint: docker exec el34-siem grep '"id":"100214"' /var/ossec/logs/alerts/alerts.json | grep -oE '"request_id":"[0-9a-f]+"' | sort | uniq -c | sort -rn | head
+    answer: |
+      docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | python3 -c '
+      import sys, json
+      from collections import Counter
+      starts = Counter(); retry = 0
+      for l in sys.stdin:
+          try: a = json.loads(l)
+          except: continue
+          rid = a.get("data", {}).get("request_id", "")
+          if a["rule"]["id"] == "100214" and rid: starts[rid] += 1
+          if a["rule"]["id"] == "100217": retry += 1
+      mx = max(starts.values()) if starts else 0
+      print("max_skill_start_per_mission", mx, "retry_events(100217)", retry)
+      if mx >= 2 or retry >= 1: print("RETRY_OK")
+      '
+    answer_detail: |
+      한 request_id 안의 skill_start(100214) 횟수를 센다. 1회면 한 번에 성공, 2회 이상이면
+      여러 skill을 순차 실행했거나 실패 후 재시도(자가 수정)한 것. 100217(step_retry)이 있으면
+      명시적 자가 수정. el34 실측 미션은 한 미션에서 shell skill을 3회 실행한다.
+    verify:
+      type: output_contains
+      expect: RETRY_OK
+      field: stdout
+      semantic:
+        intent: |
+          한 미션에서 skill 다단계 실행/재시도(자가 수정) 패턴이 로그로 관측됨을 확인.
+        success_criteria:
+          - "한 request_id의 skill_start 2회 이상 또는 100217 1건 이상"
+
+  # ============================================================
+  # STEP 5 — 위험 미션(100204, level 10) 탐지
+  # ============================================================
+  - order: 5
+    instruction: |
+      ## 🎯 MISSION
+
+      ⚠️ **자율 에이전트 통제의 핵심.** 위험 키워드(`MASQUERADE`/`drop counter`/`reverse shell` 등)가
+      포함된 미션은 고위험 경보(rule.id 100204, **level 10**)로 떠야 한다. 위험 키워드를 **설명
+      요청** 형태로만 넣어(실제 인프라 변경 절대 금지) 위험 경보를 관측한다.
+
+      ## 🖥️ Dashboard에서
+
+      ```kql
+      rule.id:100204
+      ```
+      → 결과가 있으면 즉시 확인 대상. `data.user_prompt`로 어떤 미션인지 본다.
+      (요약 경보 100204는 미션 **완료 시** 뜨므로 수백 초 뒤. 제출 직후엔 request.received에 키워드가 먼저 보인다.)
+
+      ## 💻 실행 명령 (CLI 검증)
+
+      ```bash
+      P=$(printf %s '{"message":"nftables MASQUERADE 룰과 drop counter 룰의 의미를 설명해줘","auto_approve":true,"stream":false,"course":"wazuh-special","step_order":5}' | base64 -w0)
+      docker exec el34-bastion sh -c "echo $P | base64 -d > /tmp/lab_m5.json"
+      docker exec -d el34-bastion sh -c "curl -s -m 300 -X POST http://127.0.0.1:9100/chat -H 'X-API-Key: ccc-api-key-2026' -H 'content-type: application/json' --data @/tmp/lab_m5.json > /tmp/lab_m5.out 2>&1"
+      sleep 6
+      A=$(docker exec el34-siem grep -c '"id":"100204"' /var/ossec/logs/alerts/alerts.json)
+      K=$(docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | grep -c MASQUERADE)
+      if [ "$A" -gt 0 ] || [ "$K" -gt 0 ]; then echo "RISK_OK audit100204=$A keyword=$K"; fi
+      ```
+
+      ## 📋 확인 사항
+
+      - `RISK_OK audit100204=... keyword=...` — 위험 audit(100204) 또는 위험 키워드가 lifecycle에 기록.
+      - 완료된 위험 미션이 쌓이면 `audit100204` 가 1 이상이 된다(level 10).
+    hint: docker exec el34-siem grep -c '"id":"100204"' /var/ossec/logs/alerts/alerts.json
+    answer: |
+      P=$(printf %s '{"message":"nftables MASQUERADE 룰과 drop counter 룰의 의미를 설명해줘","auto_approve":true,"stream":false,"course":"wazuh-special","step_order":5}' | base64 -w0)
+      docker exec el34-bastion sh -c "echo $P | base64 -d > /tmp/lab_m5.json"
+      docker exec -d el34-bastion sh -c "curl -s -m 300 -X POST http://127.0.0.1:9100/chat -H 'X-API-Key: ccc-api-key-2026' -H 'content-type: application/json' --data @/tmp/lab_m5.json > /tmp/lab_m5.out 2>&1"
+      sleep 6
+      A=$(docker exec el34-siem grep -c '"id":"100204"' /var/ossec/logs/alerts/alerts.json)
+      K=$(docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | grep -c MASQUERADE)
+      if [ "$A" -gt 0 ] || [ "$K" -gt 0 ]; then echo "RISK_OK audit100204=$A keyword=$K"; fi
+    answer_detail: |
+      위험 키워드(MASQUERADE 등)가 든 미션을 백그라운드로 던진다. 미션 완료 시 audit 요약이
+      rule.id 100204(level 10)로 뜬다(수백 초 뒤). 제출 직후엔 request.received(100211)에
+      user_prompt로 키워드가 먼저 기록되므로, audit 또는 키워드 중 하나라도 보이면 위험 미션이
+      탐지 경로에 올라온 것. 경보는 prompt 키워드로 트리거되며 실제 변경 여부는 별도 확인 필요.
+    verify:
+      type: output_contains
+      expect: RISK_OK
+      field: stdout
+      semantic:
+        intent: |
+          위험 키워드 미션이 고위험 경보(100204) 또는 lifecycle 키워드로 탐지 경로에 오름을 확인.
+        success_criteria:
+          - "rule.id 100204 경보 또는 bastion 경보 내 위험 키워드 1건 이상"
+
+  # ============================================================
+  # STEP 6 — 운영 집계 + 종합
+  # ============================================================
+  - order: 6
+    instruction: |
+      ## 🎯 MISSION
+
+      운영자 상황판의 숫자판을 CLI로 집계한다 — 완료 미션 수·느린 미션 수·KG 결정 수·서로 다른
+      미션 수. 강의 §5의 Bastion Operations 대시보드를 한 줄 요약으로 만드는 셈이다.
+
+      ## 🖥️ Dashboard에서
+
+      Metric 패널: `rule.id:100218` count(완료), `rule.id:100201` count(느림), `rule.id:100213`
+      terms `data.decision`(KG). Time = Last 24 hours.
+
+      ## 💻 실행 명령 (CLI 검증)
+
+      ```bash
+      docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | python3 -c '
+      import sys, json
+      from collections import Counter
+      ids = Counter(); reqs = set()
+      for l in sys.stdin:
+          try: a = json.loads(l)
+          except: continue
+          ids[a["rule"]["id"]] += 1
+          r = a.get("data", {}).get("request_id", "")
+          if r: reqs.add(r)
+      print("completed(100218)", ids.get("100218", 0))
+      print("slow(100201)", ids.get("100201", 0))
+      print("kg_decision(100213)", ids.get("100213", 0))
+      print("distinct_missions", len(reqs))
+      if ids.get("100218", 0) >= 1 and len(reqs) >= 1: print("AGG_OK")
+      '
+      ```
+
+      ## 📋 확인 사항
+
+      - 완료/느림/KG결정/미션수 집계 출력.
+      - `AGG_OK` — 완료 미션 1건 이상 + 서로 다른 미션 1건 이상.
+      - (보고서) 위 숫자 + STEP 2 timeline + STEP 5 위험 미션 결과를 1쪽으로 정리.
+    hint: docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | grep -oE '"id":"1002[0-9][0-9]"' | sort | uniq -c | sort -rn
+    answer: |
+      docker exec el34-siem grep bastion /var/ossec/logs/alerts/alerts.json | python3 -c '
+      import sys, json
+      from collections import Counter
+      ids = Counter(); reqs = set()
+      for l in sys.stdin:
+          try: a = json.loads(l)
+          except: continue
+          ids[a["rule"]["id"]] += 1
+          r = a.get("data", {}).get("request_id", "")
+          if r: reqs.add(r)
+      print("completed(100218)", ids.get("100218", 0))
+      print("slow(100201)", ids.get("100201", 0))
+      print("kg_decision(100213)", ids.get("100213", 0))
+      print("distinct_missions", len(reqs))
+      if ids.get("100218", 0) >= 1 and len(reqs) >= 1: print("AGG_OK")
+      '
+    answer_detail: |
+      bastion 경보 전체를 rule.id별로 집계하고 서로 다른 request_id 수(=미션 수)를 센다.
+      완료(100218)·느림(100201)·KG결정(100213) 카운트가 운영 상황판의 핵심 지표.
+      완료 미션과 구분되는 미션이 각각 1건 이상이면 운영 데이터가 정상 축적되는 것.
+    verify:
+      type: output_contains
+      expect: AGG_OK
+      field: stdout
+      semantic:
+        intent: |
+          bastion 운영 지표(완료/느림/KG결정/미션수)를 CLI로 집계해 상황판 숫자판을 재현.
+        success_criteria:
+          - "완료 미션(100218) 1건 이상 + 서로 다른 미션(request_id) 1건 이상"
