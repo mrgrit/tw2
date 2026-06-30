@@ -15,11 +15,13 @@ class _Inf:
 
 
 def test_build_vars_falls_back_to_reference_defaults():
+    from app.config import get_settings
+    s = get_settings()
     v = ir.build_vars(None, None)
-    # config 기본 = el34 기준 랩 IP
-    assert v["TARGET_IP"] == "192.168.0.151"
-    assert v["WEB_ENTRY"] == "192.168.0.161"
-    assert v["ATTACKER_IP"] == "192.168.0.202"
+    # 폴백 = config(.env TUBEWAR_REF_*) 값. IP 는 가변이라 리터럴 대신 설정값으로 검증.
+    assert v["TARGET_IP"] == s.ref_target_ip
+    assert v["WEB_ENTRY"] == s.ref_web_entry
+    assert v["ATTACKER_IP"] == s.ref_attacker_ip
 
 
 def test_build_vars_uses_registered_infra():

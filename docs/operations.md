@@ -93,7 +93,7 @@ systemctl is-active tw2-api tw2-ui                                       # 2x ac
 curl -s -o/dev/null -w '%{http_code}\n' http://127.0.0.1:9200/health     # 200
 curl -s -o/dev/null -w '%{http_code}\n' http://127.0.0.1:5173/           # 200 (UI)
 # Assessor reachability (el34 타깃)
-curl -s -H 'X-API-Key: ccc-api-key-2026' http://192.168.0.151:9201/health
+curl -s -H 'X-API-Key: ccc-api-key-2026' http://192.168.0.80:9201/health
 ```
 
 ## 6. 모니터링 (학생 행동)

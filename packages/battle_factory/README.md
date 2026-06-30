@@ -15,7 +15,7 @@ CCC `apps/battle-factory/` 에서 이식. CVE/CTI 또는 자연어 프롬프트 
 현행 콘텐츠는 `contents/battle-scenarios/*.yaml`(128개) 을 직접 관리하며, **el34 라이브 검수는
 `scripts/play_scenario.py`(RED/BLUE 증거 심기) + `scripts/grind_track.py`(claude 채점)** 하니스로 수행한다.
 자동 생성을 되살릴 경우: 경로 상수를 `apps/api/app/config.py` 로 주입, 출력처를 DB `Scenario` +
-`contents/battle-scenarios/`, 검증을 el34 타깃(192.168.0.151) dry-run 으로 연결한다.
+`contents/battle-scenarios/`, 검증을 el34 타깃(192.168.0.80) dry-run 으로 연결한다.
 
 ## 시나리오 카탈로그
 

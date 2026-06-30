@@ -18,7 +18,7 @@
    SOC 분석가 등급(L1 / L2 / L3)의 책임 차이를 비유 없이 1분 안에 설명한다.
 2. SIEM(Wazuh)이 Suricata(네트워크) · ModSecurity(웹) · 호스트 인증 로그라는 서로 다른
    소스의 이벤트를 어떻게 한 스트림(`alerts.json`)으로 모으는지 그림으로 재현한다.
-3. el34 호스트(`ssh ccc@192.168.0.151`)에서 Wazuh 가동 상태를 확인하고, 경보 한 건에서
+3. el34 호스트(`ssh ccc@192.168.0.80`)에서 Wazuh 가동 상태를 확인하고, 경보 한 건에서
    **4요소**(출발지 `srcip` / 시그니처 `rule.description` / 시각 `timestamp` / 심각도
    `rule.level`)를 30초 안에 읽어낸다.
 4. 한 외부 공격자가 발생시킨 다중벡터 공격(포트 스캔 → SSH 무차별 대입 → 웹 SQLi)이
@@ -149,7 +149,7 @@ graph TD
 ```
 
 > **참고 — el34 의 Wazuh 구성.** el34 의 SIEM 은 `el34-siem` 컨테이너(호스트
-> 192.168.0.151 위) 의 Wazuh manager 와, 각 컨테이너에 설치된 Wazuh agent 로 구성된다.
+> 192.168.0.80 위) 의 Wazuh manager 와, 각 컨테이너에 설치된 Wazuh agent 로 구성된다.
 > 현재 활성 agent 는 **ips**(Suricata 호스트) 와 **web**(ModSec 호스트) 둘이다. 통합 경보는
 > manager 의 `/var/ossec/logs/alerts/alerts.json` 에 한 줄당 1 JSON 으로 쌓인다.
 
@@ -508,7 +508,7 @@ docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | gr
 - **결과 해석(정상 vs 비정상)** — 출력을 어떻게 읽나
 - **실전 활용** — 현장에서 언제 쓰나
 
-> 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`, 비밀번호 `1`)에서 `docker exec el34-<컨테이너>`
+> 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 `1`)에서 `docker exec el34-<컨테이너>`
 > 로 실행한다. 공격 발생은 `el34-attacker`, 분석은 `el34-siem` 의 alerts.json, `el34-ips` 의
 > eve.json, `el34-web` 의 modsec_audit.log, 그리고 호스트의 `/var/log/auth.log` 다(ccc 계정은
 > `adm` 그룹이라 sudo 없이 인증 로그를 읽는다).

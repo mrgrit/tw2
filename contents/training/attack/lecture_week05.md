@@ -386,7 +386,7 @@ graph TD
 ## 6. 실습 안내 (총 8 미션)
 
 본 주차 실습은 lab의 8개 step(`lab_week05.yaml`)에 대응한다. 모든 명령은 el34 호스트
-(`ssh ccc@192.168.0.151`, 비밀번호 1)에 접속한 뒤 `docker exec el34-attacker`(공격) ·
+(`ssh ccc@192.168.0.80`, 비밀번호 1)에 접속한 뒤 `docker exec el34-attacker`(공격) ·
 `docker exec el34-web`(로그 분석)로 실행한다. **인가된 el34 실습 환경 안에서만** 수행한다.
 
 각 실습은 **4축**으로 설명한다 — 왜 하는가 / 무엇을 알 수 있는가 / 결과 해석 / 실전 활용.

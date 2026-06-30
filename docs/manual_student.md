@@ -6,7 +6,7 @@
 > 전 과정을 설명합니다.
 
 - 중앙 서버(tw2): `http://<host>:9200` (API) / UI `:5173`
-- el34 타깃 VM 예시: `192.168.0.151` (ssh `ccc`), 외부 공격자 VM `192.168.0.202` (ssh `att`)
+- el34 타깃 VM 예시: `192.168.0.80` (ssh `ccc`), 외부 공격자 VM `192.168.0.202` (ssh `att`)
 
 ---
 
@@ -33,7 +33,7 @@ el34 인프라 기동 → tw2 가입 → 내 인프라 등록(타깃+공격자 2
 
 tw2 가 채점·모니터링할 **el34** 인프라가 기동되어 있어야 합니다. el34 는 다음으로 구성됩니다.
 
-- **타깃 단일 VM** (`192.168.0.151`): 패킷 흐름 `FW → IPS(Suricata) → WAF(Apache+ModSec) → 앱`.
+- **타깃 단일 VM** (`192.168.0.80`): 패킷 흐름 `FW → IPS(Suricata) → WAF(Apache+ModSec) → 앱`.
   컨테이너 `el34-*`(fw / ips / web / siem / attacker / bastion) + 취약 앱
   (juiceshop · dvwa · neobank · govportal · mediforum · adminconsole · aicompanion).
 - **외부 공격자 VM** (`192.168.0.202`): 망 밖에서 타깃의 공개 포트로만 침입하는 outsider 발판.
@@ -84,7 +84,7 @@ curl -X POST http://<host>:9200/auth/signup \
 | 항목 | 설명 |
 |------|------|
 | 이름(alias) | 예: `gildong-el34-target` |
-| vm_ip | el34 타깃 VM 의 IP (`192.168.0.151`) |
+| vm_ip | el34 타깃 VM 의 IP (`192.168.0.80`) |
 | ssh_user / ssh_password | 타깃 접속 자격 (기본 `ccc`) — **서버 DB 에 Fernet 암호화 저장** |
 | bastion_api_key | Assessor 의 `X-API-Key` (기본 `ccc-api-key-2026`) |
 | port_map | Assessor 포트. `{"assessor": 9201}` |
@@ -204,7 +204,7 @@ curl -X POST http://<host>:9200/auth/signup \
 ## 9. 용어
 
 - **el34**: 타깃 단일 VM + 외부 공격자 VM 으로 구성된 실습 인프라(별도 레포).
-- **Assessor**: el34 타깃의 읽기 전용 채점 표면(`/assess`, `192.168.0.151:9201`) + 활동 표면(`/activity`).
+- **Assessor**: el34 타깃의 읽기 전용 채점 표면(`/assess`, `192.168.0.80:9201`) + 활동 표면(`/activity`).
 - **외부 공격자(attacker-ext)**: 망 밖 VM(`192.168.0.202`)에서 공개 포트+Host 헤더로만 침입하는 outsider.
 - **Cohort(코호트)**: 학과–학년–교과목–분반–팀 위계. 수업용 배틀이 묶이는 단위.
 - **check-spec**: 미션 성공조건을 Assessor 가 점검할 수 있게 컴파일한 단언 목록.

@@ -587,10 +587,10 @@ echo "user namespace remap + seccomp(시스템콜 제한) + AppArmor/SELinux + c
 
 ## 7. 점검 명령 빠른 복습 — "무엇을 어디서 보나"
 
-본 주차의 점검은 모두 el34 호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에서 `docker` CLI 로 수행하며,
+본 주차의 점검은 모두 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 `docker` CLI 로 수행하며,
 신규 도구 설치는 없다(호스트의 `docker` CLI 만 사용). 각 명령이 무엇을 보여 주는지 한눈에 정리한다.
 
-> **점검 경로.** el34 의 모든 컨테이너는 타깃 VM(192.168.0.151) 한 대 위에서 돈다. namespace 격리
+> **점검 경로.** el34 의 모든 컨테이너는 타깃 VM(192.168.0.80) 한 대 위에서 돈다. namespace 격리
 > 설정(`PidMode`·`NetworkMode`)과 cgroups 한도(`Memory`·`NanoCpus`)는 `docker inspect` 로 호스트에서
 > 바로 읽고, namespace **목록**(`/proc/1/ns/`)처럼 컨테이너 내부가 필요한 항목만 `docker exec
 > el34-web` 으로 진입해 본다.
@@ -616,7 +616,7 @@ echo "user namespace remap + seccomp(시스템콜 제한) + AppArmor/SELinux + c
 본 주차 lab 은 8 미션으로 구성되며, lab 의 `order` 와 1:1 로 대응한다. 각 미션을 **4 축**으로 설명한다
 — 왜 하는가 / 무엇을 알 수 있는가 / 결과 해석(정상 vs 갭) / 실전 활용.
 
-> **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker` CLI 로 실행한다.
+> **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`)에서 `docker` CLI 로 실행한다.
 > 이번 주는 **신규 설치가 없고**, 점검 대상은 인가된 el34 컨테이너 `el34-web` 뿐이며 모두 **읽기 전용**
 > 점검이다(컨테이너를 멈추거나 설정을 바꾸지 않는다). 합격 임계값은 0.7 이다.
 

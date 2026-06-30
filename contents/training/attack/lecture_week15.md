@@ -504,7 +504,7 @@ el34 의 4-tier 세그먼트는 `ext 10.20.30` / `pipe 10.20.31` / `dmz 10.20.32
 ## 5. 단계·도구별 빠른 복습 — "어느 단계에 무엇을 어디서"
 
 캡스톤에서 각 단계를 수행·검증하는 핵심 명령을 한 번에 정리한다. 모든 명령은 el34
-호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에서 `docker exec el34-<comp>` 로 실행한다.
+호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 `docker exec el34-<comp>` 로 실행한다.
 
 ### 5.1 ② 정찰 — el34-attacker / nmap + ffuf — W01–W02
 
@@ -629,7 +629,7 @@ docker exec el34-web osqueryi --json 'SELECT username FROM users WHERE username=
 ④취약점 분석 → ⑤익스플로잇 → ⑥권한상승 → ⑥persistence·유출 → 방어 킬체인 재구성 → ⑦보고 →
 정리 순서로 흐른다.
 
-> **시험 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec
+> **시험 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`)에서 `docker exec
 > el34-<comp>` 로. **인가된 실습 환경(el34)에서만** 수행한다. 셸(리스너)·계정·staging 은 각
 > 미션에서 심으면 그 미션에서 정리한다(self-clean). 합격 임계값은 0.7 이다.
 

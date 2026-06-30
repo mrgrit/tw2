@@ -7,13 +7,27 @@
 
 usage: python scripts/play_scenario.py <scenario_id> <solo|duel> [--red-host .79 --blue-host .78]
 """
-import sys, re, time, argparse, sqlite3
+import sys, re, time, argparse, sqlite3, os
 sys.path.insert(0, "scripts"); import vh
 import yaml, os.path as osp, glob
 
 CN = {"web": "el34-web", "ips": "el34-ips", "siem": "el34-siem", "fw": "el34-fw", "attacker": "el34-attacker"}
-EL34_HOST = "192.168.0.151"      # el34 단일 머신(ssh ccc/1, docker exec el34-*)
-WEB_ENTRY = "192.168.0.161"      # 외부 웹 진입(.202 공격자가 여기로) — 출처 IP 보존
+
+def _env_ip(key, fallback):
+    """IP 하드코딩 금지(가변). 우선순위: env > .env > 폴백."""
+    v = os.environ.get(key)
+    if v:
+        return v.strip()
+    try:
+        for ln in open(osp.join(osp.dirname(osp.abspath(__file__)), "..", ".env")):
+            if ln.startswith(key + "="):
+                return ln.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return fallback
+
+EL34_HOST = os.environ.get("EL34_HOST") or _env_ip("TUBEWAR_REF_TARGET_IP", "192.168.0.80")  # ssh ccc/1, docker exec el34-*
+WEB_ENTRY = _env_ip("TUBEWAR_REF_WEB_ENTRY", "192.168.0.161")  # 외부 웹 진입 — 출처 IP 보존
 LEDGER = ".data/verify_ledger.sqlite3"
 
 def load_yaml(sid):
@@ -272,7 +286,7 @@ def _observe(host, m, text):
             if "authentic" in grp:
                 # SSH 무차별 대입(MITRE T1110). el34 가 host SSH auth 미수집이면 SIEM 경보 미생성(인프라 한계).
                 vh.attacker_exec("for i in 1 2 3 4 5 6 7 8; do sshpass -p wrong$i ssh -o StrictHostKeyChecking=no "
-                                 "-o ConnectTimeout=4 -o PreferredAuthentications=password baduser@192.168.0.151 id 2>/dev/null; done; echo bf")
+                                 f"-o ConnectTimeout=4 -o PreferredAuthentications=password baduser@{EL34_HOST} id 2>/dev/null; done; echo bf")
                 time.sleep(8)
                 add(_cite_wazuh_auth(host) or
                     "SSH 무차별 대입(MITRE T1110) 8회 연속 인증 실패 시도(.202→.151:22) 관측 — 표적 계정 baduser, 단시간 다발 실패 패턴. "
@@ -519,7 +533,7 @@ def run_one(sid, mode, target=EL34_HOST):
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("sid"); ap.add_argument("mode",choices=["solo","duel"])
-    ap.add_argument("--target",default="192.168.0.151")
+    ap.add_argument("--target",default=EL34_HOST)
     a=ap.parse_args()
     run_one(a.sid,a.mode,a.target)
 

@@ -150,7 +150,7 @@ graph TD
 
 el34 의 본 주차 victim 은 **`el34-web`** 한 대다. 이 호스트에는 W06 에서 확인한 **osquery 5.23.0** 이
 설치되어 있고, **Wazuh agent(ID 004)** 가 매니저(`el34-siem`)에 연결되어 호스트 행위를 SIEM 으로
-보낸다. 분석가는 `ssh ccc@192.168.0.151` 로 호스트에 들어간 뒤 `docker exec el34-web` 로 victim 에
+보낸다. 분석가는 `ssh ccc@192.168.0.80` 로 호스트에 들어간 뒤 `docker exec el34-web` 로 victim 에
 osquery 를 던지고, `docker exec el34-siem` 으로 Wazuh 쪽 적재를 확인한다.
 
 > **주의 — el34-web 은 auth.log 대신 컨테이너 로깅을 쓴다.** 일반 Linux 서버라면 SSH 로그온·sudo

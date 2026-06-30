@@ -17,7 +17,7 @@
 
 **환경 변경(§el34 노트)**: 관제 SIEM 중앙 OpenSearch lake → **el34-siem Wazuh 직접**(Suricata·ModSec
 에이전트 수집, 0.1% 도달 문제 해소). 채점 권위 Postgres → **SQLite**(tw2 DB). WAF HAProxy → **Apache+ModSec**.
-결정론 점검 bastion → **el34 Assessor `192.168.0.151:9201`**. 플랫폼 tubewar → tw2.
+결정론 점검 bastion → **el34 Assessor `192.168.0.80:9201`**. 플랫폼 tubewar → tw2.
 
 **불변(환경 무관 유효)**: OODA 루프, 사이클 유형 3종(quiet/continuation/intel), 증거 블롭 파서
 규약(§4.5), dedup 키, 반복=신호(#14).

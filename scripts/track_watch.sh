@@ -5,6 +5,9 @@
 GP="$1"; LIKE="$2"; TOTAL="$3"; LOG="$4"
 LED=/home/ccc/tw2/.data/verify_ledger.sqlite3
 PY="$(command -v python3)"
+# el34 IP 는 가변 — env > .env 로 해석(하드코딩 금지)
+TARGET_IP="${TUBEWAR_REF_TARGET_IP:-$(grep -oP '^TUBEWAR_REF_TARGET_IP=\K.*' /home/ccc/tw2/.env 2>/dev/null)}"
+TARGET_IP="${TARGET_IP:-192.168.0.80}"
 donecount(){ "$PY" -c "import sqlite3;c=sqlite3.connect('$LED');print(sum(1 for _ in c.execute(\"SELECT 1 FROM scenario_state WHERE scenario_id LIKE '$LIKE' AND status='done'\")))" 2>/dev/null || echo "?"; }
 prev=-1; same=0; n=0
 while true; do
@@ -14,7 +17,7 @@ while true; do
     break
   fi
   d=$(donecount)
-  ah=$(curl -s -m 8 http://192.168.0.151:9201/health -o /dev/null -w '%{http_code}' 2>/dev/null)
+  ah=$(curl -s -m 8 "http://$TARGET_IP:9201/health" -o /dev/null -w '%{http_code}' 2>/dev/null)
   [ "$ah" != "200" ] && echo "ASSESSOR DOWN (http=$ah) [$LIKE] done=$d/$TOTAL — recreate: cd ~/el34 && docker compose --profile assessor up -d assessor"
   if [ "$d" = "$prev" ]; then same=$((same+1)); else same=0; fi
   prev="$d"

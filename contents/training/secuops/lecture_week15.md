@@ -334,7 +334,7 @@ graph TD
 
 - **sysmon** 은 프로세스가 **생성되는 순간** 의 cmdline 을 EventID 1(ProcessCreate)로 남긴다.
   단명이라 osquery 가 놓친 인코딩 명령도, sysmon 에는 생성 사실이 그대로 남는다(lab STEP 8).
-  el34 에서 sysmon 은 **호스트(192.168.0.151)** 에 설치돼 있고, 컨테이너 프로세스도 결국
+  el34 에서 sysmon 은 **호스트(192.168.0.80)** 에 설치돼 있고, 컨테이너 프로세스도 결국
   호스트 커널 프로세스이므로 el34-web 내부의 명령까지 포착한다. 로그는 호스트의
   `/var/log/syslog` 에 `Linux-Sysmon` 소스로 남는다(W11).
 - **위협인텔 격상** — 이 APT 의 IOC(C2 도구·포트, 예: `apt15-c2`)를 **Wazuh 룰(id 101510,
@@ -483,7 +483,7 @@ el34 의 4-tier 세그먼트는 `ext 10.20.30` / `pipe 10.20.31` / `dmz 10.20.32
 ## 5. 장비별 빠른 복습 — 기말에서 동원하는 무기
 
 기말에서 각 장비를 점검·조작하는 핵심 명령을 한 번에 정리한다. 모든 명령은 el34
-호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에서 `docker exec el34-<comp>` 로 실행한다(단,
+호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 `docker exec el34-<comp>` 로 실행한다(단,
 sysmon 관측은 호스트의 `/var/log/syslog`).
 
 ### 5.1 방화벽 (el34-fw / nftables) — W02
@@ -551,7 +551,7 @@ docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE
 ### 5.5 sysmon (호스트 / Sysmon for Linux) — W11
 
 sysmon 은 프로세스 생성·네트워크 연결·파일 생성을 **이벤트 스트림** 으로 남기는 호스트의
-비행기록장치다. el34 에서는 **호스트(192.168.0.151)에 설치** 돼 있고, 컨테이너 프로세스도
+비행기록장치다. el34 에서는 **호스트(192.168.0.80)에 설치** 돼 있고, 컨테이너 프로세스도
 호스트 커널 프로세스이므로 컨테이너 내부까지 포착한다. 로그는 호스트
 `/var/log/syslog` 의 `Linux-Sysmon` 소스다.
 
@@ -623,7 +623,7 @@ osquery, C2 는 sysmon+인텔, 수렴은 SIEM. 그리고 **"무엇이 못 보나
 수 있는가 / 결과 해석(정상 vs 비정상) / 실전 활용. 미션은 한 APT 캠페인을 따라 점검 → ①
 정찰 → ② 침투 → ③ 발판·헌팅 → ④ C2·인텔 → ⑤ 수렴·상관·보고 → 정리 순서로 흐른다.
 
-> **시험 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`)에서 `docker exec
+> **시험 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`)에서 `docker exec
 > el34-<comp>` 로(sysmon 관측은 호스트 syslog). 각 미션은 **독립적** 이며, 심은 것은 그
 > 미션에서 정리한다(self-clean). IDS/Wazuh 룰은 추가 → 검증 → 삭제, 발판(계정·리스너)은
 > self-clean. 합격 임계값은 0.7 이다.

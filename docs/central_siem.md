@@ -38,7 +38,7 @@ el34 Wazuh(IPS/WAF 상관·경보) ── Assessor /activity·/assess ──▶ 
 tw2 는 `bootstrap.sh` 만으로 동작한다(§ `docs/manual_admin.md` 2장).
 
 - Wazuh 경보 확인은 **인프라 측**(el34-siem)에서 한다.
-- tw2 는 Assessor(`192.168.0.151:9201`, header `X-API-Key: ccc-api-key-2026`)로 경보·활동을 조회한다.
+- tw2 는 Assessor(`192.168.0.80:9201`, header `X-API-Key: ccc-api-key-2026`)로 경보·활동을 조회한다.
 
 ### tw2 API 환경변수
 

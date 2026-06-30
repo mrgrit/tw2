@@ -211,7 +211,7 @@ graph TD
 
 > **주의 — el34 사실.** 본 트랙의 인증 로그 1차 분석은 호스트 `/var/log/auth.log` 를 직접 본다
 > (W01~W02 와 동일). Wazuh manager 의 `analysisd` 와 agent 상태 점검·룰 작성·`wazuh-logtest`
-> 검증은 모두 `el34-siem` 컨테이너 안에서 한다. 명령은 호스트(`ssh ccc@192.168.0.151`,
+> 검증은 모두 `el34-siem` 컨테이너 안에서 한다. 명령은 호스트(`ssh ccc@192.168.0.80`,
 > 비밀번호 `1`)에 들어가 `docker exec el34-siem …` 으로 실행한다.
 
 ```bash
@@ -526,7 +526,7 @@ graph TD
 ## 7. 실습 안내 (총 8 미션)
 
 각 실습은 **4축 설명**(왜 하는가 / 무엇을 알 수 있는가 / 결과 해석 / 실전 활용)을 담는다.
-모든 명령은 호스트(`ssh ccc@192.168.0.151`)에 들어가 `docker exec el34-siem …` 으로 실행하고,
+모든 명령은 호스트(`ssh ccc@192.168.0.80`)에 들어가 `docker exec el34-siem …` 으로 실행하고,
 룰은 **`wazuh-logtest` 로만 검증한 뒤 반드시 삭제**한다(공유 SIEM 베이스 보존).
 
 ### 미션 1 — 점검: Manager / Agent

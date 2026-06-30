@@ -278,7 +278,7 @@ graph TD
 > 올리는 방식을 표준으로 삼는다.
 
 이번 주 핵심 실습(lab 4번)은 el34-web 컨테이너에서 이 설정을 직접 끌어내 정책 강제 여부를 판정한다.
-명령은 el34 호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에서 `docker exec` 로 실행한다.
+명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 `docker exec` 로 실행한다.
 
 ```bash
 docker exec el34-web sh -c 'V=$(grep -iE "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null); echo "current:$V"; echo "$V" | grep -qi "no" && echo "enforced=rootlogin_disabled" || echo "gap=rootlogin_allowed"'
@@ -463,7 +463,7 @@ graph TD
 있는가 / 결과 해석(정상 vs 비정상) / 실전 활용. 미션은 점검(도달성) → 정책 위계 → 거버넌스 R&R →
 **정책 기술 강제(핵심)** → 생명주기 → 준수 점검 → 거버넌스 종합 → 보고서 순으로 흐른다.
 
-> **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.151`, 비밀번호 1)에서 `docker exec
+> **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 `docker exec
 > el34-web` 으로 실행한다. 신규 도구 설치는 없다. 점검 대상 컨테이너는 **el34-web** 이다. 합격
 > 임계값은 0.7 이다.
 

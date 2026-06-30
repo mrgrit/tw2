@@ -15,16 +15,20 @@ import json, os, re, sys, collections, datetime as dt
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(REPO, "apps/api"))
 
-SSH_USER, SSH_PASS, VM_IP = "ccc", "1", "192.168.0.151"
+# 타깃 IP 는 하드코딩하지 않는다(배포마다 가변). 우선순위: env > .env > infras DB.
+SSH_USER, SSH_PASS = "ccc", "1"
+VM_IP = os.environ.get("TUBEWAR_REF_TARGET_IP", "").strip()
 try:
     for ln in open(os.path.join(REPO, ".env")):
         if ln.startswith("SIX_DEFAULT_SSH_USER="):
             SSH_USER = ln.split("=", 1)[1].strip()
         elif ln.startswith("SIX_DEFAULT_SSH_PASS="):
             SSH_PASS = ln.split("=", 1)[1].strip()
+        elif ln.startswith("TUBEWAR_REF_TARGET_IP=") and not VM_IP:
+            VM_IP = ln.split("=", 1)[1].strip()
 except Exception:  # noqa: BLE001
     pass
-# el34 타깃 IP 는 infras 에서(assessor port_map 보유 = el34) 해석
+# el34 타깃 IP 는 infras 에서(assessor port_map 보유 = el34) 최종 해석(있으면 우선)
 try:
     import sqlite3
     from app.config import get_settings  # type: ignore

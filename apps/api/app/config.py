@@ -35,8 +35,8 @@ class Settings(BaseSettings):
     )
 
     # 시나리오 미션 IP 치환 기준값 — 학생이 인프라 미등록 시 폴백.
-    # 배포 환경마다 다르면 env 로 override. (기본=el34 기준 랩 IP)
-    ref_target_ip: str = Field("192.168.0.151", alias="TUBEWAR_REF_TARGET_IP")
+    # el34 IP 는 가변 → 운영값은 .env 의 TUBEWAR_REF_TARGET_IP(단일 노브). 아래는 스키마 기본일 뿐.
+    ref_target_ip: str = Field("192.168.0.80", alias="TUBEWAR_REF_TARGET_IP")
     ref_attacker_ip: str = Field("192.168.0.202", alias="TUBEWAR_REF_ATTACKER_IP")
     ref_web_entry: str = Field("192.168.0.161", alias="TUBEWAR_REF_WEB_ENTRY")
 

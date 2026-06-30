@@ -53,7 +53,7 @@
 el34 의 fw 는 별도 GUI 콘솔이 없다. 운영자는 호스트에서 fw 컨테이너에 들어가 `nft` 로 운영한다.
 
 ```bash
-ssh ccc@192.168.0.151                 # el34 호스트 (비밀번호 1)
+ssh ccc@192.168.0.80                 # el34 호스트 (비밀번호 1)
 docker exec -it el34-fw bash          # fw 컨테이너 (root)
 ```
 

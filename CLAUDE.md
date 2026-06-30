@@ -22,11 +22,16 @@
 ## 외부 의존
 
 - **인프라 el34** (단일 타깃 VM + 외부 공격자 VM):
-  - 타깃 `192.168.0.151` (ssh ccc/1) — 패킷흐름 **FW→IPS(Suricata)→WAF(Apache+ModSec)→앱**, 컨테이너 `el34-*`(fw/ips/web/siem + 취약앱 juiceshop·dvwa·neobank·govportal·mediforum·adminconsole·aicompanion + bastion).
-  - 외부 공격자 `192.168.0.202` (att/1, **별도 VM**) — 웹 진입 `192.168.0.161` 로 공격, **출처 IP가 Suricata/ModSec/Wazuh 전 계층에 보존**.
-  - **Assessor** `192.168.0.151:9201` (헤더 `X-API-Key: ccc-api-key-2026`) — RED/BLUE 결정론 체크(file/log/port/process/wazuh_alert).
+  - ⚠ **el34 IP 는 가변(배포마다 바뀜) — 하드코딩 금지. 단일 노브 = `.env` 의 `TUBEWAR_REF_TARGET_IP`**
+    (현재 `192.168.0.80`, ssh ccc/1). IP 바뀌면: `.env` 의 `TUBEWAR_REF_TARGET_IP` 수정 → `python3
+    scripts/sync_target_ip.py` (DB infras 반영) 하면 관제(gwanje/wazuh_probe)·미션 IP 치환이 따라간다.
+    코드/스크립트는 전부 이 env(또는 DB infras)에서 읽는다. 강의/문서 본문의 리터럴 IP는 일괄 치환:
+    `grep -rl OLD contents docs | xargs sed -i 's/OLD/NEW/g'`.
+  - 타깃 el34 (`$TUBEWAR_REF_TARGET_IP`, 현재 `192.168.0.80`) — 패킷흐름 **FW→IPS(Suricata)→WAF(Apache+ModSec)→앱**, 컨테이너 `el34-*`(fw/ips/web/siem + 취약앱 juiceshop·dvwa·neobank·govportal·mediforum·adminconsole·aicompanion + bastion).
+  - 외부 공격자 `$TUBEWAR_REF_ATTACKER_IP`(현재 `192.168.0.202`, att/1, **별도 VM**) — 웹 진입 `192.168.0.161` 로 공격, **출처 IP가 Suricata/ModSec/Wazuh 전 계층에 보존**.
+  - **Assessor** `$TUBEWAR_REF_TARGET_IP:9201` (헤더 `X-API-Key: ccc-api-key-2026`) — RED/BLUE 결정론 체크(file/log/port/process/wazuh_alert).
   - vhost `*.el34.lab` 유지(.161 Host 헤더/포트분기), 내부망 10.20.30/31/32/40.x.
-- 학생 인프라 등록은 **타깃(el34, .151) + 공격자(.202) 2개**.
+- 학생 인프라 등록은 **타깃(el34) + 공격자(.202) 2개**.
 - **외부 공격자 명령 로그는 수집 안 됨** → 공격 채점은 `command_ran` 대신 **타깃 인프라의 공격 흔적**
   (ModSec/Suricata/Wazuh + 출처 IP·payload 상관)으로 한다. el34 미보유 텔레메트리(SSH auth·Windows/Sysmon·
   endpoint)는 자동채점 불가 — `contents/battle-scenarios/GRADING-LIMITATIONS.md` 참고.

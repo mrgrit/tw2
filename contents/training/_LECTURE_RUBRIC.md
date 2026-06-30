@@ -54,7 +54,7 @@
 - `answer_detail:` 은 채점자·학생이 보는 정답 해설 — 무엇을·왜·어떻게 판정하는지 한 문장 이상.
 
 ## 4. el34 사실(절대 정확히 사용 — 지어내지 말 것)
-- 호스트 `ssh ccc@192.168.0.151`(pw 1) → `docker exec el34-<X>`. 컨테이너 41개.
+- 호스트 `ssh ccc@192.168.0.80`(pw 1) → `docker exec el34-<X>`. 컨테이너 41개.
 - 4-tier: ext 10.20.30 / pipe .31 / dmz .32 / int .40. fw ext.1/pipe.1, ips pipe.2/dmz.1,
   web dmz.80/int.80, siem dmz.100. attacker 내부 10.20.30.202 → 10.20.30.1(fw gw)/vhost.
 - 외부공격자 VM 192.168.0.202 → 공인 .161(출처 IP 보존). vhost `*.el34.lab`(juice/dvwa/neobank/

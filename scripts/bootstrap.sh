@@ -104,10 +104,11 @@ TUBEWAR_ANALYZER_MODEL=claude-sonnet-4-6
 TUBEWAR_GRADE_TIMEOUT=200
 TUBEWAR_GRADE_ROUNDS=1
 TUBEWAR_LAB_MONITOR=0
-# 미션 IP 치환 폴백 기준(학생 인프라 미등록 시). 배포 환경에 맞게 수정 가능.
-TUBEWAR_REF_TARGET_IP=192.168.0.151
-TUBEWAR_REF_WEB_ENTRY=192.168.0.161
-TUBEWAR_REF_ATTACKER_IP=192.168.0.202
+# el34 인프라 IP 단일 노브(가변). IP 바뀌면 여기만 고치고 sync_target_ip.py 실행.
+# 부트스트랩 전에 export TUBEWAR_REF_TARGET_IP=... 로 덮어쓸 수 있음.
+TUBEWAR_REF_TARGET_IP=${TUBEWAR_REF_TARGET_IP:-192.168.0.80}
+TUBEWAR_REF_WEB_ENTRY=${TUBEWAR_REF_WEB_ENTRY:-192.168.0.161}
+TUBEWAR_REF_ATTACKER_IP=${TUBEWAR_REF_ATTACKER_IP:-192.168.0.202}
 ENV
   echo "ADMIN_PW:$ADMIN_PASSWORD" > .admin-credentials.txt; chmod 600 .admin-credentials.txt
   [ "$(id -u)" -eq 0 ] && [ "$RUN_USER" != "root" ] && chown "$RUN_USER" .env .admin-credentials.txt 2>/dev/null || true
@@ -140,6 +141,10 @@ async def go():
     async with lifespan(app): pass
 asyncio.run(go())
 " && say "  DB 시드 완료: .data/tw2.sqlite3"
+
+# 등록된 el34 인프라 vm_ip 를 .env 의 단일 노브(TUBEWAR_REF_TARGET_IP)로 정렬(멱등).
+# IP 가 바뀌어도 .env 만 고치고 이 스크립트(또는 sync_target_ip.py) 재실행이면 관제가 따라간다.
+AS_USER python3 scripts/sync_target_ip.py 2>/dev/null || true
 
 # ---------- 6) 데모 학생(옵션) ----------
 if [ "$DEMO_USERS" = "1" ]; then

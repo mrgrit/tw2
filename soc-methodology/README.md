@@ -24,7 +24,7 @@ el34 현행은 이 노트와 갱신된 §3 을 따른다.
 | 채점 권위 | Postgres | **SQLite** (`.data/tw2.sqlite3`) |
 | WAF/방화벽 | HAProxy (rule 100250/100251) | **Apache+ModSec**(942/913/949 등) + nftables |
 | 외부 공격자 | attacker-ext 10.20.20.x (SSH 2203) | **별도 VM `192.168.0.202`** — 웹 진입 `192.168.0.161` |
-| 결정론 점검 | bastion API | **el34 Assessor** `192.168.0.151:9201` (file/log/port/process/wazuh_alert) |
+| 결정론 점검 | bastion API | **el34 Assessor** `192.168.0.80:9201` (file/log/port/process/wazuh_alert) |
 | 출처 귀속 | 게이트웨이-src 한계 → L7 de-NAT 복원 필요(#5·#6·#7) | **외부공격자 `.202` src IP 가 Suricata·ModSec·Wazuh 전 계층에 보존 → 출처 호스트 직접 식별(de-NAT 복원 불요). #5·#6·#7 대부분 해소** |
 
 > **교훈 #15 (cycle-008) — 출처 귀속은 인프라 설계로 해소됐다.** 방법론 최대 난제였던 *호스트 단위

@@ -18,14 +18,14 @@
                                         ▼
                           ┌───────── el34 인프라 ──────────┐
                           │  타깃 VM      외부 공격자 VM     │
-                          │  192.168.0.151  192.168.0.202  │
+                          │  192.168.0.80  192.168.0.202  │
                           │  (el34-* 컨테이너)  (att/1)     │
                           │  웹 진입 192.168.0.161          │
                           │  FW→IPS(Suricata)→WAF→앱        │
                           └────────────────────────────────┘
 ```
 
-el34 인프라는 **공유 실습장**이다. 타깃은 단일 VM `192.168.0.151`(ssh `ccc/1`) 의
+el34 인프라는 **공유 실습장**이다. 타깃은 단일 VM `192.168.0.80`(ssh `ccc/1`) 의
 `el34-*` 컨테이너 묶음이고, 외부 공격자는 **별도 VM** `192.168.0.202`(att/1) 에서 공개
 포트 + Host 헤더만으로 침입한다. 웹 진입점은 `192.168.0.161`. tw2 는 이 인프라의
 **Assessor API + 공개 포트**만 본다 → 인프라가 버전업되어도 tw2 는 외부 표면만 보면 동작.
@@ -129,7 +129,7 @@ admin UI → 게시판에서 검토 → 승인 → POST /admin/scrap/{id}/approv
 
 - **의미 채점**: `claude` CLI (`claude-sonnet-4-6`) 가 제출물의 의도/품질을 평가.
   claude 가 없으면 review 보류(자동 fail 하지 않음).
-- **결정론 채점**: Assessor (`192.168.0.151:9201`) 의 RED/BLUE 체크 —
+- **결정론 채점**: Assessor (`192.168.0.80:9201`) 의 RED/BLUE 체크 —
   `file_contains` / `log_contains` / `port_listening` / `process_running` / `wazuh_alert`.
 - **RED**(공격) = 타깃 공격 흔적(ModSec/Suricata/Wazuh + 출처 IP). **BLUE**(방어) =
   방어 아티팩트(suricata/wazuh rule·yara·CDB·auditd) + 로그 분석.
