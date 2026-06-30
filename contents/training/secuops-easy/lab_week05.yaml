@@ -1,0 +1,303 @@
+lab_id: secuops-easy-week05
+title: "W05 — WAF(ModSecurity) 콘솔 실습: SecRule·configtest·차단 확인"
+version: standalone-easy
+course: secuops-easy
+week: 5
+description: |
+  WAF 콘솔(192.168.136.145:8083)로 ModSecurity SecRule 을 배운다. SecRule 을 분석기로 분해하고, 폼으로
+  만들어 생성되는 SecRule 을 확인한 뒤 적용한다. 적용 전 configtest 가 문법을 검사하므로 잘못된
+  룰은 거부되고 웹서버는 살아남는다(안전장치 직접 체험). 그다음 공격을 재현해 실제 403 차단을
+  확인하고, 시나리오(waf-s11)를 검증한다. 마지막에 실습 룰(id 9000000+)을 정리한다.
+difficulty: easy
+duration_minutes: 130
+audience: 보안 솔루션 운영 입문자 (5주차)
+prerequisites:
+  - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
+  - el34 호스트 브라우저에서 WAF 콘솔(192.168.136.145:8083) 접속 가능
+  - W05 강의안 정독 — SecRule 구조, transform, configtest, anomaly / W01~W04 실습 완료
+objectives:
+  - "WAF 엔진 모드/CRS 를 콘솔에서 확인한다"
+  - "SecRule 을 변수+연산자+액션으로 분해해 이해한다"
+  - "폼으로 SecRule 을 만들어 configtest 후 적용한다"
+  - "잘못된 룰이 거부되고 웹서버가 보존됨을 확인한다(안전장치)"
+  - "공격을 재현해 403 차단을 확인하고, 시나리오를 검증 통과시킨다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — WAF 상태 확인
+
+      WAF 콘솔(`http://192.168.136.145:8083/`) **대시보드**에서 SecRuleEngine 모드(On=차단)와 CRS
+      버전, Apache 가동 여부를 확인한다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s http://192.168.136.145:8083/api/status
+      ```
+      ## ✅ 합격 기준
+      출력의 engine 이 `On` 이다.
+    hint: 'curl -s http://192.168.136.145:8083/api/status'
+    answer: |
+      curl -s http://192.168.136.145:8083/api/status
+    answer_detail: "engine=On(차단), crs_version=3.3.2, apache_running=true. On 이면 공격을 403으로 막는다."
+    verify:
+      type: output_contains
+      expect: '"engine": "On"'
+      field: stdout
+      semantic:
+        intent: "WAF 동작 모드/CRS 확인 — On(차단) vs DetectionOnly(탐지) 구분"
+        success_criteria: ["SecRuleEngine On", "CRS 3.3.2", "Apache 가동"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 구성과 CRS 패밀리 확인
+
+      **구성·CRS** 메뉴에서 ModSecurity 설정과 OWASP CRS 룰 패밀리(941 XSS, 942 SQLi 등)를 본다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s http://192.168.136.145:8083/api/config
+      ```
+      ## ✅ 합격 기준
+      출력에 `crs_families`(CRS 룰 패밀리 목록)가 보인다.
+    hint: 'curl -s http://192.168.136.145:8083/api/config'
+    answer: |
+      curl -s http://192.168.136.145:8083/api/config
+    answer_detail: "modsec 설정(SecRuleEngine/SecAuditLog) + crs_families(941/942/930/932/913/949). 룰 0개여도 CRS 가 기본 방어."
+    verify:
+      type: output_contains
+      expect: crs_families
+      field: stdout
+      semantic:
+        intent: "WAF 설정과 CRS 표준 룰셋 파악 — 직접 만들기 전에도 보호됨을 이해"
+        success_criteria: ["modsec 설정 확인", "CRS 패밀리 확인", "anomaly 모델 인지"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — SecRule 구조 분석
+
+      **SecRule 분석기**에 SQLi 룰을 붙여넣고 분석한다. 변수(ARGS)·연산자(@rx)·액션(deny/transform/
+      severity)이 분해된다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/analyze -d '{"rule":"SecRule ARGS \"@rx (?i)union\\s+select\" \"id:942100,phase:2,t:none,t:lowercase,deny,status:403,msg:'\''SQLi'\'',severity:'\''CRITICAL'\''\""}'
+      ```
+      ## ✅ 합격 기준
+      분해 결과에 변수 `ARGS` 가 보인다.
+    hint: 'SecRule 분석기. POST /api/rule/analyze'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/analyze -d '{"rule":"SecRule ARGS \"@rx (?i)union\\s+select\" \"id:942100,phase:2,t:none,t:lowercase,deny,status:403,msg:'\''SQLi'\'',severity:'\''CRITICAL'\''\""}'
+    answer_detail: "variables=ARGS, operator=@rx, pattern=union\\s+select, actions=[id,phase,t:lowercase,deny,...]. 변수=IPS 의 버퍼에 대응."
+    verify:
+      type: output_contains
+      expect: ARGS
+      field: stdout
+      semantic:
+        intent: "SecRule 을 변수+연산자+액션으로 분해 — 룰 읽는 능력"
+        success_criteria: ["변수/연산자/패턴 분해", "액션(transform/deny/severity) 분해", "transform 의미 이해"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — sqlmap 차단 SecRule 미리보기
+
+      **SecRule 관리** 폼에서 — 변수 `REQUEST_HEADERS:User-Agent`, 연산자 `@contains`, 패턴 `sqlmap`,
+      transform `lowercase`, action `deny`, phase `1`, severity `CRITICAL` → **① 미리보기**.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/preview -d '{"variable":"REQUEST_HEADERS:User-Agent","operator":"@contains","pattern":"sqlmap","transforms":["lowercase"],"action":"deny","phase":"1","severity":"CRITICAL","msg":"EDU sqlmap block"}'
+      ```
+      ## ✅ 합격 기준
+      생성된 룰이 `SecRule REQUEST_HEADERS:User-Agent` 로 시작한다.
+    hint: '미리보기는 미실행. POST /api/rule/preview'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/preview -d '{"variable":"REQUEST_HEADERS:User-Agent","operator":"@contains","pattern":"sqlmap","transforms":["lowercase"],"action":"deny","phase":"1","severity":"CRITICAL","msg":"EDU sqlmap block"}'
+    answer_detail: "SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:90000xx,phase:1,t:lowercase,deny,status:403,log,...\". 특정 헤더만 콕 집어 검사."
+    verify:
+      type: output_contains
+      expect: SecRule REQUEST_HEADERS:User-Agent
+      field: stdout
+      semantic:
+        intent: "폼이 SecRule 로 변환되는 과정 확인 — 명령을 학습"
+        success_criteria: ["변수=특정 헤더", "@contains+transform", "id 자동 배정"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 적용 (configtest + reload)
+
+      **② 적용**을 누른다. 콘솔이 edu_rules.conf 에 추가하고 **configtest**로 문법을 검사한 뒤,
+      통과하면 graceful reload 한다. 적용 후 `/api/rules`에서 내 룰(id 9000011)이 등록됐는지 확인한다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:'\''EDU sqlmap block'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
+      curl -s http://192.168.136.145:8083/api/rules | grep -o 9000011 | head -1
+      ```
+      ## ✅ 합격 기준
+      적용 후 룰 목록에 내 룰 `9000011` 이 보인다(configtest 통과 → reload).
+    hint: 'apply(configtest) 후 /api/rules 에서 9000011 확인'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:'\''EDU sqlmap block'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
+      curl -s http://192.168.136.145:8083/api/rules | grep -o 9000011 | head -1
+    answer_detail: "apply 가 edu_rules.conf 에 추가 + apache2ctl configtest → Syntax OK 면 graceful reload. rules 목록에 id 9000011 등장 = 성공."
+    verify:
+      type: output_contains
+      expect: "9000011"
+      field: stdout
+      semantic:
+        intent: "SecRule 을 안전하게 적용 — configtest 통과 후에만 reload"
+        success_criteria: ["configtest 통과", "graceful reload", "rules 목록에 id 등록"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 안전장치 체험: 잘못된 룰은 거부된다
+
+      일부러 문법이 틀린 룰을 적용해 본다. configtest 가 실패해 룰이 **거부**되고, 웹서버는 그대로
+      **살아남는다**. (운영 WAF 를 죽이지 않는 안전장치)
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@rx (unclosed\" \"id:9000098,phase:2,deny,bogusaction\""}'
+      ```
+      ## ✅ 합격 기준
+      응답에 `문법 오류` 가 보인다(룰 미적용, 기존 설정 보존).
+    hint: '잘못된 룰 → configtest 실패 → 거부. expect: 문법 오류'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@rx (unclosed\" \"id:9000098,phase:2,deny,bogusaction\""}'
+    answer_detail: "ok=false, error='문법 오류 — 룰이 적용되지 않았고 기존 설정은 보존됨'. Apache 정상 가동 유지(웹서버 안 죽음)."
+    verify:
+      type: output_contains
+      expect: 문법 오류
+      field: stdout
+      semantic:
+        intent: "configtest 보호를 직접 체험 — 잘못된 룰이 웹서버를 죽이지 않음"
+        success_criteria: ["ok=false", "문법 오류 반환", "웹서버는 정상"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — 실제 차단 확인 (403)
+
+      차단용 룰을 만들고(ARGS 에 EDUBLKW5 포함 시 deny), 공격자(el34-attacker)에서 그 요청을 보내
+      **403 차단**을 확인한다. dvwa 는 On(차단) 모드 vhost 다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@contains EDUBLKW5\" \"id:9000077,phase:2,t:none,deny,status:403,log,msg:'\''EDU live block'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
+      docker exec el34-attacker curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=EDUBLKW5"
+      ```
+      ## ✅ 합격 기준
+      차단되어 응답 코드 `403` 이 보인다.
+    hint: '차단 룰 적용 후 그 패턴으로 접속 → 403'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@contains EDUBLKW5\" \"id:9000077,phase:2,t:none,deny,status:403,log,msg:'\''EDU live block'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
+      docker exec el34-attacker curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=EDUBLKW5"
+    answer_detail: "ARGS @contains EDUBLKW5 deny → 그 파라미터 요청은 403. WAF 가 실제로 막음(audit 로그에도 기록)."
+    verify:
+      type: output_contains
+      expect: "403"
+      field: stdout
+      semantic:
+        intent: "내가 만든 SecRule 이 실제 공격을 403 으로 차단함을 확인 — 차단의 실증"
+        success_criteria: ["deny 룰 적용", "해당 패턴 요청 403", "정상 요청은 통과"]
+
+  - order: 8
+    instruction: |
+      ## 🎯 미션 — 침해대응 시나리오 검증 (waf-s11)
+
+      **침해대응 훈련** waf-s11(sqlmap 차단)을 검증한다(STEP 5 에서 만든 룰). 콘솔이 edu_rules.conf 를
+      읽어 정답 조건(REQUEST_HEADERS:User-Agent @contains sqlmap)을 충족하는지 채점한다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s11"}'
+      ```
+      ## ✅ 합격 기준
+      검증 결과가 `"ok": true` 다.
+    hint: '침해대응 훈련 waf-s11 검증. POST /api/scenario/check {"id":"waf-s11"}'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s11"}'
+    answer_detail: "ok=true, evidence require=SecRule REQUEST_HEADERS:User-Agent @contains sqlmap found=true, configtest=Syntax OK."
+    verify:
+      type: output_contains
+      expect: '"ok": true'
+      field: stdout
+      semantic:
+        intent: "작성한 SecRule 이 시나리오 정답을 충족하는지 콘솔이 실측 채점"
+        success_criteria: ["scenario check ok=true", "require 충족", "configtest Syntax OK"]
+
+  - order: 9
+    instruction: |
+      ## 🎯 미션 — SIEM(Wazuh) 연동 확인
+
+      **SIEM 연동** 메뉴에서 modsec_audit.log 가 Wazuh 매니저(10.20.32.100)로 가는지 확인한다.
+      Wazuh decoder 가 `[id "941100"]` 같은 룰 ID 를 추출해 alert 로 만든다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s http://192.168.136.145:8083/api/siem
+      ```
+      ## ✅ 합격 기준
+      출력에 매니저 주소 `10.20.32.100` 이 보인다.
+    hint: 'GET /api/siem — manager 10.20.32.100'
+    answer: |
+      curl -s http://192.168.136.145:8083/api/siem
+    answer_detail: "manager=10.20.32.100, integrated=true. WAF 차단이 SIEM 으로 모여 방화벽·IPS 와 통합 관제."
+    verify:
+      type: output_contains
+      expect: 10.20.32.100
+      field: stdout
+      semantic:
+        intent: "WAF 를 SIEM 에 연동 — 세 장비 통합 관제 완성"
+        success_criteria: ["매니저 주소 확인", "audit.log 가 전송 소스", "[id] 추출 decoder 이해"]
+
+  - order: 10
+    instruction: |
+      ## 🎯 미션 — 실습 룰 정리 (cleanup, 필수)
+
+      실습으로 만든 SecRule(id 9000000 이상)을 모두 삭제한다. **SecRule 관리** 목록의 삭제 버튼으로도
+      가능하다. (호스트에 jq 가 없으므로 python3 로 처리.)
+
+      ## 💻 정리 명령
+      ```bash
+      python3 -c '
+      import json, urllib.request as u
+      B="http://192.168.136.145:8083"
+      def post(p,o):
+          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
+          return u.urlopen(r,timeout=8).read().decode()
+      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
+      n=0
+      for r in rs.get("rules",[]):
+          rid=str(r.get("id",""))
+          if rid: post("/api/rule/delete",{"id":rid}); n+=1
+      print("cleanup done deleted=%d"%n)
+      '
+      ```
+      ## ✅ 합격 기준
+      실습 룰이 모두 삭제되어 `cleanup done` 이 보인다(CRS 보호는 유지).
+    hint: 'python3 로 edu 룰(id) 일괄 삭제 → cleanup done'
+    answer: |
+      python3 -c '
+      import json, urllib.request as u
+      B="http://192.168.136.145:8083"
+      def post(p,o):
+          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
+          return u.urlopen(r,timeout=8).read().decode()
+      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
+      n=0
+      for r in rs.get("rules",[]):
+          rid=str(r.get("id",""))
+          if rid: post("/api/rule/delete",{"id":rid}); n+=1
+      print("cleanup done deleted=%d"%n)
+      '
+    answer_detail: "edu_rules.conf 의 모든 GUI 룰(id>=9000000) 삭제 → graceful reload. CRS/기본 보호는 유지."
+    verify:
+      type: output_contains
+      expect: cleanup done
+      field: stdout
+      semantic:
+        intent: "실습 후 WAF 룰 원상 복구 — 운영 위생"
+        success_criteria: ["edu 룰 전부 삭제", "CRS 보호 유지", "edu_rules.conf 비워짐"]

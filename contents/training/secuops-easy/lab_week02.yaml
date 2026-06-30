@@ -1,0 +1,333 @@
+lab_id: secuops-easy-week02
+title: "W02 — 방화벽(nftables) 콘솔 실습: 룰·NAT·stateful·SIEM"
+version: standalone-easy
+course: secuops-easy
+week: 2
+description: |
+  방화벽 콘솔(192.168.136.145:8081)로 실제 방화벽을 다룬다. 룰을 만들면 콘솔이 생성하는 진짜 nft
+  명령을 확인하고 적용한다. 악성 IP 차단 → SSH 속도 제한 → DNAT 공개 → 연결 추적 → SIEM 상태 →
+  침해대응 시나리오 검증(fw-s01, fw-s11) → 마지막에 실습 룰·객체를 모두 정리(cleanup)한다. 채점
+  명령은 콘솔이 내부에서 호출하는 API 와 동일하다(= GUI 동작 = nft 명령). 적용 결과는 콘솔의
+  `/api/ruleset`(raw nft 텍스트 포함)에서 확인한다.
+difficulty: easy
+duration_minutes: 120
+audience: 보안 솔루션 운영 입문자 (2주차)
+prerequisites:
+  - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
+  - el34 호스트 브라우저에서 방화벽 콘솔(192.168.136.145:8081) 접속 가능
+  - W02 강의안 정독 — 체인/룰 순서/stateful/NAT/객체/카운터
+objectives:
+  - "방화벽 구성(테이블/인터페이스)을 콘솔에서 읽는다"
+  - "룰을 만들어 생성되는 nft 명령을 확인하고 적용한다"
+  - "SSH 무차별 대입을 rate limit 으로 완화한다"
+  - "DNAT 으로 내부 서비스를 외부에 공개한다"
+  - "conntrack 으로 stateful 을 확인하고, 방화벽을 SIEM 에 연동한다"
+  - "침해대응 시나리오(fw-s01, fw-s11)를 검증 통과시키고, 실습 룰을 정리한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 방화벽 구성 읽기
+
+      방화벽 콘솔(`http://192.168.136.145:8081/`)의 **대시보드**와 **룰 관리**를 열어, 방화벽이 다루는
+      테이블을 확인한다. `inet six_filter`(필터 룰), `ip six_nat`(NAT 룰) 두 개가 우리가 편집할
+      테이블이다. (`ip nat`은 Docker 용이라 콘솔이 보호한다.)
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s http://192.168.136.145:8081/api/status
+      ```
+      ## ✅ 합격 기준
+      출력의 tables 에 `six_filter` 가 보인다.
+    hint: 'curl -s http://192.168.136.145:8081/api/status'
+    answer: |
+      curl -s http://192.168.136.145:8081/api/status
+    answer_detail: "tables=[ip nat(보호), inet six_filter(편집), ip six_nat(편집)]. editable=true 인 것만 룰 추가 가능."
+    verify:
+      type: output_contains
+      expect: six_filter
+      field: stdout
+      semantic:
+        intent: "방화벽이 다루는 테이블 구조를 콘솔에서 확인 — 편집 가능 테이블과 보호 테이블 구분"
+        success_criteria: ["inet six_filter / ip six_nat 확인", "ip nat 은 보호됨을 이해"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 룰이 만들어내는 nft 명령 미리보기
+
+      **룰 관리** 폼에서 — 체인 `forward`, 출발지 `10.20.30.202`, 동작 `drop`, 위치 `top`으로 두고
+      **① 명령 미리보기**를 누른다. 아직 적용하지 말고, 어떤 `nft` 명령이 만들어지는지 본다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/preview -d '{"chain":"forward","saddr":"10.20.30.202","action":"drop","position":"top"}'
+      ```
+      ## 🔍 무엇을 보나
+      `nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop` — GUI 클릭이 곧
+      이 명령이다. 미리보기는 **실행하지 않는다**(안전).
+      ## ✅ 합격 기준
+      생성된 명령에 `nft insert rule inet six_filter forward` 가 보인다.
+    hint: '미리보기는 실행 없이 명령만 생성. POST /api/rule/preview'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/preview -d '{"chain":"forward","saddr":"10.20.30.202","action":"drop","position":"top"}'
+    answer_detail: "미리보기 = nft 명령 문자열만 반환. 적용 전에 무엇이 실행될지 확인하는 안전 단계. insert=top(맨 위)."
+    verify:
+      type: output_contains
+      expect: nft insert rule inet six_filter forward
+      field: stdout
+      semantic:
+        intent: "GUI 폼 입력이 실제 nft 명령으로 변환되는 과정을 확인 — 버튼이 아니라 명령을 학습"
+        success_criteria: ["preview 가 nft 명령을 반환", "insert=top 의미 이해", "미리보기는 미실행"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — 악성 IP 차단 룰 적용 (fw-s01)
+
+      이제 **② 적용**을 눌러 룰을 실제로 적용한다. 우측 현재 룰셋에 새 룰이 나타난다. 적용 후
+      `/api/ruleset`에서 그 룰이 반영됐는지 확인한다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop"}' >/dev/null
+      curl -s http://192.168.136.145:8081/api/ruleset | grep -o 10.20.30.202 | head -1
+      ```
+      ## ✅ 합격 기준
+      적용 후 룰셋에 `10.20.30.202` 가 보인다.
+    hint: 'apply 후 /api/ruleset 에서 10.20.30.202 확인'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop"}' >/dev/null
+      curl -s http://192.168.136.145:8081/api/ruleset | grep -o 10.20.30.202 | head -1
+    answer_detail: "apply 가 nft 명령을 실제 실행 → forward 체인 맨 위에 saddr drop 룰 생성. 1차 침해대응(악성 IP 차단)."
+    verify:
+      type: output_contains
+      expect: 10.20.30.202
+      field: stdout
+      semantic:
+        intent: "차단 룰을 실제 적용하고 룰셋에 반영됨을 확인 — 1차 침해대응(악성 IP 차단)"
+        success_criteria: ["forward 체인에 saddr 10.20.30.202 drop 룰 생성", "현재 룰셋에 반영"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — SSH 무차별 대입 완화 (rate limit, fw-s03)
+
+      체인 `input`, tcp, dport `22`, ct state `new`, rate `10/minute` + 초과분만(over), 동작 `drop`,
+      위치 `top` → 적용한다. 정상 사용자는 통과하고 폭주만 막힌다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop"}' >/dev/null
+      curl -s http://192.168.136.145:8081/api/ruleset | grep -o "limit rate over" | head -1
+      ```
+      ## ✅ 합격 기준
+      적용된 룰에 `limit rate over` 가 보인다.
+    hint: 'limit rate over = 초과분만 차단'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop"}' >/dev/null
+      curl -s http://192.168.136.145:8081/api/ruleset | grep -o "limit rate over" | head -1
+    answer_detail: "limit rate over 10/minute → 분당 10회 초과 신규 연결만 drop. 가용성 보존형 방어."
+    verify:
+      type: output_contains
+      expect: limit rate over
+      field: stdout
+      semantic:
+        intent: "rate limit 으로 무차별 대입만 차단 — 가용성을 해치지 않는 방어 이해"
+        success_criteria: ["tcp dport 22 + ct state new", "limit rate over 10/minute", "정상 사용자 통과 보존"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — DNAT 으로 내부 웹서버 공개 (fw-s08)
+
+      **NAT** 메뉴에서 — DNAT, tcp, 외부 포트 `8088`, 대상 `10.20.32.80:80` → 적용. 외부에서
+      `방화벽:8088`로 오면 내부 웹서버로 연결된다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/nat/apply -d '{"command":"nft add rule ip six_nat prerouting iifname \"eth0\" tcp dport 8088 counter dnat to 10.20.32.80:80"}' >/dev/null
+      curl -s http://192.168.136.145:8081/api/ruleset | grep -o 8088 | head -1
+      ```
+      ## ✅ 합격 기준
+      적용된 NAT 룰에 외부 포트 `8088` 이 보인다.
+    hint: 'DNAT 은 prerouting 에서. 적용 후 ruleset 에 8088'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/nat/apply -d '{"command":"nft add rule ip six_nat prerouting iifname \"eth0\" tcp dport 8088 counter dnat to 10.20.32.80:80"}' >/dev/null
+      curl -s http://192.168.136.145:8081/api/ruleset | grep -o 8088 | head -1
+    answer_detail: "prerouting 에서 dport 8088 의 목적지를 10.20.32.80:80 으로 변환. 포트 포워딩(내부 주소 은닉)."
+    verify:
+      type: output_contains
+      expect: "8088"
+      field: stdout
+      semantic:
+        intent: "DNAT 으로 내부 서비스를 외부에 공개 — prerouting 훅과 주소 변환 이해"
+        success_criteria: ["six_nat prerouting 에 dport 8088 dnat 룰 생성", "내부 주소 은닉 효과"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 연결 추적(conntrack)으로 stateful 보기
+
+      **Stateful (연결추적)** 메뉴를 연다. 방화벽이 기억하는 연결들이 표로 보인다. `ESTABLISHED`가
+      정상적으로 맺어진 연결이며, 그 응답은 `ct state established,related accept` 룰로 자동 통과한다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s http://192.168.136.145:8081/api/conntrack
+      ```
+      ## ✅ 합격 기준
+      출력에 `count`(연결 수)가 보인다.
+    hint: 'GET /api/conntrack — count/summary/conns'
+    answer: |
+      curl -s http://192.168.136.145:8081/api/conntrack
+    answer_detail: "count/summary/conns. ESTABLISHED 연결의 응답이 자동 통과 = stateful inspection."
+    verify:
+      type: output_contains
+      expect: count
+      field: stdout
+      semantic:
+        intent: "stateful 방화벽이 연결을 추적함을 눈으로 확인 — established 자동 통과 이해"
+        success_criteria: ["연결 목록/개수 확인", "established,related accept 룰과 연결"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — SIEM(Wazuh) 연동 상태 확인
+
+      **SIEM 연동** 메뉴를 연다. 방화벽 활동(`/var/log/nft_edu/events.log`)이 SIEM 매니저
+      (10.20.32.100)로 가도록 연동할 수 있다. 현재 상태와 매니저 주소를 확인한다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s http://192.168.136.145:8081/api/siem
+      ```
+      ## ✅ 합격 기준
+      출력에 SIEM 매니저 주소 `10.20.32.100` 이 보인다.
+    hint: 'GET /api/siem — manager 10.20.32.100'
+    answer: |
+      curl -s http://192.168.136.145:8081/api/siem
+    answer_detail: "manager=10.20.32.100. 연동 켜면 events.log 를 Wazuh 에이전트(fw)가 tail → 통합 관제."
+    verify:
+      type: output_contains
+      expect: 10.20.32.100
+      field: stdout
+      semantic:
+        intent: "방화벽을 SIEM 에 연동 — 분산 로그를 한 곳에서 보는 통합 관제의 출발점"
+        success_criteria: ["SIEM 매니저 주소 확인", "events.log 가 전송 소스"]
+
+  - order: 8
+    instruction: |
+      ## 🎯 미션 — 침해대응 시나리오 검증 (fw-s01)
+
+      **침해대응 훈련** 메뉴에서 fw-s01(악성 IP 차단)을 펼치고 **검증**을 누른다. 콘솔이 실제 룰셋을
+      읽어 STEP 3 에서 만든 차단 룰이 올바른지 채점한다(`ok: true`면 통과).
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/scenario/check -d '{"id":"fw-s01"}'
+      ```
+      ## ✅ 합격 기준
+      검증 결과가 `"ok": true` 다.
+    hint: '침해대응 훈련 → fw-s01 → 검증. POST /api/scenario/check {"id":"fw-s01"}'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/scenario/check -d '{"id":"fw-s01"}'
+    answer_detail: "ok=true, evidence=[{require: ip saddr 10.20.30.202 .*drop, found: true}]. STEP3 룰이 정답 조건 충족."
+    verify:
+      type: output_contains
+      expect: '"ok": true'
+      field: stdout
+      semantic:
+        intent: "작성한 룰이 침해대응 정답 조건을 충족하는지 콘솔이 실측 채점 — 실전 검증"
+        success_criteria: ["scenario check ok=true", "evidence 의 require 충족", "실제 룰셋 기반 채점"]
+
+  - order: 9
+    instruction: |
+      ## 🎯 미션 — 객체(그룹·Alias)로 다중 악성 IP 차단 (fw-s11)
+
+      여러 악성 IP를 **그룹 하나**(nftables named set)로 묶고 룰은 그 그룹을 참조한다. **객체**
+      메뉴에서 IP 그룹 `blocklist`를 만들고, **룰 관리**에서 `@blocklist`를 drop한 뒤 fw-s11을 검증한다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/object/apply -d '{"create":"nft add set inet six_filter blocklist { type ipv4_addr ; }","element":"nft add element inet six_filter blocklist { 10.20.30.202, 10.20.30.250 }"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter forward ip saddr @blocklist counter drop"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/scenario/check -d '{"id":"fw-s11"}'
+      ```
+      ## 🔍 무엇을 배우나
+      그룹에 IP를 추가/삭제하면 룰을 바꾸지 않아도 즉시 반영된다. 여러 룰이 같은 그룹을 재사용할 수
+      있어 운영이 일관되고 간단해진다.
+      ## ✅ 합격 기준
+      검증 결과가 `"ok": true` 다(그룹 존재 + @blocklist 참조 룰 확인).
+    hint: '객체 blocklist 생성 → @blocklist drop 룰 → fw-s11 검증'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/object/apply -d '{"create":"nft add set inet six_filter blocklist { type ipv4_addr ; }","element":"nft add element inet six_filter blocklist { 10.20.30.202, 10.20.30.250 }"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter forward ip saddr @blocklist counter drop"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/scenario/check -d '{"id":"fw-s11"}'
+    answer_detail: "named set blocklist(2 IP) + forward 의 @blocklist drop. ok=true. 그룹 구성원만 바꿔 정책을 갱신 — 운영 효율."
+    verify:
+      type: output_contains
+      expect: '"ok": true'
+      field: stdout
+      semantic:
+        intent: "객체(그룹·Alias)로 다중 IP 를 묶어 룰에서 재사용 — 운영 효율과 일관성"
+        success_criteria: ["named set blocklist 생성", "룰이 @blocklist 참조", "fw-s11 통과"]
+
+  - order: 10
+    instruction: |
+      ## 🎯 미션 — 실습 룰·객체 정리 (cleanup, 필수)
+
+      실습으로 추가한 룰(악성 IP 차단, SSH rate limit, DNAT, @blocklist)과 객체(blocklist 그룹)를
+      모두 삭제해 방화벽을 원래 상태로 되돌린다. 콘솔의 **룰 관리 / NAT / 객체** 화면의 "삭제"
+      버튼으로도 가능하다. (객체는 그것을 참조하는 룰을 먼저 지워야 삭제된다.)
+
+      ## 💻 정리 명령
+      el34 호스트에는 jq 가 없으므로 python3 로 룰셋을 읽어 실습 룰을 일괄 삭제한다.
+      ```bash
+      python3 -c '
+      import json, urllib.request as u
+      B="http://192.168.136.145:8081"
+      def post(p,o):
+          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
+          return u.urlopen(r,timeout=8).read().decode()
+      rs=json.load(u.urlopen(B+"/api/ruleset",timeout=8))
+      n=0
+      for t in rs["tables"]:
+          if not t.get("editable"): continue
+          for ch in t["chains"]:
+              for r in ch["rules"]:
+                  mj=" ".join(r.get("matchers",[]))
+                  if ("10.20.30.202" in mj) or ("8088" in mj) or ("@blocklist" in mj) or ("dport 22" in mj and r.get("action")=="drop"):
+                      post("/api/rule/delete",{"family":r["family"],"table":r["table"],"chain":r["chain"],"handle":r["handle"]}); n+=1
+      try: post("/api/object/delete",{"name":"blocklist"})
+      except Exception: pass
+      print("cleanup done deleted=%d"%n)
+      '
+      ```
+      ## ✅ 합격 기준
+      실습 룰·객체가 모두 삭제되어 출력에 `cleanup done` 이 보인다(베이스라인은 보존).
+    hint: '룰 먼저(@blocklist 참조 포함), 그다음 객체 삭제. python3 로 일괄 → cleanup done'
+    answer: |
+      python3 -c '
+      import json, urllib.request as u
+      B="http://192.168.136.145:8081"
+      def post(p,o):
+          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
+          return u.urlopen(r,timeout=8).read().decode()
+      rs=json.load(u.urlopen(B+"/api/ruleset",timeout=8))
+      n=0
+      for t in rs["tables"]:
+          if not t.get("editable"): continue
+          for ch in t["chains"]:
+              for r in ch["rules"]:
+                  mj=" ".join(r.get("matchers",[]))
+                  if ("10.20.30.202" in mj) or ("8088" in mj) or ("@blocklist" in mj) or ("dport 22" in mj and r.get("action")=="drop"):
+                      post("/api/rule/delete",{"family":r["family"],"table":r["table"],"chain":r["chain"],"handle":r["handle"]}); n+=1
+      try: post("/api/object/delete",{"name":"blocklist"})
+      except Exception: pass
+      print("cleanup done deleted=%d"%n)
+      '
+    answer_detail: "실습 룰 4종(saddr drop / dport22 limit / dnat 8088 / @blocklist) + blocklist 그룹 삭제. 룰 먼저 지워야 그룹이 지워짐. 베이스라인 보존."
+    verify:
+      type: output_contains
+      expect: cleanup done
+      field: stdout
+      semantic:
+        intent: "실습 후 룰·객체를 원상 복구 — 운영 위생(삭제 순서: 룰 → 객체)"
+        success_criteria: ["추가한 실습 룰 전부 삭제", "blocklist 그룹 삭제", "베이스라인 룰 보존"]

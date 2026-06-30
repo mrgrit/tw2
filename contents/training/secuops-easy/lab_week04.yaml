@@ -1,0 +1,267 @@
+lab_id: secuops-easy-week04
+title: "W04 — IPS 침해대응 30: 공격별 탐지룰 작성 실전"
+version: standalone-easy
+course: secuops-easy
+week: 4
+description: |
+  IPS 콘솔(192.168.136.145:8082)의 침해대응 훈련 30 시나리오를 푼다. 본 랩은 세 그룹(웹/스캔/심화)에서
+  대표 시나리오를 골라, 폼으로 탐지룰을 만들고 적용한 뒤 콘솔의 '검증'으로 채점한다.
+  content·threshold·dns.query·pcre·classtype 를 두루 연습한다. 마지막에 실습 룰(sid 9000000+)을
+  정리한다. (전체 30개 중 20개 이상은 과제로 직접 풀 것.)
+difficulty: easy
+duration_minutes: 150
+audience: 보안 솔루션 운영 입문자 (4주차)
+prerequisites:
+  - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
+  - el34 호스트 브라우저에서 IPS 콘솔(192.168.136.145:8082) 접속 가능
+  - W04 강의안 정독 — 그룹별 탐지 전략, 좋은 룰 4원칙 / W03 실습 완료
+objectives:
+  - "웹 공격을 버퍼+content 로 탐지하는 룰을 작성한다"
+  - "스캔/무차별대입을 threshold(by_src)로 탐지한다"
+  - "dns.query·pcre·classtype 를 활용한 룰을 작성한다"
+  - "각 룰을 시나리오 검증으로 통과시킨다"
+  - "공격 재현으로 실제 탐지를 확인하고 실습 룰을 정리한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 침해대응 훈련 30 시나리오 목록 확인
+
+      **침해대응 훈련** 메뉴를 연다. 30개 시나리오가 세 그룹(웹 1-18 / 스캔 19-26 / 심화 27-30)으로
+      나뉘어 있다. 각 시나리오의 난이도와 제목을 훑어본다.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s http://192.168.136.145:8082/api/scenarios
+      ```
+      ## ✅ 합격 기준
+      목록에 `ips-s30` 까지 보인다(30개).
+    hint: 'GET /api/scenarios — ips-s01 ~ ips-s30'
+    answer: |
+      curl -s http://192.168.136.145:8082/api/scenarios
+    answer_detail: "30개 시나리오(ips-s01~s30), 3그룹. 각 항목에 상황/공격/build/힌트/검증."
+    verify:
+      type: output_contains
+      expect: ips-s30
+      field: stdout
+      semantic:
+        intent: "30개 시나리오 구성을 파악 — 그룹별 공격 유형 조망"
+        success_criteria: ["30개 시나리오 확인", "3그룹 구분 인지"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — [웹] sqlmap 스캐너 탐지 (ips-s08)
+
+      User-Agent 에 `sqlmap` 이 보이면 탐지. 폼: 버퍼 `http.user_agent`, content `sqlmap`, nocase,
+      flow `to_server`. 적용 후 ips-s08 을 검증한다(`ok: true`면 통과).
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert http any any -> any any (msg:\"EDU s08 sqlmap\"; flow:to_server; http.user_agent; content:\"sqlmap\"; nocase; sid:9000008; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s08"}'
+      ```
+      ## ✅ 합격 기준
+      검증 결과가 `"ok": true` 다.
+    hint: '버퍼=http.user_agent, content=sqlmap → apply → scenario/check ips-s08'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert http any any -> any any (msg:\"EDU s08 sqlmap\"; flow:to_server; http.user_agent; content:\"sqlmap\"; nocase; sid:9000008; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s08"}'
+    answer_detail: "http.user_agent 버퍼 + content sqlmap + nocase. ok=true. 도구 핑거프린트는 UA 버퍼에서."
+    verify:
+      type: output_contains
+      expect: '"ok": true'
+      field: stdout
+      semantic:
+        intent: "도구 핑거프린트(UA)를 정확한 버퍼로 탐지 — 버퍼 선택의 중요성"
+        success_criteria: ["http.user_agent 버퍼 사용", "content sqlmap + nocase", "ips-s08 통과"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — [스캔] SSH 무차별 대입 (ips-s20, threshold)
+
+      tcp 22번으로 같은 출처가 60초 10회 초과 연결이면 탐지. 폼: proto `tcp`, dport `22`,
+      threshold count `10`, seconds `60`, track `by_src`, type `both`. 적용 후 ips-s20 검증.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert tcp any any -> any 22 (msg:\"EDU s20 ssh brute\"; threshold:type both, track by_src, count 10, seconds 60; sid:9000020; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s20"}'
+      ```
+      ## ✅ 합격 기준
+      검증 결과가 `"ok": true` 다.
+    hint: 'proto=tcp dport=22 + threshold by_src → scenario/check ips-s20'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert tcp any any -> any 22 (msg:\"EDU s20 ssh brute\"; threshold:type both, track by_src, count 10, seconds 60; sid:9000020; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s20"}'
+    answer_detail: "단발 연결은 정상 → threshold(by_src 60s 10회 초과)로 무차별 대입만 탐지. 포트는 헤더 dport 22."
+    verify:
+      type: output_contains
+      expect: '"ok": true'
+      field: stdout
+      semantic:
+        intent: "빈도 기반(threshold) 탐지 — 단발 정상, 폭주만 탐지하는 전략"
+        success_criteria: ["tcp dport 22", "threshold track by_src", "ips-s20 통과"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — [심화] 의심 도메인 DNS 탐지 (ips-s25, dns.query)
+
+      DNS 질의 도메인에 `.xyz` 가 보이면 탐지. 폼: proto `dns`, 버퍼 `dns.query`, content `.xyz`,
+      nocase. 적용 후 ips-s25 검증.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert dns any any -> any any (msg:\"EDU s25 dns xyz\"; dns.query; content:\".xyz\"; nocase; sid:9000025; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s25"}'
+      ```
+      ## ✅ 합격 기준
+      검증 결과가 `"ok": true` 다.
+    hint: 'proto=dns, 버퍼=dns.query, content=.xyz → scenario/check ips-s25'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert dns any any -> any any (msg:\"EDU s25 dns xyz\"; dns.query; content:\".xyz\"; nocase; sid:9000025; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s25"}'
+    answer_detail: "dns.query 버퍼로 조회 도메인 검사. 의심 TLD(.xyz)는 C2 의 단골. HTTP 외 프로토콜도 전용 버퍼로."
+    verify:
+      type: output_contains
+      expect: '"ok": true'
+      field: stdout
+      semantic:
+        intent: "HTTP 외 프로토콜(DNS)도 전용 버퍼로 탐지 — 버퍼의 폭 이해"
+        success_criteria: ["proto dns", "dns.query 버퍼", "ips-s25 통과"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — [심화] 정규식 패턴 탐지 (ips-s29, pcre)
+
+      content 로 못 잡는 "형태"(13~16자리 숫자)를 pcre 로 잡는다. 폼: 버퍼 `http.uri`, pcre 칸에
+      `/\d{13,16}/`. 적용 후 ips-s29 검증.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert http any any -> any any (msg:\"EDU s29 cc pattern\"; http.uri; pcre:\"/\\d{13,16}/\"; sid:9000029; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s29"}'
+      ```
+      ## ✅ 합격 기준
+      검증 결과가 `"ok": true` 다.
+    hint: '버퍼=http.uri, pcre=/\d{13,16}/ → scenario/check ips-s29'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert http any any -> any any (msg:\"EDU s29 cc pattern\"; http.uri; pcre:\"/\\d{13,16}/\"; sid:9000029; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s29"}'
+    answer_detail: "pcre /\\d{13,16}/ = 13~16자리 연속 숫자(카드 형태). content 가 못 잡는 가변 패턴을 정규식으로."
+    verify:
+      type: output_contains
+      expect: '"ok": true'
+      field: stdout
+      semantic:
+        intent: "정규식(pcre)으로 형태 기반 탐지 — content 의 한계 보완"
+        success_criteria: ["pcre 사용", "http.uri 버퍼", "ips-s29 통과"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — [종합] 단계 분류 (ips-s30, classtype)
+
+      정찰(sqlmap UA)을 잡되 `classtype:attempted-recon` 으로 분류해 kill-chain 초입을 표시한다.
+      폼: 버퍼 `http.user_agent`, content `sqlmap`, nocase, classtype `attempted-recon`. 적용 후
+      ips-s30 검증.
+
+      ## 💻 확인 명령
+      ```bash
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert http any any -> any any (msg:\"EDU s30 recon sqlmap\"; flow:to_server; http.user_agent; content:\"sqlmap\"; nocase; classtype:attempted-recon; sid:9000030; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s30"}'
+      ```
+      ## ✅ 합격 기준
+      검증 결과가 `"ok": true` 다.
+    hint: 'classtype=attempted-recon 추가 → scenario/check ips-s30'
+    answer: |
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert http any any -> any any (msg:\"EDU s30 recon sqlmap\"; flow:to_server; http.user_agent; content:\"sqlmap\"; nocase; classtype:attempted-recon; sid:9000030; rev:1;)"}' >/dev/null
+      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s30"}'
+    answer_detail: "classtype 로 공격 단계(정찰)를 분류 → SOC 우선순위. 다단계 방어의 조기 경보."
+    verify:
+      type: output_contains
+      expect: '"ok": true'
+      field: stdout
+      semantic:
+        intent: "classtype 로 공격 단계를 분류 — kill-chain 초입 탐지와 우선순위"
+        success_criteria: ["classtype:attempted-recon", "정찰 단계 탐지", "ips-s30 통과"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — 공격 재현으로 실제 탐지 확인
+
+      방금 만든 sqlmap 탐지 룰들이 진짜 잡는지 확인한다. 공격자(el34-attacker)에서 sqlmap UA
+      요청을 보내고 eve.json 의 alert 를 본다.
+
+      ## 💻 확인 명령
+      ```bash
+      docker exec el34-attacker curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: juice.el34.lab" "http://10.20.30.1/?id=1"
+      sleep 3
+      curl -s "http://192.168.136.145:8082/api/eve?type=alert&n=50"
+      ```
+      ## ✅ 합격 기준
+      최근 alert 에 `sqlmap` 관련 signature 가 보인다.
+    hint: 'sqlmap UA 공격 재현 후 eve alert. expect: sqlmap'
+    answer: |
+      docker exec el34-attacker curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: juice.el34.lab" "http://10.20.30.1/?id=1"
+      sleep 3
+      curl -s "http://192.168.136.145:8082/api/eve?type=alert&n=50"
+    answer_detail: "eve alert 에 sqlmap signature(내 룰 s08/s30 + 기본 룰 1000003)가 보임 — 실제 탐지 실증."
+    verify:
+      type: output_contains
+      expect: sqlmap
+      field: stdout
+      semantic:
+        intent: "작성한 룰이 실제 트래픽을 탐지함을 eve.json 으로 확인 — 룰의 실효성 검증"
+        success_criteria: ["sqlmap 공격 재현", "eve alert 에 signature", "내 룰의 탐지 확인"]
+
+  - order: 8
+    instruction: |
+      ## 🎯 미션 — 실습 룰 정리 (cleanup, 필수)
+
+      실습으로 만든 룰(sid 9000000 이상)을 모두 삭제한다. **탐지룰 관리** 목록의 삭제 버튼으로도
+      가능하다. (호스트에 jq 가 없으므로 python3 로 처리. 전체 30개를 과제로 풀 때도 끝나면 정리한다.)
+
+      ## 💻 정리 명령
+      ```bash
+      python3 -c '
+      import json, urllib.request as u
+      B="http://192.168.136.145:8082"
+      def post(p,o):
+          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
+          return u.urlopen(r,timeout=8).read().decode()
+      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
+      n=0
+      for r in rs.get("rules",[]):
+          sid=str(r.get("sid",""))
+          if r.get("edu") or (sid.isdigit() and int(sid)>=9000000):
+              post("/api/rule/delete",{"sid":sid}); n+=1
+      print("cleanup done deleted=%d"%n)
+      '
+      ```
+      ## ✅ 합격 기준
+      실습 룰이 모두 삭제되어 `cleanup done` 이 보인다.
+    hint: 'python3 로 edu 룰(sid>=9000000) 일괄 삭제 → cleanup done'
+    answer: |
+      python3 -c '
+      import json, urllib.request as u
+      B="http://192.168.136.145:8082"
+      def post(p,o):
+          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
+          return u.urlopen(r,timeout=8).read().decode()
+      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
+      n=0
+      for r in rs.get("rules",[]):
+          sid=str(r.get("sid",""))
+          if r.get("edu") or (sid.isdigit() and int(sid)>=9000000):
+              post("/api/rule/delete",{"sid":sid}); n+=1
+      print("cleanup done deleted=%d"%n)
+      '
+    answer_detail: "edu 룰(sid>=9000000) 전부 삭제 → reload. loaded 가 기본 5로 복귀."
+    verify:
+      type: output_contains
+      expect: cleanup done
+      field: stdout
+      semantic:
+        intent: "실습 후 룰셋 원상 복구 — 운영 위생"
+        success_criteria: ["edu 룰 전부 삭제", "기본 룰 보존", "loaded 기본값 복귀"]

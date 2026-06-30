@@ -1,0 +1,288 @@
+lab_id: secuops-easy-week01
+title: "W01 — 전체 토폴로지 탐험: 세 콘솔에 접속해 지도 그리기"
+version: standalone-easy
+course: secuops-easy
+week: 1
+description: |
+  이번 실습은 명령어를 외우는 시간이 아니라 "지도"를 직접 확인하는 시간이다. el34의 세 교육용
+  콘솔(방화벽 192.168.136.145:8081 / IPS :8082 / WAF :8083)에 접속해 각 장비가 어느 구역에 있는지,
+  무엇을 검사하는지 눈으로 확인한다. 그다음 정상 웹 요청을 한 번 흘려보내, 그 요청이
+  방화벽→IPS→WAF→웹앱을 차례로 지나는 길을 추적한다. 모든 확인은 콘솔 화면(브라우저)으로 하며,
+  채점을 위해 같은 정보를 주는 명령(콘솔의 `/api/status` API)을 함께 제공한다.
+difficulty: easy
+duration_minutes: 90
+audience: 보안 솔루션 운영 입문자 (1주차)
+prerequisites:
+  - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
+  - el34 호스트 브라우저(Firefox)에서 내부 GUI(192.168.136.145:8081~8083) 접속 가능
+  - W01 강의안 정독 — 4구역(ext/pipe/dmz/int)과 세 장비의 역할
+objectives:
+  - "세 콘솔(방화벽/IPS/WAF) 대시보드를 열고 핵심 정보를 읽는다"
+  - "방화벽의 두 인터페이스(ext 10.20.30.1 / pipe 10.20.31.1)와 존을 확인한다"
+  - "IPS 가 가동 중이며 탐지룰이 로딩돼 있음을 확인한다"
+  - "WAF 의 SecRuleEngine 모드와 CRS 버전을 확인한다"
+  - "정상 웹 요청 한 개의 경로(방화벽→IPS→WAF→앱)를 추적한다"
+  - "세 보안장비가 모두 SIEM 에 연결돼 있음을 확인한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 방화벽 콘솔 대시보드 열기
+
+      el34 호스트 브라우저에서 **`http://192.168.136.145:8081/`**(방화벽 콘솔)에 접속한다. 좌측의
+      **대시보드**와 **인터페이스**를 눌러, 방화벽이 가진 두 개의 다리(인터페이스)를 확인한다.
+
+      - ext 쪽 = **10.20.30.1** → ext(외부) 구역을 향한다(공격자가 있는 망).
+      - pipe 쪽 = **10.20.31.1** → pipe(통로) 구역을 향한다(IPS로 가는 길).
+
+      ## 💻 확인 명령 (채점용)
+
+      ```bash
+      curl -s http://192.168.136.145:8081/api/status
+      ```
+
+      ## 🔍 무엇을 보나
+      출력의 `interfaces`에서 두 다리(10.20.30.1, 10.20.31.1)와 각 인터페이스의 `zone`을 찾는다.
+      `tables`에서 방화벽이 다루는 테이블(six_filter, six_nat)도 보인다.
+
+      ## ✅ 합격 기준
+      방화벽 인터페이스 두 개를 콘솔에서 확인하고, 출력에 `interfaces` 가 보인다.
+    hint: 'curl -s http://192.168.136.145:8081/api/status | python3 -m json.tool'
+    answer: |
+      curl -s http://192.168.136.145:8081/api/status
+    answer_detail: |
+      hostname=fw, interfaces 에 10.20.30.1(ext)·10.20.31.1(pipe) 두 다리가 보인다. 방화벽은 두
+      구역에 양다리를 걸친 "문". tables 의 six_filter(편집가능)/six_nat 이 W2에서 룰을 만들 곳.
+    verify:
+      type: output_contains
+      expect: interfaces
+      field: stdout
+      semantic:
+        intent: "방화벽 콘솔에서 두 인터페이스(ext/pipe)를 확인 — 방화벽이 경계의 문임을 이해"
+        success_criteria:
+          - "ext 쪽 10.20.30.1, pipe 쪽 10.20.31.1 두 인터페이스 확인"
+          - "방화벽이 두 구역에 걸쳐 있음을 설명"
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — IPS 콘솔에서 "가동 중 + 탐지룰" 확인
+
+      **`http://192.168.136.145:8082/`**(IPS 콘솔)에 접속한다. 대시보드에서 세 가지를 확인한다.
+      ① Suricata 가 **가동중**(`running:true`)인가  ② **로딩된 탐지룰 수**(`rules_loaded`, 0보다 커야 함)
+      ③ 실패한 룰(`rules_failed`, 0이어야 정상).
+
+      ## 💻 확인 명령 (채점용)
+
+      ```bash
+      curl -s http://192.168.136.145:8082/api/status
+      ```
+
+      ## 🔍 무엇을 보나
+      `running:true`, `rules_loaded`(5 이상), `rules_failed`(0). rules_failed 가 0보다 크면 잘못
+      작성된 룰이 있다는 뜻 — W3에서 자세히 배운다. IPS는 pipe(10.20.31.2)와 dmz(10.20.32.1)를 감시한다.
+
+      ## ✅ 합격 기준
+      IPS 가 가동 중이고 탐지룰이 로딩돼 있음을 확인. 출력에 `rules_loaded` 가 보인다.
+    hint: 'curl -s http://192.168.136.145:8082/api/status'
+    answer: |
+      curl -s http://192.168.136.145:8082/api/status
+    answer_detail: |
+      running=true, rules_loaded>=5, rules_failed=0. Suricata 가 pipe·dmz 두 다리로 통과하는
+      트래픽의 내용을 검사한다. 이것이 방화벽 다음의 "내용 검사" 층.
+    verify:
+      type: output_contains
+      expect: rules_loaded
+      field: stdout
+      semantic:
+        intent: "IPS 가 가동 중이고 탐지룰이 로딩됐음을 확인 — IPS 가 '내용 검사' 층임을 이해"
+        success_criteria:
+          - "running = true"
+          - "rules_loaded 가 0보다 큼, rules_failed = 0"
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — WAF 콘솔에서 보호 모드 확인
+
+      **`http://192.168.136.145:8083/`**(WAF 콘솔)에 접속한다. 대시보드에서 **SecRuleEngine** 모드와
+      **OWASP CRS** 버전을 확인한다.
+
+      - `engine: On` → 공격을 탐지하면 **실제로 차단(403)** 한다.
+      - `DetectionOnly` → 탐지만 하고 통과시킨다(학습/튜닝용).
+
+      ## 💻 확인 명령 (채점용)
+
+      ```bash
+      curl -s http://192.168.136.145:8083/api/status
+      ```
+
+      ## 🔍 무엇을 보나
+      `engine`(On이면 차단 모드), `crs_version`(3.3.2), `apache_running:true`. WAF 는 dmz 의 웹서버
+      앞단에서 HTTP 요청의 의미를 검사한다.
+
+      ## ✅ 합격 기준
+      WAF 엔진 모드와 CRS 버전을 확인. 출력에 `crs_version` 이 보인다.
+    hint: 'curl -s http://192.168.136.145:8083/api/status'
+    answer: |
+      curl -s http://192.168.136.145:8083/api/status
+    answer_detail: |
+      engine=On(차단 모드), crs_version=3.3.2, apache_running=true. WAF 는 dmz 웹서버에서 HTTP
+      요청을 검사하는 마지막 방패. On 이면 공격을 403으로 막고, DetectionOnly 면 탐지만 한다.
+    verify:
+      type: output_contains
+      expect: crs_version
+      field: stdout
+      semantic:
+        intent: "WAF 의 보호 모드(On)와 CRS 버전을 확인 — WAF 가 HTTP 의미를 검사하는 층임을 이해"
+        success_criteria:
+          - "engine = On, crs_version = 3.3.2"
+          - "WAF 가 웹서버 앞단에서 HTTP 를 검사한다고 설명"
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — 세 콘솔이 서로 다른 장비임을 확인
+
+      세 콘솔은 각각 다른 컴퓨터(컨테이너)에서 돌아간다. 각 콘솔의 상태에서 `hostname`을 확인해
+      서로 다른 장비(fw / ips / web)임을 직접 본다.
+
+      ## 💻 확인 명령 (채점용)
+
+      ```bash
+      for p in 8081 8082 8083; do
+        echo -n "$p => "
+        curl -s http://192.168.136.145:$p/api/status | grep -o '"hostname": "[a-z]*"'
+      done
+      ```
+
+      ## 🔍 무엇을 보나
+      8081 → hostname "fw", 8082 → "ips", 8083 → "web". 세 장비가 각자 다른 구역에서 자기 역할을 한다.
+
+      ## ✅ 합격 기준
+      세 콘솔의 hostname 이 서로 다름을 확인. 출력에 `hostname` 이 보인다.
+    hint: '세 콘솔 포트(8081/8082/8083)의 /api/status hostname 비교'
+    answer: |
+      for p in 8081 8082 8083; do
+        echo -n "$p => "
+        curl -s http://192.168.136.145:$p/api/status | grep -o '"hostname": "[a-z]*"'
+      done
+    answer_detail: |
+      8081=fw, 8082=ips, 8083=web. 세 장비가 각각 ext/pipe 경계, pipe/dmz 경계, dmz 웹서버에
+      위치한다. 한 장비가 다 하지 않고 경계마다 전문 장비를 두는 것이 분산 방어.
+    verify:
+      type: output_contains
+      expect: hostname
+      field: stdout
+      semantic:
+        intent: "세 콘솔이 서로 다른 장비(fw/ips/web)에서 동작함을 확인 — 분산된 방어 구조 이해"
+        success_criteria:
+          - "8081→fw, 8082→ips, 8083→web"
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 정상 요청 한 개의 경로 추적
+
+      이제 정상 웹 요청을 한 번 보내, 그 요청이 **방화벽 → IPS → WAF → 내부 앱**을 거쳐 응답이
+      돌아오는지 확인한다. JuiceShop 웹 사이트(`juice.el34.lab`)에 접속해 본다. 요청은 공격자
+      위치(el34-attacker)에서 방화벽 입구(10.20.30.1)로 보낸다.
+
+      ## 💻 확인 명령 (채점용)
+
+      ```bash
+      docker exec el34-attacker curl -s -o /dev/null -w "응답 코드: %{http_code}\n" -H "Host: juice.el34.lab" http://10.20.30.1/
+      ```
+
+      ## 🔍 무엇을 보나
+      `200`(정상) 같은 응답 코드가 돌아오면, 이 요청이 방화벽(80포트 허용+DNAT)을 통과하고, IPS를
+      거쳐(공격 패턴 없음), WAF를 통과해(정상 요청), 내부 JuiceShop까지 닿았다가 응답이 같은 길로
+      돌아온 것이다. 한 번의 접속에 4개 장비가 관여한다.
+
+      ## ✅ 합격 기준
+      정상 응답 코드를 받는다. 출력에 `응답 코드` 가 보인다.
+    hint: 'docker exec el34-attacker curl -w "%{http_code}" -H "Host: juice.el34.lab" http://10.20.30.1/'
+    answer: |
+      docker exec el34-attacker curl -s -o /dev/null -w "응답 코드: %{http_code}\n" -H "Host: juice.el34.lab" http://10.20.30.1/
+    answer_detail: |
+      응답 코드(예: 200) = 방화벽(포트 허용+DNAT)→IPS(내용 정상)→WAF(HTTP 정상)→JuiceShop 도달→
+      응답 복귀. 정상 트래픽은 네 장비를 매끄럽게 통과한다. juice 는 DetectionOnly vhost 라 정상 200.
+    verify:
+      type: output_contains
+      expect: "응답 코드"
+      field: stdout
+      semantic:
+        intent: "정상 요청이 4개 장비를 통과해 응답을 받는 전체 경로를 체감 — 트래픽 흐름 이해"
+        success_criteria:
+          - "HTTP 응답 코드 수신 (200 등)"
+          - "요청이 방화벽→IPS→WAF→앱 경로를 지났음을 설명"
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 그 요청이 IPS 에 남긴 흔적 보기
+
+      방금 보낸 요청은 IPS를 지났으므로, IPS 콘솔의 **이벤트(eve.json)**에 흔적이 남는다.
+      IPS 콘솔에서 이벤트 타입(http/flow 등)을 확인한다.
+
+      ## 💻 확인 명령 (채점용)
+
+      ```bash
+      curl -s http://192.168.136.145:8082/api/eve | head -c 400
+      ```
+
+      ## 🔍 무엇을 보나
+      `events`에 `event_type`(http, flow, fileinfo 등)이 보인다. 우리가 보낸 웹 요청이 IPS의 눈에
+      잡혀 기록된 것이다. (이것이 나중에 SIEM으로 모이는 원천 데이터다.)
+
+      ## ✅ 합격 기준
+      IPS 이벤트에 `event_type` 이 보인다.
+    hint: 'curl -s http://192.168.136.145:8082/api/eve | head -c 400'
+    answer: |
+      curl -s http://192.168.136.145:8082/api/eve | head -c 400
+    answer_detail: |
+      events 에 http/flow/fileinfo 등 event_type 이 보임 — 방금 요청이 IPS 에 기록됐다. 이
+      eve.json 데이터가 SIEM(Wazuh)으로 모여 통합 관제의 재료가 된다.
+    verify:
+      type: output_contains
+      expect: event_type
+      field: stdout
+      semantic:
+        intent: "한 요청이 IPS 에 기록되는 것을 확인 — IPS 가 원천 로그를 만드는 곳임을 이해"
+        success_criteria:
+          - "eve.json 이벤트에 event_type(http/flow 등)이 보임"
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — 세 장비가 모두 SIEM 에 보고하는지 확인 + 토폴로지 정리
+
+      강의 §6에서 본 대로, 세 보안장비(방화벽·IPS·웹서버)의 기록은 모두 **SIEM(Wazuh, 10.20.32.100)**
+      한 곳으로 모인다. el34에서는 세 장비가 각각 Wazuh 에이전트(`fw`·`ips`·`web`)로 SIEM에
+      연결돼 있다. 세 에이전트가 모두 **Active**인지 확인한다.
+
+      ## 💻 확인 명령 (채점용)
+
+      ```bash
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "Name: (fw|ips|web)"
+      ```
+
+      ## 🔍 무엇을 보나
+      `Name: fw ... Active`, `Name: web ... Active`, `Name: ips ... Active`. 세 관문이 모두 관제실에
+      보고 중. SIEM 대시보드에서도 같은 목록을 볼 수 있다. **관문 3개 + 통합 관제 = 심층 방어의 완성.**
+
+      ## ✅ 합격 기준
+      출력에 `Name: web`(및 fw/ips) 이 Active 로 보인다. + 4구역 토폴로지 그림 제출.
+    hint: 'docker exec el34-siem /var/ossec/bin/agent_control -l'
+    answer: |
+      docker exec el34-siem /var/ossec/bin/agent_control -l | grep -E "Name: (fw|ips|web)"
+    answer_detail: |
+      세 보안장비가 Wazuh 에이전트(fw/ips/web)로 SIEM 에 Active 연결 — 방화벽이 막은 것, IPS 가
+      탐지한 것, WAF 가 차단한 것이 한 관제실에 모인다. 토폴로지: ext(10.20.30)→pipe(10.20.31)→
+      dmz(10.20.32, WAF+웹서버+SIEM)→int(10.20.40, 앱 7종), 경계마다 방화벽/IPS.
+    verify:
+      type: output_contains
+      expect: "Name: web"
+      field: stdout
+      semantic:
+        intent: "세 보안장비가 모두 SIEM 에 연결됨을 확인 + 전체 토폴로지 종합 — 1주차 마무리"
+        success_criteria:
+          - "Wazuh 에 fw/ips/web 에이전트가 Active"
+          - "세 장비의 로그가 한 SIEM 으로 모임을 이해"
+          - "4구역 토폴로지를 직접 그려 정리"
