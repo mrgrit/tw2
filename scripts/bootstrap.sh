@@ -43,6 +43,23 @@ say(){ printf '\n\033[1;36m[bootstrap]\033[0m %s\n' "$*"; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 SUDO=""; [ "$(id -u)" -ne 0 ] && have sudo && SUDO="sudo"
 
+# user-space 단계(venv/pip/npm/DB시드)는 항상 RUN_USER 권한으로 실행한다.
+# sudo 로 부트스트랩하면 .venv·.data·egg-info·node_modules 가 root 소유가 되어
+#  (1) 비루트로 재실행 시 pip 가 'Cannot update time stamp ... egg-info' 로 실패하고
+#  (2) systemd 서비스(User=RUN_USER)가 root 소유 SQLite DB 에 write 못해 런타임이 깨진다.
+AS_USER(){
+  if [ "$(id -u)" -eq 0 ] && [ "$RUN_USER" != "root" ]; then
+    sudo -u "$RUN_USER" -H env "PATH=$PATH" "$@"
+  else
+    "$@"
+  fi
+}
+# 이전에 root 소유로 남은 빌드 산출물을 RUN_USER 로 자가복구(있을 때만).
+heal_owner(){
+  [ "$(id -u)" -eq 0 ] && [ "$RUN_USER" != "root" ] || return 0
+  chown -R "$RUN_USER" .venv .data apps/api/*.egg-info apps/ui/node_modules 2>/dev/null || true
+}
+
 # ---------- 1) 시스템 패키지 ----------
 say "1/7 시스템 패키지 설치"
 if have apt-get; then
@@ -89,40 +106,41 @@ TUBEWAR_GRADE_ROUNDS=1
 TUBEWAR_LAB_MONITOR=0
 ENV
   echo "ADMIN_PW:$ADMIN_PASSWORD" > .admin-credentials.txt; chmod 600 .admin-credentials.txt
+  [ "$(id -u)" -eq 0 ] && [ "$RUN_USER" != "root" ] && chown "$RUN_USER" .env .admin-credentials.txt 2>/dev/null || true
   say "  .env 생성됨 (관리자 비번 → .admin-credentials.txt)"
 else
   say "  기존 .env 유지"
   API_PORT="$(grep -oP '^TUBEWAR_API_PORT=\K.*' .env || echo "$API_PORT")"
 fi
-mkdir -p .data
+AS_USER mkdir -p .data
+heal_owner
 
 # ---------- 3) python venv + 의존성 ----------
-say "3/7 python venv + 의존성(apps/api[dev])"
-[ -d .venv ] || python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -q -U pip wheel
-python -m pip install -q -e "apps/api[dev]"
+say "3/7 python venv + 의존성(apps/api[dev]) — RUN_USER=$RUN_USER 권한"
+[ -d .venv ] || AS_USER python3 -m venv .venv
+AS_USER .venv/bin/python -m pip install -q -U pip wheel
+AS_USER .venv/bin/python -m pip install -q -e "apps/api[dev]"
 
 # ---------- 4) UI 의존성 + 빌드 ----------
 say "4/7 UI 의존성 + 빌드"
-( cd apps/ui && (npm ci 2>/dev/null || npm install) )
-if [ "$UI_MODE" = "build" ]; then ( cd apps/ui && npm run build ); fi
+( cd apps/ui && (AS_USER npm ci 2>/dev/null || AS_USER npm install) )
+if [ "$UI_MODE" = "build" ]; then ( cd apps/ui && AS_USER npm run build ); fi
 
 # ---------- 5) DB 초기화(앱 startup이 스키마+관리자+시나리오 시드) ----------
+# .env 는 app.config(pydantic-settings)가 repo root 절대경로로 직접 로드한다.
 say "5/7 DB 초기화 (스키마+관리자+시나리오 자동 시드)"
-set -a; . ./.env; set +a
-( python -c "
+AS_USER .venv/bin/python -c "
 import asyncio,sys; sys.path.insert(0,'apps/api')
 from app.main import lifespan, app
 async def go():
     async with lifespan(app): pass
 asyncio.run(go())
-" ) && say "  DB 시드 완료: .data/tw2.sqlite3"
+" && say "  DB 시드 완료: .data/tw2.sqlite3"
 
 # ---------- 6) 데모 학생(옵션) ----------
 if [ "$DEMO_USERS" = "1" ]; then
   say "6/7 데모 학생 시드 (shin/kim/mrgrit)"
-  python -c "
+  AS_USER .venv/bin/python -c "
 import asyncio,sys; sys.path.insert(0,'apps/api')
 from app.db import SessionLocal
 from app.models import User
@@ -179,8 +197,9 @@ UNIT
   sleep 3; $SUDO systemctl --no-pager --lines=0 status tw2-api tw2-ui || true
 else
   say "7/7 nohup 기동(systemd 미사용)"
-  nohup .venv/bin/uvicorn app.main:app --host "$HOST" --port "$API_PORT" --app-dir apps/api > .data/api.log 2>&1 &
-  ( cd apps/ui && VITE_API_TARGET="http://127.0.0.1:$API_PORT" nohup $UI_START > "$REPO/.data/ui.log" 2>&1 & )
+  # 로그 리다이렉트도 RUN_USER 컨텍스트에서 열어 .data/*.log 가 root 소유로 남지 않게 함.
+  AS_USER bash -c "cd '$REPO' && nohup .venv/bin/uvicorn app.main:app --host '$HOST' --port '$API_PORT' --app-dir apps/api > .data/api.log 2>&1 &"
+  AS_USER bash -c "cd '$REPO/apps/ui' && VITE_API_TARGET='http://127.0.0.1:$API_PORT' nohup $UI_START > '$REPO/.data/ui.log' 2>&1 &"
   sleep 5
 fi
 
