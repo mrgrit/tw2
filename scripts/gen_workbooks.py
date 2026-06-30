@@ -16,6 +16,10 @@ import yaml
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "apps", "api"))
 from app.services import workbook as wb  # noqa: E402
+from app.services import infra_render  # noqa: E402
+
+# 사전 배포 워크북은 배포 기준 IP(config.ref_*)로 플레이스홀더를 치환.
+_REF_VARS = infra_render.build_vars(None, None)
 
 SRC = os.path.join(ROOT, "contents", "battle-scenarios")
 OUT = os.environ.get("TUBEWAR_WORKBOOK_OUT") or os.path.join(ROOT, "contents", "battle-workbook")
@@ -30,6 +34,7 @@ def main():
         if not isinstance(d, dict) or not (d.get("red_missions") or d.get("blue_missions")):
             continue
         sid = d.get("id") or os.path.splitext(os.path.basename(f))[0]
+        d = infra_render.render(d, _REF_VARS)   # IP 플레이스홀더 → 기준 IP
         doc = wb.build_doc(d)          # prefill 없음 → 빈 워크북(사전 배포본)
         doc.save(os.path.join(OUT, f"{sid}.docx"))
         n += 1

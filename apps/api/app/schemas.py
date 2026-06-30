@@ -42,7 +42,11 @@ class UserOut(BaseModel):
 # ── Infra ────────────────────────────────────────────
 class InfraIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    # target(el34 타깃 VM) | attacker(외부 공격자 VM). 미션 IP 치환에 사용.
+    kind: str = Field(default="target", pattern=r"^(target|attacker)$")
     vm_ip: str = Field(min_length=3, max_length=45)
+    # 타깃 웹 진입(공격 인입) IP — 관리 IP 와 다를 때만. 비우면 vm_ip 로 폴백.
+    web_entry_ip: str | None = Field(default=None, max_length=45)
     ssh_user: str = Field(default="ccc", max_length=40)
     ssh_password: str = Field(min_length=1, max_length=255)
     bastion_api_key: str = Field(default="ccc-api-key-2026", max_length=120)
@@ -53,7 +57,9 @@ class InfraIn(BaseModel):
 class InfraOut(BaseModel):
     id: int
     name: str
+    kind: str = "target"
     vm_ip: str
+    web_entry_ip: str | None = None
     ssh_user: str
     bastion_api_key: str
     port_map: dict[str, int]

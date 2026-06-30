@@ -47,7 +47,11 @@ class Infra(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(80), nullable=False)         # alias e.g. "alice-6v6"
-    vm_ip: Mapped[str] = mapped_column(String(45), nullable=False)        # IPv4/IPv6
+    # 인프라 역할: target(el34 타깃 VM) | attacker(외부 공격자 VM). 미션 IP 치환에 사용.
+    kind: Mapped[str] = mapped_column(String(16), default="target", nullable=False)
+    vm_ip: Mapped[str] = mapped_column(String(45), nullable=False)        # IPv4/IPv6 (관리/SSH/Assessor)
+    # 타깃 웹 진입(공격 인입) IP — 관리 IP(vm_ip)와 다를 때만. 비우면 vm_ip 로 폴백.
+    web_entry_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     ssh_user: Mapped[str] = mapped_column(String(40), default="ccc", nullable=False)
     ssh_password_enc: Mapped[str] = mapped_column(String(255), nullable=False)  # TODO Phase 2 암호화
     bastion_api_key: Mapped[str] = mapped_column(String(120), nullable=False)

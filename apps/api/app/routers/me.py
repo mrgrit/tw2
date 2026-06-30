@@ -17,6 +17,7 @@ from ..models import Scenario, StudentSubmission, User
 from ..schemas import StudentSubmissionOut
 from ..security import get_current_user
 from ..services import workbook as wb
+from ..services import infra_render
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -75,6 +76,8 @@ async def my_workbook(
     else:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no scenario and no submissions to build a workbook")
 
+    # 미션 텍스트의 IP 플레이스홀더를 내 등록 인프라로 치환한 뒤 렌더.
+    scn_dict = infra_render.render(scn_dict, await infra_render.vars_for_user(session, user.id))
     doc = wb.build_doc(scn_dict, prefill=wb.prefill_from_submissions(list(subs)))
     buf = io.BytesIO()
     doc.save(buf)
