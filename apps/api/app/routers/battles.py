@@ -27,6 +27,7 @@ from ..schemas import (
 from ..security import get_current_user, require_admin
 from ..services import auto_monitor, battle_service as bs, hints as hint_svc
 from ..services import event_analyzer as ea
+from ..services import infra_render
 from ..services import lab_monitor, provisioner
 from ..services import feedback as fb_svc
 from ..services import assessor_client, battlefield
@@ -92,7 +93,9 @@ def _solved_orders(events: list, side_marker: str) -> set[int]:
     return out
 
 
-def _missions_for_side(scenario, side: str, solved: set[int]) -> list[MissionOut]:
+def _missions_for_side(
+    scenario, side: str, solved: set[int], variables: dict[str, str] | None = None,
+) -> list[MissionOut]:
     if not scenario:
         return []
     container = (scenario.mission_red if side == "red" else scenario.mission_blue) or {}
@@ -118,11 +121,11 @@ def _missions_for_side(scenario, side: str, solved: set[int]) -> list[MissionOut
             expect_str = str(raw_expect) if raw_expect else None
         out.append(MissionOut(
             side=side, order=order,
-            title=m.get("title"),
-            instruction=str(m.get("instruction") or ""),
+            title=infra_render.render(m.get("title"), variables) if variables else m.get("title"),
+            instruction=infra_render.render(str(m.get("instruction") or ""), variables) if variables else str(m.get("instruction") or ""),
             target_vm=m.get("target_vm"),
             points=int(m.get("points") or 0),
-            hint=m.get("hint"),
+            hint=infra_render.render(m.get("hint"), variables) if variables else m.get("hint"),
             verify_expect=expect_str,
             semantic_intent=sem.get("intent"),
             success_criteria=list(sem.get("success_criteria") or []),
@@ -152,8 +155,11 @@ async def _serialize_with_missions(
 
     blue_solved = _solved_orders(b.events, "blue")
     red_solved = _solved_orders(b.events, "red")
-    red_missions = _missions_for_side(scenario, "red", red_solved)
-    blue_missions = _missions_for_side(scenario, "blue", blue_solved)
+    # 미션 IP 치환 — 이 배틀 참가자가 등록한 인프라(공격자=red, 타깃=blue) 기준.
+    role_infra, _ = await _role_infra_map(session, b.id)
+    mvars = infra_render.vars_for_battle(role_infra)
+    red_missions = _missions_for_side(scenario, "red", red_solved, mvars)
+    blue_missions = _missions_for_side(scenario, "blue", blue_solved, mvars)
 
     if my_role == "red":
         my_m, opp_m = red_missions, blue_missions

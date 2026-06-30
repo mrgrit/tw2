@@ -45,7 +45,7 @@
 | 영역 | 설명 |
 |------|------|
 | 회원/인증 | 학생/강사/관리자 계정, JWT. (구글 로그인 옵션) |
-| 인프라 등록 | 학생이 **타깃(el34)** 과 **공격자(.202)** 2개를 등록 → 헬스체크 |
+| 인프라 등록 | 학생이 **타깃(el34, 역할=target)** 과 **외부 공격자(역할=attacker)** 2개를 등록 → 헬스체크. 미션 지시문의 IP는 등록 인프라로 **자동 치환** |
 | 공방전 모드 | **solo**(혼자 Red+Blue) · **1v1(duel)**(Red vs Blue) · **ffa**(자율) |
 | 코호트 | 강사가 코호트 트리 구성·학생 배치, 코호트 한정/교차 인프라 출제 |
 | 시나리오/미션 | YAML 카탈로그 → DB 자동 import. RED/BLUE 미션 + 채점 기준 |
@@ -78,6 +78,10 @@ sudo bash scripts/bootstrap.sh          # 패키지+venv+UI빌드+.env+DB시드+
 
 옵션: `--no-systemd`(nohup) · `--demo-users`(데모 학생) · `--dev-ui` ·
 `TW2_API_PORT=` / `TW2_UI_PORT=` / `TW2_ADMIN_PASSWORD=` override.
+
+> 미션 지시문의 IP는 콘텐츠에 하드코딩되지 않고 플레이스홀더(`{{TARGET_IP}}`/`{{WEB_ENTRY}}`/`{{ATTACKER_IP}}`)로
+> 저장되어, 학생이 **등록한 인프라**로 런타임 치환된다. 미등록 시 폴백 기준 IP는 `.env` 의
+> `TUBEWAR_REF_TARGET_IP` / `TUBEWAR_REF_WEB_ENTRY` / `TUBEWAR_REF_ATTACKER_IP` 로 배포마다 설정(기본=el34 기준 랩).
 
 접속: UI `http://<host>:5173` · API `http://<host>:9200` (health `/health`).
 관리자 비번은 `.admin-credentials.txt` 에 생성됨. 상세 [docs/operations.md](docs/operations.md).

@@ -77,7 +77,7 @@ def append_file(host, container, path, content, marker):
 def plant_red(host, m, suf, P):
     """RED 미션 증거 심기. P=Planted. 반환: (what_i_did, what_happened, cite[])"""
     did, cite = [], []
-    blocks = fenced(m.get("instruction",""))
+    blocks = fenced(_render_ips(m.get("instruction","")))
     text = "\n".join(blocks)
     # substitute placeholders — el34: 외부공격자(.202)가 웹 진입 .161 로 공격(출처 IP 보존)
     def sub(c):
@@ -153,6 +153,14 @@ def plant_red(host, m, suf, P):
     return what_i_did, what_happened
 
 ATT_VM = "192.168.0.202"   # 외부 공격자 VM(출처 IP 보존)
+
+def _render_ips(text):
+    """콘텐츠 IP 플레이스홀더 → el34 기준 랩 IP(이 하니스 전용 상수)로 치환.
+    (런타임 학생 미션은 API 가 등록 인프라로 치환하지만, 검수 하니스는 기준 랩 대상.)"""
+    return (str(text or "")
+            .replace("{{TARGET_IP}}", EL34_HOST)
+            .replace("{{WEB_ENTRY}}", WEB_ENTRY)
+            .replace("{{ATTACKER_IP}}", ATT_VM))
 
 def _site_of(text, m):
     """미션 지시문 Host 헤더에서 대상 vhost 추출(없으면 dvwa 기본)."""
@@ -279,7 +287,7 @@ def _observe(host, m, text):
 
 def plant_blue(host, m, P):
     did, cite, hunted = [], [], []
-    blocks = fenced(m.get("instruction",""))
+    blocks = fenced(_render_ips(m.get("instruction","")))
     text="\n".join(blocks)
     vtype=(m.get("verify") or {}).get("type")
     red_files = {p for _,p in P.files}   # RED 가 심은 파일(헌팅 미션이 찾을 대상)

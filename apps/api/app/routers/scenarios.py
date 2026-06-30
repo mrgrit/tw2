@@ -8,6 +8,7 @@ from ..db import get_session
 from ..models import Scenario, User
 from ..schemas import ScenarioOut
 from ..security import get_current_user
+from ..services import infra_render
 
 router = APIRouter(prefix="/scenarios", tags=["scenarios"])
 
@@ -36,10 +37,14 @@ async def get_scenario(
     s = await session.get(Scenario, scenario_id)
     if not s:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "scenario not found")
+    # 미션 텍스트의 {{TARGET_IP}}/{{WEB_ENTRY}}/{{ATTACKER_IP}} 를 요청자가 등록한 인프라로 치환.
+    v = await infra_render.vars_for_user(session, user.id)
+    base = ScenarioOut.model_validate(s).model_dump()
+    base["description"] = infra_render.render(base.get("description"), v)
     return {
-        **ScenarioOut.model_validate(s).model_dump(),
+        **base,
         "course_ref": s.course_ref,
-        "mission_red": s.mission_red,
-        "mission_blue": s.mission_blue,
+        "mission_red": infra_render.render(s.mission_red, v),
+        "mission_blue": infra_render.render(s.mission_blue, v),
         "scoring": s.scoring,
     }

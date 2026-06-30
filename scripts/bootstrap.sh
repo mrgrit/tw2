@@ -104,6 +104,10 @@ TUBEWAR_ANALYZER_MODEL=claude-sonnet-4-6
 TUBEWAR_GRADE_TIMEOUT=200
 TUBEWAR_GRADE_ROUNDS=1
 TUBEWAR_LAB_MONITOR=0
+# 미션 IP 치환 폴백 기준(학생 인프라 미등록 시). 배포 환경에 맞게 수정 가능.
+TUBEWAR_REF_TARGET_IP=192.168.0.151
+TUBEWAR_REF_WEB_ENTRY=192.168.0.161
+TUBEWAR_REF_ATTACKER_IP=192.168.0.202
 ENV
   echo "ADMIN_PW:$ADMIN_PASSWORD" > .admin-credentials.txt; chmod 600 .admin-credentials.txt
   [ "$(id -u)" -eq 0 ] && [ "$RUN_USER" != "root" ] && chown "$RUN_USER" .env .admin-credentials.txt 2>/dev/null || true

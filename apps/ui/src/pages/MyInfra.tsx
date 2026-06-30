@@ -5,7 +5,9 @@ import { fmtTime } from '../time.ts'
 interface Infra {
   id: number
   name: string
+  kind: string
   vm_ip: string
+  web_entry_ip: string | null
   ssh_user: string
   bastion_api_key: string
   status: string
@@ -35,10 +37,11 @@ export default function MyInfra() {
   const [smokingId, setSmokingId] = useState<number | null>(null)
   const [showPorts, setShowPorts] = useState(false)
   const [form, setForm] = useState<{
-    name: string; vm_ip: string; ssh_user: string; ssh_password: string;
+    name: string; kind: string; vm_ip: string; web_entry_ip: string;
+    ssh_user: string; ssh_password: string;
     bastion_api_key: string; port_map: Record<string, number>;
   }>({
-    name: '', vm_ip: '',
+    name: '', kind: 'target', vm_ip: '', web_entry_ip: '',
     ssh_user: 'ccc', ssh_password: 'ccc',
     bastion_api_key: 'ccc-api-key-2026',
     port_map: {},
@@ -60,7 +63,7 @@ export default function MyInfra() {
     setErr(null)
     try {
       await api('/infras', { method: 'POST', json: form })
-      setForm({ ...form, name: '', vm_ip: '' })
+      setForm({ ...form, name: '', vm_ip: '', web_entry_ip: '' })
       await refresh()
     } catch (e: any) {
       setErr(e.message)
@@ -89,25 +92,40 @@ export default function MyInfra() {
     <>
       <h1 style={{ color: 'var(--primary)' }}>내 인프라</h1>
       <p style={{ color: 'var(--fg-dim)' }}>
-        <b>el34</b> 타깃 VM(192.168.0.151) 과 <b>외부 공격자</b> VM(192.168.0.202) 의 외부 IP·자격 증명을
-        등록합니다. 공방전은 이 인프라를 대상으로 진행됩니다. (타깃엔 Assessor key, 외부 진입은 192.168.0.161)
+        공방전 대상이 될 <b>타깃 VM</b>(el34)과 <b>외부 공격자 VM</b> 두 인프라의 외부 IP·자격 증명을 등록합니다.
+        미션 지시문 속 IP는 <b>여기 등록한 인프라로 자동 치환</b>됩니다. (타깃엔 Assessor key, 웹 진입 IP가 관리
+        IP와 다르면 별도 입력)
       </p>
 
-      {!loading && infras.length === 0 && (
+      {!loading && infras.length < 2 && (
         <form onSubmit={register} className="card col">
-          <h3 style={{ marginTop: 0 }}>인프라 등록</h3>
+          <h3 style={{ marginTop: 0 }}>인프라 등록 {infras.length === 1 && '(나머지 1개 추가)'}</h3>
           <div className="row">
             <label style={{ flex: 1 }}>
               alias
               <input value={form.name} onChange={e => setForm({...form, name: e.target.value})}
                 placeholder="el34-target / attacker" required />
             </label>
+            <label style={{ flex: '0 0 140px' }}>
+              역할(kind)
+              <select value={form.kind} onChange={e => setForm({...form, kind: e.target.value})}>
+                <option value="target">target (el34 타깃)</option>
+                <option value="attacker">attacker (외부 공격자)</option>
+              </select>
+            </label>
             <label style={{ flex: 1 }}>
-              VM 외부 IP
+              VM 외부 IP{form.kind === 'target' ? ' (관리/SSH/Assessor)' : ''}
               <input value={form.vm_ip} onChange={e => setForm({...form, vm_ip: e.target.value})}
                 placeholder="192.168.0.123" required />
             </label>
           </div>
+          {form.kind === 'target' && (
+            <label>
+              웹 진입 IP (선택 — 비우면 위 VM IP 사용)
+              <input value={form.web_entry_ip} onChange={e => setForm({...form, web_entry_ip: e.target.value})}
+                placeholder="공격 인입 IP (관리 IP와 다를 때만)" />
+            </label>
+          )}
           <div className="row">
             <label style={{ flex: 1 }}>
               SSH user
@@ -174,6 +192,7 @@ export default function MyInfra() {
         <div key={i.id} className="card">
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <h3 style={{ margin: 0 }}>{i.name}</h3>
+            <span className="badge">{i.kind === 'attacker' ? '공격자' : '타깃'}</span>
             <span className={`badge ${statusColor[i.status] || 'yellow'}`}>{i.status}</span>
             <div style={{ flex: 1 }} />
             <button onClick={() => smoke(i.id)} disabled={smokingId === i.id}>
@@ -182,7 +201,7 @@ export default function MyInfra() {
             <button className="danger" onClick={() => remove(i.id)}>삭제</button>
           </div>
           <div style={{ marginTop: 8, color: 'var(--fg-dim)', fontSize: 13 }}>
-            IP <code>{i.vm_ip}</code> · SSH <code>{i.ssh_user}@…</code>
+            IP <code>{i.vm_ip}</code>{i.web_entry_ip && <> · 웹진입 <code>{i.web_entry_ip}</code></>} · SSH <code>{i.ssh_user}@…</code>
             {i.last_smoke_at && <> · 마지막 검증 {fmtTime(i.last_smoke_at, true)}</>}
           </div>
 
