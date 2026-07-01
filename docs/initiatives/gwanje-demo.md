@@ -246,4 +246,32 @@ Admin '중앙 SIEM' 탭은 tw2 **자체 OpenSearch**(`OPENSEARCH_URL`)를 전제
 - **검증**: provisioned dv-3/se-3/dash-3, OSD 가 인덱스 116건 조회(김민수 nmap/whatweb 등 raw payload), 외부 터널 200.
 - **재시드 후**: `backfill_siem.py` 재실행 + SIEM 탭에서 코호트 재선택(객체 reconcile).
 
-_작성: Claude Code. 상태: Phase 0·1·2 + G6 + 검증/버그수정 + 중앙 SIEM + 임베드 OSD(v7.1). AI 채점·피드백·중앙 SIEM(네이티브+임베드 Dashboards) 모두 가동._
+---
+
+## 15. 배포 절차 (다른 컴퓨터 이식) — v8
+
+레포만 있으면 재현되도록 SIEM 인프라(OpenSearch/OSD/터널)를 `scripts/setup_siem.sh` 로 스크립트화(멱등). `.env`·`.data/`·컨테이너는 gitignore/런타임이라, 새 머신에서 아래 순서로 부트스트랩.
+
+```bash
+# 1) 코어(api/ui/db/systemd) — tw2-api 유닛에 claude PATH 자동 포함(§13 버그 수정 반영)
+bash scripts/bootstrap.sh
+
+# 2) 중앙 SIEM 스택(OpenSearch + Dashboards) — 멱등. 원격 iframe 접근 필요하면 --tunnel
+bash scripts/setup_siem.sh            # 로컬(OPENSEARCH_DASHBOARDS_URL=http://127.0.0.1:5602)
+#   또는  bash scripts/setup_siem.sh --tunnel   # + cloudflared 공개 터널
+
+# 3) 데모 데이터
+.venv/bin/python scripts/seed_demo_cohort.py
+
+# 4) 중앙 SIEM 백필(seed/orchestrate 는 SIEM 미전송이므로 필수)
+OPENSEARCH_URL=http://127.0.0.1:9210 .venv/bin/python scripts/backfill_siem.py --cohort 3 --reset
+
+# 5) (선택) 라이브 오케스트레이션 리허설
+.venv/bin/python scripts/orchestrate_demo.py run --ticks 3
+```
+
+**이식 시 자동 처리되는 것**: claude CLI PATH(tw2-api 유닛 Environment), OpenSearch/OSD 컨테이너(restart=unless-stopped, 재부팅 자동기동), 도커망 tw2-siem, .env 의 OPENSEARCH_URL·OPENSEARCH_DASHBOARDS_URL upsert.
+**머신마다 다른 것(gitignore)**: `.env`(bootstrap/setup_siem 이 생성·배선), quick tunnel URL(재기동마다 가변 — setup_siem 재실행으로 갱신), `.data/tw2.sqlite3`.
+**전제**: docker, (원격 iframe 원할 때) cloudflared.
+
+_작성: Claude Code. 상태: Phase 0·1·2 + G6 + 검증/버그수정 + 중앙 SIEM(네이티브+임베드 OSD) + 배포 스크립트화(v8). `bootstrap → setup_siem → seed → backfill` 로 타 머신 재현._
