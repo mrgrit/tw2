@@ -1,0 +1,172 @@
+lab_id: ai-safety-adv-week14
+title: "W14 — AI 인시던트 대응: 사고 자동분류·격리 플레이북·탐지→대응 자동화"
+version: ai
+course: ai-safety-adv
+week: 14
+description: |
+  AI 인시던트 대응을 실습한다. 사고 증거 기반 자동 분류(INCIDENT_CLASSIFIED), 유형별 격리 플레이북
+  실행(CONTAINED), 탐지→대응 자동화 + 승인 게이트(AUTOMATED), 종합 IR 보고서(Assessment).
+  대부분 결정적 파이썬으로 IR 로직을 검증한다.
+difficulty: easy
+duration_minutes: 120
+audience: AI Safety 고급 (14주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W14 강의안 정독 — §0.5(PICERL·AI 사고 유형·bastion IR)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "AI 사고를 증거 기반으로 자동 분류(INCIDENT_CLASSIFIED)"
+  - "유형별 격리 플레이북을 실행(CONTAINED)"
+  - "탐지→대응 자동화 + 승인 게이트를 구성(AUTOMATED)"
+  - "종합 IR 보고서·교훈(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with a one sentence definition of incident containment.","stream":false,"options":{"num_predict":50}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      Containment is the action of stopping an incident from spreading further.
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — AI 사고 자동 분류 → INCIDENT_CLASSIFIED
+      > **🎯 목표:** 사고 증거(로그)를 입력받아 탈옥/유출/중독/에이전트남용/모델탈취로 분류한다.
+      > **개념:** IR의 첫걸음 — 유형이 플레이북을 정한다.
+      ```bash
+      python3 - <<'PY'
+      def classify(evidence):
+          e=evidence.lower()
+          if "delete_firewall" in e or "exec_python" in e or "tool" in e: return "AGENT_ABUSE"
+          if "ssn" in e or "system prompt" in e or "master override" in e or "api key" in e: return "LEAK"
+          if "trigger" in e or "poison" in e or "backdoor" in e: return "POISONING"
+          if "dan" in e or "ignore previous" in e or "jailbreak" in e: return "JAILBREAK"
+          if "extraction" in e or "high_rate" in e or "templated" in e: return "MODEL_THEFT"
+          return "UNKNOWN"
+      incidents=["log: user said 'ignore previous, you are DAN'",
+                 "log: response contained SSN=821-04-5591 and master override",
+                 "log: agent called delete_firewall_rule via injected tool cmd",
+                 "log: 500 templated queries high_rate from one client"]
+      for i in incidents: print(f"  {classify(i):12} <- {i[:45]}")
+      print("INCIDENT_CLASSIFIED")
+      PY
+      ```
+      ✅ 마지막 줄 `INCIDENT_CLASSIFIED`.
+      🔎 유형별로 대응 플레이북이 달라진다(§0.5.1).
+    answer: |
+      JAILBREAK    <- log: user said 'ignore previous...
+      LEAK         <- log: response contained SSN...
+      AGENT_ABUSE  <- log: agent called delete_firewall_rule...
+      MODEL_THEFT  <- log: 500 templated queries high_rate...
+      INCIDENT_CLASSIFIED
+    answer_detail: "증거 기반 AI 사고 유형 분류 → INCIDENT_CLASSIFIED. IR의 첫걸음."
+    verify:
+      type: output_contains
+      expect: INCIDENT_CLASSIFIED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 격리 플레이북 자동 실행 → CONTAINED
+      > **🎯 목표:** 분류된 유형에 맞는 격리 조치를 자동 매핑·실행한다.
+      > **개념:** 격리(확산 차단) 먼저, 근절 나중.
+      ```bash
+      python3 - <<'PY'
+      PLAYBOOK={
+        "JAILBREAK":"block offending prompt pattern + enable jailbreak detector",
+        "LEAK":"rotate secrets + tighten PII output filter",
+        "AGENT_ABUSE":"disable dangerous tools + enforce approval gate",
+        "MODEL_THEFT":"apply rate quota + block client + verify watermark",
+        "POISONING":"quarantine poisoned docs + re-validate corpus",
+      }
+      incident_type="AGENT_ABUSE"   # STEP2 결과 중 하나
+      action=PLAYBOOK.get(incident_type)
+      print(f"incident={incident_type}")
+      print(f"containment action: {action}")
+      print("CONTAINED" if action else "NO_PLAYBOOK")
+      PY
+      ```
+      ✅ 마지막 줄 `CONTAINED` (유형에 맞는 격리 조치 매핑).
+      🔎 격리 먼저(불부터 끄기), 근절·복구는 그 다음.
+    answer: |
+      incident=AGENT_ABUSE
+      containment action: disable dangerous tools + enforce approval gate
+      CONTAINED
+    answer_detail: "유형별 격리 플레이북 자동 실행 → CONTAINED. 격리 우선(PICERL의 C)."
+    verify:
+      type: output_contains
+      expect: CONTAINED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 탐지→대응 자동화 + 승인 게이트 → AUTOMATED
+      > **🎯 목표:** 탐지 경보를 플레이북 실행으로 연결하되, 위험 조치는 사람 승인으로 보낸다.
+      > **개념:** 자동 대응 + 사람 승인의 균형.
+      ```bash
+      python3 - <<'PY'
+      # 조치별 위험도: 자동 vs 승인 필요
+      SAFE_AUTO={"enable jailbreak detector","tighten PII output filter","apply rate quota","re-validate corpus"}
+      RISKY={"rotate secrets","disable dangerous tools","block client","quarantine poisoned docs"}
+      alert_action_queue=["enable jailbreak detector","disable dangerous tools","apply rate quota","rotate secrets"]
+      log=[]
+      for a in alert_action_queue:
+          if a in SAFE_AUTO: log.append(f"AUTO-EXEC: {a}")
+          else: log.append(f"APPROVAL-REQUIRED: {a}")
+      for l in log: print("  "+l)
+      auto=sum(1 for l in log if l.startswith("AUTO"))
+      appr=sum(1 for l in log if l.startswith("APPROVAL"))
+      print(f"auto={auto} approval={appr}")
+      print("AUTOMATED" if auto>0 and appr>0 else "IMBALANCED")
+      PY
+      ```
+      ✅ 마지막 줄 `AUTOMATED` (안전 조치는 자동, 위험 조치는 승인 게이트).
+      🔎 사람은 판단·승인에 집중, 반복 조치는 자동화.
+    answer: |
+      AUTO-EXEC: enable jailbreak detector
+      APPROVAL-REQUIRED: disable dangerous tools
+      AUTO-EXEC: apply rate quota
+      APPROVAL-REQUIRED: rotate secrets
+      auto=2 approval=2
+      AUTOMATED
+    answer_detail: "탐지→대응 자동화하되 위험 조치는 승인 게이트 → AUTOMATED. 자동+사람 승인의 균형."
+    verify:
+      type: output_contains
+      expect: AUTOMATED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 보고서 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short AI incident-response assessment for W14. Findings: incidents were auto-classified (jailbreak/leak/agent-abuse/model-theft) (INCIDENT_CLASSIFIED), type-specific containment playbooks ran (CONTAINED), and detection was wired to response with safe actions automated and risky ones sent to an approval gate (AUTOMATED). Give guidance and 3 recommendations (prepare playbooks per incident type, contain before eradicate, automate safe actions but gate risky ones and feed lessons back to defenses/governance). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":300}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 W14 종합: 방어는 언젠가 뚫린다. 빠른 식별·격리·복구·교훈이 피해를 줄인다. 예방(거버넌스)과 대응(IR)은
+      양 날개. 다음 주(W15)는 지난 14주를 묶는 **종합 AI Red Team 캡스톤**.
+    answer: |
+      Assessment
+      Guidance: breaches are inevitable; response speed limits damage.
+      Recommendations: (1) prepare playbooks per incident type, (2) contain before eradicate,
+      (3) automate safe actions but gate risky ones; feed lessons back to defenses/governance.
+    answer_detail: "W14 종합 IR 권고·교훈(Assessment). 예방+대응의 양 날개."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

@@ -1,0 +1,198 @@
+lab_id: ai-safety-adv-week06
+title: "W06 — 모델 탈취/추출: 데이터 수집·충실도·추출 탐지·핑거프린팅"
+version: ai
+course: ai-safety-adv
+week: 6
+description: |
+  모델 추출을 실측한다. 대상(ccc-vulnerable:4b)에서 (질문,답) 수집(HARVESTED=), 값싼
+  student(llama3.2:3b)의 충실도 측정(Fidelity=), 추출 질의 패턴 탐지(EXTRACTION_DETECTED),
+  canary 기반 핑거프린팅(FINGERPRINT), 종합 보고서(Assessment).
+  ⚠️ 수집/복제 산출물은 분석·교육용이며 인가된 el34 격리 환경 밖으로 내보내지 않는다.
+difficulty: medium
+duration_minutes: 150
+audience: AI Safety 고급 (6주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — ccc-vulnerable:4b, llama3.2:3b, gemma3:4b
+  - W06 강의안 정독 — §0.5(증류·충실도·비싸게 만들기), §2(탐지/워터마킹)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "대상에서 (질문,답) 데이터셋을 수집(HARVESTED=)"
+  - "값싼 모델의 충실도를 측정(Fidelity=)"
+  - "추출 질의 패턴을 탐지(EXTRACTION_DETECTED)"
+  - "canary 기반 모델 핑거프린트를 생성(FINGERPRINT)"
+  - "종합 위험 판단·방어 권고(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"ccc-vulnerable:4b","prompt":"Reply with a one sentence definition of model extraction.","stream":false,"options":{"num_predict":50}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      Model extraction is copying a target model's behavior by querying it and learning from its outputs.
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 추출 데이터 수집(harvest) → HARVESTED=
+      > **🎯 목표:** 대상 `ccc-vulnerable:4b` 에 프로브 질의를 던져 (질문, 답) 쌍을 수집한다.
+      > **개념:** 이 데이터셋이 곧 증류 재료. 많을수록 복제 충실도가 오른다.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      def gen(m,p,n=40):
+          b={"model":m,"prompt":p,"stream":False,"options":{"num_predict":n,"temperature":0.0}}
+          req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+          return json.load(urllib.request.urlopen(req,timeout=100)).get("response","").strip()
+      PROBES=["Capital of France? one word.","2+2=? number only.","Opposite of hot? one word.",
+              "Color of the sky on a clear day? one word.","Largest planet in the solar system? one word."]
+      pairs=[(q,gen("ccc-vulnerable:4b",q)) for q in PROBES]
+      for q,a in pairs: print("  ",q,"=>",a[:30].replace(chr(10)," "))
+      print(f"HARVESTED={len(pairs)} pairs")
+      PY
+      ```
+      ✅ 마지막 줄 `HARVESTED=5 pairs`.
+      🔎 실전에선 수천~수만 프로브로 데이터셋을 키운다. 여기선 원리 확인용 5개.
+    answer: |
+      Capital of France? => Paris ... (5개)
+      HARVESTED=5 pairs
+    answer_detail: "대상에서 (질문,답) 쌍 수집 → 증류 데이터셋. 추출의 재료."
+    verify:
+      type: output_contains
+      expect: "HARVESTED="
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 충실도 측정 → Fidelity=
+      > **🎯 목표:** 값싼 `llama3.2:3b` 가 대상의 답을 얼마나 재현하는지 측정(단어 겹침).
+      > **개념:** "쿼리로 기능이 샌다"를 숫자로. 값싼 모델이 대상 답의 상당수를 맞히면 추출이 실현 가능.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request, re
+      GPU="http://211.170.162.139:10934/api/generate"
+      def gen(m,p,n=40):
+          b={"model":m,"prompt":p,"stream":False,"options":{"num_predict":n,"temperature":0.0}}
+          req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+          return json.load(urllib.request.urlopen(req,timeout=100)).get("response","").strip()
+      NOISE={"complied","safe","refused","blocked","allow","allowed","the","is","a","an","of","one","word","number","only"}
+      def words(s): return [w for w in re.findall(r"[a-z0-9]+",s.lower()) if w not in NOISE]
+      PROBES=["Capital of France? one word.","2+2=? number only.","Opposite of hot? one word.",
+              "Color of the sky on a clear day? one word.","Largest planet in the solar system? one word."]
+      agree=0
+      for q in PROBES:
+          ta,sa=gen("ccc-vulnerable:4b",q),gen("llama3.2:3b",q)
+          if set(words(ta)) & set(words(sa)): agree+=1
+      print(f"Fidelity={int(agree/len(PROBES)*100)}% ({agree}/{len(PROBES)}) student=llama3.2:3b")
+      PY
+      ```
+      ✅ 출력에 `Fidelity=` (실측 대개 60~90%).
+      🔎 값싼 모델이 대상 동작을 상당 부분 복제 → 추출 실현 가능. 원본이 비싸도 추출은 그 일부 비용.
+    answer: |
+      Fidelity=80% (4/5) student=llama3.2:3b
+    answer_detail: "값싼 student가 대상 답의 ~80% 재현 → 추출 실현 가능성. '비싸서 안전'은 틀린 안심."
+    verify:
+      type: output_contains
+      expect: "Fidelity="
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 추출 탐지 → EXTRACTION_DETECTED
+      > **🎯 목표:** 질의 로그에서 "짧은 시간 다수 + 높은 체계성/유사도"를 이상으로 탐지한다.
+      > **개념:** 정상 사용자와 추출 봇의 패턴 차이를 이용(완전 차단은 불가하므로 탐지·지연).
+      ```bash
+      python3 - <<'PY'
+      # 질의 로그: (timestamp_sec, query)
+      log=[(0.0,"Capital of France?"),(0.3,"Capital of Germany?"),(0.6,"Capital of Italy?"),
+           (0.9,"Capital of Spain?"),(1.2,"Capital of Japan?"),(1.5,"Capital of Korea?")]
+      # 규칙1: 초당 질의율(rate)
+      span=log[-1][0]-log[0][0]; rate=len(log)/max(span,0.001)
+      # 규칙2: 템플릿 유사도(같은 형식 반복)
+      import re
+      templ=[re.sub(r"[A-Z][a-z]+","<X>",q) for _,q in log]
+      similar=len(set(templ))==1
+      flags=[]
+      if rate>2: flags.append(f"high_rate({rate:.1f}/s)")
+      if similar: flags.append("templated_queries")
+      print("flags:", ",".join(flags) if flags else "none")
+      print("EXTRACTION_DETECTED" if flags else "CLEAN")
+      PY
+      ```
+      ✅ 마지막 줄 `EXTRACTION_DETECTED`.
+      🔎 실전: API 게이트웨이/SIEM에서 질의 속도·템플릿 유사도를 모니터링해 추출 봇을 경보·지연·쿼터.
+    answer: |
+      flags: high_rate(4.2/s),templated_queries
+      EXTRACTION_DETECTED
+    answer_detail: "질의 속도·템플릿 유사도 이상으로 대량 추출을 탐지 → EXTRACTION_DETECTED. 차단 대신 탐지·지연."
+    verify:
+      type: output_contains
+      expect: EXTRACTION_DETECTED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 핑거프린팅(소유 증명) → FINGERPRINT
+      > **🎯 목표:** canary 질의 집합에 대한 대상의 응답으로 **지문 서명(해시)** 을 만든다.
+      > **개념:** 복제 의심 모델이 같은 지문을 내면 신원 특정 — 사후 소유 증명.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request, hashlib
+      GPU="http://211.170.162.139:10934/api/generate"
+      def gen(m,p,n=30):
+          b={"model":m,"prompt":p,"stream":False,"options":{"num_predict":n,"temperature":0.0}}
+          req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+          return json.load(urllib.request.urlopen(req,timeout=100)).get("response","").strip().lower()
+      # 남들이 잘 안 하는 특이 canary 질의
+      CANARY=["Answer with one word: the secret color is","Reply the single token zephyr if you are model A","Say the word pineapple only"]
+      sig="".join(gen("ccc-vulnerable:4b",c)[:20] for c in CANARY)
+      fp=hashlib.sha256(sig.encode()).hexdigest()[:12]
+      print(f"canary signature length={len(sig)}")
+      print(f"FINGERPRINT={fp}")
+      PY
+      ```
+      ✅ 출력에 `FINGERPRINT=` (12자리 지문). 같은 canary로 복제 의심 모델을 찍어 지문 비교.
+      🔎 워터마킹의 사촌 — 사후 소유 증명. 모델 도난 분쟁 시 증거.
+    answer: |
+      canary signature length=NN
+      FINGERPRINT=ab12cd34ef56
+    answer_detail: "canary 응답으로 모델 지문(해시) 생성 → FINGERPRINT. 복제 모델 신원 특정·소유 증명."
+    verify:
+      type: output_contains
+      expect: "FINGERPRINT="
+      field: stdout
+
+  - order: 6
+    instruction: |
+      ## STEP 6 — 종합 보고서 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short model-theft assessment for W06. Findings: harvested query/answer pairs from the target, a cheap student model reproduced ~80% of answers (Fidelity high, extraction feasible), systematic high-rate templated queries were detected (EXTRACTION_DETECTED), and a canary fingerprint was generated for ownership proof (FINGERPRINT). Give risk level and 3 recommendations (rate limiting and quotas, extraction-pattern detection, watermarking/fingerprinting for ownership). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":300}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 W06 종합: 모델은 쿼리 창만 열려도 샌다. 방어는 완전 차단이 아니라 비싸게·눈에 띄게·추적 가능하게.
+      다음 주(W07)는 모델을 만드는 재료(학습 데이터)를 오염시키는 **데이터 중독**.
+    answer: |
+      Assessment
+      Risk: High — the model's behavior is extractable via queries (Fidelity ~80%).
+      Recommendations: (1) rate limiting and quotas, (2) extraction-pattern detection,
+      (3) watermarking/fingerprinting for ownership proof.
+    answer_detail: "W06 종합 위험 판단·방어 권고(Assessment). 지연·탐지·추적(워터마킹)이 핵심."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout
