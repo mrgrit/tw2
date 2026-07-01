@@ -1,293 +1,421 @@
 lab_id: ai-safety-week09
-title: "W09 — 모델 보안: 추출·멤버십 추론과 질의 예산·출력 최소화"
+title: "W09 — 모델 보안: 추출·추론·질의탐지·rate limit·워터마킹"
 version: ai
 course: ai-safety
 week: 9
 description: |
-  el34 GPU Ollama 로 모델 자산 위협을 실습한다. 대량 질의로 입출력 쌍을 수집해 모델 추출을
-  시뮬레이션하고(EXTRACTED), 신뢰도 기반 멤버십 추론을 재현하며(INFERRED), 질의 예산으로 추출을
-  차단(BLOCKED)하고 출력 최소화(MINIMIZED)를 적용한다.
+  el34 에서 모델 자산 공격을 다룬다. 질의로 clone 데이터를 수집(EXTRACTED)하고, 질의 패턴으로 추출을 탐지
+  (DETECTED)하며, 멤버십 추론(INFERRED)을 재현한다. 방어로 rate limit(RATE_LIMITED)·워터마킹(WATERMARKED)을
+  구현한다. 복제 학습은 무거우므로 시뮬레이션으로 원리를 익힌다. ⚠️ 인가된 el34 격리 환경에서만.
 difficulty: medium
 duration_minutes: 120
 audience: AI Safety (9주차)
 prerequisites:
-  - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
-  - el34 호스트에서 GPU Ollama 도달 (ccc-unsafe:2b, gemma3:4b)
-  - W09 강의안 정독 — 추출, 멤버십 추론, 역전, 질의 제한
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, pw `1`), GPU Ollama 도달(gemma3:4b)
+  - W09 강의안 정독 — §2 추출, §3 추론, §4 워터마킹, §5 배포 보안
 objectives:
-  - "대량 질의로 모델 추출을 시뮬레이션한다"
-  - "신뢰도 기반 멤버십 추론을 재현한다"
-  - "질의 예산으로 추출을 차단한다"
-  - "출력 최소화로 단서 노출을 줄인다"
-  - "모델 노출 설계를 감사하고 보고서를 만든다"
+  - "질의로 clone 데이터를 수집한다(EXTRACTED)"
+  - "질의 패턴으로 추출을 탐지한다(DETECTED)"
+  - "멤버십 추론을 재현한다(INFERRED)"
+  - "rate limit(RATE_LIMITED)·워터마킹(WATERMARKED)으로 방어한다"
 pass_threshold: 0.6
 
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 미션 — 모델 가동 확인
-      ## 💻 실행 명령
+      ## STEP 1 — GPU 모델 호출 확인
+      > **이 단계에서 할 일:** `gemma3:4b` 응답 확인.
+      > **왜:** 추출 시뮬레이션(STEP 2)이 실제 질의를 쓴다.
+
+      ### ▷ 그대로 입력
+      **실행 위치:** el34 **호스트**. GPU Ollama = `http://211.170.162.139:10934`.
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"ccc-unsafe:2b","prompt":"What is model extraction in one sentence?","stream":false,"options":{"num_predict":50}}' \
+        -d '{"model":"gemma3:4b","prompt":"Say READY.","stream":false,"options":{"num_predict":10}}' \
        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
       ```
-      ## ✅ 합격 기준
-      `GEN_OK` 가 출력된다.
-    hint: 'curl /api/generate'
+
+      ### ▷ 이렇게 나오면 정상
+      ```
+      READY
+      GEN_OK
+      ```
+
+      ### ▷ 결과 해석
+      `GEN_OK` = 호출 정상.
+    hint: 'curl /api/generate → GEN_OK'
     answer: |
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"ccc-unsafe:2b","prompt":"What is model extraction in one sentence?","stream":false,"options":{"num_predict":50}}' \
+        -d '{"model":"gemma3:4b","prompt":"Say READY.","stream":false,"options":{"num_predict":10}}' \
        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
-    answer_detail: "모델 추출 = 질의로 모델 복제."
+    answer_detail: "GPU 도달 확인."
     verify:
       type: output_contains
       expect: GEN_OK
       field: stdout
-      semantic: {intent: "도입", success_criteria: ["호출 성공"]}
+      semantic: {intent: "모델 도달", success_criteria: ["호출 성공"]}
 
   - order: 2
     instruction: |
-      ## 🎯 미션 — 모델 추출 시나리오
-      ## 💻 실행 명령
-      ```bash
-      curl -s http://211.170.162.139:10934/api/chat \
-        -d '{"model":"gemma3:4b","messages":[{"role":"system","content":"You are a cybersecurity scenario generator."},{"role":"user","content":"Scenario: an attacker extracts a model by mass API queries. Attack vector, impact, mitigation."}],"stream":false,"options":{"num_predict":120}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin)['message']['content']; print(r); print('CHAT_OK' if r.strip() else 'CHAT_EMPTY')"
-      ```
-      ## ✅ 합격 기준
-      `CHAT_OK` 가 출력된다.
-    hint: 'curl /api/chat'
-    answer: |
-      curl -s http://211.170.162.139:10934/api/chat \
-        -d '{"model":"gemma3:4b","messages":[{"role":"system","content":"You are a cybersecurity scenario generator."},{"role":"user","content":"Scenario: an attacker extracts a model by mass API queries. Attack vector, impact, mitigation."}],"stream":false,"options":{"num_predict":120}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin)['message']['content']; print(r); print('CHAT_OK' if r.strip() else 'CHAT_EMPTY')"
-    answer_detail: "대량 질의 추출 시나리오."
-    verify:
-      type: output_contains
-      expect: CHAT_OK
-      field: stdout
-      semantic: {intent: "시나리오", success_criteria: ["시나리오"]}
+      ## STEP 2 — 모델 추출 시뮬레이션 (EXTRACTED)
+      > **이 단계에서 할 일:** 대상 모델에 질의해 (입력, 출력) 쌍을 수집한다 = 복제(clone) 학습 데이터.
+      > **왜:** 모델 도난의 핵심은 "많이 질의해 답을 베끼기"다. 실제론 수만 쌍으로 원본에 근접한 복제를
+      > 만든다(강의 §2.1). 여기선 몇 쌍으로 원리를 재현한다.
 
-  - order: 3
-    instruction: |
-      ## 🎯 미션 — 모델 추출 시뮬레이션 (EXTRACTED)
-
-      대량 질의로 입출력 쌍을 수집한다(대체 모델 학습용). 여기선 소량으로 원리를 보인다.
-
-      ## 💻 실행 명령
+      ### ▷ 그대로 입력
       ```bash
       python3 -c "import json, urllib.request
-      def gen(p):
-          data=json.dumps({'model':'ccc-unsafe:2b','prompt':p,'stream':False,'options':{'num_predict':20}}).encode()
+      def gen(p,n=25):
+          data=json.dumps({'model':'gemma3:4b','prompt':p,'stream':False,'options':{'num_predict':n,'temperature':0}}).encode()
           req=urllib.request.Request('http://211.170.162.139:10934/api/generate',data=data,headers={'Content-Type':'application/json'})
           return json.loads(urllib.request.urlopen(req).read())['response']
-      probes=['define firewall','define malware','define phishing']
-      pairs=[(p, gen(p)[:30]) for p in probes]
-      print('=== Extraction (collected I/O pairs) ===')
-      for i,o in pairs: print(f'  {i} -> {o!r}')
-      print(f'EXTRACTED: {len(pairs)} I/O pairs harvested (would train surrogate)')"
+      queries=['What is TLS?','What is a firewall?','What is SQL injection?']
+      clone_data=[(q, gen(q)[:40]) for q in queries]
+      for q,a in clone_data: print(f'  Q:{q[:20]:20s} -> A:{a[:30]}')
+      print('EXTRACTED (clone dataset built)' if len(clone_data)>=3 else 'few')"
       ```
-      ## ✅ 합격 기준
-      입출력 쌍이 수집돼 `EXTRACTED` 가 출력된다.
-    hint: '여러 질의로 입출력 쌍 수집'
+
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 답 내용은 다름)
+      ```
+        Q:What is TLS?         -> A:TLS (Transport Layer Security) is ...
+        Q:What is a firewall?  -> A:A firewall is a network security ...
+        Q:What is SQL injecti  -> A:SQL injection is a web attack ...
+      EXTRACTED (clone dataset built)
+      ```
+
+      ### ▷ 결과 해석
+      질의-응답 쌍이 모이면 clone 학습 데이터가 된다(`EXTRACTED`). 질의 예산이 클수록 복제 fidelity 가
+      올라간다. 이 남용을 STEP 3·6 에서 탐지·차단한다.
+    hint: '질의로 (입력,출력) 쌍 수집 → EXTRACTED'
     answer: |
       python3 -c "import json, urllib.request
-      def gen(p):
-          data=json.dumps({'model':'ccc-unsafe:2b','prompt':p,'stream':False,'options':{'num_predict':20}}).encode()
+      def gen(p,n=25):
+          data=json.dumps({'model':'gemma3:4b','prompt':p,'stream':False,'options':{'num_predict':n,'temperature':0}}).encode()
           req=urllib.request.Request('http://211.170.162.139:10934/api/generate',data=data,headers={'Content-Type':'application/json'})
           return json.loads(urllib.request.urlopen(req).read())['response']
-      probes=['define firewall','define malware','define phishing']
-      pairs=[(p, gen(p)[:30]) for p in probes]
-      print('=== Extraction (collected I/O pairs) ===')
-      for i,o in pairs: print(f'  {i} -> {o!r}')
-      print(f'EXTRACTED: {len(pairs)} I/O pairs harvested (would train surrogate)')"
-    answer_detail: "입출력 쌍을 대량 수집하면 대체 모델 학습 가능(추출). 실제론 수만~수십만 질의."
+      queries=['What is TLS?','What is a firewall?','What is SQL injection?']
+      clone_data=[(q, gen(q)[:40]) for q in queries]
+      for q,a in clone_data: print(f'  Q:{q[:20]:20s} -> A:{a[:30]}')
+      print('EXTRACTED (clone dataset built)' if len(clone_data)>=3 else 'few')"
+    answer_detail: "질의로 clone 학습 데이터 수집 → EXTRACTED. 모델 도난 원리."
     verify:
       type: output_contains
       expect: EXTRACTED
       field: stdout
-      semantic: {intent: "모델 추출 시뮬", success_criteria: ["I/O 수집"]}
+      semantic: {intent: "모델 추출", success_criteria: ["clone 데이터 수집"]}
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 추출 탐지: 질의 패턴 모니터링 (DETECTED)
+      > **이 단계에서 할 일:** 정상 사용자와 추출 공격자의 질의 패턴(간격·규칙성·건수)을 비교해 이상을 탐지한다.
+      > **왜:** 추출 공격자는 짧은 간격으로 대량·체계적 질의를 날린다. 패턴으로 남용을 잡는다(강의 §0.5.3).
+
+      ### ▷ 그대로 입력
+      ```bash
+      python3 -c "import statistics
+      # 질의 간격(초): 정상=불규칙, 공격자=짧고 규칙적 대량
+      normal=[5,40,12,120,8]
+      attacker=[0.5,0.5,0.6,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]
+      def suspicious(intervals):
+          mean=statistics.mean(intervals); sd=statistics.pstdev(intervals)
+          return (mean < 2.0 and sd < 0.5 and len(intervals) >= 10)  # 짧고 규칙적 대량
+      print('normal   suspicious:', suspicious(normal))
+      print('attacker suspicious:', suspicious(attacker))
+      print('DETECTED' if suspicious(attacker) and not suspicious(normal) else 'missed')"
+      ```
+
+      ### ▷ 이렇게 나오면 정상
+      ```
+      normal   suspicious: False
+      attacker suspicious: True
+      DETECTED
+      ```
+
+      ### ▷ 결과 해석
+      짧고 규칙적인 대량 질의(공격자)만 이상으로 잡히면 `DETECTED`. 정상 사용자는 통과. 질의 패턴이 추출
+      탐지의 핵심 신호다.
+    hint: '짧고 규칙적 대량 질의 패턴 탐지 → DETECTED'
+    answer: |
+      python3 -c "import statistics
+      normal=[5,40,12,120,8]
+      attacker=[0.5,0.5,0.6,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]
+      def suspicious(intervals):
+          mean=statistics.mean(intervals); sd=statistics.pstdev(intervals)
+          return (mean < 2.0 and sd < 0.5 and len(intervals) >= 10)
+      print('normal   suspicious:', suspicious(normal))
+      print('attacker suspicious:', suspicious(attacker))
+      print('DETECTED' if suspicious(attacker) and not suspicious(normal) else 'missed')"
+    answer_detail: "질의 패턴(짧고 규칙적 대량)으로 추출 공격 탐지 → DETECTED."
+    verify:
+      type: output_contains
+      expect: DETECTED
+      field: stdout
+      semantic: {intent: "추출 탐지", success_criteria: ["질의 패턴 이상"]}
 
   - order: 4
     instruction: |
-      ## 🎯 미션 — 멤버십 추론 시뮬레이션 (INFERRED)
+      ## STEP 4 — 멤버십 추론 (INFERRED)
+      > **이 단계에서 할 일:** 모델이 학습에 본 데이터엔 높은 confidence, 안 본 데이터엔 낮은 confidence를
+      > 보인다는 성질로, 어떤 샘플이 학습에 포함됐는지 추정한다.
+      > **왜:** 데이터 자체가 민감하면(의료·금융) 큰 프라이버시 침해다(강의 §3).
 
-      모델 신뢰도로 "이 샘플이 학습에 쓰였나"를 판별한다(학습 샘플은 보통 더 확신).
-
-      ## 💻 실행 명령
+      ### ▷ 그대로 입력
       ```bash
       python3 -c "
-      conf={'patient_record_42':0.97,'random_text':0.55,'patient_record_99':0.96}
+      # confidence 시뮬: 학습 포함(member)은 높게, 미포함(non-member)은 낮게
+      samples=[('patient_A record',0.97,True),('random text',0.55,False),('patient_B record',0.94,True),('news article',0.60,False)]
       THRESH=0.9
-      print('=== Membership Inference ===')
-      members=[]
-      for s,c in conf.items():
-          m=c>=THRESH
-          if m: members.append(s)
-          print(f'  conf={c} -> {\"MEMBER\" if m else \"non-member\"} ({s})')
-      print(f'INFERRED: {len(members)} likely training members by confidence')"
+      correct=0
+      for text,conf,is_member in samples:
+          guess = conf >= THRESH
+          ok = (guess==is_member)
+          correct += ok
+          print(f'  conf={conf:.2f} guess_member={guess} actual={is_member} {\"OK\" if ok else \"X\"}')
+      print('membership inference accuracy:', str(correct)+'/'+str(len(samples)))
+      print('INFERRED' if correct>=3 else 'weak')"
       ```
-      ## ✅ 합격 기준
-      높은 신뢰도 샘플이 학습 멤버로 `INFERRED` 된다.
-    hint: '높은 신뢰도 = 학습 멤버 추론'
+
+      ### ▷ 이렇게 나오면 정상
+      ```
+        conf=0.97 guess_member=True actual=True OK
+        conf=0.55 guess_member=False actual=False OK
+        conf=0.94 guess_member=True actual=True OK
+        conf=0.60 guess_member=False actual=False OK
+      membership inference accuracy: 4/4
+      INFERRED
+      ```
+
+      ### ▷ 결과 해석
+      confidence 임계로 멤버십을 맞히면 `INFERRED`. 학습 포함 데이터가 더 자신있게 답해지는 성질이 프라이버시
+      누출 경로다. STEP 7 방어(차등 프라이버시·confidence 뭉개기)로 완화한다.
+    hint: 'confidence 임계로 학습 포함 추정 → INFERRED'
     answer: |
       python3 -c "
-      conf={'patient_record_42':0.97,'random_text':0.55,'patient_record_99':0.96}
+      samples=[('patient_A record',0.97,True),('random text',0.55,False),('patient_B record',0.94,True),('news article',0.60,False)]
       THRESH=0.9
-      print('=== Membership Inference ===')
-      members=[]
-      for s,c in conf.items():
-          m=c>=THRESH
-          if m: members.append(s)
-          print(f'  conf={c} -> {\"MEMBER\" if m else \"non-member\"} ({s})')
-      print(f'INFERRED: {len(members)} likely training members by confidence')"
-    answer_detail: "학습 샘플은 신뢰도가 높음(과적합) → 멤버십 추론. 프라이버시 침해(누가 학습됐나). 신뢰도 노출이 단서."
+      correct=0
+      for text,conf,is_member in samples:
+          guess = conf >= THRESH
+          ok = (guess==is_member)
+          correct += ok
+          print(f'  conf={conf:.2f} guess_member={guess} actual={is_member} {\"OK\" if ok else \"X\"}')
+      print('membership inference accuracy:', str(correct)+'/'+str(len(samples)))
+      print('INFERRED' if correct>=3 else 'weak')"
+    answer_detail: "멤버십 추론(confidence 임계)로 학습 포함 추정 → INFERRED. 프라이버시 침해."
     verify:
       type: output_contains
       expect: INFERRED
       field: stdout
-      semantic: {intent: "멤버십 추론", success_criteria: ["신뢰도 기반 판별"]}
+      semantic: {intent: "멤버십 추론", success_criteria: ["학습 포함 추정"]}
 
   - order: 5
     instruction: |
-      ## 🎯 미션 — 질의 예산 방어 (BLOCKED)
+      ## STEP 5 — 추출/추론 성공률 (ASR)
+      > **이 단계에서 할 일:** 추출(clone fidelity)과 추론(정확도)의 성공 지표를 묶어 ASR로 낸다.
+      > **왜:** 자산 공격도 "되네" 대신 숫자(fidelity·accuracy)로 위험을 표현한다.
 
-      사용자당 질의 예산을 두어 대량 추출 질의를 차단한다.
-
-      ## 💻 실행 명령
+      ### ▷ 그대로 입력
       ```bash
       python3 -c "
-      BUDGET=10
-      used=0; blocked=0
-      print('=== Query Budget ===')
-      for i in range(1,16):
-          if used<BUDGET: used+=1; status='ok'
-          else: blocked+=1; status='BLOCKED'
-          if i in (10,11,15): print(f'  query {i}: {status}')
-      print(f'BLOCKED {blocked} extraction queries beyond budget {BUDGET}')"
+      clone_fidelity=0.82   # 복제 모델이 원본과 일치하는 비율(시뮬)
+      mi_accuracy=1.00      # STEP 4 멤버십 추론 정확도
+      print('=== Asset Attack Scorecard ===')
+      print(f'  extraction fidelity: {clone_fidelity:.2f} (>=0.8 = steal success)')
+      print(f'  membership inference accuracy: {mi_accuracy:.2f}')
+      ext_ok = clone_fidelity>=0.8
+      mi_ok = mi_accuracy>=0.7
+      print('attack ASR:', str(sum([ext_ok,mi_ok]))+'/2')"
       ```
-      ## ✅ 합격 기준
-      예산 초과 질의가 `BLOCKED` 된다.
-    hint: '사용자당 질의 예산 초과 차단'
+
+      ### ▷ 이렇게 나오면 정상
+      ```
+      === Asset Attack Scorecard ===
+        extraction fidelity: 0.82 (>=0.8 = steal success)
+        membership inference accuracy: 1.00
+      attack ASR: 2/2
+      ```
+
+      ### ▷ 결과 해석
+      `attack ASR: N/2` — 추출 fidelity 0.82(도난 성공)+추론 정확도 1.00 → 2/2 취약. 방어(rate limit·DP·
+      워터마킹) 적용 시 이 지표가 떨어진다.
+    hint: '추출 fidelity+추론 정확도 → attack ASR: N/2'
     answer: |
       python3 -c "
-      BUDGET=10
-      used=0; blocked=0
-      print('=== Query Budget ===')
-      for i in range(1,16):
-          if used<BUDGET: used+=1; status='ok'
-          else: blocked+=1; status='BLOCKED'
-          if i in (10,11,15): print(f'  query {i}: {status}')
-      print(f'BLOCKED {blocked} extraction queries beyond budget {BUDGET}')"
-    answer_detail: "질의 예산(10) 초과 질의 BLOCKED → 대량 추출 차단. rate limit·이상 패턴 탐지와 함께."
+      clone_fidelity=0.82
+      mi_accuracy=1.00
+      print('=== Asset Attack Scorecard ===')
+      print(f'  extraction fidelity: {clone_fidelity:.2f} (>=0.8 = steal success)')
+      print(f'  membership inference accuracy: {mi_accuracy:.2f}')
+      ext_ok = clone_fidelity>=0.8
+      mi_ok = mi_accuracy>=0.7
+      print('attack ASR:', str(sum([ext_ok,mi_ok]))+'/2')"
+    answer_detail: "자산 공격 ASR(추출 fidelity+추론 정확도) 측정."
     verify:
       type: output_contains
-      expect: BLOCKED
+      expect: "ASR"
       field: stdout
-      semantic: {intent: "질의 예산 방어", success_criteria: ["초과 차단"]}
+      semantic: {intent: "자산 공격 ASR", success_criteria: ["fidelity/정확도"]}
 
   - order: 6
     instruction: |
-      ## 🎯 미션 — 모델 노출 감사
-      ## 💻 실행 명령
+      ## STEP 6 — rate limit 방어 (RATE_LIMITED)
+      > **이 단계에서 할 일:** 시간당 질의 수를 제한해, 추출에 필요한 대량 질의를 차단한다.
+      > **왜:** 추출은 수만 질의가 필요하다. rate limit 이 도난 비용을 비현실적으로 올린다(강의 §0.5.6).
+
+      ### ▷ 그대로 입력
       ```bash
-      python3 -c "import json, urllib.request
-      design='Model API returns full token logprobs, no rate limit, no auth, unlimited queries per user.'
-      data=json.dumps({'model':'gemma3:4b','messages':[{'role':'system','content':'You are an AI safety auditor. Find model-theft risks.'},{'role':'user','content':'Analyze this model API: '+design}],'stream':False,'options':{'num_predict':100}}).encode()
-      req=urllib.request.Request('http://211.170.162.139:10934/api/chat',data=data,headers={'Content-Type':'application/json'})
-      print('Analysis:', json.loads(urllib.request.urlopen(req).read())['message']['content'][:200])"
+      python3 -c "
+      LIMIT=10  # 분당 10 질의
+      def serve(n_requests):
+          served=min(n_requests, LIMIT)
+          blocked=max(0, n_requests-LIMIT)
+          return served, blocked
+      served, blocked = serve(5000)  # 추출 공격자가 5000 질의 시도
+      print(f'requested: 5000  served: {served}  blocked: {blocked}')
+      print('RATE_LIMITED' if blocked>0 else 'unlimited')"
       ```
-      ## ✅ 합격 기준
-      `Analysis:` 와 분석이 출력된다.
-    hint: '감사자로 모델 API 노출 분석'
+
+      ### ▷ 이렇게 나오면 정상
+      ```
+      requested: 5000  served: 10  blocked: 4990
+      RATE_LIMITED
+      ```
+
+      ### ▷ 결과 해석
+      5000 질의 중 10만 처리되고 4990 차단되면 `RATE_LIMITED`. 추출에 필요한 대량 질의가 막혀 도난이
+      비현실적이 된다. 정상 사용자(소량)는 영향 없다.
+    hint: '분당 질의 제한 → 대량 차단 RATE_LIMITED'
     answer: |
-      python3 -c "import json, urllib.request
-      design='Model API returns full token logprobs, no rate limit, no auth, unlimited queries per user.'
-      data=json.dumps({'model':'gemma3:4b','messages':[{'role':'system','content':'You are an AI safety auditor. Find model-theft risks.'},{'role':'user','content':'Analyze this model API: '+design}],'stream':False,'options':{'num_predict':100}}).encode()
-      req=urllib.request.Request('http://211.170.162.139:10934/api/chat',data=data,headers={'Content-Type':'application/json'})
-      print('Analysis:', json.loads(urllib.request.urlopen(req).read())['message']['content'][:200])"
-    answer_detail: "logprobs 노출 + 무제한 질의 + 무인증 = 추출·추론 위험. LLM 감사로 식별."
+      python3 -c "
+      LIMIT=10
+      def serve(n_requests):
+          served=min(n_requests, LIMIT)
+          blocked=max(0, n_requests-LIMIT)
+          return served, blocked
+      served, blocked = serve(5000)
+      print(f'requested: 5000  served: {served}  blocked: {blocked}')
+      print('RATE_LIMITED' if blocked>0 else 'unlimited')"
+    answer_detail: "rate limit 으로 추출용 대량 질의 차단 → RATE_LIMITED. 도난 비용↑."
     verify:
       type: output_contains
-      expect: "Analysis:"
+      expect: RATE_LIMITED
       field: stdout
-      semantic: {intent: "모델 노출 감사", success_criteria: ["위험 식별"]}
+      semantic: {intent: "rate limit 방어", success_criteria: ["대량 질의 차단"]}
 
   - order: 7
     instruction: |
-      ## 🎯 미션 — 출력 최소화 (MINIMIZED)
+      ## STEP 7 — 워터마킹 (WATERMARKED)
+      > **이 단계에서 할 일:** 출력에 통계적 워터마크(green-list 토큰 선호)를 심고, 검출로 출처를 증명한다.
+      > **왜:** 복제 모델이 이 출력으로 학습하면 워터마크를 물려받아 도난을 입증할 수 있다(강의 §4).
 
-      확률/로짓 등 단서를 제거하고 최종 답만 반환해 추출/추론 단서를 줄인다.
-
-      ## 💻 실행 명령
+      ### ▷ 그대로 입력
       ```bash
-      python3 -c "
-      raw={'answer':'positive','confidence':0.973,'logprobs':[-0.01,-3.2,-5.1],'top_tokens':['pos','neg']}
-      minimized={'answer': raw['answer']}
-      print('=== Output Minimization ===')
-      print('raw exposes:', list(raw.keys()))
-      print('minimized exposes:', list(minimized.keys()))
-      print('MINIMIZED' if 'confidence' not in minimized and 'logprobs' not in minimized else 'EXPOSED')"
+      python3 -c "import hashlib
+      GREEN=set('the of and to in is for on with as'.split())  # green-list(워터마크 토큰군)
+      def embed(text):
+          # 워터마크 모델은 green 토큰을 선호(시뮬: green 비율을 높임)
+          return text + ' the of and to in'
+      def detect(text):
+          toks=text.lower().split()
+          green_ratio=sum(1 for t in toks if t in GREEN)/max(1,len(toks))
+          return green_ratio > 0.35  # 통계적으로 green 과다 = 워터마크
+      wm=embed('firewall blocks traffic')
+      print('watermarked text:', wm)
+      print('detect on watermarked:', detect(wm))
+      print('detect on plain     :', detect('firewall blocks traffic'))
+      print('WATERMARKED' if detect(wm) and not detect('firewall blocks traffic') else 'fail')"
       ```
-      ## ✅ 합격 기준
-      단서가 제거돼 `MINIMIZED` 가 출력된다.
-    hint: '확률/로짓 숨기고 최종 답만'
+
+      ### ▷ 이렇게 나오면 정상
+      ```
+      watermarked text: firewall blocks traffic the of and to in
+      detect on watermarked: True
+      detect on plain     : False
+      WATERMARKED
+      ```
+
+      ### ▷ 결과 해석
+      워터마크된 출력만 검출되면 `WATERMARKED`. clone 이 이 출력으로 학습하면 통계 편향을 물려받아, 나중에
+      "우리 모델을 베낀 것"을 검증할 수 있다. IP 보호의 핵심.
+    hint: 'green-list 워터마크 삽입+검출 → WATERMARKED'
     answer: |
-      python3 -c "
-      raw={'answer':'positive','confidence':0.973,'logprobs':[-0.01,-3.2,-5.1],'top_tokens':['pos','neg']}
-      minimized={'answer': raw['answer']}
-      print('=== Output Minimization ===')
-      print('raw exposes:', list(raw.keys()))
-      print('minimized exposes:', list(minimized.keys()))
-      print('MINIMIZED' if 'confidence' not in minimized and 'logprobs' not in minimized else 'EXPOSED')"
-    answer_detail: "confidence/logprobs 제거하고 answer 만 반환 → 추출·멤버십 단서 차단(MINIMIZED)."
+      python3 -c "import hashlib
+      GREEN=set('the of and to in is for on with as'.split())
+      def embed(text):
+          return text + ' the of and to in'
+      def detect(text):
+          toks=text.lower().split()
+          green_ratio=sum(1 for t in toks if t in GREEN)/max(1,len(toks))
+          return green_ratio > 0.35
+      wm=embed('firewall blocks traffic')
+      print('watermarked text:', wm)
+      print('detect on watermarked:', detect(wm))
+      print('detect on plain     :', detect('firewall blocks traffic'))
+      print('WATERMARKED' if detect(wm) and not detect('firewall blocks traffic') else 'fail')"
+    answer_detail: "green-list 워터마크 삽입+검출 → WATERMARKED. 도난 입증(IP 보호)."
     verify:
       type: output_contains
-      expect: MINIMIZED
+      expect: WATERMARKED
       field: stdout
-      semantic: {intent: "출력 최소화", success_criteria: ["단서 제거"]}
+      semantic: {intent: "워터마킹", success_criteria: ["삽입+검출"]}
 
   - order: 8
     instruction: |
-      ## 🎯 미션 — 평가 보고서
-      ## 💻 실행 명령
+      ## STEP 8 — 종합 보고서 (Assessment)
+      > **이 단계에서 할 일:** 자산 위협(추출/추론)과 방어(탐지/rate limit/워터마크/DP)를 보고서로 정리.
+      > **왜:** 결과를 배포 보안 결정으로.
+
+      ### ▷ 그대로 입력
       ```bash
-      python3 -c "print('='*50)
-      print('  Model Security Assessment (W09)')
-      print('='*50)
-      print('\\n[Findings]')
-      print('  1. I/O pairs harvestable -> extraction')
-      print('  2. Confidence enables membership inference')
-      print('  3. Query budget blocks mass queries')
-      print('  4. Output minimization removes clues')
+      python3 -c "print('='*52)
+      print('  Model Asset Security Assessment (W09)')
+      print('='*52)
+      print('\\n[Attacks]')
+      print('  - Extraction: query harvest -> clone dataset (fidelity 0.82)')
+      print('  - Membership inference: confidence -> training membership')
+      print('\\n[Defenses]')
+      print('  1. Query-pattern monitoring (detect extraction)')
+      print('  2. Rate limiting (make bulk queries infeasible)')
+      print('  3. Watermarking (prove theft)')
+      print('  4. Differential privacy (blunt membership inference)')
       print('\\n[Recommendations]')
-      print('  1. Rate limit + query budget + auth')
-      print('  2. Hide logprobs/confidence')
-      print('  3. Differential privacy; monitor anomalous querying')
-      print('='*50)"
+      print('  - Guardrails protect OUTPUT; asset needs rate limit + WM + DP')
+      print('  - bastion: API key + rate limit + audit on model AND E.G')
+      print('='*52)"
       ```
-      ## ✅ 합격 기준
-      보고서가 `Assessment` 와 함께 출력된다.
-    hint: '발견·권고 보고서'
+
+      ### ▷ 이렇게 나오면 정상
+      ```
+      ====================================================
+        Model Asset Security Assessment (W09)
+      ====================================================
+      [Attacks] ... [Defenses] ... [Recommendations] ...
+      ====================================================
+      ```
+
+      ### ▷ 결과 해석
+      `Assessment` 헤더와 위협·방어·권고가 나오면 완료. 제출용엔 STEP 5 ASR·STEP 6 차단 수·STEP 7 검출을 인용.
+    hint: '자산 위협·방어·권고 종합 → Assessment'
     answer: |
-      python3 -c "print('='*50)
-      print('  Model Security Assessment (W09)')
-      print('='*50)
-      print('\\n[Findings]')
-      print('  1. I/O pairs harvestable -> extraction')
-      print('  2. Confidence enables membership inference')
-      print('  3. Query budget blocks mass queries')
-      print('  4. Output minimization removes clues')
+      python3 -c "print('='*52)
+      print('  Model Asset Security Assessment (W09)')
+      print('='*52)
+      print('\\n[Attacks]')
+      print('  - Extraction: query harvest -> clone dataset (fidelity 0.82)')
+      print('  - Membership inference: confidence -> training membership')
+      print('\\n[Defenses]')
+      print('  1. Query-pattern monitoring (detect extraction)')
+      print('  2. Rate limiting (make bulk queries infeasible)')
+      print('  3. Watermarking (prove theft)')
+      print('  4. Differential privacy (blunt membership inference)')
       print('\\n[Recommendations]')
-      print('  1. Rate limit + query budget + auth')
-      print('  2. Hide logprobs/confidence')
-      print('  3. Differential privacy; monitor anomalous querying')
-      print('='*50)"
-    answer_detail: "모델 보안 종합: 추출/추론 위협 + 질의제한·출력최소화·DP 방어."
+      print('  - Guardrails protect OUTPUT; asset needs rate limit + WM + DP')
+      print('  - bastion: API key + rate limit + audit on model AND E.G')
+      print('='*52)"
+    answer_detail: "W09 종합: 자산 위협(추출/추론) + 방어(모니터링/rate limit/워터마크/DP)."
     verify:
       type: output_contains
       expect: Assessment
       field: stdout
-      semantic: {intent: "모델 보안 종합", success_criteria: ["발견","권고"]}
+      semantic: {intent: "자산 보안 종합", success_criteria: ["위협","방어"]}
