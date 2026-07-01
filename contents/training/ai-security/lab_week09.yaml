@@ -1,0 +1,155 @@
+lab_id: ai-security-week09
+title: "W09 — Bastion (1) 기본: 상태·스킬 조회·안전 화이트리스트·Manager harness"
+version: ai
+course: ai-security
+week: 9
+description: |
+  el34의 실물 자율보안 에이전트 bastion을 직접 다룬다. bastion API 상태·스킬 조회(BASTION_OK),
+  /exec 안전 화이트리스트(안전 명령 실행·위험 명령 차단, WHITELIST_OK), Manager가 작업에 맞는 skill을
+  고르는 harness 재현(HARNESS_OK), 구조 종합(Assessment).
+  실물 bastion(el34-bastion:9100, X-API-Key: ccc-api-key-2026) + GPU Manager 시뮬을 결합.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 활용 입문 (9주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W09 강의안 정독 — §0.5(bastion 두 층·화이트리스트·harness/E.G)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "bastion 상태·스킬 조회(BASTION_OK)"
+  - "안전 화이트리스트로 안전 명령 실행·위험 명령 차단(WHITELIST_OK)"
+  - "Manager가 작업에 맞는 skill 선택(HARNESS_OK)"
+  - "bastion 구조 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — bastion 상태·스킬 조회 → BASTION_OK
+      > **🎯 목표:** bastion `/health`·`/skills`를 호출해 실행 계층이 살아 있고 어떤 스킬이 있는지 확인.
+      > **개념:** bastion이 할 수 있는 일(skills)과 대상(target VM)을 파악.
+      ### 💻 그대로 입력 (el34 호스트 — bastion은 `el34-bastion` 컨테이너 :9100)
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c \
+        'curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/health; echo;
+         curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/skills' 2>/dev/null \
+       | python3 -c "import sys,json
+      lines=[l for l in sys.stdin.read().splitlines() if l.strip().startswith('{')]
+      health=json.loads(lines[0]); skills=json.loads(lines[1])
+      print('health:', health.get('service'), 'llm_configured:', health.get('llm_configured'))
+      print('skills:', [s['id'] for s in skills['skills']])
+      print('BASTION_OK' if health.get('status')=='ok' and any(s['id']=='wazuh.alerts' for s in skills['skills']) else 'NO_BASTION')"
+      ```
+      ✅ 마지막 줄 `BASTION_OK` (bastion 상태 ok + 스킬 목록에 wazuh.alerts 등).
+      ### 🔎 스킬: nft.list_ruleset(secu)·suricata.tail_eve(secu)·apache.error_log(web)·wazuh.alerts(siem)·attacker.nmap(attacker).
+      `llm_configured:false` = el34-bastion은 경량 실행기(Manager LLM 계획은 STEP4에서 GPU로 시연).
+    answer: |
+      health: el34-bastion llm_configured: False
+      skills: ['nft.list_ruleset', 'suricata.tail_eve', 'apache.error_log', 'wazuh.alerts', 'attacker.nmap']
+      BASTION_OK
+    answer_detail: "bastion /health·/skills 조회로 실행 계층·스킬 파악 → BASTION_OK."
+    verify:
+      type: output_contains
+      expect: BASTION_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 안전 화이트리스트 → WHITELIST_OK
+      > **🎯 목표:** `/exec`로 안전 명령(hostname)은 실행되고, 위험 명령(rm -rf /)은 차단됨을 확인.
+      > **개념:** LLM이 뭐라 하든 위험 명령은 코드가 막는다(실행 계층의 마지막 안전선).
+      ### 💻 그대로 입력
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c '
+        echo "[safe]  "; curl -s -X POST -H "X-API-Key: ccc-api-key-2026" -H "content-type: application/json" -d "{\"target\":\"secu\",\"command\":\"hostname\"}" http://localhost:9100/exec;
+        echo; echo "[danger]"; curl -s -X POST -H "X-API-Key: ccc-api-key-2026" -H "content-type: application/json" -d "{\"target\":\"secu\",\"command\":\"rm -rf /\"}" http://localhost:9100/exec' 2>/dev/null \
+       | python3 -c "import sys
+      t=sys.stdin.read()
+      safe_ran = ('\"rc\":0' in t) or ('rc\": 0' in t)
+      danger_blocked = 'must start with' in t
+      print(t[:200].replace(chr(10),' '))
+      print('WHITELIST_OK' if safe_ran and danger_blocked else 'CHECK')"
+      ```
+      ✅ 마지막 줄 `WHITELIST_OK` (hostname 실행됨(rc:0), rm -rf / 차단됨).
+      ### 🔎 화이트리스트 접두: ping/uptime/hostname/date/whoami/ip a/ip route/nslookup/dig/curl http. 그 외 전부 차단.
+      Manager LLM이 오염돼 위험 명령을 지시해도 실행 계층이 막는다(ai-safety의 allowlist 안전통제 실물).
+    answer: |
+      [safe] {"target":"secu","command":"hostname","rc":0,"stdout":"bastion\n"...} [danger] {"detail":"command must start with ..."}
+      WHITELIST_OK
+    answer_detail: "안전 명령 실행·위험 명령 차단 → WHITELIST_OK. 실행 계층의 마지막 안전선(allowlist)."
+    verify:
+      type: output_contains
+      expect: WHITELIST_OK
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — Manager harness(skill 선택) → HARNESS_OK
+      > **🎯 목표:** GPU Manager에게 skills 목록을 주고 "Wazuh 알림 확인" 작업에 맞는 skill을 고르게 한다.
+      > **개념:** Manager가 작업→skill 매핑(harness)을 자동 구성. (el34-bastion은 llm 미탑재라 GPU로 시연.)
+      ### 💻 그대로 입력 (heredoc)
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request, re
+      GPU="http://211.170.162.139:10934/api/generate"
+      SKILLS="nft.list_ruleset(secu), suricata.tail_eve(secu), apache.error_log(web), wazuh.alerts(siem), attacker.nmap(attacker)"
+      sysp=f"You are a Bastion Manager. Available skills: {SKILLS}. For the task, reply with ONLY one line: SKILL: <skill.id>. No prose."
+      b={"model":"gemma3:4b","system":sysp,"prompt":"Task: check recent Wazuh SIEM alerts for the host.","stream":False,"options":{"num_predict":25,"temperature":0.2}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=90)).get("response","")
+      m=re.search(r"SKILL:\s*([a-z._]+)",r); sk=m.group(1) if m else r[:30]
+      print("Manager chose:", sk)
+      print("HARNESS_OK" if "wazuh" in str(sk) else "WRONG_SKILL")
+      PY
+      ```
+      ✅ 마지막 줄 `HARNESS_OK` (Manager가 wazuh.alerts 선택).
+      ### 🔎 실물 bastion에선 Manager가 이 skill 선택 → 실행 계층(/exec·/skills)에 A2A로 지시 → 결과를 E.G에 축적.
+    answer: |
+      Manager chose: wazuh.alerts
+      HARNESS_OK
+    answer_detail: "Manager가 'Wazuh 알림 확인' 작업에 wazuh.alerts skill 선택 → HARNESS_OK. 작업→skill harness 구성."
+    verify:
+      type: output_contains
+      expect: HARNESS_OK
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note on bastion architecture for W09. Findings: bastion exposes health/skills and an /exec with a safe whitelist (safe commands run, rm -rf / is blocked), and a Manager selects the right skill (wazuh.alerts) for a task. Explain the two layers (Manager plans with harness+E.G, execution layer runs skills with a whitelist as the last safety line) and give 3 points (least privilege whitelist, Manager selects skills via harness, verify results). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":300}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: bastion = Manager(계획·harness·E.G) + 실행 계층(스킬·화이트리스트). 화이트리스트가 최종 안전선.
+      다음 주(W10)는 반복 대응을 표준화하는 **Playbook + RL steering**.
+    answer: |
+      Assessment
+      Bastion has two layers: Manager (plans via harness + E.G) and the execution layer (runs skills, whitelist as last safety line).
+      Points: (1) least-privilege whitelist, (2) Manager selects skills via harness, (3) verify results.
+    answer_detail: "W09 bastion 구조 종합(Assessment). Manager+실행 계층, 화이트리스트 안전선."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

@@ -1,0 +1,174 @@
+lab_id: ai-security-week04
+title: "W04 — LLM 기반 로그 분석: 요약·상관·우선순위화·결정론 검증"
+version: ai
+course: ai-security
+week: 4
+description: |
+  LLM으로 로그를 분석하되 결정론으로 검증한다. 대량 로그 요약(SUMMARIZED), 이벤트 상관으로 공격
+  체인 재구성(CORRELATED), 심각도 우선순위화(PRIORITIZED), LLM 판단을 grep/count로 검증(VERIFIED).
+  'LLM 필터 + 결정론 확정' 2단 구조가 신뢰의 핵심. (el34 실 로그로 확장 가능: Wazuh alerts.json·web 로그.)
+difficulty: easy
+duration_minutes: 130
+audience: AI 보안 활용 입문 (4주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W04 강의안 정독 — §0.5(요약·상관·검증 2단 구조)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "대량 로그에서 이상 요약(SUMMARIZED)"
+  - "이벤트 상관으로 공격 체인 재구성(CORRELATED)"
+  - "심각도 우선순위화 구조화 출력(PRIORITIZED)"
+  - "LLM 판단을 결정론 규칙으로 검증(VERIFIED)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 대량 로그 요약 → SUMMARIZED
+      > **🎯 목표:** 혼합 로그에서 이상 징후를 요약하고 수상한 IP를 지목한다.
+      > **개념:** 대량 노이즈 속 소수 위협을 좁힌다.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      LOGS=("185.220.101.42 sshd: Failed password for root (x40)\n"
+            "10.0.0.5 GET /index.html 200\n"
+            "185.220.101.42 sshd: Accepted password for root\n"
+            "10.0.0.5 GET /about 200\n"
+            "185.220.101.42 GET /?id=1' UNION SELECT pw FROM users-- 200")
+      b={"model":"gemma3:4b","prompt":f"Summarize the security anomalies in these logs in 2 lines. Name the suspicious IP.\n{LOGS}","stream":False,"options":{"num_predict":120,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=90)).get("response","")
+      print(r[:200].replace(chr(10)," "))
+      print("SUMMARIZED" if "185.220.101.42" in r else "no_ip")
+      PY
+      ```
+      ✅ 마지막 줄 `SUMMARIZED` (수상한 IP 185.220.101.42 지목).
+      🔎 el34 확장: `el34-siem` Wazuh `alerts.json` 을 같은 프롬프트로 요약할 수 있다.
+    answer: |
+      The IP 185.220.101.42 shows brute-force, a successful root login, and a SQL injection attempt.
+      SUMMARIZED
+    answer_detail: "혼합 로그에서 이상 요약 + 수상 IP 지목 → SUMMARIZED. 대량 노이즈 좁히기."
+    verify:
+      type: output_contains
+      expect: SUMMARIZED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 이벤트 상관 → CORRELATED
+      > **🎯 목표:** 브루트포스→성공→SQLi로 이어진 단일 IP를 LLM이 상관해 찾는다.
+      > **개념:** 한 줄씩 보면 놓칠 체인을 재구성.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request, re
+      GPU="http://211.170.162.139:10934/api/generate"
+      LOGS=("185.220.101.42 sshd: Failed password for root (x40)\n"
+            "10.0.0.5 GET /index.html 200\n"
+            "185.220.101.42 sshd: Accepted password for root\n"
+            "185.220.101.42 GET /?id=1' UNION SELECT pw FROM users-- 200")
+      b={"model":"gemma3:4b","prompt":f"Which single IP shows a full attack chain (brute force then success then web attack)? Answer with just the IP.\n{LOGS}","stream":False,"options":{"num_predict":20,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=60)).get("response","")
+      m=re.search(r"\d+\.\d+\.\d+\.\d+", r)
+      print("chain IP:", m.group() if m else r[:30])
+      print("CORRELATED" if (m and m.group()=="185.220.101.42") else "no")
+      PY
+      ```
+      ✅ 마지막 줄 `CORRELATED` (공격 체인 IP를 정확히 상관).
+      🔎 요약(무엇)에서 상관(어떻게 이어지나)으로 — 침해 스토리 재구성.
+    answer: |
+      chain IP: 185.220.101.42
+      CORRELATED
+    answer_detail: "브루트포스→성공→SQLi 체인의 단일 IP 상관 → CORRELATED. 공격 스토리 재구성."
+    verify:
+      type: output_contains
+      expect: CORRELATED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 우선순위화(구조화) → PRIORITIZED
+      > **🎯 목표:** 이벤트들을 심각도로 순위 매겨 JSON으로 출력한다.
+      > **개념:** 구조화 출력이 자동 티켓팅·에스컬레이션의 입력.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      prompt=('Output JSON only, exactly this schema: {"ranked": ["<most severe event>", "<next>", "<least>"]}. '
+              'Rank these 3 events most-severe first: (a) successful root login after brute force, '
+              '(b) port scan, (c) a single 404 error.')
+      b={"model":"gemma3:4b","prompt":prompt,"stream":False,"format":"json","options":{"num_predict":150,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=90)).get("response","")
+      try:
+          j=json.loads(r); ranked=j.get("ranked")
+          print("ranked:", json.dumps(ranked)[:140] if ranked else json.dumps(j)[:140])
+          print("PRIORITIZED" if isinstance(ranked,list) and len(ranked)>=2 else "SHALLOW")
+      except Exception:
+          print("parse_fail:", r[:80]); print("PARSE_FAIL")
+      PY
+      ```
+      ✅ 마지막 줄 `PRIORITIZED` (심각도 순 정렬된 이벤트 리스트 JSON).
+      🔎 이 구조화 출력을 SOAR가 받아 자동으로 티켓 생성·에스컬레이션한다.
+    answer: |
+      ranked: ["successful root login after brute force", "port scan", "a single 404 error"]
+      PRIORITIZED
+    answer_detail: "이벤트를 심각도 순 JSON 리스트로 우선순위화 → PRIORITIZED. 자동 티켓팅 입력."
+    verify:
+      type: output_contains
+      expect: PRIORITIZED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 결정론 검증 → VERIFIED
+      > **🎯 목표:** LLM이 지목한 IP를 실제 로그에서 카운트해 임계 이상인지 확인한다.
+      > **개념:** LLM은 틀린다. 후보는 LLM이, **사실 확정은 결정론 규칙**이 한다.
+      ```bash
+      python3 - <<'PY'
+      # LLM 이 지목한 IP (STEP2/3 결과)
+      flagged="185.220.101.42"
+      LOGS=["185.220.101.42 sshd: Failed password for root (x40)",
+            "10.0.0.5 GET /index.html 200",
+            "185.220.101.42 sshd: Accepted password for root",
+            "10.0.0.5 GET /about 200",
+            "185.220.101.42 GET /?id=1' UNION SELECT pw FROM users-- 200"]
+      # 결정론 검증: 실제 등장 횟수 카운트 (grep -c 와 동일)
+      count=sum(1 for line in LOGS if flagged in line)
+      print(f"deterministic count of {flagged} = {count}")
+      # LLM 판단(수상)이 결정론(임계 3회 이상)으로 확정되는가
+      print("VERIFIED" if count>=3 else "LLM_HALLUCINATION")
+      PY
+      ```
+      ✅ 마지막 줄 `VERIFIED` (LLM 지목 IP가 실제 3회 이상 등장 — 사실 확정).
+      🔎 정리: W04는 LLM으로 좁히고(요약·상관·우선순위) 결정론으로 확정(검증)하는 2단 구조를 익혔다. 이 구조가
+      bastion 관제의 신뢰 기반(LLM 분석 + Assessor 검증)이다. 다음 주(W05)는 **탐지 룰 자동 생성**.
+    answer: |
+      deterministic count of 185.220.101.42 = 3
+      VERIFIED
+    answer_detail: "LLM 지목 IP를 결정론 카운트로 확정(3회 이상) → VERIFIED. 'LLM 필터+규칙 확정' 2단 구조."
+    verify:
+      type: output_contains
+      expect: VERIFIED
+      field: stdout

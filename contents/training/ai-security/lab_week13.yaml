@@ -1,0 +1,163 @@
+lab_id: ai-security-week13
+title: "W13 — 분산 지식: local_knowledge 구조·SubAgent 지식 전달·병합 통찰"
+version: ai
+course: ai-security
+week: 13
+description: |
+  bastion의 분산 지식. 각 SubAgent의 local_knowledge 확인(KNOWLEDGE_OK), SubAgent 간 지식 전달
+  (TRANSFER_OK), 부분 지식 병합으로 통찰 도출(MERGED), 오염 검증 종합(Assessment).
+  아무도 혼자 못 보는 전체를 나눠 갖고 합쳐서 본다 — 단, 지식이 신뢰할 만할 때만.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 활용 입문 (13주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W13 강의안 정독 — §0.5(분산 지식·전달·병합·오염)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "각 SubAgent의 local_knowledge 구조 확인(KNOWLEDGE_OK)"
+  - "SubAgent 간 지식 전달(TRANSFER_OK)"
+  - "부분 지식 병합으로 통찰 도출(MERGED)"
+  - "오염 검증 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — local_knowledge 구조 → KNOWLEDGE_OK
+      > **🎯 목표:** 각 SubAgent의 local_knowledge(담당 VM 지식)를 확인한다.
+      > **개념:** 각자 보는 것이 다르다 — 아무도 전체를 혼자 못 본다.
+      ```bash
+      python3 - <<'PY'
+      import json
+      # 각 SubAgent의 local_knowledge.json (담당 VM별 부분 지식)
+      local_knowledge={
+        "web-subagent":  {"vm":"web","facts":[{"ip":"185.220.101.42","obs":"SQLi attempt","ts":"10:01"}]},
+        "siem-subagent": {"vm":"siem","facts":[{"ip":"185.220.101.42","obs":"wazuh alerts x5","ts":"10:02"}]},
+        "fw-subagent":   {"vm":"fw","facts":[{"ip":"185.220.101.42","obs":"not blocked yet","ts":"10:03"}]},
+      }
+      for name,kb in local_knowledge.items():
+          print(f"  {name:14} vm={kb['vm']:4} facts={len(kb['facts'])} -> {kb['facts'][0]['obs']}")
+      # 세 SubAgent가 각자 다른 관측을 보유
+      print("KNOWLEDGE_OK" if len(local_knowledge)==3 else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `KNOWLEDGE_OK` (3개 SubAgent가 각자 다른 관측 보유).
+      🔎 web=SQLi, siem=경보, fw=미차단 — 각자 부분만 본다.
+    answer: |
+      web-subagent   vm=web  facts=1 -> SQLi attempt
+      siem-subagent  vm=siem facts=1 -> wazuh alerts x5
+      fw-subagent    vm=fw   facts=1 -> not blocked yet
+      KNOWLEDGE_OK
+    answer_detail: "각 SubAgent가 담당 VM의 부분 지식을 local_knowledge에 보유 → KNOWLEDGE_OK."
+    verify:
+      type: output_contains
+      expect: KNOWLEDGE_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 지식 전달 → TRANSFER_OK
+      > **🎯 목표:** web-SubAgent의 발견을 fw-SubAgent에게 전달한다(출처 포함).
+      > **개념:** 한 곳의 발견이 다른 곳의 행동이 된다(인수인계).
+      ```bash
+      python3 - <<'PY'
+      # web-SubAgent의 지식을 fw-SubAgent로 전달 (출처 태그 유지)
+      msg={"from":"web-subagent","ip":"185.220.101.42","obs":"SQLi attempt","ts":"10:01"}
+      fw_kb={"vm":"fw","facts":[{"ip":"185.220.101.42","obs":"not blocked yet"}]}
+      # 전달 수신: 출처를 기록하고 자기 지식에 반영
+      fw_kb["facts"].append({"ip":msg["ip"],"obs":msg["obs"],"src":msg["from"]})
+      print("fw-subagent received:", [f.get("obs") for f in fw_kb["facts"]])
+      print("  -> fw now watches", msg["ip"], "(src:", msg["from"]+")")
+      transferred = any(f.get("src")=="web-subagent" for f in fw_kb["facts"])
+      print("TRANSFER_OK" if transferred else "NO_TRANSFER")
+      PY
+      ```
+      ✅ 마지막 줄 `TRANSFER_OK` (web의 발견이 fw로 전달, 출처 태그 포함).
+      🔎 출처(src)를 유지해야 나중에 오염 추적·검증이 가능하다.
+    answer: |
+      fw-subagent received: ['not blocked yet', 'SQLi attempt']
+        -> fw now watches 185.220.101.42 (src: web-subagent)
+      TRANSFER_OK
+    answer_detail: "web-SubAgent 발견을 fw-SubAgent로 출처 태그와 함께 전달 → TRANSFER_OK."
+    verify:
+      type: output_contains
+      expect: TRANSFER_OK
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 지식 병합·통찰 → MERGED
+      > **🎯 목표:** 세 SubAgent의 로컬 지식을 병합해 "실재하는 미대응 위협" 결론을 도출한다.
+      > **개념:** 부분의 합보다 큰 통찰 — 개별론 못 보던 패턴이 합치면 드러남.
+      ```bash
+      python3 - <<'PY'
+      # 같은 IP에 대한 세 부분 지식을 병합
+      facts=[{"ip":"185.220.101.42","obs":"SQLi attempt","src":"web"},
+             {"ip":"185.220.101.42","obs":"wazuh alerts x5","src":"siem"},
+             {"ip":"185.220.101.42","obs":"not blocked yet","src":"fw"}]
+      from collections import defaultdict
+      by_ip=defaultdict(list)
+      for f in facts: by_ip[f["ip"]].append(f["obs"])
+      ip="185.220.101.42"; obs=by_ip[ip]
+      attack = any("SQLi" in o or "alert" in o for o in obs)
+      unhandled = any("not blocked" in o for o in obs)
+      print(f"merged view of {ip}: {obs}")
+      # 병합 통찰: 공격 흔적 + 미차단 = 실재하는 미대응 위협
+      insight = attack and unhandled
+      print("INSIGHT: real un-handled threat -> escalate" if insight else "insufficient")
+      print("MERGED" if insight else "NO_INSIGHT")
+      PY
+      ```
+      ✅ 마지막 줄 `MERGED` (병합으로 "실재하는 미대응 위협" 통찰 도출).
+      🔎 web 한 조각(SQLi 시도)만으론 확신 못 하지만, siem·fw와 합치면 확실해진다.
+    answer: |
+      merged view of 185.220.101.42: ['SQLi attempt', 'wazuh alerts x5', 'not blocked yet']
+      INSIGHT: real un-handled threat -> escalate
+      MERGED
+    answer_detail: "세 SubAgent 부분 지식 병합 → '실재하는 미대응 위협' 통찰 → MERGED. 부분의 합보다 큰 통찰."
+    verify:
+      type: output_contains
+      expect: MERGED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합(오염 검증) → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note on bastion distributed knowledge for W13. Findings: three SubAgents held partial local_knowledge (KNOWLEDGE_OK), a finding was transferred with its source tag (TRANSFER_OK), and merging the parts revealed a real un-handled threat that no single agent could confirm (MERGED). Warn that distributed knowledge can be poisoned and give 3 points (partial views need merging, keep source tags, verify before trusting merged knowledge). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":300}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 분산 지식은 부분을 나눠 갖고 합쳐 전체를 본다. 출처·검증이 있어야 오염 지식이 결론을 망치지 않는다.
+      다음 주(W14)는 보상 함수로 행동을 조향하는 **RL Steering**.
+    answer: |
+      Assessment
+      Distributed knowledge shares partial views that merge into a whole no single agent sees.
+      Points: (1) partial views need merging, (2) keep source tags, (3) verify before trusting merged knowledge.
+    answer_detail: "W13 분산 지식 종합(Assessment). 전달·병합 + 출처·검증(오염 방어)."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

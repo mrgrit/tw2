@@ -1,0 +1,158 @@
+lab_id: ai-security-week01
+title: "W01 — AI/LLM 보안 활용 개론: Ollama API·system/user·로그 분석·트리아지"
+version: ai
+course: ai-security
+week: 1
+description: |
+  AI를 방어자의 무기로 쓰는 첫걸음. el34 GPU Ollama 를 호출해(GEN_OK), system/user 역할 분리
+  (CHAT_OK), SSH 브루트포스 로그 분석(BRUTEFORCE), 웹 SQLi 로그 분석(SQLI_FOUND), 구조화 트리아지
+  (TRIAGED)를 손으로 확인한다. LLM 출력은 '분석가의 초안'이며 검증 대상임을 익힌다.
+difficulty: easy
+duration_minutes: 120
+audience: AI 보안 활용 입문 (1주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 (`curl -s http://211.170.162.139:10934/api/tags`) — gemma3:4b
+  - W01 강의안 정독 — §0.5(LLM 기초·Ollama API·bastion), §1(LLM 한계)
+objectives:
+  - "GPU 모델 응답 확인(GEN_OK)"
+  - "system/user 역할 분리 호출(CHAT_OK)"
+  - "SSH 브루트포스 로그를 LLM으로 분석(BRUTEFORCE)"
+  - "웹 SQLi 로그를 LLM으로 분석(SQLI_FOUND)"
+  - "구조화 트리아지(심각도·조치) 출력(TRIAGED)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      > **🎯 목표:** el34 GPU 의 `gemma3:4b` 가 응답하는지 확인.
+      ### 💻 그대로 입력 (el34 호스트, GPU=`http://211.170.162.139:10934`)
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"What is a brute force attack in one sentence?","stream":false,"options":{"num_predict":50}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+      ### 🔎 처음 나오는 것: `/api/generate`=단발 생성, `num_predict`=생성 토큰 수.
+    answer: |
+      A brute force attack repeatedly tries many credentials until one works.
+      GEN_OK
+    answer_detail: "GPU /api/generate 응답 확인. 모든 실습의 전제."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — system/user 역할 분리 → CHAT_OK
+      > **🎯 목표:** `/api/chat` 로 system(역할)과 user(요청)를 분리해, 역할이 반영된 답을 받는다.
+      > **개념:** 역할을 system에 고정하면 답의 형식·관점이 일관돼진다(프롬프트 엔지니어링의 첫걸음).
+      ### 💻 그대로 입력
+      ```bash
+      curl -s http://211.170.162.139:10934/api/chat \
+        -d '{"model":"gemma3:4b","stream":false,"options":{"num_predict":80,"temperature":0.2},"messages":[{"role":"system","content":"You are a terse SOC analyst. Prefix every answer with SOC:"},{"role":"user","content":"What is a port scan?"}]}' \
+       | python3 -c "import sys,json; c=json.load(sys.stdin).get('message',{}).get('content',''); print(c); print('CHAT_OK' if 'SOC' in c else 'NO_ROLE')"
+      ```
+      ✅ 마지막 줄 `CHAT_OK` (답이 SOC 역할로 시작).
+      ### 🔎 `/api/chat` 은 `messages` 배열에 role(system/user)을 담고, 응답은 `message.content` 에 온다.
+    answer: |
+      SOC: A port scan probes a host's ports to find which services are open.
+      CHAT_OK
+    answer_detail: "system 역할 고정(SOC 분석가)으로 일관된 관점의 답 → CHAT_OK. 역할 부여가 프롬프트 엔지니어링의 시작."
+    verify:
+      type: output_contains
+      expect: CHAT_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — SSH 브루트포스 로그 분석 → BRUTEFORCE
+      > **🎯 목표:** 반복 실패 로그를 LLM에 주고 공격 유형을 분석시킨다.
+      > **개념:** 대량 로그를 사람이 다 읽지 않고 LLM이 요약·분류.
+      ### 💻 그대로 입력 (heredoc)
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      log="\n".join([f"Mar 27 03:15:{i:02d} web sshd: Failed password for root from 185.220.101.42 port {4500+i}" for i in range(8)])
+      body={"model":"gemma3:4b","prompt":f"Analyze this auth log. Name the attack type in one line starting with 'ATTACK:'.\n{log}","stream":False,"options":{"num_predict":100,"temperature":0.2}}
+      req=urllib.request.Request(GPU,data=json.dumps(body).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=90)).get("response","")
+      print(r[:160].replace(chr(10)," "))
+      print("BRUTEFORCE" if "brute" in r.lower() else "unclear")
+      PY
+      ```
+      ✅ 마지막 줄 `BRUTEFORCE` (LLM이 브루트포스로 식별).
+      ### 🔎 실전 확장: el34-siem 의 실제 Wazuh 알림(`alerts.json`)이나 sshd 로그로 같은 분석을 돌릴 수 있다.
+    answer: |
+      ATTACK: Brute-force attack against the SSH root account from 185.220.101.42.
+      BRUTEFORCE
+    answer_detail: "반복 실패 로그를 LLM이 브루트포스로 분류 → BRUTEFORCE. 로그 분석 자동화의 대표 사례."
+    verify:
+      type: output_contains
+      expect: BRUTEFORCE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 웹 공격 로그 분석(SQLi) → SQLI_FOUND
+      > **🎯 목표:** UNION SELECT 페이로드가 든 웹 로그를 LLM에 주고 공격 유형을 뽑는다.
+      > **개념:** LLM이 페이로드를 SQL Injection으로 분류.
+      ### 💻 그대로 입력 (heredoc)
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      log='192.168.0.202 - "GET /?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users-- HTTP/1.1" 200'
+      body={"model":"gemma3:4b","prompt":f"Analyze this web access log. Name the attack type in one line starting with 'ATTACK:'.\n{log}","stream":False,"options":{"num_predict":90,"temperature":0.2}}
+      req=urllib.request.Request(GPU,data=json.dumps(body).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=90)).get("response","")
+      print(r[:160].replace(chr(10)," "))
+      print("SQLI_FOUND" if ("sql" in r.lower() or "injection" in r.lower()) else "unclear")
+      PY
+      ```
+      ✅ 마지막 줄 `SQLI_FOUND` (LLM이 SQL Injection으로 분류).
+      ### 🔎 실전 확장: el34-web 의 ModSecurity audit(`modsec_edu_gui.log`) 실 로그로 같은 분석 가능.
+    answer: |
+      ATTACK: SQL Injection using UNION SELECT to extract user credentials.
+      SQLI_FOUND
+    answer_detail: "웹 로그의 UNION SELECT 페이로드를 LLM이 SQL Injection으로 분류 → SQLI_FOUND."
+    verify:
+      type: output_contains
+      expect: SQLI_FOUND
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 구조화 트리아지 → TRIAGED
+      > **🎯 목표:** 분석을 표준 형식(심각도·조치)으로 만든다.
+      > **개념:** SOAR 자동화의 씨앗 — 구조화 출력이 있어야 후속 자동 처리가 가능. 단 결과는 검증 대상.
+      ### 💻 그대로 입력 (heredoc)
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      prompt="For this security event, output EXACTLY two lines: 'SEVERITY: <low/medium/high>' and 'ACTION: <one action>'.\nEvent: 500 failed SSH root logins from a single IP in 2 minutes."
+      body={"model":"gemma3:4b","prompt":prompt,"stream":False,"options":{"num_predict":50,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(body).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=90)).get("response","")
+      print(r[:120].replace(chr(10)," "))
+      print("TRIAGED" if "SEVERITY:" in r else "NO_FORMAT")
+      PY
+      ```
+      ✅ 마지막 줄 `TRIAGED` (심각도·조치 구조화 출력).
+      ### 🔎 정리
+      W01 요약: LLM을 API로 불러 로그를 분석·분류·구조화했다. 이 구조화 출력이 SOAR 자동화와 bastion의 씨앗이다.
+      **단, LLM 답은 초안** — 실제 로그·결정론 규칙으로 검증한다. 다음 주(W02)는 Ollama·파라미터를 심화한다.
+    answer: |
+      SEVERITY: high
+      ACTION: Block the source IP at the firewall
+      TRIAGED
+    answer_detail: "LLM이 심각도·권고 조치를 정해진 형식으로 출력 → TRIAGED. SOAR 자동화의 씨앗(검증 전제)."
+    verify:
+      type: output_contains
+      expect: TRIAGED
+      field: stdout

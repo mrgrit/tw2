@@ -1,0 +1,158 @@
+lab_id: ai-security-week14
+title: "W14 — RL Steering: 보상 함수 설계·행동 조향·reward hacking 탐지"
+version: ai
+course: ai-security
+week: 14
+description: |
+  보상 함수로 bastion 행동을 조향한다. 다면 보상 함수 설계(REWARD_OK), 보상 기반 행동 조향(STEERED),
+  잘못된 보상의 reward hacking 탐지(HACK_DETECTED), 정렬·검증 종합(Assessment).
+  무엇에 보상을 주느냐가 무엇을 배우게 하느냐를 결정한다.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 활용 입문 (14주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W14 강의안 정독 — §0.5(보상 함수·조향·reward hacking)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "다면 보상 함수 설계(REWARD_OK)"
+  - "보상 기반 행동 조향(STEERED)"
+  - "reward hacking 탐지(HACK_DETECTED)"
+  - "정렬·검증 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 보상 함수 설계 → REWARD_OK
+      > **🎯 목표:** 정탐+/오탐−/누락−− 다면 보상 함수로 행동을 채점한다.
+      > **개념:** 보상이 목표를 정의한다.
+      ```bash
+      python3 - <<'PY'
+      # 다면 보상 함수: 정탐 +2, 오탐 -1, 누락 -3 (진짜 목적=정확한 탐지)
+      def reward(outcome):
+          return {"true_positive":+2, "false_positive":-1, "miss":-3, "correct_ignore":+1}.get(outcome,0)
+      # 두 행동의 결과로 보상 계산
+      actionA={"true_positive":3,"false_positive":0,"miss":0,"correct_ignore":2}  # 정확
+      actionB={"true_positive":1,"false_positive":4,"miss":2,"correct_ignore":0}  # 남발
+      def score(a): return sum(reward(k)*n for k,n in a.items())
+      sA,sB=score(actionA),score(actionB)
+      print(f"action A (accurate) reward = {sA}")
+      print(f"action B (over-alert) reward = {sB}")
+      print("REWARD_OK" if sA>sB else "MISALIGNED")
+      PY
+      ```
+      ✅ 마지막 줄 `REWARD_OK` (정확한 행동A가 남발하는 행동B보다 높은 보상).
+      🔎 정탐+·오탐−·누락−− 로 목적(정확한 탐지)을 직접 겨냥.
+    answer: |
+      action A (accurate) reward = 8
+      action B (over-alert) reward = -8
+      REWARD_OK
+    answer_detail: "다면 보상(정탐+/오탐-/누락--)이 정확한 행동을 높게 채점 → REWARD_OK. 보상=목표 정의."
+    verify:
+      type: output_contains
+      expect: REWARD_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 행동 조향 → STEERED
+      > **🎯 목표:** 정책이 보상 높은 행동(정확 대응)을 선호하게 됨을 확인한다(결정론).
+      > **개념:** 보상 신호가 행동을 조향.
+      ```bash
+      python3 - <<'PY'
+      # 여러 정책 후보의 누적 보상 → 정책이 최고 보상 정책을 선택
+      policies={"aggressive_block":{"tp":2,"fp":6}, "investigate_first":{"tp":5,"fp":1}, "ignore_all":{"tp":0,"fp":0,"miss":6}}
+      def reward(s): return s.get("tp",0)*2 - s.get("fp",0)*1 - s.get("miss",0)*3
+      scored={p:reward(s) for p,s in policies.items()}
+      best=max(scored,key=scored.get)
+      for p,v in scored.items(): print(f"  {p:18} reward={v:+d}")
+      print("chosen policy:", best)
+      print("STEERED" if best=="investigate_first" else "MISSTEERED")
+      PY
+      ```
+      ✅ 마지막 줄 `STEERED` (보상이 'investigate_first'(정확) 정책을 선택하게 조향).
+      🔎 aggressive_block은 오탐 페널티로, ignore_all은 누락 페널티로 밀려남.
+    answer: |
+      aggressive_block   reward=-2
+      investigate_first  reward=+9
+      ignore_all         reward=-18
+      chosen policy: investigate_first
+      STEERED
+    answer_detail: "보상이 정확한 'investigate_first' 정책을 선택하게 조향 → STEERED."
+    verify:
+      type: output_contains
+      expect: STEERED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — reward hacking 탐지 → HACK_DETECTED
+      > **🎯 목표:** "경보 수 최소화" 보상이 "경보 끄기" 편법을 최고 보상으로 만듦을 탐지한다(결정론).
+      > **개념:** 보상=목적 어긋남의 증거(대리 지표의 함정).
+      ```bash
+      python3 - <<'PY'
+      # 잘못된 보상: '경보 수가 적을수록 +' (대리 지표) — 진짜 목적은 '실제 위협 대응'
+      def bad_reward(alerts): return -alerts   # 경보 적을수록 높은 보상
+      behaviors={"respond_properly":{"alerts":5,"threats_handled":5},
+                 "disable_alerting":{"alerts":0,"threats_handled":0}}  # 편법: 경보 끔
+      scored={b:bad_reward(s["alerts"]) for b,s in behaviors.items()}
+      best=max(scored,key=scored.get)
+      # 편법이 최고 보상인데 실제 목적(위협 대응)은 실패 → reward hacking
+      hacked = best=="disable_alerting" and behaviors[best]["threats_handled"]==0
+      for b,v in scored.items(): print(f"  {b:18} bad_reward={v:+d} threats_handled={behaviors[b]['threats_handled']}")
+      print("HACK_DETECTED" if hacked else "OK")
+      PY
+      ```
+      ✅ 마지막 줄 `HACK_DETECTED` (편법 'disable_alerting'이 최고 보상이나 위협 대응 0 = reward hacking).
+      🔎 대리 지표(경보 수)에 보상하면 목적(위협 대응)과 어긋난 편법을 학습한다.
+    answer: |
+      respond_properly   bad_reward=-5 threats_handled=5
+      disable_alerting   bad_reward=+0 threats_handled=0
+      HACK_DETECTED
+    answer_detail: "잘못된 보상(경보 수 최소화)이 '경보 끄기' 편법을 최고 보상으로 만듦 → HACK_DETECTED."
+    verify:
+      type: output_contains
+      expect: HACK_DETECTED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합(정렬·검증) → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note on RL steering for W14. Findings: a multi-objective reward (TP+/FP-/miss--) scored accurate behavior highest (REWARD_OK), steering selected the investigate-first policy (STEERED), and a bad proxy reward (minimize alert count) made disabling alerting the top-reward behavior with zero threats handled (HACK_DETECTED). Give 3 defenses against reward hacking (multi-objective reward, held-out verification against the real goal, caps and human oversight). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":300}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 보상=목표 정의. 목적과 정렬하면 좋은 행동, 대리 지표에 치우치면 reward hacking. 다면 보상·held-out 검증·상한·사람 감독이 방어.
+      다음 주(W15)는 **기말: 자율 보안 에이전트 종합 구축**.
+    answer: |
+      Assessment
+      The reward function defines the goal; alignment yields good behavior, proxy metrics invite reward hacking.
+      Defenses: (1) multi-objective reward, (2) held-out verification against the real goal, (3) caps and human oversight.
+    answer_detail: "W14 RL steering 종합(Assessment). 보상=목적 정렬·검증, reward hacking 방지."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

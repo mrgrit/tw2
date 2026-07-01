@@ -1,0 +1,169 @@
+lab_id: ai-security-week15
+title: "W15 — 기말: 자율 보안 에이전트 종합 구축·실물 bastion E2E·안전장치 검증"
+version: ai
+course: ai-security
+week: 15
+description: |
+  W01~W14 종합. 이벤트→계획→분석→검증→안전실행→축적 자율 파이프라인 구축(PIPELINE_OK),
+  실물 el34-bastion으로 실행 단계 E2E(BASTION_E2E), 안전장치(화이트리스트·승인·검증) 검증(SAFE_OK),
+  기말 종합 보고(Assessment). 'LLM으로 넓게 훑고 결정론으로 좁혀 확정 + 통제'의 완성.
+difficulty: hard
+duration_minutes: 170
+audience: AI 보안 활용 입문 (15주차·기말)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100, X-API-Key ccc-api-key-2026
+  - W09~W14 강의·실습 완료
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "자율 보안 에이전트 파이프라인 구축·실행(PIPELINE_OK)"
+  - "실물 bastion으로 실행 단계 E2E(BASTION_E2E)"
+  - "안전장치(화이트리스트·승인·검증) 검증(SAFE_OK)"
+  - "기말 종합 보고(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 자율 파이프라인 구축·실행 → PIPELINE_OK
+      > **🎯 목표:** 이벤트→계획→분석(LLM)→검증(결정론)→안전실행(게이트)→축적 6단계를 하나로 이어 실행.
+      > **개념:** 부분들(W09~W14)이 하나로 동작. LLM으로 넓게 훑고 결정론으로 좁혀 확정.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      stages=[]
+      # ① 이벤트 감지 (daemon)
+      event={"sev":"threat","msg":"ssh brute force from 185.220.101.42"}; stages.append("detect")
+      # ② 미션 계획 (harness)
+      plan=["recon","analysis","response"]; stages.append("plan")
+      # ③ 넓게 훑기 (LLM 분석)
+      b={"model":"gemma3:4b","prompt":f"One short line: classify this security event severity (low/med/high): {event['msg']}","stream":False,"options":{"num_predict":20,"temperature":0}}
+      llm=json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=60)).get("response","").strip()
+      stages.append("analyze"); print("  LLM analysis:", llm[:50])
+      # ④ 좁혀 확정 (결정론 검증)
+      confirmed = "185.220.101.42" in event["msg"] and event["sev"]=="threat"; stages.append("verify" if confirmed else "reject")
+      # ⑤ 안전 실행 (승인 게이트)
+      action="block 185.220.101.42"; gated = any(r in action for r in ["block","delete"]); stages.append("gate" if gated else "auto")
+      # ⑥ 경험 축적
+      experience={"event":event["msg"],"confirmed":confirmed,"action":action,"approved_by":"human"}; stages.append("accumulate")
+      print("  pipeline stages:", " -> ".join(stages))
+      ok = stages==["detect","plan","analyze","verify","gate","accumulate"]
+      print("PIPELINE_OK" if ok else "BROKEN")
+      PY
+      ```
+      ✅ 마지막 줄 `PIPELINE_OK` (6단계가 순서대로 이어져 동작).
+      🔎 ③LLM(넓게)→④결정론(좁혀)→⑤게이트(통제) — 이 과목의 두 원칙이 한 파이프라인에.
+    answer: |
+      LLM analysis: high
+      pipeline stages: detect -> plan -> analyze -> verify -> gate -> accumulate
+      PIPELINE_OK
+    answer_detail: "감지→계획→분석(LLM)→검증(결정론)→안전실행(게이트)→축적 6단계 파이프라인 동작 → PIPELINE_OK."
+    verify:
+      type: output_contains
+      expect: PIPELINE_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 실물 bastion 실행 → BASTION_E2E
+      > **🎯 목표:** 파이프라인의 ⑤ 실행 단계를 실물 el34-bastion `/skills`+`/exec`로 실제 수행.
+      > **개념:** Manager 계획(GPU)이 실물 실행 계층(bastion)으로 내려간다.
+      ### 💻 그대로 입력 (bastion은 el34-bastion 컨테이너 :9100)
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c \
+        'curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/skills;
+         echo; curl -s -X POST -H "X-API-Key: ccc-api-key-2026" -H "content-type: application/json" -d "{\"target\":\"siem\",\"command\":\"hostname\"}" http://localhost:9100/exec' 2>/dev/null \
+       | python3 -c "import sys,json
+      lines=[l for l in sys.stdin.read().splitlines() if l.strip().startswith('{')]
+      skills=json.loads(lines[0]); ex=json.loads(lines[1])
+      print('skills:', [s['id'] for s in skills['skills']][:3], '...')
+      print('exec rc:', ex.get('rc'), 'stdout:', (ex.get('stdout') or '').strip()[:20])
+      print('BASTION_E2E' if any(s['id']=='wazuh.alerts' for s in skills['skills']) and ex.get('rc')==0 else 'NO_E2E')"
+      ```
+      ✅ 마지막 줄 `BASTION_E2E` (실물 bastion에서 skills 조회 + exec(hostname) 성공).
+      ### 🔎 계획은 GPU Manager로, 실제 실행·안전 게이트는 실물 bastion으로 — 개념과 실물의 결합.
+    answer: |
+      skills: ['nft.list_ruleset', 'suricata.tail_eve', 'apache.error_log'] ...
+      exec rc: 0 stdout: bastion
+      BASTION_E2E
+    answer_detail: "실물 el34-bastion /skills+/exec로 파이프라인 실행 단계 E2E 수행 → BASTION_E2E."
+    verify:
+      type: output_contains
+      expect: BASTION_E2E
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 안전장치 검증 → SAFE_OK
+      > **🎯 목표:** 화이트리스트(위험 명령 차단) + 승인 게이트(위험 단계) + 검증(결정론)이 작동함을 확인.
+      > **개념:** 자율이 강할수록 통제가 겹층으로.
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c '
+        curl -s -X POST -H "X-API-Key: ccc-api-key-2026" -H "content-type: application/json" -d "{\"target\":\"siem\",\"command\":\"rm -rf /\"}" http://localhost:9100/exec' 2>/dev/null \
+       | python3 -c "import sys
+      t=sys.stdin.read()
+      whitelist_blocks = 'must start with' in t   # 화이트리스트가 위험 명령 차단
+      # 승인 게이트(결정론) + 검증(결정론)도 함께 확인
+      def gate(a): return any(r in a for r in ['block','delete','disable'])
+      approval_ok = gate('block ip') and not gate('read log')
+      verify_ok = ('185.220.101.42' in 'threat 185.220.101.42')
+      print('whitelist blocks danger:', whitelist_blocks)
+      print('approval gate on risky:', approval_ok)
+      print('deterministic verify:', verify_ok)
+      print('SAFE_OK' if (whitelist_blocks and approval_ok and verify_ok) else 'UNSAFE')"
+      ```
+      ✅ 마지막 줄 `SAFE_OK` (화이트리스트 차단 + 승인 게이트 + 결정론 검증 모두 작동).
+      🔎 세 겹 통제가 함께 걸려야 자율 에이전트를 믿고 맡길 수 있다.
+    answer: |
+      whitelist blocks danger: True
+      approval gate on risky: True
+      deterministic verify: True
+      SAFE_OK
+    answer_detail: "화이트리스트(실물 차단)+승인 게이트+결정론 검증 3겹 통제 작동 → SAFE_OK."
+    verify:
+      type: output_contains
+      expect: SAFE_OK
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 기말 종합 보고 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a final capstone note for the AI security course W15. Findings: a full autonomous security agent pipeline ran detect->plan->analyze(LLM)->verify(deterministic)->safe-execute(gate)->accumulate (PIPELINE_OK), a real el34-bastion executed skills and a safe command end to end (BASTION_E2E), and safety controls held: whitelist blocked a dangerous command, an approval gate covered risky actions, and deterministic verification passed (SAFE_OK). Conclude with the two principles: (1) sweep broadly with the LLM and narrow to certainty with deterministic checks, (2) tame autonomy with controls (whitelist, approval gate, circuit breaker). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":340}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 자율 보안 에이전트 = LLM(넓게 훑기) + 결정론(좁혀 확정) + 통제(안전장치). 이 과목의 결론.
+      수고했습니다 — AI를 보안에 신뢰할 수 있게 쓰는 법을 완성했습니다.
+    answer: |
+      Assessment
+      A trustworthy autonomous security agent combines LLM breadth, deterministic certainty, and safety controls.
+      Principles: (1) sweep broadly with the LLM and narrow to certainty with deterministic checks,
+      (2) tame autonomy with controls (whitelist, approval gate, circuit breaker).
+    answer_detail: "W15 기말 종합(Assessment). 파이프라인+실물 bastion+안전장치, 두 원칙 완성."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

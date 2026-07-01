@@ -1,0 +1,160 @@
+lab_id: ai-security-week06
+title: "W06 — 취약점 분석: LLM 코드 리뷰·결정론 검증·안전코드 오탐 한계·CVE 분석"
+version: ai
+course: ai-security
+week: 6
+description: |
+  LLM 코드 리뷰의 강점과 한계를 실측한다. 취약 코드 분석(VULN_FOUND), 결정론 패턴 검증(VERIFIED),
+  안전 코드를 LLM이 오탐하나 결정론이 안전 확정(DET_SAFE), CVE 영향 분석(CVE_ANALYZED).
+  'LLM으로 넓게 훑고 결정론으로 좁혀 확인'이 신뢰의 핵심.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 활용 입문 (6주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W06 강의안 정독 — §0.5(LLM 리뷰 강점·오탐 한계·2단 구조)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "LLM으로 취약 코드 분석(VULN_FOUND)"
+  - "결정론 패턴으로 취약 확정(VERIFIED)"
+  - "안전 코드 LLM 오탐을 결정론이 기각(DET_SAFE)"
+  - "CVE 영향 분석(CVE_ANALYZED)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — LLM 코드 리뷰(취약 코드) → VULN_FOUND
+      > **🎯 목표:** 사용자 입력을 쿼리에 직접 이어 붙인 PHP를 LLM에 주고 취약점·수정안을 JSON으로 받는다.
+      > **개념:** LLM이 SQL Injection을 정확히 지적(넓게 훑기의 강점).
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      CODE='$q = "SELECT * FROM users WHERE id=".$_GET["id"]; mysqli_query($conn,$q);'
+      prompt=f'Analyze this PHP for the vulnerability. Output JSON only: {{"vuln":"<owasp name>","fix":"<one line fix>"}}\nCode: {CODE}'
+      b={"model":"gemma3:4b","prompt":prompt,"stream":False,"format":"json","options":{"num_predict":140,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=90)).get("response","")
+      d=json.loads(r); vuln=d.get("vuln","").lower()
+      print("LLM says:", json.dumps(d)[:110])
+      print("VULN_FOUND" if ("sql" in vuln or "injection" in vuln) else "MISSED")
+      PY
+      ```
+      ✅ 마지막 줄 `VULN_FOUND` (LLM이 SQL Injection 지적 + 수정안).
+      🔎 LLM은 의심 지점을 빠르게 넓게 훑는다. 단 확정은 STEP3에서.
+    answer: |
+      LLM says: {"vuln": "SQL Injection", "fix": "Use a prepared statement with a parameter"}
+      VULN_FOUND
+    answer_detail: "LLM이 취약 코드의 SQL Injection을 지적 + 수정안 → VULN_FOUND. 넓게 훑기의 강점."
+    verify:
+      type: output_contains
+      expect: VULN_FOUND
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 결정론 검증 → VERIFIED
+      > **🎯 목표:** 코드에 "미검증 입력이 쿼리에 직접 들어가는 패턴"이 있는지 결정론적으로 확인.
+      > **개념:** LLM 지적을 확정 — 패턴이 있으면 진짜 취약.
+      ```bash
+      python3 - <<'PY'
+      import re
+      CODE='$q = "SELECT * FROM users WHERE id=".$_GET["id"]; mysqli_query($conn,$q);'
+      # 결정론: SQL 문자열에 사용자 입력($_GET/$_POST)이 직접 concat 되었나
+      uses_input = bool(re.search(r'\$_(GET|POST|REQUEST)\[', CODE))
+      concat_into_sql = bool(re.search(r'(SELECT|INSERT|UPDATE|DELETE).*\.\s*\$_(GET|POST|REQUEST)', CODE, re.I))
+      no_prepare = "prepare(" not in CODE
+      vulnerable = uses_input and concat_into_sql and no_prepare
+      print(f"uses_input={uses_input} concat_into_sql={concat_into_sql} no_prepare={no_prepare}")
+      print("VERIFIED" if vulnerable else "NOT_CONFIRMED")
+      PY
+      ```
+      ✅ 마지막 줄 `VERIFIED` (입력이 쿼리에 직접 concat + prepare 없음 → 진짜 취약).
+      🔎 LLM 지적을 결정론 패턴이 확정. 이제 조치의 근거가 확실.
+    answer: |
+      uses_input=True concat_into_sql=True no_prepare=True
+      VERIFIED
+    answer_detail: "결정론 패턴(입력 직접 concat + prepare 없음)으로 취약 확정 → VERIFIED. LLM 후보의 확정."
+    verify:
+      type: output_contains
+      expect: VERIFIED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 한계 실측: 안전 코드 오탐 → DET_SAFE
+      > **🎯 목표:** 안전한 파라미터화 쿼리를 LLM에 주면 LLM이 취약하다고 **오탐**할 수 있다. 결정론으로 그
+      > 코드가 실제 안전함을 확인한다.
+      > **개념:** LLM 오탐을 결정론이 기각 → 결정론이 최종 판정관.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request, re
+      GPU="http://211.170.162.139:10934/api/generate"
+      SAFE='$stmt = $pdo->prepare("SELECT * FROM users WHERE id=?"); $stmt->execute([$_GET["id"]]);'
+      # LLM 판정 (오탐할 수 있음)
+      b={"model":"gemma3:4b","prompt":f'Is this PHP safe from SQL injection? JSON only: {{"safe": true or false}}\nCode: {SAFE}',"stream":False,"format":"json","options":{"num_predict":40,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      llm=json.loads(json.load(urllib.request.urlopen(req,timeout=60)).get("response","{}")).get("safe")
+      # 결정론 판정: prepare + ? 자리표시자 + SQL 문자열에 입력 직접 concat 없음 → 안전
+      has_prepare = "prepare(" in SAFE and "?" in SAFE
+      no_direct_concat = not re.search(r'(SELECT|INSERT|UPDATE|DELETE)[^;]*\.\s*\$_(GET|POST)', SAFE, re.I)
+      det_safe = has_prepare and no_direct_concat
+      print(f"LLM_says_safe={llm}   deterministic_safe={det_safe}")
+      print("(LLM 오탐: 안전 코드를 unsafe로 판정)" if llm is False and det_safe else "")
+      print("DET_SAFE" if det_safe else "DET_UNSAFE")
+      PY
+      ```
+      ✅ 마지막 줄 `DET_SAFE` (결정론이 안전 확정). LLM이 `safe=false`로 오탐하면 그 대비가 한계의 실증.
+      🔎 LLM은 `$_GET` 표면만 보고 오탐할 수 있다. 파라미터화(prepare+?)로 안전 분리됐음은 결정론이 확정한다.
+    answer: |
+      LLM_says_safe=False   deterministic_safe=True
+      (LLM 오탐: 안전 코드를 unsafe로 판정)
+      DET_SAFE
+    answer_detail: "안전 코드를 LLM은 오탐하나 결정론(prepare+? )이 안전 확정 → DET_SAFE. 결정론이 최종 판정관."
+    verify:
+      type: output_contains
+      expect: DET_SAFE
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — CVE 분석 → CVE_ANALYZED
+      > **🎯 목표:** LLM에게 Log4Shell(CVE-2021-44228)의 영향·완화를 요약시킨다.
+      > **개념:** CVE 브리핑에 유용(단 버전·CVSS 세부는 NVD 공식으로 재확인).
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"In 2 sentences, explain the impact of Log4Shell (CVE-2021-44228) and one mitigation. Start with CVE:.","stream":false,"options":{"num_predict":130,"temperature":0.1}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r[:200]); print('CVE_ANALYZED' if ('log4' in r.lower() or 'jndi' in r.lower() or 'CVE' in r) else 'unclear')"
+      ```
+      ✅ 마지막 줄 `CVE_ANALYZED` (Log4Shell 영향·완화 요약).
+      🔎 정리: W06은 LLM 코드 리뷰의 강점(넓게 훑기)과 한계(오탐)를 둘 다 봤다. 결정론 검증이 최종 판정관이다.
+      다음 주(W07)는 이 도구들을 자율로 엮는 **AI 에이전트 아키텍처**(bastion의 큰 그림).
+    answer: |
+      CVE: Log4Shell (CVE-2021-44228) allowed remote code execution via JNDI lookups in Log4j; mitigate by upgrading Log4j / disabling JNDI lookups.
+      CVE_ANALYZED
+    answer_detail: "LLM이 Log4Shell 영향·완화 요약 → CVE_ANALYZED. 세부는 공식 소스로 재확인."
+    verify:
+      type: output_contains
+      expect: CVE_ANALYZED
+      field: stdout

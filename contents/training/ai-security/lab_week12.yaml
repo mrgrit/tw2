@@ -1,0 +1,156 @@
+lab_id: ai-security-week12
+title: "W12 — Agent Daemon: 이벤트 트리거 상시 감시·stimulate·회로 차단기"
+version: ai
+course: ai-security
+week: 12
+description: |
+  bastion의 상시 자율 관제. daemon 모드 이벤트 트리거 자동 대응(DAEMON_OK), stimulate 능동 검증
+  (STIMULATE_OK), 폭주 방지 회로 차단기(BREAKER_OK), 통제 종합(Assessment).
+  상시 자율일수록 통제(속도 제한·차단기·승인)가 촘촘해야 폭주가 재앙이 안 된다.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 활용 입문 (12주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W12 강의안 정독 — §0.5(3모드·daemon 루프·회로 차단기)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "daemon 모드 이벤트 트리거 자동 대응(DAEMON_OK)"
+  - "stimulate 모드 능동 검증(STIMULATE_OK)"
+  - "회로 차단기로 폭주 방지(BREAKER_OK)"
+  - "상시 자율 통제 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — daemon 모드 이벤트 트리거 → DAEMON_OK
+      > **🎯 목표:** 이벤트 큐를 감시하다 위협 이벤트가 오면 자동 대응 미션을 시작한다(결정론 시뮬).
+      > **개념:** 사람 지시 없이 감시→대응.
+      ```bash
+      python3 - <<'PY'
+      # 이벤트 큐(시간순) — 위협 이벤트만 대응 미션 트리거
+      events=[("info","health check ok"),("info","user login"),
+              ("threat","ssh brute force from 185.220.101.42"),("info","page view")]
+      THREATS={"threat"}
+      triggered=[]
+      for sev,msg in events:
+          if sev in THREATS:
+              triggered.append(msg)   # 자동 대응 미션 시작
+      for m in triggered: print("  AUTO-MISSION started for:", m[:40])
+      print("DAEMON_OK" if triggered else "IDLE")
+      PY
+      ```
+      ✅ 마지막 줄 `DAEMON_OK` (위협 이벤트에 자동 대응 미션 시작).
+      🔎 info 이벤트는 무시, threat만 트리거 — 사람 없이 감시→대응.
+    answer: |
+      AUTO-MISSION started for: ssh brute force from 185.220.101.42
+      DAEMON_OK
+    answer_detail: "위협 이벤트 트리거로 자동 대응 미션 시작 → DAEMON_OK. 상시 감시→대응."
+    verify:
+      type: output_contains
+      expect: DAEMON_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — stimulate 모드 능동 검증 → STIMULATE_OK
+      > **🎯 목표:** 알려진 테스트 시그니처를 주입하고 탐지 룰이 잡는지 확인한다(결정론).
+      > **개념:** 방어가 살아 있는지 능동 확인(Purple 자동화 상시판).
+      ```bash
+      python3 - <<'PY'
+      import re
+      # 탐지 룰(배포된 것)
+      RULES=[("sqli", re.compile(r"union\s+select", re.I)), ("xss", re.compile(r"<script", re.I))]
+      # stimulate: 인가된 안전 테스트 시그니처 주입
+      stimuli=["GET /?q=1 UNION SELECT 1", "GET /?x=<script>test</script>"]
+      caught=[]
+      for s in stimuli:
+          for name,rx in RULES:
+              if rx.search(s): caught.append(name)
+      print("stimuli injected:", len(stimuli), "| rules fired:", caught)
+      # 모든 자극이 탐지되면 방어 정상
+      print("STIMULATE_OK" if len(caught)>=len(stimuli) else "DETECTION_GAP")
+      PY
+      ```
+      ✅ 마지막 줄 `STIMULATE_OK` (주입한 테스트 시그니처를 탐지 룰이 모두 잡음).
+      🔎 만약 룰이 못 잡으면 DETECTION_GAP → 방어 빈틈 발견(개선 대상).
+    answer: |
+      stimuli injected: 2 | rules fired: ['sqli', 'xss']
+      STIMULATE_OK
+    answer_detail: "인가된 테스트 자극을 탐지 룰이 모두 잡음 → STIMULATE_OK. 방어 능동 검증."
+    verify:
+      type: output_contains
+      expect: STIMULATE_OK
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 회로 차단기 → BREAKER_OK
+      > **🎯 목표:** 짧은 시간 위험 행동이 임계 이상이면 daemon을 자동 중단한다(결정론).
+      > **개념:** 24시간 자율이 24시간 폭주가 되지 않게.
+      ```bash
+      python3 - <<'PY'
+      # daemon 행동 로그(최근 10초) — 위험 행동(block/delete) 급증 감지
+      recent_actions=["block","block","block","block","block"]  # 짧은 시간 차단 5회
+      DANGER={"block","delete","disable"}
+      THRESHOLD=3   # 10초에 위험 행동 3회 이상이면 폭주 의심
+      danger_count=sum(1 for a in recent_actions if a in DANGER)
+      tripped = danger_count >= THRESHOLD
+      print(f"danger actions in window: {danger_count} (threshold {THRESHOLD})")
+      print("BREAKER_OK" if tripped else "NORMAL")  # 차단기 작동 = daemon 자동 중단
+      if tripped: print("  -> circuit breaker TRIPPED: daemon paused, human review requested")
+      PY
+      ```
+      ✅ 마지막 줄에 `BREAKER_OK` (위험 행동 급증 → 차단기 작동, daemon 중단).
+      🔎 폭주 징후(짧은 시간 차단 급증)에 자동 중단 + 사람 개입 요청. 속도 제한·승인 게이트와 겹층.
+    answer: |
+      danger actions in window: 5 (threshold 3)
+      BREAKER_OK
+        -> circuit breaker TRIPPED: daemon paused, human review requested
+    answer_detail: "위험 행동 급증 시 회로 차단기 작동으로 daemon 중단 → BREAKER_OK. 폭주 방지."
+    verify:
+      type: output_contains
+      expect: BREAKER_OK
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note on bastion Agent Daemon for W12. Findings: daemon mode auto-started a mission on a threat event (DAEMON_OK), stimulate mode confirmed detection rules fire on injected test signatures (STIMULATE_OK), and a circuit breaker tripped when risky actions spiked (BREAKER_OK). Explain the explore/daemon/stimulate modes and give 3 controls (rate limiting, circuit breaker, approval gate for risky actions). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":300}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: Agent Daemon은 24시간 자율 관제. explore/daemon/stimulate 3모드 + 통제(속도 제한·차단기·승인)가
+      폭주를 막는다. 다음 주(W13)는 **분산 지식**.
+    answer: |
+      Assessment
+      Agent Daemon runs 24/7: explore (survey), daemon (event-triggered response), stimulate (active validation).
+      Controls: (1) rate limiting, (2) circuit breaker, (3) approval gate for risky actions.
+    answer_detail: "W12 Agent Daemon 종합(Assessment). 3모드 + 폭주 방지 통제."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

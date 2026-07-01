@@ -1,0 +1,169 @@
+lab_id: ai-security-week10
+title: "W10 — Bastion (2) Playbook + RL: 표준 대응 절차·실행·강화학습 steering"
+version: ai
+course: ai-security
+week: 10
+description: |
+  bastion을 더 잘 일하게 만드는 두 축. LLM으로 대응 playbook 생성(PLAYBOOK_OK), 각 단계를 실행 매핑
+  (EXECUTED), RL 보상으로 정책 개선 시뮬레이션(RL_LEARNED), 보상 설계 주의 종합(Assessment).
+  playbook=지식(안정성), RL steering=경험(개선) — E.G의 두 부분.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 활용 입문 (10주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W10 강의안 정독 — §0.5(Playbook·RL steering·reward hacking)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "LLM으로 대응 playbook 생성(PLAYBOOK_OK)"
+  - "playbook 단계를 실행 매핑(EXECUTED)"
+  - "RL 보상으로 정책 개선 시뮬레이션(RL_LEARNED)"
+  - "보상 설계 주의 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — Playbook 생성 → PLAYBOOK_OK
+      > **🎯 목표:** LLM으로 SSH 브루트포스 대응 3단계 playbook을 구조화(JSON) 생성.
+      > **개념:** 반복 대응을 표준 절차로 굳혀 Manager가 재사용.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      prompt=('Output JSON only: {"playbook":"brute_force_response","steps":["<step1>","<step2>","<step3>"]}. '
+              'Create a 3-step incident response playbook for an SSH brute force from a single IP.')
+      b={"model":"gemma3:4b","prompt":prompt,"stream":False,"format":"json","options":{"num_predict":150,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=70)).get("response","")
+      d=json.loads(r); steps=d.get("steps",[])
+      print("playbook:", d.get("playbook"), "| steps:", len(steps))
+      for s in steps[:3]: print("  -", str(s)[:60])
+      print("PLAYBOOK_OK" if len(steps)>=2 else "SHALLOW")
+      PY
+      ```
+      ✅ 마지막 줄 `PLAYBOOK_OK` (3단계 대응 playbook 생성).
+      🔎 Manager는 harness를 짤 때 이 playbook을 기반으로 상황에 맞게 조정한다.
+    answer: |
+      playbook: brute_force_response | steps: 3
+        - Identify the attacking IP address using logs
+        - Temporarily block the offending IP at the firewall
+        - Investigate the source and implement prevention
+      PLAYBOOK_OK
+    answer_detail: "LLM이 브루트포스 대응 3단계 playbook 생성 → PLAYBOOK_OK. 표준 절차."
+    verify:
+      type: output_contains
+      expect: PLAYBOOK_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — Playbook 실행 → EXECUTED
+      > **🎯 목표:** playbook 각 단계를 bastion skill/조치에 매핑해 실행(결정론 시뮬).
+      > **개념:** 표준 절차가 실행 계층으로 내려간다.
+      ```bash
+      python3 - <<'PY'
+      # playbook 단계 → bastion skill/조치 매핑(결정론)
+      playbook=["identify attacking ip from logs","block the offending ip at firewall","investigate and prevent"]
+      SKILL_MAP=[("identify","wazuh.alerts / suricata.tail_eve (조사)"),
+                 ("block","nft rule add (차단, 승인 게이트)"),
+                 ("investigate","apache.error_log / 상관분석")]
+      executed=[]
+      for step in playbook:
+          skill=next((s for k,s in SKILL_MAP if k in step.lower()), "manual")
+          executed.append((step[:30], skill))
+      for st,sk in executed: print(f"  {st:32} -> {sk}")
+      print("EXECUTED" if len(executed)==len(playbook) else "PARTIAL")
+      PY
+      ```
+      ✅ 마지막 줄 `EXECUTED` (playbook 3단계가 skill/조치로 매핑·실행).
+      🔎 차단 단계는 위험 조치 → 승인 게이트를 거친다(W05·W09 안전통제).
+    answer: |
+      identify attacking ip from logs   -> wazuh.alerts / suricata.tail_eve (조사)
+      block the offending ip at firewall-> nft rule add (차단, 승인 게이트)
+      investigate and prevent           -> apache.error_log / 상관분석
+      EXECUTED
+    answer_detail: "playbook 단계를 bastion skill/조치로 매핑 실행 → EXECUTED. 차단은 승인 게이트."
+    verify:
+      type: output_contains
+      expect: EXECUTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — RL 보상 학습 → RL_LEARNED
+      > **🎯 목표:** 두 대응(즉시 차단 vs 조사 후 차단)의 보상 기록으로 정책이 더 나은 대응을 선호하게 됨을 시뮬.
+      > **개념:** 보상 높은 행동을 학습 → Experience DB 축적.
+      ```bash
+      python3 - <<'PY'
+      # 과거 경험: (대응, 보상) — 조사 후 차단이 정확(오탐 없음)해서 보상 높음
+      experience=[("immediate_block", -1),  # 정상 사용자 오탐
+                  ("investigate_then_block", +2),
+                  ("immediate_block", -1),
+                  ("investigate_then_block", +2),
+                  ("investigate_then_block", +2)]
+      # 정책: 행동별 평균 보상 → 최고 보상 행동 선호
+      from collections import defaultdict
+      total=defaultdict(list)
+      for act,r in experience: total[act].append(r)
+      avg={a:sum(v)/len(v) for a,v in total.items()}
+      best=max(avg, key=avg.get)
+      for a,v in avg.items(): print(f"  {a:24} avg_reward={v:+.1f}")
+      print(f"policy prefers: {best}")
+      print("RL_LEARNED" if best=="investigate_then_block" else "MISLEARNED")
+      PY
+      ```
+      ✅ 마지막 줄 `RL_LEARNED` (보상 높은 '조사 후 차단'을 정책이 선호).
+      🔎 경험(보상)이 판단을 개선한다. 이 경험이 E.G의 Experience DB에 쌓인다.
+    answer: |
+      immediate_block          avg_reward=-1.0
+      investigate_then_block   avg_reward=+2.0
+      policy prefers: investigate_then_block
+      RL_LEARNED
+    answer_detail: "보상 기반 정책이 오탐 없는 '조사 후 차단'을 선호 → RL_LEARNED. Experience DB 축적."
+    verify:
+      type: output_contains
+      expect: RL_LEARNED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합(보상 설계 주의) → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note on bastion playbooks and RL for W10. Findings: an LLM generated a 3-step brute-force playbook (PLAYBOOK_OK), its steps mapped to skills with an approval gate on the block step (EXECUTED), and reward-based learning made the policy prefer investigate-then-block over immediate-block (RL_LEARNED). Warn about reward hacking and give 3 points (playbooks for stability, RL steering for improvement, align rewards with real goals and verify). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":300}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: bastion은 playbook(안정)+RL steering(개선)으로 일한다. 보상 설계가 목적과 어긋나면 reward hacking.
+      다음 주(W11)는 bastion의 다단계 **자율 미션**.
+    answer: |
+      Assessment
+      Bastion uses playbooks for stability and RL steering for improvement.
+      Points: (1) playbooks for stability, (2) RL steering for improvement,
+      (3) align rewards with real goals and verify (avoid reward hacking).
+    answer_detail: "W10 playbook+RL 종합(Assessment). 안정+개선, 보상 정렬·검증."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

@@ -1,0 +1,153 @@
+lab_id: ai-security-week05
+title: "W05 — 탐지 룰 자동 생성: Sigma 생성·정규식 검증·오탐 점검·파이프라인"
+version: ai
+course: ai-security
+week: 5
+description: |
+  LLM으로 탐지 룰을 생성하고 반드시 검증한다. Sigma 룰 자동 생성(SIGMA_OK), SQLi 탐지 정규식 생성+
+  악성/정상 로그 검증(RULE_TESTED), 정상 세트 오탐 점검(QUALITY_OK), 종합(Assessment).
+  '생성→검증→배포' 파이프라인이 신뢰의 핵심.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 활용 입문 (5주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W05 강의안 정독 — §0.5(Sigma 구조·검증·오탐)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "LLM으로 Sigma 탐지 룰 자동 생성(SIGMA_OK)"
+  - "탐지 정규식 생성 + 악성/정상 로그 검증(RULE_TESTED)"
+  - "정상 세트로 오탐 점검(QUALITY_OK)"
+  - "룰 배포 가부 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — Sigma 룰 자동 생성 → SIGMA_OK
+      > **🎯 목표:** LLM에게 SSH 브루트포스 Sigma 룰을 생성시킨다(detection·condition 포함).
+      > **개념:** 문법 장벽 없이 탐지 논리에 집중.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      b={"model":"gemma3:4b","prompt":"Write a minimal Sigma detection rule (YAML) for SSH brute force (many failed logins). Include 'detection:' and 'condition:'. Output only the YAML.","stream":False,"options":{"num_predict":200,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=90)).get("response","")
+      print(r[:200].replace(chr(10)," | "))
+      low=r.lower()
+      print("SIGMA_OK" if ("detection" in low and "condition" in low) else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `SIGMA_OK` (detection·condition 포함 룰 생성).
+      🔎 초안은 반드시 검증 후 배포. LLM은 룰 문법을 대신 써 주는 초안기.
+    answer: |
+      ```yaml detection: selection: event: failed_login condition: selection | count() by ip > 10 ...
+      SIGMA_OK
+    answer_detail: "LLM이 detection·condition 포함 Sigma 룰 초안 생성 → SIGMA_OK. 문법 장벽 제거."
+    verify:
+      type: output_contains
+      expect: SIGMA_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 탐지 정규식 생성 + 검증 → RULE_TESTED
+      > **🎯 목표:** LLM으로 SQLi 탐지 정규식을 생성하고, 악성엔 매치·정상엔 미매치인지 확인.
+      > **개념:** 재현율(악성 잡음)+정밀도(정상 안 잡음)를 동시에 확인.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request, re
+      GPU="http://211.170.162.139:10934/api/generate"
+      b={"model":"gemma3:4b","prompt":'Output JSON only: {"regex": "<a simple python regex detecting SQL injection UNION SELECT in a URL, case-insensitive>"}.',"stream":False,"format":"json","options":{"num_predict":80,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=60)).get("response","")
+      rgx=json.loads(r).get("regex","")
+      mal="GET /?id=1 UNION SELECT user,pass FROM users"; ben="GET /index.html"
+      try:
+          m=bool(re.search(rgx,mal,re.I)); bn=bool(re.search(rgx,ben,re.I))
+      except re.error:
+          rgx=r"union\s+select"; m=bool(re.search(rgx,mal,re.I)); bn=bool(re.search(rgx,ben,re.I))
+      print(f"regex={rgx[:40]!r} malicious_match={m} benign_match={bn}")
+      print("RULE_TESTED" if (m and not bn) else "RULE_BAD")
+      PY
+      ```
+      ✅ 마지막 줄 `RULE_TESTED` (악성 매치·정상 미매치). (LLM 정규식이 invalid면 안전 fallback 사용.)
+      🔎 룰은 만드는 것보다 **검증**이 중요하다. 악성/정상 둘 다로 시험.
+    answer: |
+      regex='union\\s+select' malicious_match=True benign_match=False
+      RULE_TESTED
+    answer_detail: "LLM 생성 정규식이 악성 매치·정상 미매치 → RULE_TESTED. 재현율+정밀도 동시 검증."
+    verify:
+      type: output_contains
+      expect: RULE_TESTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 오탐 품질 점검 → QUALITY_OK
+      > **🎯 목표:** 생성한 룰을 정상 로그 세트에 돌려 오탐(FP)이 0인지 확인.
+      > **개념:** 오탐 폭탄 방지 — 오탐 많은 룰은 분석가가 경보를 무시하게 만든다.
+      ```bash
+      python3 - <<'PY'
+      import re
+      rgx=r"union\s+select"   # STEP3에서 검증된 룰
+      benign=["GET /index.html","POST /login 200","GET /products?category=shoes",
+              "GET /search?q=union of workers","GET /about"]  # 4번째는 'union' 이지만 select 없음(오탐 유발 후보)
+      fp=[b for b in benign if re.search(rgx,b,re.I)]
+      print("false positives:", fp if fp else "none")
+      print("QUALITY_OK" if len(fp)==0 else f"FP_FOUND({len(fp)})")
+      PY
+      ```
+      ✅ 마지막 줄 `QUALITY_OK` (정상 세트에 오탐 0). 'union of workers'는 select가 없어 미매치 — 룰이 적절히 좁음.
+      🔎 만약 룰이 'union' 만 봤다면 4번째에서 오탐 → 그래서 'union select' 로 좁혀야 한다.
+    answer: |
+      false positives: none
+      QUALITY_OK
+    answer_detail: "정상 세트에 오탐 0 → QUALITY_OK. 룰이 적절히 좁아 오탐 폭탄 회피."
+    verify:
+      type: output_contains
+      expect: QUALITY_OK
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합(파이프라인 요약) → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short detection-rule assessment for W05. Findings: LLM generated a Sigma rule (SIGMA_OK), a generated regex matched malicious and not benign traffic (RULE_TESTED), and it had zero false positives on a benign set (QUALITY_OK). Give a deploy decision and 3 recommendations (always validate generated rules on malicious+benign logs, control false positives, keep humans in the loop before deployment). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":260}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: W05는 '생성(LLM)→검증(악성/정상 로그)→배포'의 룰 파이프라인을 익혔다. 검증이 신뢰를 만든다.
+      다음 주(W06)는 코드·설정의 **취약점 분석**.
+    answer: |
+      Assessment
+      Deploy: approved — rule validated on malicious and benign logs with zero FP.
+      Recommendations: (1) always validate generated rules on malicious+benign logs,
+      (2) control false positives, (3) keep humans in the loop before deployment.
+    answer_detail: "룰 배포 가부 종합(Assessment). 생성→검증→배포 파이프라인의 결론."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout
