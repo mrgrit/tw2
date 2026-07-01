@@ -170,6 +170,10 @@ fi
 
 # ---------- 7) 서비스 기동 (systemd 또는 nohup) ----------
 NODE_BIN="$(command -v node)"; NPM_BIN="$(command -v npm)"
+# API subprocess(채점·피드백·SIEM 분석)가 claude CLI 를 찾도록 PATH 에 사용자 로컬 bin 포함.
+# systemd 기본 PATH 엔 ~/.local/bin 이 없어 shutil.which("claude")=None → AI 채점 실패했음.
+RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"; RUN_HOME="${RUN_HOME:-$HOME}"
+API_PATH="$RUN_HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
 UI_START="$NPM_BIN run preview -- --host $HOST --port $UI_PORT"
 [ "$UI_MODE" = "dev" ] && UI_START="$NPM_BIN run dev -- --host $HOST --port $UI_PORT"
 if [ "$USE_SYSTEMD" = "1" ] && have systemctl && [ -d /run/systemd/system ]; then
@@ -182,6 +186,7 @@ After=network.target
 User=$RUN_USER
 WorkingDirectory=$REPO
 EnvironmentFile=$REPO/.env
+Environment=PATH=$API_PATH
 ExecStart=$REPO/.venv/bin/uvicorn app.main:app --host $HOST --port $API_PORT --app-dir apps/api
 Restart=always
 [Install]

@@ -193,4 +193,27 @@
 3. `orchestrate_demo.py analyze --ai` — CC가 분석·피드백·추천 생성(Scene 2). 콘솔 내레이션을 화면에.
 4. 교수 관제 대시보드 드릴다운(Scene 3) → 학생 로그인 개인 대시보드(Scene 4).
 
-_작성: Claude Code. 상태: Phase 0·1·2 + G6 완료(v5). 전체 시연 흐름(데이터→대시보드→오케스트레이션) 준비 완료._
+---
+
+## 13. 실제 공방전 플로우 검증 + 버그 수정 (v6) — 촬영 전 점검
+
+실제 학생 계정으로 solo 공방전(시나리오 63 RED-1)을 API로 완주 재현하며 제출→채점→피드백→대시보드를 점검.
+
+### 🔧 발견·수정한 치명 버그 — AI 채점/피드백 전면 실패
+- **증상**: 학생 제출 시 채점이 `verdict=review, 0점, "AI 채점기 호출 실패(타임아웃/오류)"`. 모든 제출이 그러함.
+- **원인**: **systemd `tw2-api` 프로세스 PATH 에 `~/.local/bin` 없음** → `shutil.which("claude")=None`, fallback `/usr/local/bin/claude` 부재 → claude CLI 실행 실패. (셸에선 PATH 에 claude 있어 정상이라 안 드러났음.)
+- **수정**: (1) 즉시 — `.env` 에 `PATH=/home/ccc/.local/bin:...` 추가(EnvironmentFile 로 로드). (2) 영구 — `bootstrap.sh` tw2-api 유닛에 `Environment=PATH=$RUN_HOME/.local/bin:...` 추가(재배포 대비).
+- **검증 후**: 채점이 실제 claude 로 동작 — `grader=cc:claude-sonnet-4-6`, 상세 한국어 근거. fail 제출 시 제출 피드백(lab/submission)도 정상 생성.
+
+### ⚠ 촬영 필수 인지 — 공격 미션은 **인프라 흔적으로 채점**
+- 시나리오 63 **RED-1(Host Discovery)** 등 공격 미션은 **대상 Suricata/Wazuh 흔적을 직접 점검**해 채점(외부 공격자 명령은 미수집·불신). **무인프라 학생은 `can_inspect:false` → 아무리 구체적 자가 보고도 공정성상 0점**("검증 불가"). 버그 아님(정상·엄격).
+- 온카메라에서 **점수/통과**를 보이려면: **① 실제 el34 인프라(타깃+공격자) 등록 + el34 기동 + 실제 공격 수행**(그러면 흔적 남아 채점 인정) — 가장 현실적. ② 아니면 대시보드 데이터는 seed/orchestrator 로 채우고, 실제 제출은 **AI 피드백 파이프라인 시연**(fail 이어도 피드백은 생성됨)으로.
+- 참고: 관제/피드백 데모 자체는 학생 통과가 필수 아님(fail 제출도 피드백 트리거).
+
+### ⏱ 채점 지연
+- 채점기 `TUBEWAR_ANALYZER_MODEL=claude-sonnet-4-6` → 1건 ~40s. 빠른 시연 원하면 `TUBEWAR_ANALYZER_MODEL`/`TUBEWAR_GRADER_MODEL=claude-haiku-4-5`(~10s, 덜 상세). `.env` 수정 후 tw2-api 재기동.
+
+### 데모 상태
+- 재시드로 클린 복구(배틀 #11 ffa, 완주 2·병목 2). 테스트용 solo 배틀 전부 제거.
+
+_작성: Claude Code. 상태: Phase 0·1·2 + G6 + 실제 플로우 검증/버그수정(v6). PATH 버그 수정으로 AI 채점·피드백 정상화._
