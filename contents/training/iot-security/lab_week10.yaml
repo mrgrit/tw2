@@ -1,0 +1,160 @@
+lab_id: iot-security-week10
+title: "W10 — 스마트홈 보안: 허브 단일 장애점·측면이동/프라이버시·네트워크 분리"
+version: ai
+course: iot-security
+week: 10
+description: |
+  스마트홈 생태계 방어. 허브 단일 장애점 영향(HUB_RISK), 장치 간 측면이동·프라이버시 위험(PRIVACY_LEAK),
+  네트워크 분리·최소 신뢰 강화(SMARTHOME_HARDENED), 종합(Assessment).
+  허브 하나 뚫리면 집 전체 — 분리+최소 신뢰+최소 데이터가 방어.
+difficulty: medium
+duration_minutes: 120
+audience: IoT 보안 (10주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W10 강의안 정독 — §0.5(허브 SPOF·마이크로세분화·프라이버시)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "허브 단일 장애점 영향(HUB_RISK)"
+  - "측면이동·프라이버시 위험(PRIVACY_LEAK)"
+  - "네트워크 분리·최소 신뢰 강화(SMARTHOME_HARDENED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 허브 단일 장애점 → HUB_RISK
+      > **🎯 목표:** 허브 장악 시 제어되는 장치 범위를 평가.
+      > **개념:** 허브 하나 뚫리면 집 전체.
+      ```bash
+      python3 - <<'PY'
+      # 허브가 제어하는 장치
+      hub={"controls":["smart lock","cameras","alarm","lights","thermostat"],"auth":"weak","isolated":False}
+      # 허브 장악 시 영향
+      critical=[d for d in hub["controls"] if d in ("smart lock","cameras","alarm")]
+      print(f"hub controls {len(hub['controls'])} devices including critical: {critical}")
+      print(f"hub auth: {hub['auth']}, isolated: {hub['isolated']}")
+      # 약한 인증 허브가 잠금·카메라 등 중요 장치를 제어 = 단일 장애점 위험
+      spof = hub["auth"]=="weak" and len(critical)>=2
+      print("HUB_RISK" if spof else "MANAGED")
+      PY
+      ```
+      ✅ 마지막 줄 `HUB_RISK` (약한 인증 허브가 잠금·카메라·알람 제어 = 단일 장애점).
+      🔎 허브 하나가 잠금·카메라·알람을 제어하는데 인증이 약하면, 허브 장악 = 집 전체 장악. 최우선 보호.
+    answer: |
+      hub controls 5 devices including critical: ['smart lock', 'cameras', 'alarm']
+      hub auth: weak, isolated: False
+      HUB_RISK
+    answer_detail: "약한 허브가 중요 장치 제어하는 단일 장애점 → HUB_RISK."
+    verify:
+      type: output_contains
+      expect: HUB_RISK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 측면이동·프라이버시 → PRIVACY_LEAK
+      > **🎯 목표:** 약한 장치 발판 측면이동 + 프라이버시 데이터 유출 위험.
+      > **개념:** 약한 전구가 잠금으로 가는 발판, 센서가 생활을 노출.
+      ```bash
+      python3 - <<'PY'
+      # 같은 네트워크(플랫), 장치 간 신뢰 무제한
+      network={"segmented":False}
+      devices=[{"name":"cheap smart bulb","security":"weak"},{"name":"smart lock","security":"strong"}]
+      # 약한 전구 → 강한 잠금 측면이동(같은 망, 신뢰 무제한)
+      lateral = not network["segmented"]
+      # 프라이버시: 수집 데이터
+      data_collected={"occupancy":True,"voice":True,"video":True,"cloud_uploaded":True,"encrypted":False}
+      privacy_risk = data_collected["cloud_uploaded"] and not data_collected["encrypted"]
+      print(f"lateral movement (bulb -> lock): {lateral} (flat network, unlimited trust)")
+      print(f"privacy: occupancy/voice/video uploaded unencrypted = {privacy_risk}")
+      print("PRIVACY_LEAK" if lateral and privacy_risk else "PROTECTED")
+      PY
+      ```
+      ✅ 마지막 줄 `PRIVACY_LEAK` (약한 전구→잠금 측면이동 + 미암호 데이터 클라우드 업로드).
+      🔎 플랫 네트워크에서 약한 전구가 잠금으로 가는 발판. 센서 데이터(재실·음성·영상)가 미암호로 클라우드에 유출.
+    answer: |
+      lateral movement (bulb -> lock): True (flat network, unlimited trust)
+      privacy: occupancy/voice/video uploaded unencrypted = True
+      PRIVACY_LEAK
+    answer_detail: "측면이동+미암호 데이터 유출 위험 → PRIVACY_LEAK."
+    verify:
+      type: output_contains
+      expect: PRIVACY_LEAK
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 스마트홈 강화 → SMARTHOME_HARDENED
+      > **🎯 목표:** 네트워크 분리·허브 강화·최소 신뢰·최소 데이터로 강화.
+      > **개념:** 생태계 차원의 방어.
+      ```bash
+      python3 - <<'PY'
+      def harden(home):
+          return {"network_segmented":True,       # IoT 별도 VLAN
+                  "micro_segmentation":True,       # 장치 간 최소 신뢰
+                  "hub_auth":"strong+updated",
+                  "data":"minimal, local-first, encrypted"}
+          # (강화 후)
+      before={"network_segmented":False,"micro_segmentation":False,"hub_auth":"weak"}
+      after=harden(before)
+      def vulnerable(h):
+          return not h.get("network_segmented") or not h.get("micro_segmentation") or "weak" in str(h.get("hub_auth"))
+      print("before vulnerable:", vulnerable(before))
+      print("after vulnerable:", vulnerable(after), "(VLAN + micro-seg + strong hub + minimal encrypted data)")
+      print("SMARTHOME_HARDENED" if vulnerable(before) and not vulnerable(after) else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `SMARTHOME_HARDENED` (VLAN 분리+마이크로세분화+허브 강화+최소 데이터).
+      🔎 IoT를 별도 VLAN으로 분리+장치 간 최소 신뢰(마이크로세분화)+허브 강화+최소·암호화 데이터. 생태계 방어.
+    answer: |
+      before vulnerable: True
+      after vulnerable: False (VLAN + micro-seg + strong hub + minimal encrypted data)
+      SMARTHOME_HARDENED
+    answer_detail: "네트워크 분리·최소 신뢰·허브 강화·최소 데이터 → SMARTHOME_HARDENED."
+    verify:
+      type: output_contains
+      expect: SMARTHOME_HARDENED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W10 on smart home security. Findings: a weakly-authenticated hub controlling locks/cameras/alarm was a single point of failure (HUB_RISK), a flat network allowed lateral movement from a cheap bulb to the lock plus unencrypted privacy data upload (PRIVACY_LEAK), and network segmentation, micro-segmentation, hub hardening, and minimal encrypted data hardened it (SMARTHOME_HARDENED). Explain the ecosystem risks (hub SPOF, over-trust between devices, privacy) and defense via segmentation and least trust. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 스마트홈은 허브 SPOF·장치 간 과잉 신뢰·프라이버시 위험. 네트워크 분리+최소 신뢰+허브 강화+최소 데이터로 방어.
+      다음 주(W11)는 **IoT 허니팟**.
+    answer: |
+      Assessment
+      Smart homes carry ecosystem risks: a hub single point of failure, over-trust between devices enabling lateral movement, and privacy data leakage.
+      Defense uses network segmentation, micro-segmentation (least trust), hub hardening, and minimal encrypted data.
+    answer_detail: "W10 스마트홈 종합(Assessment). 허브 SPOF·측면이동·프라이버시·분리."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

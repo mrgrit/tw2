@@ -1,0 +1,159 @@
+lab_id: iot-security-week13
+title: "W13 — 자동차 보안: CAN 무인증·메시지 주입 탐지·도메인 분리/메시지 인증"
+version: ai
+course: iot-security
+week: 13
+description: |
+  차량 CAN 버스 보안. CAN 무인증·브로드캐스트 취약성(CAN_INSECURE), 위조 CAN 메시지 주입 탐지
+  (CAN_INJECTION), 도메인 분리·SecOC 메시지 인증 강화(VEHICLE_HARDENED), 종합(Assessment).
+  ⚠️ 실물 차량·CAN 하드웨어 필요·안전 최우선 — CAN·주입·분리 로직 결정론 시뮬.
+difficulty: hard
+duration_minutes: 130
+audience: IoT 보안 (13주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W13 강의안 정독 — §0.5(CAN·ECU·도메인 분리·SecOC)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "CAN 무인증 취약성(CAN_INSECURE)"
+  - "위조 CAN 메시지 주입 탐지(CAN_INJECTION)"
+  - "도메인 분리·메시지 인증 강화(VEHICLE_HARDENED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — CAN 무인증 취약성 → CAN_INSECURE
+      > **🎯 목표:** CAN 버스의 무인증·브로드캐스트 취약성을 평가.
+      > **개념:** 한 ECU 뚫리면 전체 — 발신자 인증 없음.
+      ```bash
+      python3 - <<'PY'
+      can={"authentication":False,"encryption":False,"broadcast":True,"domain_separation":False}
+      issues=[]
+      if not can["authentication"]: issues.append("no sender authentication (any ECU can send any message)")
+      if not can["encryption"]: issues.append("plaintext (sniffable)")
+      if can["broadcast"] and not can["domain_separation"]: issues.append("flat broadcast (infotainment reaches brakes)")
+      for i in issues: print("  issue:", i)
+      print("CAN_INSECURE" if len(issues)>=3 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `CAN_INSECURE` (무인증+평문+플랫 브로드캐스트).
+      🔎 CAN은 발신자 인증이 없어 아무 ECU나 아무 메시지 전송, 도메인 분리 없으면 인포테인먼트가 브레이크에 도달.
+    answer: |
+      issue: no sender authentication (any ECU can send any message)
+      issue: plaintext (sniffable)
+      issue: flat broadcast (infotainment reaches brakes)
+      CAN_INSECURE
+    answer_detail: "CAN 무인증·평문·플랫 브로드캐스트 → CAN_INSECURE."
+    verify:
+      type: output_contains
+      expect: CAN_INSECURE
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — CAN 메시지 주입 → CAN_INJECTION
+      > **🎯 목표:** 위조 CAN 메시지(정당한 ECU인 척)를 탐지.
+      > **개념:** 무인증이라 위조 메시지가 수용된다.
+      ```bash
+      python3 - <<'PY'
+      # 정상 발신 ECU 매핑(어느 ECU가 어떤 CAN ID를 보내는가)
+      LEGIT_SENDER={0x0C0:"steering_ecu", 0x1A0:"brake_ecu", 0x2B0:"infotainment"}
+      # 관측된 CAN 프레임(발신 물리 위치, CAN ID)
+      frames=[{"phys":"steering_ecu","can_id":0x0C0},          # 정상
+              {"phys":"infotainment","can_id":0x1A0,"value":"brake release"},  # 인포테인먼트가 브레이크 ID로 위조!
+              {"phys":"obd_port","can_id":0x0C0,"value":"steer left"}]         # OBD에서 조향 위조!
+      injections=[]
+      for f in frames:
+          expected=LEGIT_SENDER.get(f["can_id"])
+          if f["phys"]!=expected:
+              injections.append(f); print(f"  INJECTION: {f['phys']} sent CAN 0x{f['can_id']:03X} (expected {expected}) - {f.get('value','')}")
+      print("CAN_INJECTION" if injections else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `CAN_INJECTION` (인포테인먼트가 브레이크 ID·OBD가 조향 ID 위조).
+      🔎 인포테인먼트가 브레이크 CAN ID로, OBD 포트가 조향 ID로 메시지 위조. 무인증이라 수용될 위험. 생명 위협.
+    answer: |
+      INJECTION: infotainment sent CAN 0x1A0 (expected brake_ecu) - brake release
+      INJECTION: obd_port sent CAN 0x0C0 (expected steering_ecu) - steer left
+      CAN_INJECTION
+    answer_detail: "위조 CAN 메시지(발신자 불일치) 탐지 → CAN_INJECTION."
+    verify:
+      type: output_contains
+      expect: CAN_INJECTION
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 차량 강화 → VEHICLE_HARDENED
+      > **🎯 목표:** 도메인 분리 게이트웨이·메시지 인증·IDS로 강화.
+      > **개념:** 인포테인먼트가 안전 도메인에 못 가게, 위조 메시지 거부.
+      ```bash
+      python3 - <<'PY'
+      def harden(vehicle):
+          return {"domain_gateway":True,        # 인포테인먼트/안전 도메인 분리
+                  "message_auth_secoc":True,     # CAN 메시지 인증(MAC)
+                  "vehicle_ids":True,            # 비정상 CAN 탐지
+                  "remote_entry_hardened":True}
+      before={"domain_gateway":False,"message_auth_secoc":False,"vehicle_ids":False}
+      after=harden(before)
+      def vulnerable(v):
+          return not v["domain_gateway"] or not v.get("message_auth_secoc")
+      print("before vulnerable:", vulnerable(before))
+      print("after vulnerable:", vulnerable(after), "(domain gateway + SecOC message auth + vehicle IDS)")
+      print("VEHICLE_HARDENED" if vulnerable(before) and not vulnerable(after) else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `VEHICLE_HARDENED` (도메인 게이트웨이+SecOC 메시지 인증+차량 IDS).
+      🔎 게이트웨이가 인포테인먼트→브레이크 메시지를 차단하고, SecOC가 위조 메시지를 거부하며, IDS가 이상을 탐지. 생명 안전.
+    answer: |
+      before vulnerable: True
+      after vulnerable: False (domain gateway + SecOC message auth + vehicle IDS)
+      VEHICLE_HARDENED
+    answer_detail: "도메인 분리·SecOC·IDS 강화 → VEHICLE_HARDENED."
+    verify:
+      type: output_contains
+      expect: VEHICLE_HARDENED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W13 on automotive security. Findings: the CAN bus was assessed as unauthenticated, plaintext, and flat-broadcast (CAN_INSECURE), spoofed CAN frames from infotainment and the OBD port impersonating brake/steering ECUs were detected (CAN_INJECTION), and a domain gateway, SecOC message authentication, and a vehicle IDS hardened it (VEHICLE_HARDENED). Explain the Jeep hack (remote via telematics to CAN), that CAN lacks sender authentication, and defense uses domain separation and message authentication with safety first. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: CAN은 무인증이라 한 ECU 뚫리면 브레이크·조향 주입. 도메인 분리+메시지 인증+IDS로 방어. 안전 최우선.
+      다음 주(W14)는 **IoT 보안 가이드라인**.
+    answer: |
+      Assessment
+      The CAN bus lacks sender authentication, so one compromised ECU (or the OBD port) can inject brake/steering messages (Jeep hack via telematics).
+      Defense uses domain separation gateways, SecOC message authentication, and a vehicle IDS, with safety first.
+    answer_detail: "W13 자동차 보안 종합(Assessment). CAN 무인증·메시지 주입·도메인 분리/인증."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

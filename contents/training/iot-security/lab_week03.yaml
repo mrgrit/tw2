@@ -1,0 +1,159 @@
+lab_id: iot-security-week03
+title: "W03 — 하드웨어 인터페이스: 노출 디버그 포트·펌웨어 추출·보안 부팅/암호화 강화"
+version: ai
+course: iot-security
+week: 3
+description: |
+  물리 하드웨어 인터페이스 방어. 노출 디버그 인터페이스 평가(DEBUG_EXPOSED), 펌웨어 추출 가능성
+  (FIRMWARE_EXTRACTABLE), 디버그 비활성·보안 부팅·암호화 강화(HW_HARDENED), 종합(Assessment).
+  ⚠️ UART/JTAG/SPI는 실물 장치·하드웨어 도구 필요 — 평가·방어 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: IoT 보안 입문 (3주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W03 강의안 정독 — §0.5(UART/JTAG/SPI·보안 부팅·플래시 암호화)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "노출 디버그 인터페이스 평가(DEBUG_EXPOSED)"
+  - "펌웨어 추출 가능성 판정(FIRMWARE_EXTRACTABLE)"
+  - "디버그 비활성·보안 부팅·암호화 강화(HW_HARDENED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 노출 디버그 인터페이스 → DEBUG_EXPOSED
+      > **🎯 목표:** 양산 장치의 활성 디버그 인터페이스를 평가.
+      > **개념:** 양산에 남은 디버그 포트는 공격 통로.
+      ```bash
+      python3 - <<'PY'
+      # 장치 기판 인터페이스 상태
+      interfaces=[{"iface":"UART","active":True,"auth":False},    # 인증 없는 루트 셸!
+                  {"iface":"JTAG","active":True,"locked":False},   # 잠기지 않음
+                  {"iface":"SPI flash","active":True,"encrypted":False}]  # 평문 플래시
+      exposed=[]
+      for i in interfaces:
+          risk=None
+          if i["iface"]=="UART" and i["active"] and not i.get("auth"): risk="root shell without auth"
+          if i["iface"]=="JTAG" and i["active"] and not i.get("locked"): risk="memory dump possible"
+          if "SPI" in i["iface"] and not i.get("encrypted"): risk="plaintext flash readable"
+          if risk: exposed.append((i["iface"],risk)); print(f"  {i['iface']:12}: EXPOSED - {risk}")
+      print("DEBUG_EXPOSED" if len(exposed)>=2 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `DEBUG_EXPOSED` (UART 인증없는 셸+JTAG 미잠금+평문 플래시).
+      🔎 양산에 활성 UART(인증없는 셸)·미잠금 JTAG·평문 SPI 플래시가 남으면 물리 접근으로 열린다.
+    answer: |
+      UART        : EXPOSED - root shell without auth
+      JTAG        : EXPOSED - memory dump possible
+      SPI flash   : EXPOSED - plaintext flash readable
+      DEBUG_EXPOSED
+    answer_detail: "양산 장치 활성 디버그 인터페이스 평가 → DEBUG_EXPOSED."
+    verify:
+      type: output_contains
+      expect: DEBUG_EXPOSED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 펌웨어 추출 가능성 → FIRMWARE_EXTRACTABLE
+      > **🎯 목표:** 인터페이스로 펌웨어를 추출할 수 있는지 판정.
+      > **개념:** 미잠금 JTAG·평문 SPI면 펌웨어 통째 덤프.
+      ```bash
+      python3 - <<'PY'
+      device={"jtag_locked":False,"spi_encrypted":False,"secure_boot":False}
+      methods=[]
+      if not device["jtag_locked"]: methods.append("JTAG memory dump")
+      if not device["spi_encrypted"]: methods.append("SPI flash read (chip-off)")
+      print("extraction methods available:", methods)
+      # 추출된 펌웨어에서 얻을 것
+      if methods:
+          print("  -> extract firmware -> find hardcoded secrets (shared across all units)")
+      print("FIRMWARE_EXTRACTABLE" if len(methods)>=2 else "PROTECTED")
+      PY
+      ```
+      ✅ 마지막 줄 `FIRMWARE_EXTRACTABLE` (미잠금 JTAG + 평문 SPI로 펌웨어 추출 가능).
+      🔎 JTAG 덤프·SPI 칩오프로 펌웨어를 통째 추출. 한 대 뜯으면 같은 모델 전체의 하드코딩 비밀 노출.
+    answer: |
+      extraction methods available: ['JTAG memory dump', 'SPI flash read (chip-off)']
+        -> extract firmware -> find hardcoded secrets (shared across all units)
+      FIRMWARE_EXTRACTABLE
+    answer_detail: "미잠금 JTAG+평문 SPI로 펌웨어 추출 가능 → FIRMWARE_EXTRACTABLE."
+    verify:
+      type: output_contains
+      expect: FIRMWARE_EXTRACTABLE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 하드웨어 강화 → HW_HARDENED
+      > **🎯 목표:** 디버그 비활성·보안 부팅·플래시 암호화로 강화.
+      > **개념:** 접근해도 못 얻게.
+      ```bash
+      python3 - <<'PY'
+      def harden(device):
+          return {"uart_shell":"disabled/auth-required","jtag_locked":True,
+                  "spi_encrypted":True,"secure_boot":True,"tamper_detection":True}
+      before={"uart_shell":"root-no-auth","jtag_locked":False,"spi_encrypted":False,"secure_boot":False}
+      after=harden(before)
+      def extractable(d):
+          return (not d.get("jtag_locked")) or (not d.get("spi_encrypted"))
+      print("before: firmware extractable =", extractable(before))
+      print("after : firmware extractable =", extractable(after), "(JTAG locked + flash encrypted + secure boot)")
+      print("HW_HARDENED" if extractable(before) and not extractable(after) else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `HW_HARDENED` (JTAG 잠금+플래시 암호화+보안 부팅으로 추출 불가).
+      🔎 UART 셸 비활성+JTAG fuse 끊기+플래시 암호화+보안 부팅+탬퍼 감지. 물리 접근해도 펌웨어를 못 얻는다.
+    answer: |
+      before: firmware extractable = True
+      after : firmware extractable = False (JTAG locked + flash encrypted + secure boot)
+      HW_HARDENED
+    answer_detail: "디버그 비활성·JTAG 잠금·플래시 암호화·보안 부팅 강화 → HW_HARDENED."
+    verify:
+      type: output_contains
+      expect: HW_HARDENED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W03 on IoT hardware interfaces. Findings: an active UART root shell, unlocked JTAG, and plaintext SPI flash were exposed (DEBUG_EXPOSED), allowing firmware extraction via JTAG dump and SPI chip-off (FIRMWARE_EXTRACTABLE), and hardening with disabled debug, locked JTAG, encrypted flash, and secure boot blocked it (HW_HARDENED). Explain that production devices often leave debug interfaces enabled, so defense disables debug, locks JTAG, encrypts flash, and uses secure boot so physical access yields nothing. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 양산에 남은 디버그 인터페이스로 펌웨어 추출. 디버그 비활성+보안 부팅+플래시 암호화로 접근해도 못 얻게.
+      다음 주(W04)는 **펌웨어 분석**.
+    answer: |
+      Assessment
+      Production IoT devices often leave debug interfaces (UART root shell, unlocked JTAG, plaintext flash) enabled, allowing firmware extraction.
+      Defense disables debug, locks JTAG, encrypts flash, and uses secure boot so physical access yields nothing.
+    answer_detail: "W03 하드웨어 인터페이스 종합(Assessment). 노출 디버그·펌웨어 추출·보안 부팅/암호화."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

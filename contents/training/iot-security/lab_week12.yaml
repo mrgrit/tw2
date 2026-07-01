@@ -1,0 +1,165 @@
+lab_id: iot-security-week12
+title: "W12 — OT/SCADA: Modbus 무인증·위험 명령 탐지·Purdue 네트워크 분리"
+version: ai
+course: iot-security
+week: 12
+description: |
+  산업 제어(OT) 보안. Modbus 등 레거시 무인증 취약성(OT_PROTOCOL_WEAK), 안전 관련 위험 명령 탐지
+  (UNSAFE_COMMAND), Purdue 분리·읽기 전용 강화(OT_ISOLATED), 종합(Assessment).
+  ⚠️ OT는 실물 장비·안전 최우선 — 프로토콜·명령·분리 로직 결정론 시뮬.
+difficulty: hard
+duration_minutes: 130
+audience: IoT 보안 (12주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W12 강의안 정독 — §0.5(OT/SCADA·Modbus·Purdue 모델)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "레거시 프로토콜 무인증 취약성(OT_PROTOCOL_WEAK)"
+  - "안전 관련 위험 명령 탐지(UNSAFE_COMMAND)"
+  - "Purdue 분리·읽기 전용 강화(OT_ISOLATED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 레거시 프로토콜 취약성 → OT_PROTOCOL_WEAK
+      > **🎯 목표:** Modbus 등 OT 프로토콜의 무인증·무암호를 평가.
+      > **개념:** 네트워크에 붙으면 누구나 명령.
+      ```bash
+      python3 - <<'PY'
+      protocols=[{"name":"Modbus TCP","auth":False,"encryption":False},
+                 {"name":"DNP3 (legacy)","auth":False,"encryption":False},
+                 {"name":"OPC UA (modern)","auth":True,"encryption":True}]
+      weak=[]
+      for p in protocols:
+          issues=[]
+          if not p["auth"]: issues.append("no authentication")
+          if not p["encryption"]: issues.append("no encryption")
+          if issues: weak.append(p["name"]); print(f"  {p['name']:18}: WEAK - {issues}")
+          else: print(f"  {p['name']:18}: secure (auth+encryption)")
+      print("OT_PROTOCOL_WEAK" if len(weak)>=2 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `OT_PROTOCOL_WEAK` (Modbus·DNP3 무인증·무암호, OPC UA만 안전).
+      🔎 Modbus·DNP3는 수십 년 전 설계라 인증·암호가 없다. 네트워크에 붙으면 누구나 밸브·모터 명령.
+    answer: |
+      Modbus TCP        : WEAK - ['no authentication', 'no encryption']
+      DNP3 (legacy)     : WEAK - ['no authentication', 'no encryption']
+      OPC UA (modern)   : secure (auth+encryption)
+      OT_PROTOCOL_WEAK
+    answer_detail: "Modbus·DNP3 무인증·무암호 취약성 → OT_PROTOCOL_WEAK."
+    verify:
+      type: output_contains
+      expect: OT_PROTOCOL_WEAK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 위험 명령 탐지 → UNSAFE_COMMAND
+      > **🎯 목표:** 안전 관련 레지스터에 대한 위험 쓰기 명령을 탐지.
+      > **개념:** OT는 안전 우선 — 위험 명령은 물리 재앙.
+      ```bash
+      python3 - <<'PY'
+      # Modbus 명령들 (function code, register, value)
+      commands=[{"fc":"read","register":"40001(sensor)","value":None},          # 정상 읽기
+                {"fc":"write","register":"40100(pump_speed)","value":9999},       # 과속!
+                {"fc":"write","register":"40200(safety_interlock)","value":0}]    # 안전장치 해제!
+      SAFETY_REGISTERS={"40200(safety_interlock)","40201(emergency_stop)"}
+      def unsafe(cmd):
+          if cmd["fc"]=="write" and cmd["register"] in SAFETY_REGISTERS: return "SAFETY OVERRIDE (critical!)"
+          if cmd["fc"]=="write" and "speed" in cmd["register"] and cmd["value"] and cmd["value"]>5000: return "out-of-range value"
+          return None
+      alerts=[]
+      for c in commands:
+          u=unsafe(c)
+          if u: alerts.append((c["register"],u)); print(f"  UNSAFE: write {c['register']} = {c['value']} -> {u}")
+      print("UNSAFE_COMMAND" if alerts else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `UNSAFE_COMMAND` (안전장치 해제·펌프 과속 명령 탐지).
+      🔎 안전 인터록 해제(40200=0)·펌프 과속(9999)은 물리 재앙 명령. OT는 위험 명령을 반드시 탐지·차단.
+    answer: |
+      UNSAFE: write 40100(pump_speed) = 9999 -> out-of-range value
+      UNSAFE: write 40200(safety_interlock) = 0 -> SAFETY OVERRIDE (critical!)
+      UNSAFE_COMMAND
+    answer_detail: "안전 레지스터 쓰기·범위 초과 명령 탐지 → UNSAFE_COMMAND."
+    verify:
+      type: output_contains
+      expect: UNSAFE_COMMAND
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — OT 분리 강화 → OT_ISOLATED
+      > **🎯 목표:** Purdue 분리·읽기 전용·명령 화이트리스트·독립 안전 시스템.
+      > **개념:** IT 침해가 OT로 못 가게, 안전은 독립.
+      ```bash
+      python3 - <<'PY'
+      def harden(arch):
+          return {"purdue_segmented":True,        # IT/OT 계층 분리
+                  "ot_writable_from_it":False,     # IT에서 OT 쓰기 불가(읽기 전용/데이터 다이오드)
+                  "command_allowlist":True,        # 허용 명령만
+                  "independent_sis":True}          # 독립 안전 시스템
+      before={"purdue_segmented":False,"ot_writable_from_it":True,"command_allowlist":False,"independent_sis":False}
+      after=harden(before)
+      def exposed(a):
+          return not a["purdue_segmented"] or a.get("ot_writable_from_it") or not a.get("independent_sis")
+      print("before exposed:", exposed(before))
+      print("after exposed:", exposed(after), "(Purdue segmented + read-only from IT + allowlist + independent SIS)")
+      print("OT_ISOLATED" if exposed(before) and not exposed(after) else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `OT_ISOLATED` (Purdue 분리+읽기 전용+명령 화이트리스트+독립 안전 시스템).
+      🔎 IT/OT 계층 분리(Purdue)+IT에서 OT 쓰기 차단(데이터 다이오드)+명령 화이트리스트+독립 SIS. 보안 뚫려도 물리 안전 유지.
+    answer: |
+      before exposed: True
+      after exposed: False (Purdue segmented + read-only from IT + allowlist + independent SIS)
+      OT_ISOLATED
+    answer_detail: "Purdue 분리·읽기 전용·화이트리스트·독립 SIS → OT_ISOLATED."
+    verify:
+      type: output_contains
+      expect: OT_ISOLATED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W12 on OT/SCADA security. Findings: legacy Modbus and DNP3 were assessed as unauthenticated and unencrypted (OT_PROTOCOL_WEAK), unsafe write commands to a safety interlock and out-of-range pump speed were detected (UNSAFE_COMMAND), and Purdue segmentation, read-only-from-IT, command allowlist, and an independent safety system isolated it (OT_ISOLATED). Explain that OT prioritizes safety and availability, legacy protocols lack auth, and defense uses network segmentation and independent safety systems, referencing Stuxnet. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: OT는 안전·가용성 우선, 레거시 무인증. Purdue 분리+읽기 전용+화이트리스트+독립 SIS로 물리 안전을 지킨다.
+      다음 주(W13)는 **자동차 보안**.
+    answer: |
+      Assessment
+      OT/SCADA prioritizes safety and availability; legacy protocols like Modbus lack authentication, risking physical disaster (Stuxnet).
+      Defense uses Purdue segmentation, read-only from IT, command allowlists, and an independent safety system.
+    answer_detail: "W12 OT/SCADA 종합(Assessment). 무인증 프로토콜·위험 명령·분리·독립 SIS."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

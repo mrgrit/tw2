@@ -1,0 +1,163 @@
+lab_id: iot-security-week09
+title: "W09 — IP Camera 해킹: 기본 자격·인터넷 노출·무인증 RTSP·카메라 강화"
+version: ai
+course: iot-security
+week: 9
+description: |
+  IP 카메라 방어. 기본 자격·인터넷 노출 평가(CAMERA_EXPOSED), 무인증 RTSP 스트림 접근(STREAM_ACCESSIBLE),
+  자격 변경·RTSP 인증·네트워크 분리 강화(CAMERA_HARDENED), 종합(Assessment).
+  카메라는 대량 스캔(Shodan)의 최대 표적 — 기본 보안+노출 차단이 핵심.
+difficulty: medium
+duration_minutes: 120
+audience: IoT 보안 (9주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W09 강의안 정독 — §0.5(RTSP·Shodan·네트워크 분리)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "기본 자격·인터넷 노출 평가(CAMERA_EXPOSED)"
+  - "무인증 RTSP 스트림 접근(STREAM_ACCESSIBLE)"
+  - "자격 변경·RTSP 인증·네트워크 분리 강화(CAMERA_HARDENED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 기본 자격·노출 평가 → CAMERA_EXPOSED
+      > **🎯 목표:** 카메라의 기본 자격·인터넷 직접 노출을 평가.
+      > **개념:** Shodan 대량 스캔의 표적 — 노출+기본 자격.
+      ```bash
+      python3 - <<'PY'
+      # 카메라 설정
+      cam={"internet_facing":True,"upnp":True,"credentials":"admin/admin","firmware":"2019 (outdated)"}
+      DEFAULT_CREDS={"admin/admin","admin/12345","root/root","admin/(blank)"}
+      exposures=[]
+      if cam["internet_facing"]: exposures.append("directly internet-facing (Shodan-discoverable)")
+      if cam["upnp"]: exposures.append("UPnP auto port-forward")
+      if cam["credentials"] in DEFAULT_CREDS: exposures.append(f"default credentials ({cam['credentials']})")
+      if "2019" in cam["firmware"]: exposures.append("outdated firmware (known CVEs)")
+      for e in exposures: print("  exposure:", e)
+      print("CAMERA_EXPOSED" if len(exposures)>=3 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `CAMERA_EXPOSED` (인터넷 노출+UPnP+기본 자격+구형 펌웨어).
+      🔎 인터넷 직접 노출+UPnP+admin/admin+구형 펌웨어 = Shodan으로 대량 발견·장악되는 전형.
+    answer: |
+      exposure: directly internet-facing (Shodan-discoverable)
+      exposure: UPnP auto port-forward
+      exposure: default credentials (admin/admin)
+      exposure: outdated firmware (known CVEs)
+      CAMERA_EXPOSED
+    answer_detail: "카메라 기본 자격·인터넷 노출 평가 → CAMERA_EXPOSED."
+    verify:
+      type: output_contains
+      expect: CAMERA_EXPOSED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 무인증 RTSP → STREAM_ACCESSIBLE
+      > **🎯 목표:** RTSP 스트림이 인증 없이 접근되는지 판정.
+      > **개념:** 웹에 인증 걸어도 RTSP가 열리면 영상이 샌다.
+      ```bash
+      python3 - <<'PY'
+      # 카메라 서비스 상태
+      services={"web_ui":{"auth":True},"rtsp":{"port":554,"auth":False},"onvif":{"auth":False}}
+      def streamable(svc):
+          return svc.get("auth")==False
+      accessible=[]
+      for name,svc in services.items():
+          if "rtsp" in name or "onvif" in name:
+              open_=streamable(svc)
+              print(f"  {name} (port {svc.get('port','')}): {'NO AUTH - stream accessible' if open_ else 'authenticated'}")
+              if open_: accessible.append(name)
+      print(f"  web_ui: {'authenticated' if services['web_ui']['auth'] else 'open'}")
+      # RTSP/ONVIF가 무인증이면 웹 인증과 무관하게 영상 노출
+      print("STREAM_ACCESSIBLE" if accessible else "PROTECTED")
+      PY
+      ```
+      ✅ 마지막 줄 `STREAM_ACCESSIBLE` (RTSP·ONVIF 무인증 → 영상 직접 접근).
+      🔎 웹 UI에 인증이 있어도 RTSP(554)·ONVIF가 무인증이면 `rtsp://ip:554/`로 실시간 영상을 본다.
+    answer: |
+      rtsp (port 554): NO AUTH - stream accessible
+      onvif (port ): NO AUTH - stream accessible
+      web_ui: authenticated
+      STREAM_ACCESSIBLE
+    answer_detail: "무인증 RTSP/ONVIF 스트림 접근 → STREAM_ACCESSIBLE. 웹 인증과 무관."
+    verify:
+      type: output_contains
+      expect: STREAM_ACCESSIBLE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 카메라 강화 → CAMERA_HARDENED
+      > **🎯 목표:** 자격 변경·RTSP 인증·펌웨어·네트워크 분리로 강화.
+      > **개념:** 인터넷 직접 노출 금지가 근본.
+      ```bash
+      python3 - <<'PY'
+      def harden(cam):
+          return {"internet_facing":False,"upnp":False,"credentials":"unique-strong-pw",
+                  "rtsp_auth":True,"firmware":"latest","network":"isolated VLAN (no internet)","access":"VPN only"}
+      before={"internet_facing":True,"upnp":True,"credentials":"admin/admin","rtsp_auth":False}
+      after=harden(before)
+      def exposed(cam):
+          return cam.get("internet_facing") or cam.get("credentials")=="admin/admin" or not cam.get("rtsp_auth")
+      print("before exposed:", exposed(before))
+      print("after exposed:", exposed(after), "(no internet, strong pw, RTSP auth, isolated VLAN, VPN access)")
+      print("CAMERA_HARDENED" if exposed(before) and not exposed(after) else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `CAMERA_HARDENED` (강한 자격+RTSP 인증+펌웨어+VLAN 분리+VPN).
+      🔎 인터넷 직접 노출 제거(UPnP 끄기·VLAN 분리·VPN 접근)+강한 자격+RTSP 인증+펌웨어 업데이트. 대량 스캔 표적에서 제외.
+    answer: |
+      before exposed: True
+      after exposed: False (no internet, strong pw, RTSP auth, isolated VLAN, VPN access)
+      CAMERA_HARDENED
+    answer_detail: "자격 변경·RTSP 인증·네트워크 분리 강화 → CAMERA_HARDENED."
+    verify:
+      type: output_contains
+      expect: CAMERA_HARDENED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W09 on IP camera hacking. Findings: an internet-facing camera with UPnP, default credentials, and outdated firmware was exposed (CAMERA_EXPOSED), its RTSP and ONVIF streams were accessible without auth despite a login on the web UI (STREAM_ACCESSIBLE), and changing credentials, requiring RTSP auth, updating firmware, and isolating on a VLAN with VPN access hardened it (CAMERA_HARDENED). Explain that cameras are mass-scanned via Shodan, RTSP can leak video even if the web UI is authenticated, and defense removes internet exposure and default credentials. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: IP 카메라는 기본 자격·무인증 RTSP·인터넷 노출로 대량 해킹. 자격 변경+RTSP 인증+노출 차단(VLAN·VPN)으로 방어.
+      다음 주(W10)는 **스마트홈 보안**.
+    answer: |
+      Assessment
+      IP cameras are mass-scanned via Shodan; default credentials and unauthenticated RTSP leak video even if the web UI is authenticated.
+      Defense removes internet exposure (no UPnP, VLAN, VPN), changes credentials, requires RTSP auth, and updates firmware.
+    answer_detail: "W09 IP 카메라 종합(Assessment). 기본 자격·RTSP·노출 차단."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

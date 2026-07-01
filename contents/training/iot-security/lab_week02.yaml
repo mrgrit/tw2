@@ -1,0 +1,161 @@
+lab_id: iot-security-week02
+title: "W02 — IoT 네트워크 프로토콜: MQTT 취약성·감청/가짜 명령·TLS·ACL 강화"
+version: ai
+course: iot-security
+week: 2
+description: |
+  경량 IoT 프로토콜 보안. MQTT 인증·암호·ACL 취약성 평가(PROTOCOL_WEAK), 감청/가짜 명령 판정
+  (INTERCEPT_POSSIBLE), TLS·인증·ACL 강화(PROTOCOL_SECURED), 종합(Assessment).
+  ⚠️ 물리 IoT 브로커는 실물 필요 — 프로토콜 보안·공격·방어 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: IoT 보안 입문 (2주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W02 강의안 정독 — §0.5(MQTT·인증/암호/ACL·최소 권한)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "MQTT 프로토콜 취약성 평가(PROTOCOL_WEAK)"
+  - "감청/가짜 명령 판정(INTERCEPT_POSSIBLE)"
+  - "TLS·인증·ACL 강화(PROTOCOL_SECURED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 프로토콜 취약성 → PROTOCOL_WEAK
+      > **🎯 목표:** MQTT 브로커 설정에서 인증·TLS·ACL 부재를 평가.
+      > **개념:** 경량을 위해 보안을 끄면 취약.
+      ```bash
+      python3 - <<'PY'
+      # Mosquitto 브로커 설정
+      broker={"allow_anonymous":True, "tls":False, "acl":False, "port":1883}
+      weaknesses=[]
+      if broker["allow_anonymous"]: weaknesses.append("anonymous access allowed (no auth)")
+      if not broker["tls"]: weaknesses.append("plaintext (no TLS) — eavesdropping/tampering")
+      if not broker["acl"]: weaknesses.append("no ACL — any client accesses any topic")
+      for w in weaknesses: print("  weakness:", w)
+      print("PROTOCOL_WEAK" if len(weaknesses)>=3 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `PROTOCOL_WEAK` (익명 접속+평문+ACL 없음 3중 취약).
+      🔎 allow_anonymous+TLS 없음+ACL 없음 = 누구나 붙어 모든 토픽 구독·발행. 경량 기본 설정의 위험.
+    answer: |
+      weakness: anonymous access allowed (no auth)
+      weakness: plaintext (no TLS) — eavesdropping/tampering
+      weakness: no ACL — any client accesses any topic
+      PROTOCOL_WEAK
+    answer_detail: "MQTT 인증·TLS·ACL 부재 3중 취약 → PROTOCOL_WEAK."
+    verify:
+      type: output_contains
+      expect: PROTOCOL_WEAK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 감청·가짜 명령 → INTERCEPT_POSSIBLE
+      > **🎯 목표:** 취약 브로커에서 감청·가짜 명령 가능성을 판정.
+      > **개념:** 인증·ACL 없으면 모든 토픽 구독·명령 발행.
+      ```bash
+      python3 - <<'PY'
+      # 취약 브로커(익명·ACL 없음)에 대한 공격 시뮬
+      broker={"allow_anonymous":True,"acl":False}
+      def can_subscribe(topic): return broker["allow_anonymous"] and not broker["acl"]  # 모든 토픽 구독 가능
+      def can_publish(topic): return broker["allow_anonymous"] and not broker["acl"]    # 명령 발행 가능
+      eavesdrop=can_subscribe("#")            # 모든 토픽(#) 구독
+      fake_command=can_publish("home/door/cmd")  # 문 열기 명령 발행
+      print(f"subscribe '#' (all topics): {eavesdrop} -> eavesdrop all sensor data")
+      print(f"publish 'home/door/cmd open': {fake_command} -> fake command (unlock door)")
+      print("INTERCEPT_POSSIBLE" if eavesdrop and fake_command else "PROTECTED")
+      PY
+      ```
+      ✅ 마지막 줄 `INTERCEPT_POSSIBLE` (모든 토픽 구독 감청 + 문 열기 가짜 명령 발행).
+      🔎 인증·ACL 없으면 `#` 구독으로 모든 데이터 감청, 명령 토픽에 가짜 명령 발행(문 열기). 심각.
+    answer: |
+      subscribe '#' (all topics): True -> eavesdrop all sensor data
+      publish 'home/door/cmd open': True -> fake command (unlock door)
+      INTERCEPT_POSSIBLE
+    answer_detail: "취약 브로커 감청+가짜 명령 가능 → INTERCEPT_POSSIBLE."
+    verify:
+      type: output_contains
+      expect: INTERCEPT_POSSIBLE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 프로토콜 강화 → PROTOCOL_SECURED
+      > **🎯 목표:** TLS·인증·ACL(최소 권한)로 강화.
+      > **개념:** 경량이라도 보안 3종을 켠다.
+      ```bash
+      python3 - <<'PY'
+      # 강화된 브로커 설정 + ACL
+      broker={"allow_anonymous":False,"tls":True,"acl":True,"port":8883}
+      # ACL: 장치별 허용 토픽(최소 권한)
+      ACL={"sensor-1":{"publish":["home/temp"],"subscribe":[]},
+           "app-1":{"publish":["home/door/cmd"],"subscribe":["home/#"]},
+           "attacker":{"publish":[],"subscribe":[]}}  # 인증 안 되면 아무것도
+      def authorized(client, action, topic):
+          if broker["allow_anonymous"]==False and client not in ACL: return False
+          allowed=ACL.get(client,{}).get(action,[])
+          return any(topic.startswith(a.replace("#","")) for a in allowed)
+      print("attacker subscribe '#':", authorized("attacker","subscribe","#"))       # 거부
+      print("attacker publish door cmd:", authorized("attacker","publish","home/door/cmd"))  # 거부
+      print("sensor-1 publish home/temp:", authorized("sensor-1","publish","home/temp"))     # 허용
+      secured = not authorized("attacker","subscribe","#") and authorized("sensor-1","publish","home/temp") and broker["tls"]
+      print("PROTOCOL_SECURED" if secured else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `PROTOCOL_SECURED` (공격자 거부, 정상 장치 최소 권한 허용, TLS 켜짐).
+      🔎 익명 차단+TLS+ACL(장치별 최소 토픽)로 공격자는 아무것도 못 하고 정상 장치만 자기 토픽 접근.
+    answer: |
+      attacker subscribe '#': False
+      attacker publish door cmd: False
+      sensor-1 publish home/temp: True
+      PROTOCOL_SECURED
+    answer_detail: "TLS·인증·ACL(최소 권한) 강화 → PROTOCOL_SECURED."
+    verify:
+      type: output_contains
+      expect: PROTOCOL_SECURED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W02 on IoT network protocols like MQTT. Findings: a broker with anonymous access, no TLS, and no ACL was assessed as weak (PROTOCOL_WEAK), enabling eavesdropping on all topics and fake commands (INTERCEPT_POSSIBLE), and enabling TLS, authentication, and least-privilege ACL secured it (PROTOCOL_SECURED). Explain that lightweight IoT protocols often ship with security off, so defense enables TLS, authentication, and per-device ACLs. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 경량 IoT 프로토콜은 보안 기본 꺼짐. TLS+인증+ACL(최소 권한)로 감청·가짜 명령 차단.
+      다음 주(W03)는 **하드웨어 인터페이스 보안(UART/JTAG)**.
+    answer: |
+      Assessment
+      Lightweight IoT protocols like MQTT often ship with security off (anonymous, plaintext, no ACL), enabling eavesdropping and fake commands.
+      Defense enables TLS, authentication, and per-device least-privilege ACLs.
+    answer_detail: "W02 IoT 프로토콜 종합(Assessment). MQTT 취약성·감청·TLS/인증/ACL."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

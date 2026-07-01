@@ -1,0 +1,163 @@
+lab_id: iot-security-week06
+title: "W06 — 무선 프로토콜: Zigbee 암호화·키 취약성·안전한 조인 강화"
+version: ai
+course: iot-security
+week: 6
+description: |
+  스마트홈 무선(Zigbee/Z-Wave) 방어. 암호화·기본 키 취약성 평가(CRYPTO_WEAK), 키 추출/재전송 가능성
+  (KEY_EXTRACTABLE), 강한 암호화·안전한 조인 강화(WIRELESS_SECURED), 종합(Assessment).
+  ⚠️ 무선은 라디오 하드웨어 필요 — 암호화·키·방어 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: IoT 보안 입문 (6주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W06 강의안 정독 — §0.5(무선 메시·링크 키·안전한 조인)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "암호화·기본 키 취약성 평가(CRYPTO_WEAK)"
+  - "키 추출/재전송 가능성(KEY_EXTRACTABLE)"
+  - "강한 암호화·안전한 조인 강화(WIRELESS_SECURED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 암호화·키 취약성 → CRYPTO_WEAK
+      > **🎯 목표:** 무선 프로토콜의 암호화·키 설정 취약성을 평가.
+      > **개념:** 기본 키·암호화 부재는 스니핑에 뚫린다.
+      ```bash
+      python3 - <<'PY'
+      networks=[{"proto":"Zigbee","encryption":"AES-128","key":"well-known default TC link key"},  # 기본 키!
+                {"proto":"proprietary RF","encryption":"none","key":None},                          # 무암호!
+                {"proto":"Z-Wave S2","encryption":"AES-128","key":"unique install code"}]
+      weak=[]
+      for n in networks:
+          risk=None
+          if n["encryption"]=="none": risk="no encryption"
+          elif n["key"] and "default" in str(n["key"]): risk="well-known default key"
+          if risk: weak.append((n["proto"],risk)); print(f"  {n['proto']:16}: WEAK - {risk}")
+          else: print(f"  {n['proto']:16}: strong (unique key)")
+      print("CRYPTO_WEAK" if len(weak)>=2 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `CRYPTO_WEAK` (Zigbee 기본 키 + 독점 RF 무암호).
+      🔎 Zigbee가 알려진 기본 링크 키를 쓰거나 독점 RF가 무암호면 스니핑으로 뚫린다. Z-Wave S2 고유 키만 안전.
+    answer: |
+      Zigbee          : WEAK - well-known default key
+      proprietary RF  : WEAK - no encryption
+      Z-Wave S2       : strong (unique key)
+      CRYPTO_WEAK
+    answer_detail: "무선 프로토콜 암호화·기본 키 취약성 평가 → CRYPTO_WEAK."
+    verify:
+      type: output_contains
+      expect: CRYPTO_WEAK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 키 추출/재전송 → KEY_EXTRACTABLE
+      > **🎯 목표:** 취약 무선에서 키 추출·재전송 가능성 판정.
+      > **개념:** 기본 키로 조인 트래픽 복호, 무암호는 재전송.
+      ```bash
+      python3 - <<'PY'
+      # 취약 무선 공격 시뮬
+      def key_extractable(net):
+          if net["encryption"]=="none": return "REPLAY (capture-and-replay commands)"
+          if net.get("default_key"): return "KEY EXTRACT (decrypt join traffic with known default key)"
+          return "SAFE (unique key, secure join)"
+      nets=[{"proto":"Zigbee","encryption":"AES-128","default_key":True},
+            {"proto":"proprietary RF","encryption":"none"},
+            {"proto":"Z-Wave S2","encryption":"AES-128","default_key":False}]
+      compromised=0
+      for n in nets:
+          r=key_extractable(n); print(f"  {n['proto']:16}: {r}")
+          if "SAFE" not in r: compromised+=1
+      print("KEY_EXTRACTABLE" if compromised==2 else "PROTECTED")
+      PY
+      ```
+      ✅ 마지막 줄 `KEY_EXTRACTABLE` (Zigbee 기본 키로 키 추출 + 무암호 RF 재전송).
+      🔎 알려진 기본 키로 조인 트래픽을 복호해 네트워크 키 추출, 무암호 RF는 명령 재전송. 둘 다 스마트홈 제어.
+    answer: |
+      Zigbee          : KEY EXTRACT (decrypt join traffic with known default key)
+      proprietary RF  : REPLAY (capture-and-replay commands)
+      Z-Wave S2       : SAFE (unique key, secure join)
+      KEY_EXTRACTABLE
+    answer_detail: "기본 키 키 추출·무암호 재전송 가능 → KEY_EXTRACTABLE."
+    verify:
+      type: output_contains
+      expect: KEY_EXTRACTABLE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 무선 강화 → WIRELESS_SECURED
+      > **🎯 목표:** 강한 암호화·고유 키·안전한 조인·키 순환으로 강화.
+      > **개념:** 키가 새면 전부 샌다 — 키 관리가 핵심.
+      ```bash
+      python3 - <<'PY'
+      def harden(net):
+          return {"encryption":"AES-128","key":"unique per-install (install code, OOB)",
+                  "secure_join":True,"key_rotation":True,"frame_counter":True}
+      before={"encryption":"AES-128","default_key":True,"secure_join":False}
+      after=harden(before)
+      def compromisable(net):
+          return net["encryption"]=="none" or net.get("default_key") or not net.get("secure_join")
+      print("before compromisable:", compromisable(before))
+      print("after compromisable:", compromisable(after), "(unique key + secure join + rotation + frame counter)")
+      print("WIRELESS_SECURED" if compromisable(before) and not compromisable(after) else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `WIRELESS_SECURED` (고유 키+안전한 조인+키 순환+프레임 카운터).
+      🔎 설치별 고유 키(install code·OOB)+안전한 조인(물리 근접)+키 순환+재전송 방지. 키가 안 새면 안전.
+    answer: |
+      before compromisable: True
+      after compromisable: False (unique key + secure join + rotation + frame counter)
+      WIRELESS_SECURED
+    answer_detail: "고유 키·안전한 조인·키 순환 강화 → WIRELESS_SECURED."
+    verify:
+      type: output_contains
+      expect: WIRELESS_SECURED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W06 on smart-home wireless protocols (Zigbee, Z-Wave). Findings: a well-known default key and an unencrypted proprietary RF were assessed as weak (CRYPTO_WEAK), enabling key extraction from join traffic and command replay (KEY_EXTRACTABLE), and unique per-install keys with secure join, rotation, and frame counters hardened it (WIRELESS_SECURED). Explain that weak or default keys let sniffers decrypt and control the whole mesh, so defense uses strong encryption, unique keys, secure join, and key rotation. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 스마트홈 무선은 약한/기본 키로 스니핑·키 추출에 취약. 강한 암호+고유 키+안전한 조인+키 순환으로 방어.
+      다음 주(W07)는 **BLE 해킹**.
+    answer: |
+      Assessment
+      Weak or default keys let sniffers decrypt join traffic and control the whole mesh, and unencrypted RF allows replay.
+      Defense uses strong encryption, unique per-install keys, secure join, and key rotation.
+    answer_detail: "W06 무선 프로토콜 종합(Assessment). 암호화·키 취약성·안전한 조인."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

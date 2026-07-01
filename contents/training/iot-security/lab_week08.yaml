@@ -1,0 +1,160 @@
+lab_id: iot-security-week08
+title: "W08 — 중간 평가: IoT 디바이스 4대 표면 종합·공격 경로·방어 권고"
+version: ai
+course: iot-security
+week: 8
+description: |
+  W01~W07 종합 IoT 디바이스 평가. 4대 표면 종합 점검(MULTISURFACE_ASSESSED), 취약점 연결 공격 경로
+  (ATTACK_PATH), 우선순위 방어 권고(DEFENSE_RECS), 종합(Assessment).
+  개별 취약점보다 연결된 경로가 실제 위협 — 4대 표면 종합·경로 차단.
+difficulty: hard
+duration_minutes: 150
+audience: IoT 보안 (8주차·중간 평가)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W01~W07 실습 완료
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "4대 표면 종합 점검(MULTISURFACE_ASSESSED)"
+  - "취약점 연결 공격 경로(ATTACK_PATH)"
+  - "우선순위 방어 권고(DEFENSE_RECS)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 4대 표면 종합 점검 → MULTISURFACE_ASSESSED
+      > **🎯 목표:** 한 장치를 device·network·cloud·app 4대 표면에서 점검.
+      > **개념:** 넷을 모두 봐야 전체 위험이 보인다.
+      ```bash
+      python3 - <<'PY'
+      # 스마트 도어벨 카메라 4대 표면 점검
+      assessment={"device":["hardcoded API key in firmware","default admin creds"],
+                  "network":["unencrypted RTSP stream"],
+                  "cloud":["cloud API missing rate limit"],
+                  "app":["mobile app stores token in plaintext"]}
+      for surface in ["device","network","cloud","app"]:
+          print(f"  {surface:8}: {assessment[surface]}")
+      # 4대 표면 모두 점검(각 표면에 발견) 되면 종합 평가
+      print("MULTISURFACE_ASSESSED" if all(assessment[s] for s in ["device","network","cloud","app"]) else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `MULTISURFACE_ASSESSED` (4대 표면 모두 취약점 발견).
+      🔎 펌웨어 비밀·기본자격(device), 평문 RTSP(network), API(cloud), 앱 토큰(app). 넷을 모두 점검.
+    answer: |
+      device  : ['hardcoded API key in firmware', 'default admin creds']
+      network : ['unencrypted RTSP stream']
+      cloud   : ['cloud API missing rate limit']
+      app     : ['mobile app stores token in plaintext']
+      MULTISURFACE_ASSESSED
+    answer_detail: "4대 표면(device·network·cloud·app) 종합 점검 → MULTISURFACE_ASSESSED."
+    verify:
+      type: output_contains
+      expect: MULTISURFACE_ASSESSED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 공격 경로 구성 → ATTACK_PATH
+      > **🎯 목표:** 표면 간 취약점을 연결해 공격 경로 구성.
+      > **개념:** 연결된 경로가 실제 위협.
+      ```bash
+      python3 - <<'PY'
+      # 취약점 연결: 펌웨어 비밀 → 클라우드 → 전 장치
+      path=[("device","extract hardcoded API key from firmware (W04)"),
+            ("cloud","use key to access cloud API (no rate limit)"),
+            ("network","enumerate + control all devices of this model")]
+      for surface,step in path: print(f"  [{surface:8}] {step}")
+      # 경로가 여러 표면을 잇고 최종 영향(전 장치 제어)에 도달하면 완성
+      surfaces=[s for s,_ in path]
+      complete = len(set(surfaces))>=3 and "control all" in path[-1][1]
+      print("ATTACK_PATH" if complete else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `ATTACK_PATH` (펌웨어 비밀→클라우드 API→전 장치 제어 경로).
+      🔎 하드코딩 비밀 하나가 클라우드를 거쳐 전 장치 제어로 이어진다. 연결하면 개별보다 치명적.
+    answer: |
+      [device  ] extract hardcoded API key from firmware (W04)
+      [cloud   ] use key to access cloud API (no rate limit)
+      [network ] enumerate + control all devices of this model
+      ATTACK_PATH
+    answer_detail: "표면 간 취약점 연결로 공격 경로(펌웨어→클라우드→전 장치) → ATTACK_PATH."
+    verify:
+      type: output_contains
+      expect: ATTACK_PATH
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 방어 권고 → DEFENSE_RECS
+      > **🎯 목표:** 위험 우선순위로 방어를 권고(경로 차단 우선).
+      > **개념:** 경로를 끊는 방어가 개별 패치보다 효과적.
+      ```bash
+      python3 - <<'PY'
+      # 취약점별 방어 + 위험 점수
+      recs=[{"fix":"remove hardcoded key, per-device provisioning","breaks_path":True,"risk":9},
+            {"fix":"cloud API rate limit + auth","breaks_path":True,"risk":7},
+            {"fix":"RTSP over TLS","breaks_path":False,"risk":5},
+            {"fix":"encrypt app token storage","breaks_path":False,"risk":4}]
+      ranked=sorted(recs, key=lambda r:(r["breaks_path"], r["risk"]), reverse=True)
+      for r in ranked: print(f"  [risk {r['risk']}{' PATH-BREAK' if r['breaks_path'] else ''}] {r['fix']}")
+      top=ranked[0]
+      # 경로 차단 + 최고 위험이 최우선
+      print("DEFENSE_RECS" if top["breaks_path"] and top["risk"]==9 else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `DEFENSE_RECS` (하드코딩 비밀 제거가 경로 차단+최고 위험 → 최우선).
+      🔎 하드코딩 비밀 제거는 전 경로를 끊는다(개별 패치보다 효과적). 위험+경로 차단으로 우선순위.
+    answer: |
+      [risk 9 PATH-BREAK] remove hardcoded key, per-device provisioning
+      [risk 7 PATH-BREAK] cloud API rate limit + auth
+      [risk 5] RTSP over TLS
+      [risk 4] encrypt app token storage
+      DEFENSE_RECS
+    answer_detail: "위험 우선순위+경로 차단으로 방어 권고 → DEFENSE_RECS."
+    verify:
+      type: output_contains
+      expect: DEFENSE_RECS
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W08 on IoT device penetration testing. Findings: a device was assessed across all four surfaces device/network/cloud/app (MULTISURFACE_ASSESSED), vulnerabilities were chained into an attack path from a hardcoded firmware key to cloud API to controlling all devices (ATTACK_PATH), and defenses were prioritized by risk and path-breaking with removing the hardcoded key first (DEFENSE_RECS). Explain that connected paths reveal real threat better than isolated bugs, and defense breaks the highest-risk path first. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: IoT 침투 테스트=4대 표면 종합+취약점 연결(경로)+우선순위 방어. 연결된 경로가 실제 위협.
+      다음 주(W09)는 **IP Camera 해킹**.
+    answer: |
+      Assessment
+      IoT pentesting assesses all four surfaces, chains vulnerabilities into attack paths, and prioritizes defenses.
+      Connected paths reveal real threat better than isolated bugs; break the highest-risk path first.
+    answer_detail: "W08 IoT 침투 종합(Assessment). 4대 표면·공격 경로·방어 권고."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout
