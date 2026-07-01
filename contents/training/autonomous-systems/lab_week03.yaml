@@ -1,0 +1,164 @@
+lab_id: autonomous-systems-week03
+title: "W03 — 드론 해킹: Deauth 탐지·MAVLink 명령 인젝션 탐지·하이재킹 방어"
+version: ai
+course: autonomous-systems
+week: 3
+description: |
+  드론 통신 공격. Deauth flood 탐지(DEAUTH_DETECTED), 무서명 MAVLink 명령 인젝션 탐지(COMMAND_INJECTED),
+  서명·페일세이프 하이재킹 방어(HIJACK_PREVENTED), 종합(Assessment).
+  ⚠️ 드론 공격은 실물·RF·법적 인가 필요 — 탐지·방어 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 시스템 보안 (3주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W03 강의안 정독 — §0.5(deauth·MAVLink 인젝션·하이재킹 탐지)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "Deauth flood 탐지(DEAUTH_DETECTED)"
+  - "무서명 MAVLink 명령 인젝션 탐지(COMMAND_INJECTED)"
+  - "서명·페일세이프 하이재킹 방어(HIJACK_PREVENTED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — Deauth 공격 탐지 → DEAUTH_DETECTED
+      > **🎯 목표:** 조종 WiFi에 대한 deauth flood를 탐지.
+      > **개념:** 관리 프레임은 무인증 — 위조 flood.
+      ```bash
+      python3 - <<'PY'
+      # 1초 단위 deauth 프레임 카운트(정상 vs 공격)
+      window=[{"t":0,"deauth":0},{"t":1,"deauth":1},{"t":2,"deauth":85},{"t":3,"deauth":120},{"t":4,"deauth":95}]
+      THRESHOLD=30  # 초당 deauth 임계
+      spikes=[w for w in window if w["deauth"]>THRESHOLD]
+      for w in window: print(f"  t={w['t']}s: {w['deauth']} deauth {'<-- FLOOD' if w['deauth']>THRESHOLD else ''}")
+      print(f"deauth flood windows: {len(spikes)}")
+      print("DEAUTH_DETECTED" if len(spikes)>=2 else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `DEAUTH_DETECTED` (초당 85·120·95 deauth = flood).
+      🔎 정상은 초당 deauth가 거의 0. 초당 수십~수백은 위조 deauth flood(조종 끊기 시도). 급증이 탐지 신호.
+    answer: |
+      t=0s: 0 deauth
+      t=1s: 1 deauth
+      t=2s: 85 deauth <-- FLOOD
+      t=3s: 120 deauth <-- FLOOD
+      t=4s: 95 deauth <-- FLOOD
+      deauth flood windows: 3
+      DEAUTH_DETECTED
+    answer_detail: "deauth 프레임 급증 flood 탐지 → DEAUTH_DETECTED."
+    verify:
+      type: output_contains
+      expect: DEAUTH_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — MAVLink 명령 인젝션 탐지 → COMMAND_INJECTED
+      > **🎯 목표:** 무서명/위조 MAVLink 명령을 탐지.
+      > **개념:** 무서명이면 발신자 확인 불가 — 위조 수용 위험.
+      ```bash
+      python3 - <<'PY'
+      # MAVLink 명령들 (system id, command, signed)
+      LEGIT_GCS=255
+      commands=[{"sysid":255,"cmd":"HEARTBEAT","signed":True},
+                {"sysid":42,"cmd":"MAV_CMD_NAV_LAND","signed":False},     # 위조! 다른 sysid, 무서명
+                {"sysid":42,"cmd":"SET_MODE (GUIDED)","signed":False}]    # 위조!
+      injected=[]
+      for c in commands:
+          if c["sysid"]!=LEGIT_GCS or not c["signed"]:
+              injected.append(c); print(f"  INJECTION: sysid={c['sysid']} cmd={c['cmd']} signed={c['signed']}")
+          else: print(f"  legit: sysid={c['sysid']} cmd={c['cmd']}")
+      print("COMMAND_INJECTED" if injected else "CLEAN")
+      PY
+      ```
+      ✅ 마지막 줄 `COMMAND_INJECTED` (다른 sysid·무서명 강제 착륙·모드 변경 명령).
+      🔎 정당한 GCS(sysid 255) 외 발신, 무서명 명령은 인젝션. 강제 착륙·모드 변경은 하이재킹의 시작.
+    answer: |
+      legit: sysid=255 cmd=HEARTBEAT
+      INJECTION: sysid=42 cmd=MAV_CMD_NAV_LAND signed=False
+      INJECTION: sysid=42 cmd=SET_MODE (GUIDED) signed=False
+      COMMAND_INJECTED
+    answer_detail: "무서명·위조 sysid MAVLink 명령 탐지 → COMMAND_INJECTED."
+    verify:
+      type: output_contains
+      expect: COMMAND_INJECTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 하이재킹 방어 → HIJACK_PREVENTED
+      > **🎯 목표:** MAVLink 서명·페일세이프로 하이재킹을 막는다.
+      > **개념:** 서명이 위조 명령을 거부, 페일세이프가 조종 끊김에 안전.
+      ```bash
+      python3 - <<'PY'
+      def defended_drone():
+          return {"mavlink_signing":True,"wifi":"WPA2","failsafe":"RTL","gcs_binding":"authenticated"}
+      drone=defended_drone()
+      # 위조 명령(무서명) 처리
+      def accept_command(drone, cmd):
+          if drone["mavlink_signing"] and not cmd.get("signed"): return False  # 무서명 거부
+          return True
+      forged={"cmd":"NAV_LAND","signed":False}
+      accepted=accept_command(drone, forged)
+      # deauth 발생 시 페일세이프
+      failsafe_ok = drone["failsafe"]=="RTL"
+      print(f"forged unsigned command accepted: {accepted} (rejected by signing)")
+      print(f"deauth -> failsafe: {drone['failsafe']} (safe return, not hijacked)")
+      print("HIJACK_PREVENTED" if not accepted and failsafe_ok else "VULNERABLE")
+      PY
+      ```
+      ✅ 마지막 줄 `HIJACK_PREVENTED` (서명이 위조 명령 거부 + RTL 페일세이프).
+      🔎 MAVLink2 서명이 무서명 위조 명령을 거부하고, deauth로 끊겨도 RTL(자동 귀환)로 안전. 하이재킹 차단.
+    answer: |
+      forged unsigned command accepted: False (rejected by signing)
+      deauth -> failsafe: RTL (safe return, not hijacked)
+      HIJACK_PREVENTED
+    answer_detail: "서명 거부+RTL 페일세이프로 하이재킹 방어 → HIJACK_PREVENTED."
+    verify:
+      type: output_contains
+      expect: HIJACK_PREVENTED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W03 on drone hacking. Findings: a deauth flood on the control WiFi was detected by a frame-rate spike (DEAUTH_DETECTED), unsigned MAVLink commands from a foreign system id (forced land, mode change) were detected as injection (COMMAND_INJECTED), and MAVLink signing plus an RTL failsafe prevented hijacking (HIJACK_PREVENTED). Explain that unauthenticated links let attackers deauth, inject commands, and hijack drones with physical consequences, and defense uses signing and failsafes. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 드론 해킹=deauth·MAVLink 인젝션·하이재킹(무방비 링크 악용, 물리 결과). MAVLink 서명+페일세이프로 방어.
+      다음 주(W04)는 **드론 방어(탐지·지오펜싱)**.
+    answer: |
+      Assessment
+      Unauthenticated links let attackers deauth the control channel, inject unsigned MAVLink commands, and hijack drones with physical consequences.
+      Defense uses MAVLink signing (rejects forged commands) and failsafes like RTL.
+    answer_detail: "W03 드론 해킹 종합(Assessment). deauth·명령 인젝션·하이재킹·서명/페일세이프."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

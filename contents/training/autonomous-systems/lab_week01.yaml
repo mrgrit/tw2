@@ -1,0 +1,167 @@
+lab_id: autonomous-systems-week01
+title: "W01 — CPS 보안 개론: 사이버·물리·브리지 계층 매핑·사이버→물리 경로·안전 위험"
+version: ai
+course: autonomous-systems
+week: 1
+description: |
+  CPS(사이버물리시스템) 위협 모델. 사이버·물리·브리지 3계층 매핑(CPS_MAPPED), 사이버→물리 공격 경로
+  (PHYSICAL_IMPACT), 안전 필수 위험 평가(SAFETY_RISK), 종합(Assessment).
+  ⚠️ CPS는 실물 하드웨어 필요 — 위협 모델·경로·안전 평가 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 시스템 보안 입문 (1주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W01 강의안 정독 — §0.5(CPS 3계층·사이버→물리·페일세이프)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "CPS 사이버·물리·브리지 계층 매핑(CPS_MAPPED)"
+  - "사이버→물리 공격 경로(PHYSICAL_IMPACT)"
+  - "안전 필수 위험 평가(SAFETY_RISK)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — CPS 계층 매핑 → CPS_MAPPED
+      > **🎯 목표:** 드론 구성요소를 사이버·물리·브리지 계층으로 매핑.
+      > **개념:** 3계층 모두 공격 표면.
+      ```bash
+      python3 - <<'PY'
+      components=[{"name":"flight control SW","layer":None},
+                  {"name":"WiFi command link","layer":None},
+                  {"name":"GPS receiver","layer":None},
+                  {"name":"motor ESC (actuator)","layer":None},
+                  {"name":"autopilot decision (cmd->motor)","layer":None}]
+      def classify(name):
+          n=name.lower()
+          if "decision" in n or "cmd->" in n or "autopilot" in n: return "bridge"   # 브리지 먼저(명령→구동)
+          if "control sw" in n or "wifi" in n or "link" in n or "ai model" in n: return "cyber"
+          if "gps" in n or "sensor" in n or "motor" in n or "actuator" in n or "receiver" in n: return "physical"
+          return "other"
+      layers=set()
+      for c in components:
+          c["layer"]=classify(c["name"]); layers.add(c["layer"])
+          print(f"  [{c['layer']:8}] {c['name']}")
+      print("CPS_MAPPED" if {"cyber","physical","bridge"}.issubset(layers) else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `CPS_MAPPED` (사이버·물리·브리지 3계층 모두 매핑).
+      🔎 제어 SW·WiFi=사이버, GPS·모터=물리, autopilot 판단(명령→모터)=브리지. 3계층 모두 공격 표면.
+    answer: |
+      [cyber   ] flight control SW
+      [cyber   ] WiFi command link
+      [physical] GPS receiver
+      [physical] motor ESC (actuator)
+      [bridge  ] autopilot decision (cmd->motor)
+      CPS_MAPPED
+    answer_detail: "드론을 사이버·물리·브리지 3계층으로 매핑 → CPS_MAPPED."
+    verify:
+      type: output_contains
+      expect: CPS_MAPPED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 사이버→물리 공격 경로 → PHYSICAL_IMPACT
+      > **🎯 목표:** 사이버 진입이 물리 결과로 이어지는 경로 구성.
+      > **개념:** CPS는 사이버 공격이 물리 재앙.
+      ```bash
+      python3 - <<'PY'
+      # 사이버 진입 → 물리 결과
+      path=[("cyber","deauth WiFi command link (W03)"),
+            ("bridge","inject hijack command to autopilot"),
+            ("physical","motors follow attacker -> drone crash/hijack")]
+      for layer,step in path: print(f"  [{layer:8}] {step}")
+      # 경로가 사이버에서 시작해 물리 결과(crash/hijack)에 도달
+      ends_physical = path[-1][0]=="physical" and ("crash" in path[-1][1] or "hijack" in path[-1][1])
+      print("PHYSICAL_IMPACT" if ends_physical and len(path)>=3 else "NO_IMPACT")
+      PY
+      ```
+      ✅ 마지막 줄 `PHYSICAL_IMPACT` (WiFi 사이버 진입→브리지→드론 추락/하이재킹).
+      🔎 사이버(WiFi deauth)→브리지(명령 주입)→물리(모터가 공격자 명령 따름=추락). 사이버 공격이 물리 재앙.
+    answer: |
+      [cyber   ] deauth WiFi command link (W03)
+      [bridge  ] inject hijack command to autopilot
+      [physical] motors follow attacker -> drone crash/hijack
+      PHYSICAL_IMPACT
+    answer_detail: "사이버→브리지→물리 공격 경로(드론 추락) → PHYSICAL_IMPACT."
+    verify:
+      type: output_contains
+      expect: PHYSICAL_IMPACT
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 안전 필수 위험 평가 → SAFETY_RISK
+      > **🎯 목표:** 물리 결과의 안전 영향으로 위험 우선순위.
+      > **개념:** 인명·물리 피해가 걸린 것이 최우선.
+      ```bash
+      python3 - <<'PY'
+      # CPS 위협의 안전 영향(인명·물리)
+      threats=[{"name":"drone hijack over populated area","safety_impact":"life-threatening","likelihood":2},
+               {"name":"telemetry eavesdrop","safety_impact":"none (data only)","likelihood":3},
+               {"name":"GPS spoof -> wrong navigation","safety_impact":"physical damage","likelihood":2}]
+      SAFETY_WEIGHT={"life-threatening":10,"physical damage":6,"none (data only)":1}
+      for t in threats: t["risk"]=SAFETY_WEIGHT[t["safety_impact"]]*t["likelihood"]
+      ranked=sorted(threats, key=lambda t:t["risk"], reverse=True)
+      for t in ranked: print(f"  {t['name'][:34]:34} [{t['safety_impact']}] risk {t['risk']}")
+      top=ranked[0]
+      # 인명 위협이 데이터 위협보다 우선(안전 최우선)
+      print("SAFETY_RISK" if "life-threatening" in top["safety_impact"] else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `SAFETY_RISK` (인명 위협 드론 하이재킹이 최우선, 데이터 감청은 후순위).
+      🔎 CPS는 안전(인명·물리)을 최우선 가중. 데이터 감청보다 물리 사고·인명 위협을 우선 방어. IT와 다른 우선순위.
+    answer: |
+      drone hijack over populated area   [life-threatening] risk 20
+      GPS spoof -> wrong navigation      [physical damage] risk 12
+      telemetry eavesdrop                [none (data only)] risk 3
+      SAFETY_RISK
+    answer_detail: "안전 영향(인명>물리>데이터) 가중 위험 평가 → SAFETY_RISK."
+    verify:
+      type: output_contains
+      expect: SAFETY_RISK
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W01 of an autonomous systems (CPS) security course. Findings: a drone was mapped into cyber/physical/bridge layers (CPS_MAPPED), a cyber-to-physical attack path from WiFi deauth to autopilot injection to crash was built (PHYSICAL_IMPACT), and safety-critical risk weighting put a life-threatening hijack above data eavesdropping (SAFETY_RISK). Explain that CPS combines cyber and physical so cyber attacks cause physical consequences, and defense is safety-first with fail-safes. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: CPS는 사이버+물리 결합이라 사이버 공격이 물리 결과. 3계층 위협 모델+안전 최우선(페일세이프).
+      다음 주(W02)는 **드론 기초**.
+    answer: |
+      Assessment
+      CPS combines cyber and physical layers, so cyber attacks cause physical consequences (a WiFi deauth can crash a drone).
+      Threat modeling covers cyber/physical/bridge layers, and defense is safety-first with fail-safes and independent safety systems.
+    answer_detail: "W01 CPS 개론 종합(Assessment). 3계층·사이버→물리·안전 최우선."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

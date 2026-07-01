@@ -1,0 +1,159 @@
+lab_id: autonomous-systems-week09
+title: "W09 — 로봇 보안: ROS/시리얼 취약성·공격 표면·SROS2/안전 정지 강화"
+version: ai
+course: autonomous-systems
+week: 9
+description: |
+  로봇 시스템 보안. ROS/시리얼/펌웨어 취약성 평가(ROBOT_INSECURE), 로봇 공격 표면 매핑(SURFACE_MAPPED),
+  SROS2·시리얼 격리·펌웨어 서명·독립 안전 정지 강화(ROBOT_HARDENED), 종합(Assessment).
+  ⚠️ 로봇은 실물 하드웨어 필요 — 취약성·표면·방어 로직 결정론 시뮬. 보안+기능 안전.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 시스템 보안 (9주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W09 강의안 정독 — §0.5(ROS·시리얼·펌웨어·안전 정지)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "ROS/시리얼/펌웨어 취약성 평가(ROBOT_INSECURE)"
+  - "로봇 공격 표면 매핑(SURFACE_MAPPED)"
+  - "SROS2·안전 정지 강화(ROBOT_HARDENED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 로봇 통신 취약성 → ROBOT_INSECURE
+      > **🎯 목표:** ROS·시리얼·펌웨어의 무보안을 평가.
+      > **개념:** ROS2도 SROS2 없으면 무방비.
+      ```bash
+      python3 - <<'PY'
+      robot={"ros":{"version":"ROS2","sros2_enabled":False},   # SROS2 꺼짐 -> 무방비
+             "serial":{"auth":False,"isolated":False},          # 무인증 시리얼
+             "firmware":{"signed":False}}
+      issues=[]
+      if not robot["ros"]["sros2_enabled"]: issues.append("ROS2 without SROS2 (topic sniff/inject)")
+      if not robot["serial"]["auth"]: issues.append("serial/fieldbus no auth (direct motor command)")
+      if not robot["firmware"]["signed"]: issues.append("unsigned firmware (tamper)")
+      for i in issues: print("  issue:", i)
+      print("ROBOT_INSECURE" if len(issues)>=3 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `ROBOT_INSECURE` (SROS2 미사용+무인증 시리얼+무서명 펌웨어).
+      🔎 ROS2라도 SROS2가 꺼지면 토픽 감청·주입, 무인증 시리얼은 모터 명령 직접 주입, 무서명 펌웨어는 변조.
+    answer: |
+      issue: ROS2 without SROS2 (topic sniff/inject)
+      issue: serial/fieldbus no auth (direct motor command)
+      issue: unsigned firmware (tamper)
+      ROBOT_INSECURE
+    answer_detail: "ROS·시리얼·펌웨어 무보안 평가 → ROBOT_INSECURE."
+    verify:
+      type: output_contains
+      expect: ROBOT_INSECURE
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 공격 표면 매핑 → SURFACE_MAPPED
+      > **🎯 목표:** 로봇 공격 표면을 유형별로 매핑.
+      > **개념:** ROS·시리얼·펌웨어·원격 모두 표면.
+      ```bash
+      python3 - <<'PY'
+      surfaces=[{"vector":"ROS2 topics (no SROS2)","threat":"sniff/inject motion commands"},
+                {"vector":"serial/fieldbus","threat":"direct actuator control"},
+                {"vector":"firmware","threat":"hardcoded secrets, tamper"},
+                {"vector":"remote/cloud mgmt","threat":"remote takeover"}]
+      kinds=set()
+      for s in surfaces:
+          v=s["vector"].lower()
+          kind="ros" if "ros" in v else ("serial" if "serial" in v or "fieldbus" in v else ("firmware" if "firmware" in v else "remote"))
+          kinds.add(kind); print(f"  [{kind:8}] {s['vector']}: {s['threat']}")
+      print("SURFACE_MAPPED" if {"ros","serial","firmware","remote"}.issubset(kinds) else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `SURFACE_MAPPED` (ROS·시리얼·펌웨어·원격 4대 표면).
+      🔎 ROS 토픽(감청/주입)·시리얼(직접 제어)·펌웨어(비밀/변조)·원격(인수). 로봇의 4대 공격 표면.
+    answer: |
+      [ros     ] ROS2 topics (no SROS2): sniff/inject motion commands
+      [serial  ] serial/fieldbus: direct actuator control
+      [firmware] firmware: hardcoded secrets, tamper
+      [remote  ] remote/cloud mgmt: remote takeover
+      SURFACE_MAPPED
+    answer_detail: "로봇 공격 표면(ROS·시리얼·펌웨어·원격) 매핑 → SURFACE_MAPPED."
+    verify:
+      type: output_contains
+      expect: SURFACE_MAPPED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 로봇 강화 → ROBOT_HARDENED
+      > **🎯 목표:** SROS2·시리얼 격리·펌웨어 서명·독립 안전 정지로 강화.
+      > **개념:** 보안+기능 안전(E-stop).
+      ```bash
+      python3 - <<'PY'
+      def harden(robot):
+          return {"ros":{"sros2_enabled":True},"serial":{"auth":True,"isolated":True},
+                  "firmware":{"signed":True},"independent_safe_stop":True}   # ISO 10218 E-stop
+      before={"ros":{"sros2_enabled":False},"serial":{"auth":False},"firmware":{"signed":False},"independent_safe_stop":False}
+      after=harden(before)
+      def vulnerable(r):
+          return not r["ros"]["sros2_enabled"] or not r["serial"]["auth"] or not r.get("independent_safe_stop")
+      print("before vulnerable:", vulnerable(before))
+      print("after vulnerable:", vulnerable(after), "(SROS2 + serial auth/isolation + signed fw + independent E-stop)")
+      print("ROBOT_HARDENED" if vulnerable(before) and not vulnerable(after) else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `ROBOT_HARDENED` (SROS2+시리얼 격리+펌웨어 서명+독립 안전 정지).
+      🔎 SROS2(인증·암호)+시리얼 인증/격리+펌웨어 서명+독립 안전 정지(E-stop). 보안 뚫려도 물리 안전 정지가 사람을 지킨다.
+    answer: |
+      before vulnerable: True
+      after vulnerable: False (SROS2 + serial auth/isolation + signed fw + independent E-stop)
+      ROBOT_HARDENED
+    answer_detail: "SROS2·시리얼 격리·펌웨어 서명·독립 안전 정지 → ROBOT_HARDENED."
+    verify:
+      type: output_contains
+      expect: ROBOT_HARDENED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W09 on robot security. Findings: ROS2 without SROS2, unauthenticated serial, and unsigned firmware were insecure (ROBOT_INSECURE), the attack surface was mapped across ROS topics, serial/fieldbus, firmware, and remote management (SURFACE_MAPPED), and enabling SROS2, serial isolation, signed firmware, and an independent safe-stop hardened it (ROBOT_HARDENED). Explain that ROS2 is only secure if SROS2 is enabled, robot attacks cause physical harm, and defense combines security with functional safety (E-stop). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 로봇은 ROS(무보안)·시리얼(무인증)·펌웨어로 취약. SROS2+격리+서명+독립 안전 정지로 방어(보안+기능 안전).
+      다음 주(W10)는 **ROS2 보안 심화(DDS)**.
+    answer: |
+      Assessment
+      Robots are insecure via ROS2 without SROS2, unauthenticated serial, and unsigned firmware, and attacks cause physical harm.
+      Defense enables SROS2, isolates serial, signs firmware, and adds an independent safe-stop (security plus functional safety).
+    answer_detail: "W09 로봇 보안 종합(Assessment). ROS·시리얼·펌웨어·SROS2/안전 정지."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

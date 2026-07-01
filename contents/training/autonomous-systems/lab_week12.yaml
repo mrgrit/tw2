@@ -1,0 +1,167 @@
+lab_id: autonomous-systems-week12
+title: "W12 — V2X/자동차: CAN/V2X 취약성·위조 안전 메시지 탐지·PKI/오작동 탐지"
+version: ai
+course: autonomous-systems
+week: 12
+description: |
+  차량 내부(CAN)·외부(V2X) 보안. CAN 무인증·V2X 무서명 취약성(V2X_VULNERABLE), 위조 V2X 안전 메시지
+  탐지(MESSAGE_SPOOFED), PKI 서명·오작동 탐지 방어(V2X_SECURED), 종합(Assessment).
+  ⚠️ 차량 CAN·V2X는 실물·안전·인가 필요 — 취약성·탐지·방어 로직 결정론 시뮬.
+difficulty: hard
+duration_minutes: 130
+audience: 자율 시스템 보안 (12주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W12 강의안 정독 — §0.5(CAN·V2X·PKI·오작동 탐지)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "CAN/V2X 취약성 평가(V2X_VULNERABLE)"
+  - "위조 V2X 안전 메시지 탐지(MESSAGE_SPOOFED)"
+  - "PKI 서명·오작동 탐지 방어(V2X_SECURED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — CAN/V2X 취약성 → V2X_VULNERABLE
+      > **🎯 목표:** 내부 CAN·외부 V2X의 무인증을 평가.
+      > **개념:** 둘 다 무인증이면 메시지 주입·위조.
+      ```bash
+      python3 - <<'PY'
+      vehicle={"can":{"auth":False,"domain_separation":False},
+               "v2x":{"message_signing":False,"misbehavior_detection":False}}
+      issues=[]
+      if not vehicle["can"]["auth"]: issues.append("CAN no auth (message injection)")
+      if not vehicle["can"]["domain_separation"]: issues.append("no domain gateway (infotainment -> brakes)")
+      if not vehicle["v2x"]["message_signing"]: issues.append("V2X unsigned (forged safety messages)")
+      if not vehicle["v2x"]["misbehavior_detection"]: issues.append("no misbehavior detection")
+      for i in issues: print("  issue:", i)
+      print("V2X_VULNERABLE" if len(issues)>=3 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `V2X_VULNERABLE` (CAN 무인증·미분리 + V2X 무서명·탐지없음).
+      🔎 CAN 무인증(주입)·도메인 미분리(인포→브레이크)+V2X 무서명(위조)·오작동 미탐지. 내부·외부 모두 취약.
+    answer: |
+      issue: CAN no auth (message injection)
+      issue: no domain gateway (infotainment -> brakes)
+      issue: V2X unsigned (forged safety messages)
+      issue: no misbehavior detection
+      V2X_VULNERABLE
+    answer_detail: "CAN/V2X 무인증 취약성 → V2X_VULNERABLE."
+    verify:
+      type: output_contains
+      expect: V2X_VULNERABLE
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 위조 V2X 메시지 탐지 → MESSAGE_SPOOFED
+      > **🎯 목표:** 물리적으로 불가능·모순된 V2X 안전 메시지를 탐지.
+      > **개념:** 위조 경고가 연쇄 사고 유발.
+      ```bash
+      python3 - <<'PY'
+      # 수신한 V2X 기본 안전 메시지(BSM)들
+      messages=[{"id":"veh-A","pos":(0,0),"prev_pos":(0,-10),"dt":1,"speed_mps":10},   # 정상
+                {"id":"ghost-B","pos":(0,5),"prev_pos":(0,500),"dt":1,"speed_mps":10},  # 순간이동(불가능)
+                {"id":"veh-C","event":"HARD_BRAKE","radar_confirms":False}]             # 센서와 모순
+      spoofed=[]
+      for m in messages:
+          if "prev_pos" in m:
+              jump=(((m["pos"][0]-m["prev_pos"][0]))**2+((m["pos"][1]-m["prev_pos"][1]))**2)**0.5
+              if jump/m["dt"] > m["speed_mps"]*3: spoofed.append((m["id"],f"impossible jump {jump:.0f}m/s")); print(f"  SPOOF: {m['id']} {jump:.0f}m in {m['dt']}s (>3x claimed speed)")
+          if m.get("event")=="HARD_BRAKE" and not m.get("radar_confirms"):
+              spoofed.append((m["id"],"brake warning contradicts radar")); print(f"  SPOOF: {m['id']} HARD_BRAKE but radar sees nothing")
+      print("MESSAGE_SPOOFED" if len(spoofed)>=2 else "CONSISTENT")
+      PY
+      ```
+      ✅ 마지막 줄 `MESSAGE_SPOOFED` (순간이동 유령 차량 + 센서와 모순된 급정거 경고).
+      🔎 물리적으로 불가능한 위치 점프(유령 차량)·자기 센서와 모순된 경고는 위조. 오작동 탐지로 배제해 연쇄 사고 방지.
+    answer: |
+      SPOOF: ghost-B 495m in 1s (>3x claimed speed)
+      SPOOF: veh-C HARD_BRAKE but radar sees nothing
+      MESSAGE_SPOOFED
+    answer_detail: "물리 모순 V2X 메시지 탐지 → MESSAGE_SPOOFED."
+    verify:
+      type: output_contains
+      expect: MESSAGE_SPOOFED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — PKI 서명·오작동 탐지 방어 → V2X_SECURED
+      > **🎯 목표:** PKI 서명(진위)+오작동 탐지(정합성)로 이중 방어.
+      > **개념:** 서명으로 위조자 차단, 탐지로 거짓 정보 배제.
+      ```bash
+      python3 - <<'PY'
+      def secure(vehicle):
+          return {"can":{"auth":True,"domain_separation":True},
+                  "v2x":{"message_signing":True,"misbehavior_detection":True,"pseudonym_rotation":True}}
+      before={"can":{"auth":False,"domain_separation":False},"v2x":{"message_signing":False,"misbehavior_detection":False}}
+      after=secure(before)
+      # 방어 후 메시지 처리: 무서명 위조자 거부 + 서명됐어도 모순되면 오작동 탐지
+      def accept(v2x, msg):
+          if v2x["message_signing"] and not msg.get("signed"): return False   # 위조자 서명 없음 -> 거부
+          if v2x["misbehavior_detection"] and msg.get("contradicts_sensors"): return False  # 모순 -> 배제
+          return True
+      forged={"signed":False}                       # 위조자
+      insider_lie={"signed":True,"contradicts_sensors":True}  # 정당 참여자의 거짓
+      r1=accept(after["v2x"], forged); r2=accept(after["v2x"], insider_lie)
+      print(f"forged (unsigned) accepted: {r1}")
+      print(f"signed-but-contradictory accepted: {r2}")
+      secured = not r1 and not r2 and after["can"]["auth"]
+      print("V2X_SECURED" if secured else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `V2X_SECURED` (무서명 위조 거부 + 서명됐어도 모순 메시지 배제 + CAN 인증).
+      🔎 PKI 서명이 위조자를 차단하고, 오작동 탐지가 정당 참여자의 거짓(센서 모순)까지 배제. 서명+정합성 이중 방어.
+    answer: |
+      forged (unsigned) accepted: False
+      signed-but-contradictory accepted: False
+      V2X_SECURED
+    answer_detail: "PKI 서명+오작동 탐지 이중 방어 → V2X_SECURED."
+    verify:
+      type: output_contains
+      expect: V2X_SECURED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W12 on V2X and vehicle security. Findings: unauthenticated CAN and unsigned V2X were vulnerable (V2X_VULNERABLE), forged V2X safety messages (a teleporting ghost vehicle and a brake warning contradicting radar) were detected (MESSAGE_SPOOFED), and PKI message signing plus misbehavior detection secured it (V2X_SECURED). Explain that CAN is internal and V2X is external, forged V2X messages can cause chain accidents, and defense combines signing (authenticity) with misbehavior detection (consistency). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 차량은 CAN(내부)·V2X(외부) 무인증에 취약. CAN 도메인 분리·SecOC + V2X PKI 서명·오작동 탐지로 방어.
+      다음 주(W13)는 **AI 모델 공격/방어**.
+    answer: |
+      Assessment
+      Vehicles must secure internal CAN (message injection) and external V2X (forged safety messages causing chain accidents).
+      Defense combines PKI signing (authenticity) with misbehavior detection (consistency), plus CAN domain separation and SecOC.
+    answer_detail: "W12 V2X/자동차 종합(Assessment). CAN·V2X·PKI·오작동 탐지."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

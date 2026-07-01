@@ -1,0 +1,167 @@
+lab_id: autonomous-systems-week05
+title: "W05 — GPS 보안: 스푸핑 탐지·안티스푸핑(다중 검증)·대체 항법 전환"
+version: ai
+course: autonomous-systems
+week: 5
+description: |
+  GPS/GNSS 보안. GPS 스푸핑 탐지(SPOOF_DETECTED), 다중 위성군·정합성 안티스푸핑(ANTISPOOF_APPLIED),
+  GPS 상실/의심 시 대체 항법 전환(ALT_NAV_ENGAGED), 종합(Assessment).
+  ⚠️ GPS 스푸핑은 실물·법적 인가 필요 — 탐지·안티스푸핑·항법 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 시스템 보안 (5주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W05 강의안 정독 — §0.5(스푸핑·안티스푸핑·대체 항법)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "GPS 스푸핑 탐지(SPOOF_DETECTED)"
+  - "다중 검증 안티스푸핑(ANTISPOOF_APPLIED)"
+  - "대체 항법 전환(ALT_NAV_ENGAGED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — GPS 스푸핑 탐지 → SPOOF_DETECTED
+      > **🎯 목표:** 신호 강도 급변·위치 점프·INS 불일치로 스푸핑 탐지.
+      > **개념:** 스푸퍼는 강한 신호로 가짜 위치 — 이상 징후.
+      ```bash
+      python3 - <<'PY'
+      # GPS 측정 스냅샷
+      gps={"signal_dbm":-120,"prev_signal_dbm":-155,   # 신호 급강(스푸퍼 강한 신호)
+           "pos":(37.60,127.10),"prev_pos":(37.55,126.80),"dt_s":1,  # 1초에 큰 점프
+           "ins_pos":(37.551,126.801)}                 # INS는 거의 안 움직임
+      anomalies=[]
+      if gps["signal_dbm"]-gps["prev_signal_dbm"] > 20: anomalies.append("signal strength jump (+35dBm)")
+      # 위치 점프 속도(km/s) 계산
+      jump_km=(((gps['pos'][0]-gps['prev_pos'][0])*111)**2+((gps['pos'][1]-gps['prev_pos'][1])*89)**2)**0.5
+      if jump_km/gps["dt_s"] > 1.0: anomalies.append(f"impossible position jump ({jump_km:.1f}km/s)")
+      # INS 불일치
+      ins_gap=(((gps['pos'][0]-gps['ins_pos'][0])*111)**2+((gps['pos'][1]-gps['ins_pos'][1])*89)**2)**0.5
+      if ins_gap > 5: anomalies.append(f"GPS-INS mismatch ({ins_gap:.1f}km)")
+      for a in anomalies: print("  anomaly:", a)
+      print("SPOOF_DETECTED" if len(anomalies)>=3 else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `SPOOF_DETECTED` (신호 급변+불가능한 위치 점프+INS 불일치).
+      🔎 스푸퍼는 강한 신호로 가짜 위치를 주입 → 신호 강도 급변·물리적으로 불가능한 위치 점프·INS와 큰 불일치. 3중 이상.
+    answer: |
+      anomaly: signal strength jump (+35dBm)
+      anomaly: impossible position jump (27.3km/s)
+      anomaly: GPS-INS mismatch (27.2km)
+      SPOOF_DETECTED
+    answer_detail: "신호 급변·위치 점프·INS 불일치로 스푸핑 탐지 → SPOOF_DETECTED."
+    verify:
+      type: output_contains
+      expect: SPOOF_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 안티스푸핑 적용 → ANTISPOOF_APPLIED
+      > **🎯 목표:** 다중 위성군·인증 신호·정합성으로 진위 검증.
+      > **개념:** 여러 독립 소스로 교차 검증.
+      ```bash
+      python3 - <<'PY'
+      # 다중 위성군 위치(스푸퍼는 보통 GPS만 위조)
+      constellations={"GPS":(37.60,127.10),        # 스푸핑됨
+                      "Galileo":(37.55,126.80),    # 진짜(OSNMA 인증)
+                      "GLONASS":(37.55,126.80)}    # 진짜
+      galileo_authenticated=True  # OSNMA 서명 검증
+      # 교차 검증: 다수결(2개 이상 일치)이 진짜
+      from collections import Counter
+      votes=Counter(constellations.values())
+      trusted_pos,count=votes.most_common(1)[0]
+      gps_outlier = constellations["GPS"]!=trusted_pos
+      print(f"constellation positions: {dict(constellations)}")
+      print(f"trusted (majority + OSNMA): {trusted_pos}, GPS is outlier: {gps_outlier}")
+      print("ANTISPOOF_APPLIED" if gps_outlier and count>=2 and galileo_authenticated else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `ANTISPOOF_APPLIED` (Galileo/GLONASS 다수결+OSNMA 인증으로 GPS 이상치 식별).
+      🔎 스푸퍼는 보통 GPS만 위조. Galileo(OSNMA 인증)·GLONASS가 일치하고 GPS만 벗어나면 GPS가 스푸핑됨을 확정.
+    answer: |
+      constellation positions: {'GPS': (37.6, 127.1), 'Galileo': (37.55, 126.8), 'GLONASS': (37.55, 126.8)}
+      trusted (majority + OSNMA): (37.55, 126.8), GPS is outlier: True
+      ANTISPOOF_APPLIED
+    answer_detail: "다중 위성군·OSNMA 교차 검증으로 GPS 이상치 식별 → ANTISPOOF_APPLIED."
+    verify:
+      type: output_contains
+      expect: ANTISPOOF_APPLIED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 대체 항법 전환 → ALT_NAV_ENGAGED
+      > **🎯 목표:** GPS 신뢰 불가 시 INS·시각 항법으로 전환.
+      > **개념:** GPS를 단일 진실로 믿지 않는다.
+      ```bash
+      python3 - <<'PY'
+      nav_state={"gps_trusted":False}   # 스푸핑 탐지됨
+      # 대체 항법 소스 가용성
+      alternatives={"INS":True,"visual_odometry":True,"terrain_matching":True}
+      def select_nav(state, alts):
+          if state["gps_trusted"]: return "GPS"
+          # GPS 불신 → 가용한 대체 항법 융합
+          active=[k for k,v in alts.items() if v]
+          return f"ALT_NAV: {'+'.join(active)}" if active else "DEAD_RECKONING_ONLY"
+      selected=select_nav(nav_state, alternatives)
+      print(f"gps_trusted: {nav_state['gps_trusted']}")
+      print(f"navigation source: {selected}")
+      print("ALT_NAV_ENGAGED" if selected.startswith("ALT_NAV") else "GPS_ONLY")
+      PY
+      ```
+      ✅ 마지막 줄 `ALT_NAV_ENGAGED` (GPS 불신 → INS+시각+지형 매칭 융합 전환).
+      🔎 GPS가 스푸핑되면 신뢰를 거두고 INS(관성)·시각 오도메트리·지형 매칭으로 전환해 계속 안전하게 항법.
+    answer: |
+      gps_trusted: False
+      navigation source: ALT_NAV: INS+visual_odometry+terrain_matching
+      ALT_NAV_ENGAGED
+    answer_detail: "GPS 불신 시 대체 항법(INS·시각) 전환 → ALT_NAV_ENGAGED."
+    verify:
+      type: output_contains
+      expect: ALT_NAV_ENGAGED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W05 on GPS security. Findings: a signal-strength jump, an impossible position jump, and a GPS-INS mismatch detected spoofing (SPOOF_DETECTED), multi-constellation cross-check with Galileo OSNMA authentication flagged GPS as the outlier (ANTISPOOF_APPLIED), and navigation switched to INS, visual odometry, and terrain matching (ALT_NAV_ENGAGED). Explain that GPS is weak and unauthenticated, spoofing is more dangerous than jamming because it is stealthy, and defense uses multi-source verification and alternative navigation. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: GPS는 무인증이라 스푸핑에 취약(재밍보다 위험). 다중 위성군·정합성 탐지+대체 항법으로 방어. GPS 맹신 금지.
+      다음 주(W06)는 **자율주행 기초**.
+    answer: |
+      Assessment
+      GPS is weak and unauthenticated, and spoofing is more dangerous than jamming because it is stealthy (the system trusts a fake position).
+      Defense detects anomalies, cross-checks multiple constellations with authentication, and falls back to alternative navigation (INS, visual).
+    answer_detail: "W05 GPS 보안 종합(Assessment). 스푸핑 탐지·다중 검증·대체 항법."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

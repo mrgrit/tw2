@@ -1,0 +1,160 @@
+lab_id: autonomous-systems-week04
+title: "W04 — 드론 방어: 다중 센서 융합 탐지·RF 분석 식별·지오펜싱 강제"
+version: ai
+course: autonomous-systems
+week: 4
+description: |
+  카운터-드론(C-UAS). 다중 센서 융합 탐지(DRONE_DETECTED), RF 분석 식별·분류(RF_CLASSIFIED), 지오펜싱
+  강제(GEOFENCE_ENFORCED), 종합(Assessment).
+  ⚠️ RF·센서·대응은 실물·법적 인가 필요 — 탐지·분류·지오펜싱 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 시스템 보안 (4주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W04 강의안 정독 — §0.5(탐지→식별→대응·센서 융합·지오펜싱)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "다중 센서 융합 탐지(DRONE_DETECTED)"
+  - "RF 분석 식별·분류(RF_CLASSIFIED)"
+  - "지오펜싱 강제(GEOFENCE_ENFORCED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 다중 센서 융합 탐지 → DRONE_DETECTED
+      > **🎯 목표:** 여러 센서를 융합해 드론을 고신뢰로 탐지.
+      > **개념:** 2개 이상 센서 일치 = 고신뢰(각 센서 한계 보완).
+      ```bash
+      python3 - <<'PY'
+      # 각 센서의 드론 탐지 여부(신뢰도)
+      sensors={"RF":0.8,"radar":0.7,"acoustic":0.3,"EO_IR":0.6}
+      DETECT_TH=0.5
+      hits=[s for s,c in sensors.items() if c>=DETECT_TH]
+      print("sensor hits:", {s:sensors[s] for s in hits})
+      # 융합: 2개 이상 센서가 임계 이상이면 고신뢰 탐지
+      fused_confidence = len(hits)>=2
+      print(f"sensors above threshold: {len(hits)}")
+      print("DRONE_DETECTED" if fused_confidence else "UNCERTAIN")
+      PY
+      ```
+      ✅ 마지막 줄 `DRONE_DETECTED` (RF·radar·EO/IR 3개 센서 일치 = 고신뢰).
+      🔎 음향(0.3)은 약하지만 RF·레이더·EO/IR이 일치해 고신뢰 탐지. 다중 센서 융합이 각 한계를 보완.
+    answer: |
+      sensor hits: {'RF': 0.8, 'radar': 0.7, 'EO_IR': 0.6}
+      sensors above threshold: 3
+      DRONE_DETECTED
+    answer_detail: "다중 센서 융합(3개 일치) 고신뢰 탐지 → DRONE_DETECTED."
+    verify:
+      type: output_contains
+      expect: DRONE_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — RF 분석·식별 → RF_CLASSIFIED
+      > **🎯 목표:** RF 지문으로 드론 기종·위협을 식별.
+      > **개념:** RF 시그니처로 기종 파악·조종기 위치.
+      ```bash
+      python3 - <<'PY'
+      # 관측된 RF 특성 vs 알려진 드론 시그니처 DB
+      observed={"freq":"2.4GHz","hopping":"FHSS-pattern-A","protocol":"OcuSync-like"}
+      SIGNATURES={"DJI-class":{"freq":"2.4GHz","hopping":"FHSS-pattern-A","protocol":"OcuSync-like"},
+                  "toy-wifi":{"freq":"2.4GHz","hopping":"none","protocol":"wifi"}}
+      match=None
+      for model,sig in SIGNATURES.items():
+          if all(observed[k]==sig[k] for k in sig): match=model; break
+      threat="HIGH (capable, unauthorized)" if match=="DJI-class" else "low"
+      print(f"observed RF: {observed}")
+      print(f"identified: {match}, threat: {threat}")
+      print("RF_CLASSIFIED" if match else "UNKNOWN")
+      PY
+      ```
+      ✅ 마지막 줄 `RF_CLASSIFIED` (RF 지문으로 DJI-class 식별, 위협 HIGH).
+      🔎 주파수·호핑 패턴·프로토콜을 시그니처 DB와 대조해 기종 식별. 식별로 위협 평가·대응 결정.
+    answer: |
+      observed RF: {'freq': '2.4GHz', 'hopping': 'FHSS-pattern-A', 'protocol': 'OcuSync-like'}
+      identified: DJI-class, threat: HIGH (capable, unauthorized)
+      RF_CLASSIFIED
+    answer_detail: "RF 지문으로 드론 기종 식별·위협 평가 → RF_CLASSIFIED."
+    verify:
+      type: output_contains
+      expect: RF_CLASSIFIED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 지오펜싱 강제 → GEOFENCE_ENFORCED
+      > **🎯 목표:** 금지 구역 진입을 지오펜싱으로 차단.
+      > **개념:** GPS 기반 가상 울타리(단 스푸핑 우회 가능).
+      ```bash
+      python3 - <<'PY'
+      # 금지 구역(공항) 중심과 반경
+      NO_FLY={"center":(37.55,126.80),"radius_km":5.0}
+      def dist_km(a,b):
+          # 단순 근사(위경도 차 * 111km)
+          return (((a[0]-b[0])*111)**2 + ((a[1]-b[1])*89)**2)**0.5
+      positions=[(37.60,126.90),(37.56,126.81)]  # 두 번째가 공항 근처
+      blocked=[]
+      for p in positions:
+          d=dist_km(p, NO_FLY["center"])
+          inside = d < NO_FLY["radius_km"]
+          print(f"  pos {p}: {d:.1f}km from no-fly center -> {'BLOCK (inside)' if inside else 'ok'}")
+          if inside: blocked.append(p)
+      print("GEOFENCE_ENFORCED" if blocked else "ALL_CLEAR")
+      PY
+      ```
+      ✅ 마지막 줄 `GEOFENCE_ENFORCED` (공항 반경 내 진입 드론 차단).
+      🔎 GPS 위치가 금지 구역 반경 내면 진입 차단(이륙 거부·귀환). 단 GPS 스푸핑(W05)으로 우회 가능함에 유의.
+    answer: |
+      pos (37.6, 126.9): ... -> ok
+      pos (37.56, 126.81): ... -> BLOCK (inside)
+      GEOFENCE_ENFORCED
+    answer_detail: "금지 구역 지오펜싱 강제(진입 차단) → GEOFENCE_ENFORCED."
+    verify:
+      type: output_contains
+      expect: GEOFENCE_ENFORCED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W04 on drone defense (counter-UAS). Findings: multi-sensor fusion (RF, radar, EO/IR agreeing) gave a high-confidence detection (DRONE_DETECTED), an RF fingerprint identified a DJI-class drone as high threat (RF_CLASSIFIED), and GPS geofencing blocked a drone inside a no-fly radius (GEOFENCE_ENFORCED). Explain the detect-identify-respond pipeline, that no single sensor suffices, that geofencing can be bypassed by GPS spoofing, and that active response like jamming is legally restricted. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 드론 방어=탐지(다중 센서)→식별(RF)→대응+지오펜싱. 재밍은 법적 제약. 지오펜싱은 GPS 스푸핑에 우회될 수 있다.
+      다음 주(W05)는 **GPS 보안**.
+    answer: |
+      Assessment
+      Drone defense follows detect (multi-sensor fusion) -> identify (RF fingerprint) -> respond, with geofencing for no-fly zones.
+      No single sensor suffices, geofencing can be bypassed by GPS spoofing, and active response like jamming is legally restricted.
+    answer_detail: "W04 드론 방어 종합(Assessment). 센서 융합·RF 식별·지오펜싱·법적 제약."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

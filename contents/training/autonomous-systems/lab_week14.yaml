@@ -1,0 +1,164 @@
+lab_id: autonomous-systems-week14
+title: "W14 — CPS 인시던트 대응: 물리 안전 우선 트리아지·하이브리드 증거·안전 복구"
+version: ai
+course: autonomous-systems
+week: 14
+description: |
+  사이버물리 인시던트 대응. 물리 안전 우선 트리아지(SAFETY_FIRST_TRIAGE), 사이버+물리 하이브리드 증거
+  (EVIDENCE_COLLECTED), 물리 상태 포함 안전 복구(SAFE_RECOVERY), 종합(Assessment).
+  ⚠️ CPS IR은 실물·안전 담당 필요 — 트리아지·증거·복구 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 시스템 보안 (14주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W14 강의안 정독 — §0.5(물리 안전 우선·하이브리드 증거·안전 복구)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "물리 안전 우선 트리아지(SAFETY_FIRST_TRIAGE)"
+  - "하이브리드 증거 수집(EVIDENCE_COLLECTED)"
+  - "안전한 복구(SAFE_RECOVERY)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 물리 안전 우선 트리아지 → SAFETY_FIRST_TRIAGE
+      > **🎯 목표:** 조사보다 물리 안전 확보를 우선하는 트리아지.
+      > **개념:** CPS는 사람 안전이 최우선.
+      ```bash
+      python3 - <<'PY'
+      incident={"system":"industrial robot arm","status":"erratic motion near workers","cyber":"suspected ROS injection"}
+      # CPS 트리아지: 물리 위험이면 안전 확보가 1순위(조사보다 앞)
+      actions=[]
+      physical_danger = "near workers" in incident["status"] or "erratic" in incident["status"]
+      if physical_danger:
+          actions.append(("1","SAFE STOP + isolate area (protect people)"))   # 물리 안전 먼저
+          actions.append(("2","preserve state / begin investigation"))          # 그다음 조사
+      else:
+          actions.append(("1","investigate"))
+      for order,a in actions: print(f"  step {order}: {a}")
+      # 물리 위험 시 안전 확보가 1순위여야
+      print("SAFETY_FIRST_TRIAGE" if actions[0][1].startswith("SAFE STOP") else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `SAFETY_FIRST_TRIAGE` (물리 위험 → 안전 정지·격리가 1순위, 조사는 그다음).
+      🔎 로봇 팔이 작업자 근처에서 오작동하면, 조사보다 먼저 안전 정지·구역 격리(사람 보호). CPS는 물리 안전 최우선.
+    answer: |
+      step 1: SAFE STOP + isolate area (protect people)
+      step 2: preserve state / begin investigation
+      SAFETY_FIRST_TRIAGE
+    answer_detail: "물리 위험 시 안전 확보 1순위 트리아지 → SAFETY_FIRST_TRIAGE."
+    verify:
+      type: output_contains
+      expect: SAFETY_FIRST_TRIAGE
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 하이브리드 증거 수집 → EVIDENCE_COLLECTED
+      > **🎯 목표:** 사이버+물리 증거를 수집하고 대조로 위장을 잡는다.
+      > **개념:** HMI/로그 위장 가능 — 물리와 대조.
+      ```bash
+      python3 - <<'PY'
+      evidence={"cyber":["ROS2 topic logs","network capture","controller firmware image"],
+                "physical":["actuator encoder log","black box","CCTV"]}
+      # 대조: 사이버 로그는 정상이라는데 물리 기록은 이상 -> 위장 의심(Stuxnet식)
+      cyber_says="normal operation"
+      physical_says="arm moved 90deg beyond limit"
+      contradiction = cyber_says!=physical_says
+      for k,v in evidence.items(): print(f"  {k}: {v}")
+      print(f"cyber log: '{cyber_says}' vs physical: '{physical_says}' -> contradiction: {contradiction}")
+      # 사이버+물리 모두 수집 + 대조로 위장 탐지
+      collected = len(evidence["cyber"])>=2 and len(evidence["physical"])>=2 and contradiction
+      print("EVIDENCE_COLLECTED" if collected else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `EVIDENCE_COLLECTED` (사이버+물리 증거 + 로그/물리 불일치로 위장 탐지).
+      🔎 사이버 로그(정상 위장)와 물리 기록(한계 초과 이동)이 불일치 → HMI/로그 위장 탐지(Stuxnet식). 물리와 대조가 핵심.
+    answer: |
+      cyber: ['ROS2 topic logs', 'network capture', 'controller firmware image']
+      physical: ['actuator encoder log', 'black box', 'CCTV']
+      cyber log: 'normal operation' vs physical: 'arm moved 90deg beyond limit' -> contradiction: True
+      EVIDENCE_COLLECTED
+    answer_detail: "사이버+물리 하이브리드 증거·대조로 위장 탐지 → EVIDENCE_COLLECTED."
+    verify:
+      type: output_contains
+      expect: EVIDENCE_COLLECTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 안전한 복구 → SAFE_RECOVERY
+      > **🎯 목표:** 사이버+물리 복구 후 단계적 안전 검증.
+      > **개념:** 물리 상태가 안전해야 진짜 복구.
+      ```bash
+      python3 - <<'PY'
+      recovery_steps={"cyber_cleanup":True,       # 악성 제거·서명 펌웨어 재설치
+                      "credential_rotation":True,
+                      "physical_recalibration":True,# 구동기 재보정
+                      "sis_check":True,             # 독립 안전 시스템 점검
+                      "staged_restart_verified":True}# 단계적 재가동 검증
+      done=[k for k,v in recovery_steps.items() if v]
+      for k in recovery_steps: print(f"  {k}: {'done' if recovery_steps[k] else 'PENDING'}")
+      # 사이버+물리+안전 검증 모두 완료해야 안전 복구
+      safe = recovery_steps["physical_recalibration"] and recovery_steps["sis_check"] and recovery_steps["staged_restart_verified"]
+      print("SAFE_RECOVERY" if safe and len(done)==len(recovery_steps) else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `SAFE_RECOVERY` (사이버 정리+구동기 재보정+SIS 점검+단계적 재가동 검증).
+      🔎 악성 제거·펌웨어 재설치(사이버)+구동기 재보정·SIS 점검(물리)+단계적 재가동 검증. 물리 상태가 안전해야 진짜 복구.
+    answer: |
+      cyber_cleanup: done
+      credential_rotation: done
+      physical_recalibration: done
+      sis_check: done
+      staged_restart_verified: done
+      SAFE_RECOVERY
+    answer_detail: "사이버+물리 복구·단계적 안전 검증 → SAFE_RECOVERY."
+    verify:
+      type: output_contains
+      expect: SAFE_RECOVERY
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W14 on cyber-physical incident response. Findings: for an erratic robot arm near workers, safe stop and isolation were prioritized before investigation (SAFETY_FIRST_TRIAGE), hybrid cyber and physical evidence was collected and a contradiction between normal-looking logs and physical over-travel exposed spoofing (EVIDENCE_COLLECTED), and recovery included cyber cleanup, physical recalibration, SIS check, and staged verified restart (SAFE_RECOVERY). Explain that CPS IR puts physical safety first, cross-checks cyber and physical evidence, and recovers physical state. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: CPS IR=물리 안전 최우선+하이브리드 증거(사이버+물리 대조)+물리 상태 안전 복구. 물리 안전이 조사보다 앞선다.
+      다음 주(W15)는 **종합 평가 — 전체 CPS 침투+방어**.
+    answer: |
+      Assessment
+      CPS incident response puts physical safety first (safe stop before investigation), collects hybrid cyber and physical evidence, and cross-checks them to expose spoofing.
+      Recovery restores physical state (recalibration, SIS check, staged verified restart), not just software.
+    answer_detail: "W14 CPS IR 종합(Assessment). 안전 우선·하이브리드 증거·안전 복구."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

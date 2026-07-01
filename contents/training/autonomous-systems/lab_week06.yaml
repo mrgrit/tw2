@@ -1,0 +1,161 @@
+lab_id: autonomous-systems-week06
+title: "W06 — 자율주행 기초: 센서 퓨전 매핑·인식 공격 표면·센서 중복성 평가"
+version: ai
+course: autonomous-systems
+week: 6
+description: |
+  자율주행 파이프라인. 센서 퓨전·역할 매핑(FUSION_MAPPED), 인식 파이프라인 공격 표면(SURFACE_IDENTIFIED),
+  센서 중복성 안전 기여 평가(REDUNDANCY_ASSESSED), 종합(Assessment).
+  ⚠️ 자율주행은 실물 차량·센서 필요 — 퓨전·표면·중복성 로직 결정론 시뮬.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 시스템 보안 (6주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W06 강의안 정독 — §0.5(인식·센서 퓨전·중복성)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "센서 퓨전·역할 매핑(FUSION_MAPPED)"
+  - "인식 공격 표면 식별(SURFACE_IDENTIFIED)"
+  - "센서 중복성 평가(REDUNDANCY_ASSESSED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 센서 퓨전·역할 매핑 → FUSION_MAPPED
+      > **🎯 목표:** 각 센서의 역할·강약점을 매핑해 퓨전 필요성을 이해.
+      > **개념:** 센서가 서로의 약점을 보완.
+      ```bash
+      python3 - <<'PY'
+      sensors={"camera":{"strong":"classification","weak":"distance/weather/adversarial-patch"},
+               "lidar":{"strong":"3D distance/shape","weak":"weather/spoofing"},
+               "radar":{"strong":"velocity/weather","weak":"low-resolution"}}
+      for s,r in sensors.items(): print(f"  {s:7}: strong={r['strong']}, weak={r['weak']}")
+      # 각 센서의 약점을 다른 센서가 보완하는지(퓨전 가치)
+      # 카메라 약점(거리)을 라이다가, 라이다 약점(악천후)을 레이더가 보완
+      complementary = ("distance" in sensors["camera"]["weak"] and "distance" in sensors["lidar"]["strong"] and
+                       "weather" in sensors["lidar"]["weak"] and "weather" in sensors["radar"]["strong"])
+      print("complementary coverage:", complementary)
+      print("FUSION_MAPPED" if complementary and len(sensors)==3 else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `FUSION_MAPPED` (카메라·라이다·레이더 상호 보완 매핑).
+      🔎 카메라 약점(거리)=라이다 강점, 라이다 약점(악천후)=레이더 강점. 서로 보완하므로 퓨전이 필요.
+    answer: |
+      camera : strong=classification, weak=distance/weather/adversarial-patch
+      lidar  : strong=3D distance/shape, weak=weather/spoofing
+      radar  : strong=velocity/weather, weak=low-resolution
+      complementary coverage: True
+      FUSION_MAPPED
+    answer_detail: "센서 역할·상호 보완 매핑 → FUSION_MAPPED."
+    verify:
+      type: output_contains
+      expect: FUSION_MAPPED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 인식 공격 표면 식별 → SURFACE_IDENTIFIED
+      > **🎯 목표:** 자율주행 인식·업데이트의 공격 표면을 식별.
+      > **개념:** AI·센서·OTA가 최대 표면.
+      ```bash
+      python3 - <<'PY'
+      surfaces=[{"target":"camera AI model","attack":"adversarial patch (misclassify sign, W07/W13)"},
+                {"target":"lidar","attack":"spoofed reflections (phantom/removed objects)"},
+                {"target":"GPS","attack":"spoofing (W05)"},
+                {"target":"OTA update","attack":"tampered firmware -> fleet-wide"}]
+      kinds=set()
+      for s in surfaces:
+          t=s["target"].lower()
+          kind = "ai_model" if "model" in t else ("sensor" if ("lidar" in t or "gps" in t or "camera" in t) else "ota")
+          kinds.add(kind); print(f"  [{kind:8}] {s['target']}: {s['attack']}")
+      print("SURFACE_IDENTIFIED" if {"ai_model","sensor","ota"}.issubset(kinds) else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `SURFACE_IDENTIFIED` (AI 모델·센서·OTA 공격 표면).
+      🔎 AI 인식 모델(적대적 패치)·센서(라이다/GPS 스푸핑)·OTA(변조) — 판단을 의존하는 지점이 최대 표면.
+    answer: |
+      [ai_model] camera AI model: adversarial patch (misclassify sign, W07/W13)
+      [sensor  ] lidar: spoofed reflections (phantom/removed objects)
+      [sensor  ] GPS: spoofing (W05)
+      [ota     ] OTA update: tampered firmware -> fleet-wide
+      SURFACE_IDENTIFIED
+    answer_detail: "인식·센서·OTA 공격 표면 식별 → SURFACE_IDENTIFIED."
+    verify:
+      type: output_contains
+      expect: SURFACE_IDENTIFIED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 센서 중복성 평가 → REDUNDANCY_ASSESSED
+      > **🎯 목표:** 한 센서가 속아도 중복성으로 안전한지 평가.
+      > **개념:** 정합성 검사로 불일치 센서를 배제.
+      ```bash
+      python3 - <<'PY'
+      # 시나리오: 카메라가 적대적 패치에 속아 "정지 표지 없음"으로 오인
+      readings={"camera":"no stop sign (fooled by patch)","lidar":"large object ahead","radar":"stationary object ahead"}
+      # 정합성 검사: 다수 센서가 물체 존재를 보고 → 카메라를 이상치로 배제
+      object_present_votes=sum(1 for k,v in readings.items() if "object" in v)
+      camera_outlier = "no" in readings["camera"] and object_present_votes>=2
+      # 중복성 덕에 카메라가 속아도 라이다·레이더가 물체를 봐서 안전(정지)
+      safe_decision = "STOP (object confirmed by lidar+radar despite camera)" if camera_outlier else "proceed"
+      print(f"readings: {readings}")
+      print(f"camera outlier: {camera_outlier}, decision: {safe_decision}")
+      print("REDUNDANCY_ASSESSED" if camera_outlier and "STOP" in safe_decision else "UNSAFE")
+      PY
+      ```
+      ✅ 마지막 줄 `REDUNDANCY_ASSESSED` (카메라 속아도 라이다·레이더로 물체 확인 → 안전 정지).
+      🔎 카메라가 적대적 패치에 속아도, 라이다·레이더가 물체를 보고 정합성 검사로 카메라를 배제해 안전하게 정지. 중복성이 안전.
+    answer: |
+      readings: {'camera': 'no stop sign (fooled by patch)', 'lidar': 'large object ahead', 'radar': 'stationary object ahead'}
+      camera outlier: True, decision: STOP (object confirmed by lidar+radar despite camera)
+      REDUNDANCY_ASSESSED
+    answer_detail: "센서 중복성·정합성으로 속은 센서 배제·안전 → REDUNDANCY_ASSESSED."
+    verify:
+      type: output_contains
+      expect: REDUNDANCY_ASSESSED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W06 on self-driving fundamentals. Findings: camera, lidar, and radar were mapped as complementary sensors requiring fusion (FUSION_MAPPED), the perception attack surface (AI model, sensors, OTA) was identified (SURFACE_IDENTIFIED), and sensor redundancy let the car stop safely when a camera was fooled but lidar and radar confirmed an object (REDUNDANCY_ASSESSED). Explain that self-driving depends on AI models and sensors for judgment, and defense relies on sensor redundancy and consistency checks. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 자율주행=인식·퓨전·판단·제어. AI·센서 의존이 최대 표면. 센서 중복성·정합성이 안전의 기둥.
+      다음 주(W07)는 **자율주행 공격**.
+    answer: |
+      Assessment
+      Self-driving fuses complementary sensors (camera, lidar, radar) and depends on AI models and sensors for judgment, making them the main attack surface.
+      Defense relies on sensor redundancy and consistency checks so a fooled sensor is outvoted and the car stays safe.
+    answer_detail: "W06 자율주행 기초 종합(Assessment). 센서 퓨전·표면·중복성."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

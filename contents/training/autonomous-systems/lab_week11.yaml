@@ -1,0 +1,156 @@
+lab_id: autonomous-systems-week11
+title: "W11 — OT/ICS 보안: PLC/Modbus 취약성·Stuxnet 패턴·Purdue 분리/독립 안전"
+version: ai
+course: autonomous-systems
+week: 11
+description: |
+  산업 제어(OT/ICS) 보안. PLC/Modbus 무인증·위험 명령 취약성(ICS_VULNERABLE), Stuxnet식 로직 변조+HMI
+  위장 패턴(STUXNET_PATTERN), Purdue 분리·무결성·독립 안전 방어(ICS_DEFENDED), 종합(Assessment).
+  ⚠️ OT는 실물 장비·안전 최우선 — 취약성·공격 패턴·방어 로직 결정론 시뮬.
+difficulty: hard
+duration_minutes: 130
+audience: 자율 시스템 보안 (11주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W11 강의안 정독 — §0.5(PLC·Modbus·Stuxnet·Purdue·SIS)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "PLC/Modbus 취약성 평가(ICS_VULNERABLE)"
+  - "Stuxnet식 공격 패턴 이해(STUXNET_PATTERN)"
+  - "Purdue 분리·독립 안전 방어(ICS_DEFENDED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — PLC/Modbus 취약성 → ICS_VULNERABLE
+      > **🎯 목표:** Modbus 무인증·위험 명령 취약성을 평가.
+      > **개념:** 무인증이라 누구나 PLC에 명령.
+      ```bash
+      python3 - <<'PY'
+      ics={"protocol":"Modbus TCP","auth":False,"encryption":False,"network_segmented":False}
+      issues=[]
+      if not ics["auth"]: issues.append("Modbus no auth (any host commands PLC)")
+      if not ics["encryption"]: issues.append("plaintext (sniff/tamper)")
+      if not ics["network_segmented"]: issues.append("flat IT/OT network (IT breach reaches PLC)")
+      for i in issues: print("  issue:", i)
+      print("ICS_VULNERABLE" if len(issues)>=3 else "SECURE")
+      PY
+      ```
+      ✅ 마지막 줄 `ICS_VULNERABLE` (무인증 Modbus+평문+IT/OT 미분리).
+      🔎 무인증 Modbus는 누구나 PLC 명령, 평문은 감청·변조, IT/OT 미분리는 IT 침해가 PLC로. 산업 재앙 위험.
+    answer: |
+      issue: Modbus no auth (any host commands PLC)
+      issue: plaintext (sniff/tamper)
+      issue: flat IT/OT network (IT breach reaches PLC)
+      ICS_VULNERABLE
+    answer_detail: "Modbus 무인증·평문·미분리 취약성 → ICS_VULNERABLE."
+    verify:
+      type: output_contains
+      expect: ICS_VULNERABLE
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — Stuxnet식 공격 패턴 → STUXNET_PATTERN
+      > **🎯 목표:** PLC 로직 변조 + HMI 위장(은폐)을 다중 소스로 탐지.
+      > **개념:** 물리 파괴 + 화면 위장 — HMI만 믿으면 못 잡음.
+      ```bash
+      python3 - <<'PY'
+      # 실제 물리 센서 vs HMI 표시(위장 여부)
+      actual_rpm=63000    # 실제 원심분리기 과속(파괴 유발)
+      hmi_displayed_rpm=1000  # HMI엔 정상 표시(위장!)
+      plc_logic_hash_now="abc999"
+      plc_logic_hash_baseline="abc123"   # 로직 변조됨
+      indicators=[]
+      if abs(actual_rpm - hmi_displayed_rpm) > 5000: indicators.append(f"actual RPM {actual_rpm} != HMI {hmi_displayed_rpm} (HMI spoofed)")
+      if plc_logic_hash_now != plc_logic_hash_baseline: indicators.append("PLC logic hash changed (logic tampered)")
+      for i in indicators: print("  indicator:", i)
+      # 로직 변조 + HMI 위장이 함께 = Stuxnet 패턴
+      print("STUXNET_PATTERN" if len(indicators)>=2 else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `STUXNET_PATTERN` (실제 RPM vs HMI 불일치 + PLC 로직 해시 변경).
+      🔎 실제 물리값(과속 63000)과 HMI 표시(1000)가 불일치=HMI 위장, PLC 로직 해시 변경=로직 변조. Stuxnet의 전형(파괴+은폐).
+    answer: |
+      indicator: actual RPM 63000 != HMI 1000 (HMI spoofed)
+      indicator: PLC logic hash changed (logic tampered)
+      STUXNET_PATTERN
+    answer_detail: "로직 변조+HMI 위장 다중 소스 탐지 → STUXNET_PATTERN."
+    verify:
+      type: output_contains
+      expect: STUXNET_PATTERN
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — OT 방어 → ICS_DEFENDED
+      > **🎯 목표:** Purdue 분리·화이트리스트·로직 무결성·독립 SIS로 방어.
+      > **개념:** 보안 뚫려도 SIS가 물리 안전.
+      ```bash
+      python3 - <<'PY'
+      def defend(ics):
+          return {"purdue_segmented":True,"command_allowlist":True,
+                  "plc_logic_integrity":True,"independent_sis":True}
+      before={"purdue_segmented":False,"command_allowlist":False,"plc_logic_integrity":False,"independent_sis":False}
+      after=defend(before)
+      def exposed(a):
+          return not a["purdue_segmented"] or not a.get("plc_logic_integrity") or not a.get("independent_sis")
+      print("before exposed:", exposed(before))
+      print("after exposed:", exposed(after), "(Purdue + allowlist + logic integrity + independent SIS)")
+      print("ICS_DEFENDED" if exposed(before) and not exposed(after) else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `ICS_DEFENDED` (Purdue 분리+화이트리스트+로직 무결성+독립 SIS).
+      🔎 IT/OT 분리+명령 화이트리스트+PLC 로직 무결성 검증(Stuxnet 변조 탐지)+독립 안전 시스템(위험 시 물리 차단). 안전 최우선.
+    answer: |
+      before exposed: True
+      after exposed: False (Purdue + allowlist + logic integrity + independent SIS)
+      ICS_DEFENDED
+    answer_detail: "Purdue 분리·화이트리스트·로직 무결성·독립 SIS → ICS_DEFENDED."
+    verify:
+      type: output_contains
+      expect: ICS_DEFENDED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W11 on OT/ICS security. Findings: unauthenticated plaintext Modbus on a flat IT/OT network was vulnerable (ICS_VULNERABLE), a Stuxnet-style pattern of PLC logic tampering plus HMI spoofing was detected by comparing actual physical values to the HMI and checking logic integrity (STUXNET_PATTERN), and Purdue segmentation, command allowlisting, logic integrity, and an independent safety system defended it (ICS_DEFENDED). Explain that OT prioritizes safety, air-gaps can be breached (Stuxnet), and defense uses segmentation and an independent safety system. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: OT/ICS는 무인증 Modbus·Stuxnet식 로직 변조+HMI 위장에 취약. Purdue 분리+로직 무결성+독립 SIS로 물리 안전.
+      다음 주(W12)는 **V2X/자동차 보안(CAN·ECU)**.
+    answer: |
+      Assessment
+      OT/ICS prioritizes safety; unauthenticated Modbus and Stuxnet-style logic tampering with HMI spoofing threaten physical processes.
+      Defense uses Purdue segmentation, command allowlists, PLC logic integrity, and an independent safety system that stays safe even if security is breached.
+    answer_detail: "W11 OT/ICS 종합(Assessment). Modbus·Stuxnet·Purdue·독립 SIS."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout
