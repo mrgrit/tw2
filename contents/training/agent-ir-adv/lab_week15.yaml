@@ -1,0 +1,170 @@
+lab_id: agent-ir-adv-week15
+title: "W15 — 장기 APT 잠복: 장기 상관·기준선 드리프트·다중 시간창 방어 종합"
+version: ai
+course: agent-ir-adv
+week: 15
+description: |
+  느린 공격을 긴 기억으로. 몇 달 흩어진 이벤트 장기 상관(LONGTERM_CORRELATED), 기준선 드리프트 탐지
+  (DRIFT_DETECTED), 실시간+장기 다중 시간창 종합(SYNTHESIS), 최종 종합(Assessment).
+  템포 비대칭 반전 — 느린 APT는 실시간 아래를 지난다. 모든 템포를 겹층 방어.
+difficulty: hard
+duration_minutes: 170
+audience: 에이전트 IR 심화 (15주차·기말)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W01~W14 실습 완료
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "장기 흩어진 이벤트 상관(LONGTERM_CORRELATED)"
+  - "기준선 드리프트 탐지(DRIFT_DETECTED)"
+  - "다중 시간창 방어 종합(SYNTHESIS)"
+  - "최종 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 장기 상관 → LONGTERM_CORRELATED
+      > **🎯 목표:** 몇 달에 흩어진 이벤트를 긴 시간창으로 상관.
+      > **개념:** 실시간은 놓치지만, 장기 상관하면 느린 캠페인이 드러난다.
+      ```bash
+      python3 - <<'PY'
+      # 몇 달에 흩어진 이벤트(같은 출처 185.220.101.42) — 각각은 임계 아래
+      events=[{"month":"2026-01","src":"185.220.101.42","evt":"single port scan"},
+              {"month":"2026-02","src":"185.220.101.42","evt":"one login attempt"},
+              {"month":"2026-03","src":"185.220.101.42","evt":"small data query (2MB)"},
+              {"month":"2026-04","src":"185.220.101.42","evt":"small outbound (3MB)"}]
+      # 같은 출처를 긴 시간창(4개월)으로 상관
+      from collections import defaultdict
+      by_src=defaultdict(list)
+      for e in events: by_src[e["src"]].append((e["month"],e["evt"]))
+      src="185.220.101.42"; timeline=by_src[src]
+      print(f"long-window correlation for {src} (4 months):")
+      for m,evt in timeline: print(f"  {m}: {evt}")
+      # 4개월에 걸쳐 정찰→접근→누출이 같은 출처로 이어지면 느린 APT
+      stages=" ".join(e for _,e in timeline)
+      apt = "scan" in stages and "login" in stages and "outbound" in stages and len(timeline)>=4
+      print("LONGTERM_CORRELATED" if apt else "ISOLATED")
+      PY
+      ```
+      ✅ 마지막 줄 `LONGTERM_CORRELATED` (4개월 흩어진 정찰→접근→누출이 한 출처로 상관 = 느린 APT).
+      🔎 각 이벤트는 임계 아래라 실시간은 놓친다. 몇 달을 긴 창으로 상관하면 느린 캠페인이 드러난다.
+    answer: |
+      long-window correlation for 185.220.101.42 (4 months):
+        2026-01: single port scan
+        2026-02: one login attempt
+        2026-03: small data query (2MB)
+        2026-04: small outbound (3MB)
+      LONGTERM_CORRELATED
+    answer_detail: "4개월 흩어진 이벤트 장기 상관으로 느린 APT 탐지 → LONGTERM_CORRELATED."
+    verify:
+      type: output_contains
+      expect: LONGTERM_CORRELATED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 드리프트 탐지 → DRIFT_DETECTED
+      > **🎯 목표:** 천천히 변하는 기준선(드리프트)을 추세로 탐지.
+      > **개념:** 순간 스파이크는 없어도 장기 추세가 이상.
+      ```bash
+      python3 - <<'PY'
+      # 월별 외부 전송량(MB) — 매달 조금씩 증가(느린 누출)
+      monthly_egress=[100, 105, 130, 180, 260, 400]   # 스파이크 없이 서서히 증가
+      # 순간 이상(전월 대비 급증)은 없음 — 하지만 장기 추세는 4배
+      max_month_over_month=max(monthly_egress[i]/monthly_egress[i-1] for i in range(1,len(monthly_egress)))
+      long_term_growth=monthly_egress[-1]/monthly_egress[0]
+      print(f"max month-over-month spike: {max_month_over_month:.2f}x (no single alarming spike)")
+      print(f"long-term growth (6mo): {long_term_growth:.1f}x")
+      # 순간 스파이크는 임계(2x) 아래지만 장기 성장은 크면 드리프트
+      drift = max_month_over_month<2.0 and long_term_growth>=3.0
+      print("DRIFT_DETECTED" if drift else "STABLE")
+      PY
+      ```
+      ✅ 마지막 줄 `DRIFT_DETECTED` (월별 급증 없지만 6개월 4배 성장 = 느린 누출 드리프트).
+      🔎 매달 급증(스파이크)은 없어 순간 탐지는 놓친다. 하지만 장기 추세(6개월 4배)가 느린 누출을 드러낸다.
+    answer: |
+      max month-over-month spike: 1.54x (no single alarming spike)
+      long-term growth (6mo): 4.0x
+      DRIFT_DETECTED
+    answer_detail: "순간 급증 없이 장기 추세(6개월 4배)로 드리프트 탐지 → DRIFT_DETECTED."
+    verify:
+      type: output_contains
+      expect: DRIFT_DETECTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 다중 시간창 종합 → SYNTHESIS
+      > **🎯 목표:** 실시간+중기+장기 시간창을 겹층으로 종합.
+      > **개념:** 어느 템포로 오든 하나의 창은 잡는다.
+      ```bash
+      python3 - <<'PY'
+      # 시간창별 탐지 커버리지
+      windows={"realtime (sec/min)":{"catches":"fast AI attacks (W01-09)","for":"burst/spike"},
+               "mid (hours/days)":{"catches":"campaigns","for":"correlation"},
+               "long (weeks/months)":{"catches":"slow APT dwell (W15)","for":"drift/long-correlation"}}
+      for w,info in windows.items():
+          print(f"  {w:22}: {info['catches']}")
+      # 세 시간창을 모두 갖추면 모든 템포 커버
+      complete=len(windows)>=3
+      # 공격 템포별 커버 확인
+      tempo_coverage={"fast":True,"medium":True,"slow":True}
+      print("tempo coverage:", tempo_coverage)
+      print("SYNTHESIS" if complete and all(tempo_coverage.values()) else "GAPS")
+      PY
+      ```
+      ✅ 마지막 줄 `SYNTHESIS` (실시간+중기+장기 3시간창으로 모든 템포 커버).
+      🔎 빠른 공격=실시간, 캠페인=중기 상관, 느린 APT=장기. 다중 시간창 겹층이 모든 템포를 방어. 과목의 결론.
+    answer: |
+      realtime (sec/min)    : fast AI attacks (W01-09)
+      mid (hours/days)      : campaigns
+      long (weeks/months)   : slow APT dwell (W15)
+      tempo coverage: {'fast': True, 'medium': True, 'slow': True}
+      SYNTHESIS
+    answer_detail: "실시간+중기+장기 다중 시간창으로 모든 템포 커버 → SYNTHESIS. 과목 결론."
+    verify:
+      type: output_contains
+      expect: SYNTHESIS
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 최종 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a final capstone note for the advanced agent IR course. Findings: events scattered over 4 months were correlated into a slow APT (LONGTERM_CORRELATED), a slow egress drift of 4x over 6 months was detected without any single spike (DRIFT_DETECTED), and multi-time-window defense covered fast, medium, and slow tempos (SYNTHESIS). Conclude the course: sophisticated attacks need layered defense, trust verifiable things not forgeable signals, and cover every tempo from ultra-fast to ultra-slow. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":340}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 느린 APT는 실시간 아래를 지난다. 긴 기억(장기 상관·드리프트)+다중 시간창으로 모든 템포 방어.
+      과목 결론: 겹층 방어·검증 가능한 것을 믿기·모든 템포 대응. 수고했습니다.
+    answer: |
+      Assessment
+      Slow APTs evade real-time detection, so long-window correlation and drift detection give the needed long memory.
+      The course conclusion: layer defenses, trust verifiable things over forgeable signals, and cover every tempo from ultra-fast to ultra-slow.
+    answer_detail: "W15 장기 APT·과목 종합(Assessment). 장기 상관·드리프트·다중 시간창·과목 결론."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

@@ -1,0 +1,162 @@
+lab_id: agent-ir-adv-week04
+title: "W04 — Cloud IAM 자동 Pivot: API 정찰·권한 상승 체인·최소 권한 방어"
+version: ai
+course: agent-ir-adv
+week: 4
+description: |
+  Cloud IAM pivot 탐지·방어. 유출 키 API 정찰 탐지(IAM_RECON_DETECTED), 위험 API 상승 체인 탐지
+  (PRIVESC_DETECTED), 최소 권한·단기 자격 방어(CONTAINED), 종합(Assessment).
+  ⚠️ 클라우드 텔레메트리 el34 미보유 — CloudTrail 상당 로직 결정론 시뮬.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (4주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W04 강의안 정독 — §0.5(IAM pivot·상승 체인·최소 권한)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "유출 키 API 정찰 탐지(IAM_RECON_DETECTED)"
+  - "위험 API 상승 체인 탐지(PRIVESC_DETECTED)"
+  - "최소 권한·단기 자격 방어(CONTAINED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — IAM 정찰 탐지 → IAM_RECON_DETECTED
+      > **🎯 목표:** 유출 키의 비정상 대량 열거 API를 탐지(CloudTrail 상당).
+      > **개념:** 정상 앱은 정해진 API만; 키가 갑자기 권한 열거.
+      ```bash
+      python3 - <<'PY'
+      # CloudTrail 이벤트(키, API 호출)
+      calls=["ListRoles","ListPolicies","GetAccountAuthorizationDetails","ListUsers",
+             "ListBuckets","GetPolicyVersion","ListAttachedUserPolicies","DescribeInstances"]
+      # 정찰 API(열거/조회) 비율
+      RECON_PREFIX=("List","Get","Describe")
+      recon=[c for c in calls if c.startswith(RECON_PREFIX)]
+      ratio=len(recon)/len(calls)
+      print(f"total API calls: {len(calls)}, recon(List/Get/Describe): {len(recon)} ({ratio:.0%})")
+      # 짧은 시간 대량 열거(80%+ 정찰) = 유출 키 권한 탐색
+      print("IAM_RECON_DETECTED" if len(recon)>=6 and ratio>=0.7 else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `IAM_RECON_DETECTED` (대량 List/Get/Describe = 권한 열거 정찰).
+      🔎 정상 앱은 특정 API만 반복. 키가 갑자기 권한을 대량 열거하면 유출 후 탐색 신호.
+    answer: |
+      total API calls: 8, recon(List/Get/Describe): 8 (100%)
+      IAM_RECON_DETECTED
+    answer_detail: "유출 키의 대량 열거 API 탐지 → IAM_RECON_DETECTED. 권한 탐색."
+    verify:
+      type: output_contains
+      expect: IAM_RECON_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 권한 상승 체인 탐지 → PRIVESC_DETECTED
+      > **🎯 목표:** 위험 API 조합(상승 체인)을 탐지.
+      > **개념:** 개별은 낮아도 조합하면 관리자.
+      ```bash
+      python3 - <<'PY'
+      # 알려진 권한 상승 체인 패턴
+      PRIVESC_CHAINS=[{"iam:PassRole","lambda:CreateFunction","lambda:InvokeFunction"},
+                      {"iam:CreatePolicyVersion"},
+                      {"iam:AttachUserPolicy"}]
+      # 관측된 API 호출
+      observed={"iam:PassRole","lambda:CreateFunction","lambda:InvokeFunction","s3:GetObject"}
+      triggered=[chain for chain in PRIVESC_CHAINS if chain.issubset(observed)]
+      for chain in PRIVESC_CHAINS:
+          hit=chain.issubset(observed)
+          print(f"  chain {sorted(chain)}: {'MATCHED (privesc!)' if hit else 'no'}")
+      print("PRIVESC_DETECTED" if triggered else "NO_PRIVESC")
+      PY
+      ```
+      ✅ 마지막 줄 `PRIVESC_DETECTED` (PassRole+CreateFunction+Invoke 체인 = 권한 있는 롤 탈취).
+      🔎 iam:PassRole로 권한 있는 롤을 Lambda에 붙여 실행 = 관리자 pivot. 위험 API 조합을 룰로 탐지.
+    answer: |
+      chain ['iam:PassRole', 'lambda:CreateFunction', 'lambda:InvokeFunction']: MATCHED (privesc!)
+      chain ['iam:CreatePolicyVersion']: no
+      chain ['iam:AttachUserPolicy']: no
+      PRIVESC_DETECTED
+    answer_detail: "위험 API 조합(PassRole+Lambda) 상승 체인 탐지 → PRIVESC_DETECTED."
+    verify:
+      type: output_contains
+      expect: PRIVESC_DETECTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 최소 권한 방어 → CONTAINED
+      > **🎯 목표:** 최소 권한·단기 자격으로 상승 경로 차단.
+      > **개념:** 위험 API 조합을 끊으면 pivot 불가.
+      ```bash
+      python3 - <<'PY'
+      # 최소 권한 정책: 위험 API 제거 + 단기 자격
+      DANGEROUS={"iam:PassRole","iam:CreatePolicyVersion","iam:AttachUserPolicy"}
+      def apply_least_privilege(granted):
+          return granted - DANGEROUS   # 위험 API 제거
+      before={"iam:PassRole","lambda:CreateFunction","s3:GetObject","lambda:InvokeFunction"}
+      after=apply_least_privilege(before)
+      # 상승 체인이 여전히 가능한가?
+      chain={"iam:PassRole","lambda:CreateFunction","lambda:InvokeFunction"}
+      print("before least-privilege: privesc possible?", chain.issubset(before))
+      print("after least-privilege:  privesc possible?", chain.issubset(after))
+      print("credential type: short-lived STS token (1h expiry)")
+      contained = chain.issubset(before) and not chain.issubset(after)
+      print("CONTAINED" if contained else "STILL_VULNERABLE")
+      PY
+      ```
+      ✅ 마지막 줄 `CONTAINED` (위험 API(PassRole) 제거로 상승 체인 차단).
+      🔎 최소 권한으로 위험 API를 안 주면 pivot 불가. 단기 자격은 유출돼도 곧 만료. 상승 경로를 원천 차단.
+    answer: |
+      before least-privilege: privesc possible? True
+      after least-privilege:  privesc possible? False
+      credential type: short-lived STS token (1h expiry)
+      CONTAINED
+    answer_detail: "최소 권한으로 위험 API 제거, 상승 체인 차단 → CONTAINED. 단기 자격 병행."
+    verify:
+      type: output_contains
+      expect: CONTAINED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W04 on cloud IAM pivot attacks. Findings: a leaked key doing mass enumeration was detected (IAM_RECON_DETECTED), a privilege-escalation chain (PassRole + Lambda) was detected (PRIVESC_DETECTED), and least-privilege removing dangerous APIs broke the chain (CONTAINED). Explain that individual low permissions chain into admin, AI auto-explores the permission graph in minutes, and defense uses least privilege, short-lived credentials, and dangerous-API-combination monitoring. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: IAM pivot은 위험 API 조합으로 상승. AI가 그래프를 자동 탐색. 최소 권한+단기 자격+조합 탐지로 방어.
+      다음 주(W05)는 **0-day 웹 프레임워크 자동 악용** (el34 웹 실측).
+    answer: |
+      Assessment
+      Cloud IAM pivots chain low permissions into admin via dangerous API combinations, and AI auto-explores the graph in minutes.
+      Defense uses least privilege, short-lived credentials, and monitoring of dangerous API combinations.
+    answer_detail: "W04 IAM pivot 종합(Assessment). 정찰·상승 체인 탐지·최소 권한 방어."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

@@ -1,0 +1,169 @@
+lab_id: agent-ir-adv-week12
+title: "W12 — Deepfake Voice + AI 사회공학: 정황 지표·대역 외 검증·고위험 정책"
+version: ai
+course: agent-ir-adv
+week: 12
+description: |
+  딥페이크 음성 사회공학 방어. 사회공학 정황 지표(DEEPFAKE_INDICATOR), 대역 외 검증 프로토콜
+  (VERIFIED_OOB), 고위험 요청 정책 강제(POLICY_ENFORCED), 종합(Assessment).
+  기술 탐지는 군비 경쟁 — 방어는 프로세스(대역 외 검증). 목소리가 아니라 프로세스를 믿는다.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (12주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W12 강의안 정독 — §0.5(딥페이크·대역 외 검증·고위험 정책)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "사회공학 정황 지표 식별(DEEPFAKE_INDICATOR)"
+  - "대역 외 검증 프로토콜(VERIFIED_OOB)"
+  - "고위험 요청 정책 강제(POLICY_ENFORCED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 정황 지표 식별 → DEEPFAKE_INDICATOR
+      > **🎯 목표:** 딥페이크 사회공학의 정황 지표를 식별.
+      > **개념:** 기술 탐지 어려워도 정황(긴급성·비정상 요청·채널)은 신호.
+      ```bash
+      python3 - <<'PY'
+      # 수신한 통화 요청의 정황
+      call={"claimed_identity":"CEO","channel":"phone","request":"urgent wire transfer $2M to new account",
+            "pressure":"do it now, don't tell anyone","caller_number":"unknown/spoofed",
+            "outside_hours":True}
+      indicators=[]
+      if "urgent" in call["request"] or call["pressure"]: indicators.append("urgency + secrecy pressure")
+      if "wire transfer" in call["request"] or "new account" in call["request"]: indicators.append("high-risk financial request")
+      if call["caller_number"] in ("unknown/spoofed",): indicators.append("unverified caller")
+      if call["outside_hours"]: indicators.append("outside business hours")
+      for i in indicators: print("  indicator:", i)
+      print("DEEPFAKE_INDICATOR" if len(indicators)>=3 else "LOW_RISK")
+      PY
+      ```
+      ✅ 마지막 줄 `DEEPFAKE_INDICATOR` (긴급+비밀 압박·고위험 송금·미확인 발신·업무외 시간).
+      🔎 목소리가 진짜 같아도 정황(긴급성 압박+고위험 요청+미확인 채널)이 사회공학을 드러낸다.
+    answer: |
+      indicator: urgency + secrecy pressure
+      indicator: high-risk financial request
+      indicator: unverified caller
+      indicator: outside business hours
+      DEEPFAKE_INDICATOR
+    answer_detail: "사회공학 정황 지표(긴급·고위험·미확인·업무외) 식별 → DEEPFAKE_INDICATOR."
+    verify:
+      type: output_contains
+      expect: DEEPFAKE_INDICATOR
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 대역 외 검증 → VERIFIED_OOB
+      > **🎯 목표:** 요청 채널이 아닌 다른 채널로 재확인.
+      > **개념:** 한 채널을 위조해도 독립 채널까지 동시 장악은 어렵다.
+      ```bash
+      python3 - <<'PY'
+      # 대역 외 검증: 전화 요청을 다른 채널로 확인
+      request={"via":"phone","claimed":"CEO","action":"wire transfer"}
+      def verify_out_of_band(req):
+          # 요청받은 채널(phone)이 아닌 알려진 번호 콜백 + 사내 메신저 확인
+          callback_result="CEO known number: no such request"   # CEO는 그런 요청 안 함
+          messenger_result="CEO on slack: I made no call"
+          # 두 독립 채널이 모두 부정 = 사칭 확정
+          return callback_result, messenger_result
+      cb, msg = verify_out_of_band(request)
+      print("callback (known number):", cb)
+      print("messenger check:", msg)
+      # 대역 외 확인에서 요청이 부정되면 사칭 차단
+      fraud = "no such request" in cb and "made no call" in msg
+      print("VERIFIED_OOB" if fraud else "PROCEED")
+      PY
+      ```
+      ✅ 마지막 줄 `VERIFIED_OOB` (콜백·메신저 독립 채널 확인 → CEO는 요청 안 함 = 사칭).
+      🔎 요청받은 전화가 아닌 알려진 번호·메신저로 확인하면 딥페이크 사칭이 드러난다. 대역 외 검증이 핵심.
+    answer: |
+      callback (known number): CEO known number: no such request
+      messenger check: CEO on slack: I made no call
+      VERIFIED_OOB
+    answer_detail: "대역 외 독립 채널(콜백·메신저)로 사칭 확인 → VERIFIED_OOB."
+    verify:
+      type: output_contains
+      expect: VERIFIED_OOB
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 고위험 요청 정책 → POLICY_ENFORCED
+      > **🎯 목표:** 고위험 요청은 음성만으로 승인 금지 정책 강제.
+      > **개념:** 정책이 개인 판단(속을 수 있음)을 대신한다.
+      ```bash
+      python3 - <<'PY'
+      HIGH_RISK={"wire transfer","change credentials","grant access","disable security","urgent exception"}
+      def approve(request, verifications):
+          is_high = any(h in request for h in HIGH_RISK)
+          required = {"out_of_band","code_word","dual_approval"} if is_high else set()
+          if is_high and not required.issubset(verifications):
+              return f"DENIED (high-risk needs {required - verifications})"
+          return "APPROVED"
+      # 음성만(검증 없음) vs 정책 준수(다중 검증)
+      voice_only=approve("wire transfer $2M", set())
+      verified=approve("wire transfer $2M", {"out_of_band","code_word","dual_approval"})
+      print("voice-only request:", voice_only)
+      print("fully verified request:", verified)
+      # 음성만은 거부, 다중 검증은 승인
+      enforced = "DENIED" in voice_only and verified=="APPROVED"
+      print("POLICY_ENFORCED" if enforced else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `POLICY_ENFORCED` (음성만 요청 거부, 대역외+코드워드+이중승인 갖춰야 승인).
+      🔎 고위험 요청은 음성만으로 절대 승인 안 함. 대역 외 검증+코드워드+이중 승인 정책이 개인 판단을 대신한다.
+    answer: |
+      voice-only request: DENIED (high-risk needs {'out_of_band', 'code_word', 'dual_approval'})
+      fully verified request: APPROVED
+      POLICY_ENFORCED
+    answer_detail: "고위험 요청 음성만 거부, 다중 검증 필수 → POLICY_ENFORCED. 정책이 판단 대신."
+    verify:
+      type: output_contains
+      expect: POLICY_ENFORCED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W12 on deepfake voice social engineering. Findings: social-engineering context indicators (urgency, secrecy, high-risk request, unverified caller) were identified (DEEPFAKE_INDICATOR), out-of-band verification via a known number and messenger exposed the impersonation (VERIFIED_OOB), and a policy denied high-risk requests without multi-factor verification (POLICY_ENFORCED). Explain that AI can clone voices so trust must move to verifiable processes: out-of-band verification, code words, and multi-approval for high-risk requests. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 딥페이크는 목소리 신뢰를 무너뜨린다. 대역 외 검증+코드워드+고위험 다중 승인으로 방어. 프로세스를 믿는다.
+      다음 주(W13)는 **Insider + Agent Weaponization**.
+    answer: |
+      Assessment
+      AI can clone voices, so 'the voice is the person' fails; trust must move to verifiable processes.
+      Use out-of-band verification, code words, and multi-approval for high-risk requests.
+    answer_detail: "W12 딥페이크 종합(Assessment). 정황 지표·대역 외 검증·고위험 정책."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

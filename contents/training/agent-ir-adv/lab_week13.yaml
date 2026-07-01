@@ -1,0 +1,172 @@
+lab_id: agent-ir-adv-week13
+title: "W13 — Insider + Agent Weaponization: 비정상 접근·에이전트 오남용·통제"
+version: ai
+course: agent-ir-adv
+week: 13
+description: |
+  내부자·에이전트 무기화 방어. 행동 기준선 대비 비정상 접근(INSIDER_INDICATOR), 에이전트 범위 이탈
+  오남용(AGENT_MISUSE), 최소권한·감사·직무분리 통제(CONTROLLED), 종합(Assessment).
+  정당한 권한도 비정상 사용은 잡는다 — 행동 이상+감사+권한 분산.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (13주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W13 강의안 정독 — §0.5(내부자·에이전트 무기화·행동 기준선)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "행동 기준선 대비 비정상 접근 탐지(INSIDER_INDICATOR)"
+  - "에이전트 범위 이탈 오남용 탐지(AGENT_MISUSE)"
+  - "최소권한·감사·직무분리 통제(CONTROLLED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 비정상 접근 탐지 → INSIDER_INDICATOR
+      > **🎯 목표:** 행동 기준선 대비 비정상 접근(볼륨·시간·대상)을 탐지.
+      > **개념:** 정당한 권한이어도 평소와 다른 사용이 신호(UEBA).
+      ```bash
+      python3 - <<'PY'
+      # 사용자 행동 기준선(평소) vs 현재
+      baseline={"analyst":{"records_per_day":200,"tables":{"reports"},"hours":"9-18"}}
+      current={"analyst":{"records":50000,"tables":{"reports","customer_pii","salaries"},"hour":3}}
+      user="analyst"; b=baseline[user]; c=current[user]
+      anomalies=[]
+      if c["records"]>b["records_per_day"]*10: anomalies.append(f"volume spike ({c['records']} vs {b['records_per_day']}/day)")
+      if not c["tables"].issubset(b["tables"]): anomalies.append(f"new sensitive tables {c['tables']-b['tables']}")
+      if c["hour"]<9 or c["hour"]>18: anomalies.append(f"off-hours access ({c['hour']}:00)")
+      for a in anomalies: print("  anomaly:", a)
+      print("INSIDER_INDICATOR" if len(anomalies)>=2 else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `INSIDER_INDICATOR` (볼륨 급증+민감 테이블 접근+업무외 시간).
+      🔎 "분석가가 데이터 조회"는 정상 권한. 하지만 평소 기준선(200/day·reports)을 크게 벗어나면 이상.
+    answer: |
+      anomaly: volume spike (50000 vs 200/day)
+      anomaly: new sensitive tables {'customer_pii', 'salaries'}
+      anomaly: off-hours access (3:00)
+      INSIDER_INDICATOR
+    answer_detail: "행동 기준선 대비 비정상 접근(볼륨·민감테이블·시간) → INSIDER_INDICATOR."
+    verify:
+      type: output_contains
+      expect: INSIDER_INDICATOR
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 에이전트 오남용 탐지 → AGENT_MISUSE
+      > **🎯 목표:** 에이전트가 승인 범위(scope)를 벗어난 작업을 탐지.
+      > **개념:** 무기화된 에이전트는 범위를 이탈한다.
+      ```bash
+      python3 - <<'PY'
+      # 에이전트의 승인된 범위(scope)
+      AGENT_SCOPE={"data-analysis-bot":{"read":True,"write":False,"external_transfer":False,"tables":{"reports"}}}
+      # 관측된 에이전트 행동
+      actions=[{"agent":"data-analysis-bot","op":"read","target":"reports"},          # scope 내
+               {"agent":"data-analysis-bot","op":"external_transfer","target":"185.x"},# 범위 이탈!
+               {"agent":"data-analysis-bot","op":"read","target":"customer_pii"}]      # 미승인 테이블
+      scope=AGENT_SCOPE["data-analysis-bot"]
+      misuse=[]
+      for a in actions:
+          if a["op"]=="external_transfer" and not scope["external_transfer"]: misuse.append(a)
+          elif a["op"]=="read" and a["target"] not in scope["tables"]: misuse.append(a)
+      for a in actions:
+          bad = a in misuse
+          print(f"  {a['op']:18} {a['target']:14} [{'OUT OF SCOPE' if bad else 'in scope'}]")
+      print("AGENT_MISUSE" if misuse else "IN_SCOPE")
+      PY
+      ```
+      ✅ 마지막 줄 `AGENT_MISUSE` (봇이 external_transfer·미승인 테이블 접근 = 범위 이탈).
+      🔎 데이터 분석 봇은 reports 읽기만 승인. 외부 전송·PII 접근은 범위 이탈 = 무기화 정황. 에이전트 행동 감사.
+    answer: |
+      read               reports        [in scope]
+      external_transfer  185.x          [OUT OF SCOPE]
+      read               customer_pii   [OUT OF SCOPE]
+      AGENT_MISUSE
+    answer_detail: "에이전트 범위 이탈(외부전송·미승인 테이블) 탐지 → AGENT_MISUSE. 무기화 정황."
+    verify:
+      type: output_contains
+      expect: AGENT_MISUSE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 통제 → CONTROLLED
+      > **🎯 목표:** 최소권한·감사·직무분리로 오남용을 통제.
+      > **개념:** 정당한 권한도 분산·최소화하면 오남용이 어렵다.
+      ```bash
+      python3 - <<'PY'
+      # 통제 적용
+      def enforce_controls(request):
+          checks={}
+          # 최소 권한: 필요한 것만
+          checks["least_privilege"] = request["scope"]=="minimal"
+          # 감사: 모든 행동 로깅
+          checks["audited"] = request["logged"]
+          # 직무 분리: 요청자≠승인자
+          checks["separation"] = request["requester"]!=request["approver"]
+          passed = all(checks.values())
+          return passed, checks
+      # 통제 미비 vs 통제 적용
+      bad={"scope":"broad","logged":False,"requester":"kim","approver":"kim"}
+      good={"scope":"minimal","logged":True,"requester":"kim","approver":"lee"}
+      pb,cb=enforce_controls(bad); pg,cg=enforce_controls(good)
+      print("without controls:", cb, "->", "allowed" if pb else "BLOCKED")
+      print("with controls:", cg, "->", "allowed" if pg else "BLOCKED")
+      print("CONTROLLED" if not pb and pg else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `CONTROLLED` (통제 미비(광범위·미감사·자가승인) 차단, 통제 적용 허용).
+      🔎 최소 권한+감사+직무 분리(요청자≠승인자)를 모두 갖춰야 허용. 정당한 권한도 분산·감사로 오남용 차단.
+    answer: |
+      without controls: {'least_privilege': False, 'audited': False, 'separation': False} -> BLOCKED
+      with controls: {'least_privilege': True, 'audited': True, 'separation': True} -> allowed
+      CONTROLLED
+    answer_detail: "최소권한·감사·직무분리 통제로 오남용 차단 → CONTROLLED."
+    verify:
+      type: output_contains
+      expect: CONTROLLED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W13 on insider threats plus agent weaponization. Findings: behavioral-baseline deviations (volume spike, sensitive tables, off-hours) flagged an insider (INSIDER_INDICATOR), an agent acting outside its approved scope (external transfer, unapproved tables) revealed weaponization (AGENT_MISUSE), and least privilege plus audit plus separation of duties controlled it (CONTROLLED). Explain that insiders act within legitimate permissions and agents amplify by speed, so defense uses behavioral anomaly detection, agent action auditing, and least privilege with separation of duties. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 내부자는 정당한 권한으로 에이전트를 무기화. 행동 이상+에이전트 감사+최소권한·직무분리로 통제.
+      다음 주(W14)는 **CI/CD 공급망 오염**.
+    answer: |
+      Assessment
+      Insiders act within legitimate permissions and weaponize agents to amplify by speed and scale.
+      Defense uses behavioral anomaly detection, agent action auditing, and least privilege with separation of duties.
+    answer_detail: "W13 내부자·에이전트 무기화 종합(Assessment). 행동 이상·감사·최소권한·직무분리."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

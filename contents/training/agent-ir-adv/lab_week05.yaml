@@ -1,0 +1,168 @@
+lab_id: agent-ir-adv-week05
+title: "W05 — 0-day 웹 프레임워크 자동 악용: 이상 요청·비정상 응답·가상 패치"
+version: ai
+course: agent-ir-adv
+week: 5
+description: |
+  패치 없는 0-day를 이상 기반으로 탐지. 정상 프로파일 벗어난 이상 요청(ANOMALY_DETECTED), 비정상
+  응답·행위로 성공 탐지(BEHAVIOR_FLAGGED), WAF 가상 패치(VIRTUAL_PATCHED), 종합(Assessment).
+  시그니처는 0-day에 무력 — 정상 벗어남을 잡고 가상 패치로 시간을 번다. el34 웹 실측.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (5주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100 (apache.error_log 관찰)
+  - W05 강의안 정독 — §0.5(0-day·이상 기반·가상 패치)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "정상 프로파일 벗어난 이상 요청 탐지(ANOMALY_DETECTED)"
+  - "비정상 응답·행위로 성공 탐지(BEHAVIOR_FLAGGED)"
+  - "WAF 가상 패치(VIRTUAL_PATCHED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 이상 요청 탐지 → ANOMALY_DETECTED
+      > **🎯 목표:** 정상 프로파일을 벗어난 요청을 탐지(시그니처 없이).
+      > **개념:** 0-day는 알려진 패턴이 없다 — 정상 벗어남으로 잡는다.
+      ```bash
+      python3 - <<'PY'
+      # 정상 프로파일: /api/user는 id(정수), name(문자<50)만 받음
+      PROFILE={"/api/user":{"params":{"id":"int","name":"str<50"}}}
+      def is_anomalous(path, params):
+          prof=PROFILE.get(path)
+          if not prof: return True, "unknown path"
+          for k,v in params.items():
+              if k not in prof["params"]: return True, f"unexpected param '{k}'"
+              if prof["params"][k]=="int" and not str(v).isdigit(): return True, f"'{k}' not int"
+              if prof["params"][k]=="str<50" and len(str(v))>=50: return True, f"'{k}' too long"
+          return False, "normal"
+      # 0-day 익스플로잇 시도(정상 프로파일 벗어남)
+      req={"path":"/api/user","params":{"id":"1","template":"${T(java.lang.Runtime).exec('id')}"}}
+      anom,reason=is_anomalous(req["path"], req["params"])
+      print(f"request params: {req['params']}")
+      print(f"anomaly: {anom} ({reason})")
+      print("ANOMALY_DETECTED" if anom else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `ANOMALY_DETECTED` (정상 프로파일에 없는 template 파라미터 = 이상).
+      🔎 시그니처 없이도 "정상 프로파일에 없는 파라미터"를 잡는다. 0-day 익스플로잇도 정상을 벗어난다.
+    answer: |
+      request params: {'id': '1', 'template': "${T(java.lang.Runtime).exec('id')}"}
+      anomaly: True (unexpected param 'template')
+      ANOMALY_DETECTED
+    answer_detail: "정상 프로파일 벗어난 이상 파라미터 탐지 → ANOMALY_DETECTED. 시그니처 없이."
+    verify:
+      type: output_contains
+      expect: ANOMALY_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 비정상 응답·행위 → BEHAVIOR_FLAGGED
+      > **🎯 목표:** 요청이 유발한 비정상 응답·행위로 익스플로잇 성공 탐지.
+      > **개념:** 요청이 애매하면 결과를 본다 — 성공은 흔적을 남긴다.
+      ```bash
+      python3 - <<'PY'
+      # 정상 응답 프로파일 vs 관측
+      NORMAL={"status_dist":{200:0.95,404:0.04,500:0.01}, "avg_ms":50, "spawns_process":False}
+      observed={"status":500, "response_ms":3200, "spawned_process":"/bin/sh -c id"}
+      flags=[]
+      if observed["status"]==500: flags.append("unexpected 500")
+      if observed["response_ms"]>NORMAL["avg_ms"]*10: flags.append("response time anomaly")
+      if observed["spawned_process"] and not NORMAL["spawns_process"]: flags.append(f"unexpected process spawn: {observed['spawned_process']}")
+      for f in flags: print("  flag:", f)
+      # 요청이 프로세스 실행을 유발 = 익스플로잇 성공 흔적
+      print("BEHAVIOR_FLAGGED" if len(flags)>=2 and any("process" in f for f in flags) else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `BEHAVIOR_FLAGGED` (요청이 예상 밖 프로세스(/bin/sh id) 실행 유발 = 성공 흔적).
+      🔎 웹 요청이 셸 프로세스를 실행시키면 명백한 RCE 성공. 요청을 못 막아도 결과(행위)로 잡는다.
+    answer: |
+      flag: unexpected 500
+      flag: response time anomaly
+      flag: unexpected process spawn: /bin/sh -c id
+      BEHAVIOR_FLAGGED
+    answer_detail: "요청이 유발한 비정상 프로세스 실행 탐지 → BEHAVIOR_FLAGGED. 성공의 흔적."
+    verify:
+      type: output_contains
+      expect: BEHAVIOR_FLAGGED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 가상 패치 → VIRTUAL_PATCHED
+      > **🎯 목표:** 탐지한 공격 패턴을 WAF 룰로 임시 차단(실제 패치 전).
+      > **개념:** 코드를 못 고쳐도 공격이 도달 못하게 — 시간 벌기.
+      ```bash
+      python3 - <<'PY'
+      import re
+      # 탐지한 0-day 패턴으로 가상 패치(WAF 룰) 생성
+      attack_pattern=r"\$\{.*(Runtime|exec|jndi).*\}"   # 관측된 익스플로잇 구조
+      vpatch=re.compile(attack_pattern, re.I)
+      def waf_filter(request):
+          return "BLOCKED (virtual patch)" if vpatch.search(request) else "allowed"
+      # 공격 요청은 차단, 정상 요청은 통과
+      attack="/api/user?template=${T(java.lang.Runtime).exec('id')}"
+      normal="/api/user?id=1&name=alice"
+      print("attack request:", waf_filter(attack))
+      print("normal request:", waf_filter(normal))
+      patched = "BLOCKED" in waf_filter(attack) and waf_filter(normal)=="allowed"
+      print("VIRTUAL_PATCHED" if patched else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `VIRTUAL_PATCHED` (공격 패턴 WAF 차단, 정상 요청 통과).
+      🔎 실제 코드 패치 전, WAF 가상 패치로 그 공격 패턴을 임시 차단. 벤더 패치까지 시간을 번다.
+    answer: |
+      attack request: BLOCKED (virtual patch)
+      normal request: allowed
+      VIRTUAL_PATCHED
+    answer_detail: "탐지 패턴으로 WAF 가상 패치, 공격 차단·정상 통과 → VIRTUAL_PATCHED. 시간 벌기."
+    verify:
+      type: output_contains
+      expect: VIRTUAL_PATCHED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W05 on detecting 0-day web exploits. Findings: an anomalous request outside the normal profile was flagged without any signature (ANOMALY_DETECTED), an unexpected process spawn revealed a successful RCE (BEHAVIOR_FLAGGED), and a WAF virtual patch blocked the attack pattern while allowing normal traffic (VIRTUAL_PATCHED). Explain that signatures cannot catch 0-days, so anomaly and behavior detection plus virtual patching buy time until a real patch. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 0-day는 시그니처 무력. 이상 요청+비정상 행위로 탐지, WAF 가상 패치로 시간 벌기.
+      다음 주(W06)는 **N-day 대규모 악용** (Log4Shell 등).
+    answer: |
+      Assessment
+      Signatures cannot catch 0-days, so detect anomalous requests outside the normal profile and behavioral effects like unexpected process spawns.
+      A WAF virtual patch blocks the pattern to buy time until a real vendor patch.
+    answer_detail: "W05 0-day 종합(Assessment). 이상·행위 탐지·가상 패치."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

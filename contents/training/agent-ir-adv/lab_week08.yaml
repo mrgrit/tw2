@@ -1,0 +1,165 @@
+lab_id: agent-ir-adv-week08
+title: "W08 — 컨테이너·K8s 탈출: 위험 설정 감사·탈출 흔적·최소 권한 RBAC"
+version: ai
+course: agent-ir-adv
+week: 8
+description: |
+  컨테이너 격리 붕괴 방어. 위험 설정 감사(MISCONFIG_DETECTED), 탈출 흔적 탐지(ESCAPE_DETECTED),
+  최소 권한 RBAC 강화(RBAC_HARDENED), 종합(Assessment).
+  ⚠️ K8s 텔레메트리 el34 미보유 — 설정 감사·런타임 탐지 로직 결정론 시뮬.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (8주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W08 강의안 정독 — §0.5(컨테이너 탈출·설정 감사·RBAC)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "위험 설정 감사(MISCONFIG_DETECTED)"
+  - "탈출 흔적 탐지(ESCAPE_DETECTED)"
+  - "최소 권한 RBAC 강화(RBAC_HARDENED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 위험 설정 감사 → MISCONFIG_DETECTED
+      > **🎯 목표:** 파드 설정에서 특권·hostPath 등 위험 설정 감사.
+      > **개념:** 위험 설정은 탈출의 발판 — 배포 전 차단.
+      ```bash
+      python3 - <<'PY'
+      # 파드 스펙
+      pod={"name":"webapp","privileged":True,"hostPath":["/"],"hostPID":False,"runAsRoot":True,
+           "capabilities":["SYS_ADMIN"]}
+      risks=[]
+      if pod["privileged"]: risks.append("privileged:true")
+      if pod["hostPath"]: risks.append(f"hostPath mount {pod['hostPath']}")
+      if pod["runAsRoot"]: risks.append("runAsRoot")
+      if "SYS_ADMIN" in pod["capabilities"]: risks.append("SYS_ADMIN capability")
+      for r in risks: print("  risk:", r)
+      # 위험 설정이 있으면 배포 차단 대상
+      print("MISCONFIG_DETECTED" if len(risks)>=3 else "SAFE_CONFIG")
+      PY
+      ```
+      ✅ 마지막 줄 `MISCONFIG_DETECTED` (privileged+hostPath(/)+runAsRoot+SYS_ADMIN = 위험).
+      🔎 이런 설정은 호스트 탈출의 발판. 어드미션 컨트롤러로 배포 차단하면 결함이 안 들어간다.
+    answer: |
+      risk: privileged:true
+      risk: hostPath mount ['/']
+      risk: runAsRoot
+      risk: SYS_ADMIN capability
+      MISCONFIG_DETECTED
+    answer_detail: "특권·hostPath·root·SYS_ADMIN 위험 설정 감사 → MISCONFIG_DETECTED. 배포 차단 대상."
+    verify:
+      type: output_contains
+      expect: MISCONFIG_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 탈출 흔적 탐지 → ESCAPE_DETECTED
+      > **🎯 목표:** 컨테이너가 호스트 자원에 접근하는 비정상 행위 탐지.
+      > **개념:** 컨테이너는 정해진 일만; 벗어난 행위가 탈출 신호.
+      ```bash
+      python3 - <<'PY'
+      # 컨테이너 런타임 행위(Falco 상당)
+      container_actions=["read /app/config.json","open /var/run/docker.sock","mount /host-root",
+                         "write /proc/sys/kernel/core_pattern"]
+      # 탈출 시그니처: 컨테이너 소켓·호스트 마운트·커널 파라미터 접근
+      ESCAPE_SIGS=["docker.sock","/host","/proc/sys/kernel","nsenter","/dev/mem"]
+      escapes=[a for a in container_actions if any(s in a for s in ESCAPE_SIGS)]
+      for a in container_actions:
+          esc=any(s in a for s in ESCAPE_SIGS)
+          print(f"  {a[:40]:40} {'ESCAPE ATTEMPT' if esc else 'normal'}")
+      print("ESCAPE_DETECTED" if escapes else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `ESCAPE_DETECTED` (docker.sock·host 마운트·커널 파라미터 접근 = 탈출 시도).
+      🔎 컨테이너가 런타임 소켓·호스트 파일·커널을 건드리면 탈출 시도. 런타임 보안이 비정상 행위를 잡는다.
+    answer: |
+      read /app/config.json                    normal
+      open /var/run/docker.sock                ESCAPE ATTEMPT
+      mount /host-root                         ESCAPE ATTEMPT
+      write /proc/sys/kernel/core_pattern      ESCAPE ATTEMPT
+      ESCAPE_DETECTED
+    answer_detail: "컨테이너의 호스트 자원 접근(소켓·마운트·커널) 탐지 → ESCAPE_DETECTED."
+    verify:
+      type: output_contains
+      expect: ESCAPE_DETECTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 최소 권한 RBAC → RBAC_HARDENED
+      > **🎯 목표:** 서비스어카운트에 최소 K8s 권한만 부여.
+      > **개념:** 과잉 권한이면 파드 하나가 클러스터로; 최소 권한이 확산 차단.
+      ```bash
+      python3 - <<'PY'
+      # 서비스어카운트 권한(현재 vs 최소)
+      current_perms={"secrets":["get","list","watch"],"pods":["*"],"clusterroles":["*"]}
+      # 이 앱이 실제 필요한 것: 자기 네임스페이스 pod 읽기만
+      NEEDED={"pods":["get","list"]}
+      def harden(perms, needed):
+          return {res:acts for res,acts in needed.items()}
+      hardened=harden(current_perms, NEEDED)
+      # 과잉 권한 제거 확인
+      over_before = "clusterroles" in current_perms or "*" in current_perms.get("pods",[])
+      over_after = "clusterroles" in hardened or "*" in hardened.get("pods",[])
+      print("before:", current_perms)
+      print("after :", hardened)
+      print("RBAC_HARDENED" if over_before and not over_after else "STILL_OVERPRIVILEGED")
+      PY
+      ```
+      ✅ 마지막 줄 `RBAC_HARDENED` (secrets·clusterroles·pods:* 과잉 권한 → pods:get/list 최소로).
+      🔎 앱이 필요한 최소(자기 pod 읽기)만 부여. 과잉 권한(secrets·clusterrole·*)을 제거해 확산 차단.
+    answer: |
+      before: {'secrets': ['get', 'list', 'watch'], 'pods': ['*'], 'clusterroles': ['*']}
+      after : {'pods': ['get', 'list']}
+      RBAC_HARDENED
+    answer_detail: "과잉 RBAC를 최소 권한(pods:get/list)으로 강화 → RBAC_HARDENED. 확산 차단."
+    verify:
+      type: output_contains
+      expect: RBAC_HARDENED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W08 on container and K8s escape. Findings: risky pod settings (privileged, hostPath, root, SYS_ADMIN) were audited (MISCONFIG_DETECTED), runtime actions touching the docker socket, host mount, and kernel params flagged an escape (ESCAPE_DETECTED), and overprivileged RBAC was hardened to minimal pod-read permissions (RBAC_HARDENED). Explain that a small misconfig lets one pod reach the whole cluster, so defense audits config, detects escape behavior, and enforces least-privilege RBAC and pod security standards. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 설정 실수가 격리를 무너뜨려 클러스터로. 설정 감사+탈출 탐지+최소 권한 RBAC로 방어.
+      다음 주(W09)는 **Fileless·Memory-only 악성코드**.
+    answer: |
+      Assessment
+      A small container misconfig (privileged/hostPath/overprivileged RBAC) lets one pod reach the whole cluster.
+      Defense audits configuration, detects escape behavior at runtime, and enforces least-privilege RBAC and pod security standards.
+    answer_detail: "W08 컨테이너 탈출 종합(Assessment). 설정 감사·탈출 탐지·최소 권한 RBAC."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

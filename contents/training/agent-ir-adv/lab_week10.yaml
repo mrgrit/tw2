@@ -1,0 +1,171 @@
+lab_id: agent-ir-adv-week10
+title: "W10 — DNS Exfiltration: 서브도메인 엔트로피·쿼리 볼륨·DNS 차단"
+version: ai
+course: agent-ir-adv
+week: 10
+description: |
+  방화벽 지나는 DNS 유출 탐지. 높은 엔트로피 서브도메인(DNS_EXFIL_DETECTED), 대량 쿼리 볼륨 이상
+  (VOLUME_ANOMALY), DNS 차단·싱크홀(BLOCKED), 종합(Assessment).
+  DNS는 늘 열려 유출 통로 — 통계적 이상(엔트로피·볼륨·길이)으로 정상에 섞인 누출을 잡는다.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (10주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W10 강의안 정독 — §0.5(DNS 탈출·엔트로피·볼륨)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "높은 엔트로피 서브도메인 탐지(DNS_EXFIL_DETECTED)"
+  - "대량 쿼리 볼륨 이상(VOLUME_ANOMALY)"
+  - "DNS 차단·싱크홀(BLOCKED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 엔트로피 탐지 → DNS_EXFIL_DETECTED
+      > **🎯 목표:** 서브도메인의 문자 엔트로피로 인코딩된 데이터 탐지.
+      > **개념:** 정상 도메인은 낮은 엔트로피; 인코딩은 높다.
+      ```bash
+      python3 - <<'PY'
+      import math
+      def entropy(s):
+          if not s: return 0
+          from collections import Counter
+          c=Counter(s); n=len(s)
+          return -sum((v/n)*math.log2(v/n) for v in c.values())
+      # 서브도메인 (정상 vs 인코딩된 유출)
+      domains=[("www","google.com"),("mail","company.com"),
+               ("mfrgg2ltnz4hy3dbnzxw4z3","evil.com"),   # base32 인코딩 데이터
+               ("k7x9q2m4p8w1z5v3n6b0","exfil.net")]
+      THRESHOLD=3.5   # bits/char; 인코딩된 랜덤 문자열은 높음
+      suspects=[]
+      for sub,dom in domains:
+          e=entropy(sub)
+          flag = e>=THRESHOLD and len(sub)>=15
+          if flag: suspects.append((sub,dom))
+          print(f"  {sub[:24]:24}.{dom:12} entropy={e:.2f} len={len(sub)} {'EXFIL?' if flag else 'ok'}")
+      print("DNS_EXFIL_DETECTED" if suspects else "CLEAN")
+      PY
+      ```
+      ✅ 마지막 줄 `DNS_EXFIL_DETECTED` (높은 엔트로피+긴 서브도메인 = 인코딩된 데이터).
+      🔎 www(엔트로피 낮음)는 정상. 랜덤 긴 서브도메인은 인코딩된 유출 데이터. 엔트로피+길이가 신호.
+    answer: |
+      www                     .google.com  entropy=0.92 len=3 ok
+      mail                    .company.com entropy=1.92 len=4 ok
+      mfrgg2ltnz4hy3dbnzxw4z3 .evil.com     entropy=4.02 len=23 EXFIL?
+      k7x9q2m4p8w1z5v3n6b0    .exfil.net    entropy=4.17 len=20 EXFIL?
+      DNS_EXFIL_DETECTED
+    answer_detail: "높은 엔트로피+긴 서브도메인 탐지 → DNS_EXFIL_DETECTED. 인코딩된 데이터."
+    verify:
+      type: output_contains
+      expect: DNS_EXFIL_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 볼륨 이상 → VOLUME_ANOMALY
+      > **🎯 목표:** 한 도메인에 대한 대량 쿼리 볼륨을 탐지.
+      > **개념:** 유출은 많은 청크 → 대량 쿼리; 정상은 몇 번.
+      ```bash
+      python3 - <<'PY'
+      from collections import Counter
+      # 5분간 도메인별 쿼리 수
+      queries=["evil.com"]*250 + ["google.com"]*30 + ["company.com"]*15
+      counts=Counter(queries)
+      THRESHOLD=100   # 5분에 한 도메인 100+ 쿼리 = 유출 볼륨
+      anomalies=[(d,c) for d,c in counts.items() if c>=THRESHOLD]
+      for d,c in counts.most_common(): print(f"  {d:14}: {c} queries {'(VOLUME ANOMALY)' if c>=THRESHOLD else ''}")
+      print("VOLUME_ANOMALY" if anomalies else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `VOLUME_ANOMALY` (evil.com에 250 쿼리 = 유출 볼륨).
+      🔎 데이터를 청크로 나눠 보내니 한 도메인에 쿼리가 폭증. 정상 도메인은 몇 십 번. 볼륨이 신호.
+    answer: |
+      evil.com      : 250 queries (VOLUME ANOMALY)
+      google.com    : 30 queries
+      company.com   : 15 queries
+      VOLUME_ANOMALY
+    answer_detail: "한 도메인 대량 쿼리(250) 탐지 → VOLUME_ANOMALY. 유출 볼륨."
+    verify:
+      type: output_contains
+      expect: VOLUME_ANOMALY
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — DNS 차단·싱크홀 → BLOCKED
+      > **🎯 목표:** 악성 도메인을 싱크홀로 차단.
+      > **개념:** DNS는 못 막으니 악성 도메인만 격리·추적.
+      ```bash
+      python3 - <<'PY'
+      # 탐지된 악성 도메인 싱크홀
+      SINKHOLE=set()
+      def add_to_sinkhole(domain): SINKHOLE.add(domain)
+      def resolve(domain):
+          if domain in SINKHOLE: return "0.0.0.0 (sinkholed) + alert"   # 유출 차단·추적
+          return f"resolved {domain}"
+      # 탐지된 유출 도메인 싱크홀 등록
+      add_to_sinkhole("evil.com")
+      tests=["evil.com","google.com","exfil.net"]
+      add_to_sinkhole("exfil.net")
+      for d in tests: print(f"  {d}: {resolve(d)}")
+      # 악성 도메인은 싱크홀, 정상은 정상 해석
+      blocked = "sinkholed" in resolve("evil.com") and "resolved" in resolve("google.com")
+      print("BLOCKED" if blocked else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `BLOCKED` (evil.com·exfil.net 싱크홀, google.com 정상 해석).
+      🔎 악성 도메인 쿼리를 0.0.0.0으로 돌려 유출을 차단하고 어느 호스트가 쿼리했는지 추적. 정상은 영향 없음.
+    answer: |
+      evil.com: 0.0.0.0 (sinkholed) + alert
+      google.com: resolved google.com
+      exfil.net: 0.0.0.0 (sinkholed) + alert
+      BLOCKED
+    answer_detail: "악성 도메인 싱크홀 차단, 정상 정상 해석 → BLOCKED. 유출 차단·추적."
+    verify:
+      type: output_contains
+      expect: BLOCKED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W10 on DNS exfiltration. Findings: high-entropy long subdomains indicated encoded data (DNS_EXFIL_DETECTED), a domain receiving 250 queries showed exfiltration volume (VOLUME_ANOMALY), and sinkholing the malicious domains blocked exfiltration while normal domains resolved (BLOCKED). Explain that DNS is always open so it becomes an exfil channel, and defense uses statistical anomaly detection (entropy, volume, length) plus logging and sinkholing. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: DNS는 늘 열려 유출 통로. 엔트로피·볼륨·길이 이상으로 탐지, 로깅·싱크홀로 차단.
+      다음 주(W11)는 **AI 모델 자체 공격** (el34 GPU 실측).
+    answer: |
+      Assessment
+      DNS is always open, so it becomes a covert exfiltration channel; encoded data hides in high-entropy subdomains.
+      Defense uses statistical anomaly detection (entropy, volume, length), DNS logging, and sinkholing.
+    answer_detail: "W10 DNS 탈출 종합(Assessment). 엔트로피·볼륨 탐지·싱크홀."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

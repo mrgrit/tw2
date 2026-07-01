@@ -1,0 +1,161 @@
+lab_id: agent-ir-adv-week01
+title: "W01 — 공급망 Dependency Confusion: 출처 이상·버전 이상·출처 고정 방어"
+version: ai
+course: agent-ir-adv
+week: 1
+description: |
+  공급망 Dependency Confusion 탐지·방어. 내부 패키지 공개 레지스트리 해석 이상(CONFUSION_DETECTED),
+  비정상 고버전 탐지(VERSION_ANOMALY), 전용 레지스트리 출처 고정(SOURCE_PINNED), 종합(Assessment).
+  ⚠️ 공급망 텔레메트리는 el34 미보유 — 탐지 로직 결정론 시뮬 + GPU 분석.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (1주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W01 강의안 정독 — §0.5(Dependency Confusion·출처/버전 이상·pin)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "내부 패키지 공개 레지스트리 해석 이상 탐지(CONFUSION_DETECTED)"
+  - "비정상 고버전 탐지(VERSION_ANOMALY)"
+  - "전용 레지스트리 출처 고정(SOURCE_PINNED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 출처 이상 탐지 → CONFUSION_DETECTED
+      > **🎯 목표:** 내부 전용 패키지가 공개 레지스트리로 해석되는 이상을 탐지.
+      > **개념:** 신뢰 사슬 이탈 — 내부 이름이 공개에서 나타남.
+      ```bash
+      python3 - <<'PY'
+      # 내부 전용 패키지 목록(전용 레지스트리에만 있어야 함)
+      INTERNAL={"mycompany-utils","mycompany-auth","internal-billing"}
+      # 빌드가 해석한 의존성(패키지, 출처 레지스트리)
+      resolved=[{"pkg":"requests","registry":"public"},
+                {"pkg":"mycompany-utils","registry":"public"},   # 내부인데 공개에서! 이상
+                {"pkg":"mycompany-auth","registry":"internal"}]
+      confusion=[r for r in resolved if r["pkg"] in INTERNAL and r["registry"]=="public"]
+      for r in resolved:
+          flag = "CONFUSION!" if (r["pkg"] in INTERNAL and r["registry"]=="public") else "ok"
+          print(f"  {r['pkg']:20} from {r['registry']:8} [{flag}]")
+      print("CONFUSION_DETECTED" if confusion else "CLEAN")
+      PY
+      ```
+      ✅ 마지막 줄 `CONFUSION_DETECTED` (내부 mycompany-utils가 공개 레지스트리에서 해석 = 이상).
+      🔎 내부 전용이어야 할 패키지가 공개 레지스트리에서 나타나면 가로채기 시도. 신뢰 사슬 이탈.
+    answer: |
+      requests             from public   [ok]
+      mycompany-utils      from public   [CONFUSION!]
+      mycompany-auth       from internal [ok]
+      CONFUSION_DETECTED
+    answer_detail: "내부 패키지가 공개 레지스트리에서 해석되는 이상 탐지 → CONFUSION_DETECTED."
+    verify:
+      type: output_contains
+      expect: CONFUSION_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 버전 이상 탐지 → VERSION_ANOMALY
+      > **🎯 목표:** 비정상 고버전(v99.x)을 탐지.
+      > **개념:** 해석 규칙(높은 버전 선택) 악용 신호.
+      ```bash
+      python3 - <<'PY'
+      # 내부 버전 이력 vs 공개에 나타난 버전
+      internal_versions={"mycompany-utils":[1.0,1.1,1.2]}
+      public_version={"mycompany-utils":99.0}   # 가로채기용 극단 고버전
+      pkg="mycompany-utils"
+      internal_max=max(internal_versions[pkg]); pub=public_version[pkg]
+      # 공개 버전이 내부 최신보다 비정상적으로 높으면(예: 10배 이상 점프) 이상
+      jump = pub/internal_max
+      print(f"{pkg}: internal max {internal_max}, public {pub} (jump {jump:.0f}x)")
+      print("VERSION_ANOMALY" if jump>=10 else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `VERSION_ANOMALY` (공개 v99.0 vs 내부 v1.2, 82배 점프 = 이상).
+      🔎 공격자는 해석 규칙(높은 버전 우선)을 노려 극단 고버전으로 가로챈다. 비정상 버전 점프가 신호.
+    answer: |
+      mycompany-utils: internal max 1.2, public 99.0 (jump 82x)
+      VERSION_ANOMALY
+    answer_detail: "공개 버전이 내부 최신보다 비정상 고버전(82배) → VERSION_ANOMALY. 해석 규칙 악용."
+    verify:
+      type: output_contains
+      expect: VERSION_ANOMALY
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 출처 고정 방어 → SOURCE_PINNED
+      > **🎯 목표:** 내부 패키지를 전용 레지스트리에 pin.
+      > **개념:** 이름 충돌 원천 차단 — 공개 조회 금지/우선순위 명시.
+      ```bash
+      python3 - <<'PY'
+      INTERNAL={"mycompany-utils","mycompany-auth","internal-billing"}
+      # 출처 고정 정책: 내부 패키지는 internal 레지스트리에서만
+      pin_policy={p:"internal-only" for p in INTERNAL}
+      def resolve(pkg, requested_registry):
+          if pkg in pin_policy and requested_registry=="public":
+              return "BLOCKED (pinned to internal)"   # 공개 해석 차단
+          return f"resolved from {requested_registry}"
+      tests=[("mycompany-utils","public"),("mycompany-utils","internal"),("requests","public")]
+      for pkg,reg in tests: print(f"  {pkg} from {reg}: {resolve(pkg,reg)}")
+      # 내부 패키지의 공개 해석이 차단되면 방어 성공
+      blocked = "BLOCKED" in resolve("mycompany-utils","public")
+      allowed = "resolved" in resolve("requests","public")   # 외부 패키지는 정상
+      print("SOURCE_PINNED" if blocked and allowed else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `SOURCE_PINNED` (내부 패키지 공개 해석 차단, 외부 패키지 정상).
+      🔎 내부 패키지를 전용 레지스트리에 pin하면 공개의 악성 버전이 못 끼어든다. scoped 네임스페이스로도 방어.
+    answer: |
+      mycompany-utils from public: BLOCKED (pinned to internal)
+      mycompany-utils from internal: resolved from internal
+      requests from public: resolved from public
+      SOURCE_PINNED
+    answer_detail: "내부 패키지 전용 레지스트리 pin으로 공개 해석 차단 → SOURCE_PINNED. 원천 차단."
+    verify:
+      type: output_contains
+      expect: SOURCE_PINNED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W01 on dependency confusion supply-chain attacks. Findings: an internal package resolving from the public registry was flagged (CONFUSION_DETECTED), an abnormal high version 99.0 vs internal 1.2 was detected (VERSION_ANOMALY), and pinning internal packages to a private registry blocked the public hijack while allowing normal external packages (SOURCE_PINNED). Explain that attackers hijack internal names via higher versions on public registries, and defense pins source, checks version anomalies, and audits install scripts. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: Dependency Confusion은 내부 이름을 공개 고버전으로 가로챈다. 출처 고정+버전 이상+스크립트 감사로 방어.
+      다음 주(W02)는 **Indirect Prompt Injection** (aicompanion 실측).
+    answer: |
+      Assessment
+      Dependency confusion hijacks internal package names via higher versions on public registries, running code at build time.
+      Defense pins internal packages to a private registry, flags version/source anomalies, and audits install scripts.
+    answer_detail: "W01 Dependency Confusion 종합(Assessment). 출처 고정·버전 이상·스크립트 감사."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

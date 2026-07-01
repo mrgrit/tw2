@@ -1,0 +1,168 @@
+lab_id: agent-ir-adv-week07
+title: "W07 — Multi-stage 피싱→웹셸→측면이동: 단계 탐지·침해 이야기 연결"
+version: ai
+course: agent-ir-adv
+week: 7
+description: |
+  Human+Agent 하이브리드 다단계 공격 탐지. 피싱 지표 탐지(PHISHING_DETECTED), 웹셸 탐지
+  (WEBSHELL_DETECTED), 단계 간 연결로 침해 이야기 구성(HYBRID_CHAIN), 종합(Assessment).
+  피싱→웹셸→측면이동을 인과로 이으면 전체 침해가 드러난다.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR 심화 (7주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100 (apache 관찰)
+  - W07 강의안 정독 — §0.5(다단계·피싱·웹셸·단계 연결)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "피싱 지표 탐지(PHISHING_DETECTED)"
+  - "웹셸 탐지(WEBSHELL_DETECTED)"
+  - "단계 간 연결 침해 이야기(HYBRID_CHAIN)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 피싱 탐지 → PHISHING_DETECTED
+      > **🎯 목표:** 기술 지표(발신·링크·첨부)로 피싱 탐지.
+      > **개념:** AI 피싱은 문장이 자연스럽다 — 기술 지표를 본다.
+      ```bash
+      python3 - <<'PY'
+      # 이메일 기술 지표
+      email={"from":"it-support@paypa1-secure.com",  # 유사 도메인(paypa1)
+             "links":["http://paypa1-secure.com/login"], "attachment":"invoice.docm",  # 매크로 문서
+             "reply_to":"attacker@evil.ru", "urgency":"Your account will be locked in 1 hour"}
+      indicators=[]
+      if "1" in email["from"].split("@")[1] or "-secure" in email["from"]: indicators.append("lookalike domain")
+      if email["attachment"].endswith((".docm",".exe",".js")): indicators.append("macro/executable attachment")
+      if email["reply_to"].split("@")[1]!=email["from"].split("@")[1]: indicators.append("reply-to mismatch")
+      if "hour" in email["urgency"] or "locked" in email["urgency"]: indicators.append("urgency pressure")
+      for i in indicators: print("  indicator:", i)
+      print("PHISHING_DETECTED" if len(indicators)>=3 else "LIKELY_BENIGN")
+      PY
+      ```
+      ✅ 마지막 줄 `PHISHING_DETECTED` (유사 도메인+매크로 첨부+reply-to 불일치+긴급성).
+      🔎 내용은 자연스러워도 기술 지표(발신·링크·첨부·reply-to)가 피싱을 드러낸다.
+    answer: |
+      indicator: lookalike domain
+      indicator: macro/executable attachment
+      indicator: reply-to mismatch
+      indicator: urgency pressure
+      PHISHING_DETECTED
+    answer_detail: "기술 지표(발신·첨부·reply-to·긴급성)로 피싱 탐지 → PHISHING_DETECTED."
+    verify:
+      type: output_contains
+      expect: PHISHING_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 웹셸 탐지 → WEBSHELL_DETECTED
+      > **🎯 목표:** 웹 디렉토리의 비정상 스크립트·프로세스로 웹셸 탐지.
+      > **개념:** 웹셸은 웹서버가 명령을 실행하게 하는 백도어.
+      ```bash
+      python3 - <<'PY'
+      import re
+      # 웹 디렉토리 파일 + 웹서버 프로세스
+      web_files=[{"name":"index.php","content":"echo 'home';"},
+                 {"name":"x7z.php","content":"<?php system($_GET['c']); ?>"}]   # 웹셸!
+      web_processes=["php-fpm","/bin/sh -c whoami"]   # www가 셸 실행 = 이상
+      # 웹셸 시그니처: 명령 실행 함수 + GET 파라미터
+      shell_sig=re.compile(r"(system|exec|passthru|shell_exec)\s*\(\s*\$_(GET|POST|REQUEST)", re.I)
+      webshells=[f["name"] for f in web_files if shell_sig.search(f["content"])]
+      abnormal_proc=[p for p in web_processes if "/bin/sh" in p or "whoami" in p or "bash" in p]
+      print("webshell files:", webshells)
+      print("abnormal web-server processes:", abnormal_proc)
+      print("WEBSHELL_DETECTED" if webshells and abnormal_proc else "CLEAN")
+      PY
+      ```
+      ✅ 마지막 줄 `WEBSHELL_DETECTED` (x7z.php가 system($_GET) 웹셸 + 웹서버가 셸 실행).
+      🔎 웹 디렉토리에 명령 실행 스크립트 + 웹서버가 /bin/sh 실행 = 웹셸 발판. 파일+프로세스 교차.
+    answer: |
+      webshell files: ['x7z.php']
+      abnormal web-server processes: ['/bin/sh -c whoami']
+      WEBSHELL_DETECTED
+    answer_detail: "웹셸 스크립트(system($_GET)) + 웹서버 셸 실행 탐지 → WEBSHELL_DETECTED."
+    verify:
+      type: output_contains
+      expect: WEBSHELL_DETECTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 단계 연결 → HYBRID_CHAIN
+      > **🎯 목표:** 피싱→웹셸→측면이동을 인과로 연결해 침해 이야기 구성.
+      > **개념:** 개별 경보를 하나의 침해 이야기로 — 연결이 전체를 드러낸다.
+      ```bash
+      python3 - <<'PY'
+      # 시간·주체·연쇄로 단계 연결
+      events=[{"t":"10:00","stage":"phishing","actor":"user_kim clicked link"},
+              {"t":"10:05","stage":"access","actor":"kim creds used on web-01"},
+              {"t":"10:06","stage":"webshell","actor":"x7z.php created on web-01"},
+              {"t":"10:10","stage":"lateral","actor":"web-01 -> db-01 connection"}]
+      # 인과 연결: 같은 자격/호스트로 이어지는가
+      chain=[e["stage"] for e in sorted(events, key=lambda x:x["t"])]
+      linked = chain==["phishing","access","webshell","lateral"]
+      print("incident story:")
+      for e in events: print(f"  {e['t']} [{e['stage']:9}] {e['actor']}")
+      # 피싱→접근→웹셸→측면이동이 시간순 인과로 이어지면 완전한 침해 체인
+      print("HYBRID_CHAIN" if linked else "DISCONNECTED")
+      PY
+      ```
+      ✅ 마지막 줄 `HYBRID_CHAIN` (피싱→접근→웹셸→측면이동 인과 연결 = 완전한 침해 이야기).
+      🔎 개별 경보를 시간·주체로 이으면 "피싱으로 들어와 웹셸 심고 이동한" 전체 침해가 드러난다.
+    answer: |
+      incident story:
+        10:00 [phishing ] user_kim clicked link
+        10:05 [access   ] kim creds used on web-01
+        10:06 [webshell ] x7z.php created on web-01
+        10:10 [lateral  ] web-01 -> db-01 connection
+      HYBRID_CHAIN
+    answer_detail: "피싱→접근→웹셸→측면이동 인과 연결 → HYBRID_CHAIN. 침해 이야기."
+    verify:
+      type: output_contains
+      expect: HYBRID_CHAIN
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W07 on multi-stage phishing to webshell to lateral movement. Findings: phishing was detected by technical indicators despite natural wording (PHISHING_DETECTED), a webshell was found by a command-exec script plus abnormal web-server process (WEBSHELL_DETECTED), and the stages were linked into one incident story by time and actor (HYBRID_CHAIN). Explain the human+agent hybrid roles and that linking stages reveals the whole breach better than isolated alerts. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 하이브리드 다단계는 피싱→웹셸→측면이동. 각 단계 탐지+단계 연결(침해 이야기)로 전체를 본다.
+      다음 주(W08)는 **컨테이너·K8s 탈출 + API 악용**.
+    answer: |
+      Assessment
+      Hybrid multi-stage attacks chain phishing, webshell, and lateral movement with human and AI roles split.
+      Detect each stage and link them by time and actor into one incident story to see the whole breach.
+    answer_detail: "W07 다단계 하이브리드 종합(Assessment). 단계 탐지·연결·침해 이야기."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout
