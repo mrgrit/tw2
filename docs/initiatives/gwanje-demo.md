@@ -109,4 +109,29 @@
 
 ---
 
-_작성: Claude Code. 상태: 초안(v1). 다음 액션 = Phase 0 시드 스크립트부터._
+---
+
+## 9. Phase 0 완료 노트 (v2)
+
+**`scripts/seed_demo_cohort.py`** 로 시연 데이터 시드 완료(멱등 재실행 가능, `--purge` 로 제거).
+
+- 코호트: `정보보안학과 > AI 서비스 모의해킹 > 2026-1 관제시연 A반`(section) — course_ref 마커 `demo:gwanje`.
+- 계정(비번 `demo1234`, 도메인 `@demo.ac.kr`): 교수 `prof`, 학생 `s1~s7`.
+  - fast(김민수·이서연 100%) / mid(박지훈·최유진·정하늘 50~75%) / **stuck(강도현·윤예은 병목 플래그)**.
+- 배틀 1개(active), 활동 116·진도 스냅샷 7·제출 13·피드백 7.
+
+### ⚠ 대시보드 데이터 소스 (Phase 1 설계 필수 사항)
+시드 중 확인한 계산 경로 — **교수 대시보드는 아래 로컬 엔드포인트로 구성해야 데이터가 나온다.**
+
+| 신호 | 계산 소스 | 시드가 채운 것 |
+|------|-----------|----------------|
+| **진도**(steps_done/completion) | `battle_events`(points>0 + `detail.report.mission_side/order`) | BattleEvent 로 완료 미션 심음 |
+| **병목**(bottleneck_flags) | `activity_events`(실패 명령≥3·alert/log≥5·무진전 300s) | stuck 학생만 실패명령/경보 누적 |
+| 학생별 클리어 | `/monitoring/siem/clears`(로컬 DB) | 제출/이벤트로 산출 |
+| 피드백 | `/feedback`(로컬 DB) | 건건+병목 피드백 |
+| 활동 타임라인 | `/monitoring/battles/{id}/activity` | ActivityEvent |
+
+- **주의**: `/monitoring/siem/{search,stats,ask}` 는 **중앙 OpenSearch** 경로라 `TUBEWAR_LAB_MONITOR=0`(기본)에서 `enabled:false`. 데모 대시보드는 **OpenSearch가 아니라 로컬 엔드포인트**(progress/clears/activity/feedback) 위에 만든다.
+- 검증 완료: `GET /monitoring/battles/1/progress` 가 학생별 완성도(100/75/50/25%)+병목 플래그를 정확히 반환.
+
+_작성: Claude Code. 상태: Phase 0 완료(v2). 다음 = Phase 1 교수 대시보드 시각화(위 로컬 엔드포인트 기반)._
