@@ -32,6 +32,9 @@ TRACK_LABEL = {
     "ai-agent": "AI 에이전트", "ai-safety": "AI 안전(레드팀)", "ai-safety-adv": "AI 안전 심화",
     "ai-security": "AI 시스템 보안", "aisec": "AI 보안 종합",
     "agent-ir": "AI 에이전트 사고대응", "agent-ir-adv": "AI 에이전트 사고대응 심화",
+    "physical-pentest": "물리 침투 테스트", "iot-security": "IoT 보안",
+    "autonomous-systems": "자율 시스템", "autonomous-security": "자율 보안",
+    "ai-service-pentest": "AI 서비스 모의해킹",
 }
 
 
