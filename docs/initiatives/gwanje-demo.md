@@ -168,4 +168,29 @@
 ### 남은 후속(선택)
 정식 instructor-RBAC(교수를 admin 대신 강사 역할로) · 통합 피드백/추천의 라이브 AI 생성(use_ai=True) 시연 · CC 오케스트레이션(G6, 학생 시뮬 러너).
 
-_작성: Claude Code. 상태: Phase 0·1·2 완료(v4). 학생/교수 양쪽 대시보드 시연 준비 완료._
+---
+
+## 12. G6 완료 노트 (v5) — CC 오케스트레이션 러너
+
+**`scripts/orchestrate_demo.py`** — 영상의 "CC가 학생처럼 실습 → CC가 분석" 흐름을 스크립트화(시드 상수·헬퍼 재사용, 시드 무손상). 증분(live 느낌) + 실제 분석 파이프라인.
+
+| 명령 | 역할 | 동작 |
+|------|------|------|
+| `setup` | 준비 | 코호트+교수+학생+배틀 생성(**활동 0, 빈 상태**) |
+| `student` | 학생 러너 | **1 틱 증분** — 일부는 다음 미션 통과(battle_event+제출+활동), 병목 학생은 WAF 실패 누적. 여러 번 누르면 대시보드가 점점 채워짐 |
+| `analyze [--ai]` | 분석가 | **실제 파이프라인** — `lab_monitor.snapshot_progress`(진도 재계산)·병목 피드백·`integrate_feedback`(통합)·`reco`(추천) 산출, 내레이션 |
+| `run [--ticks N] [--ai]` | 전체 | setup → student×N → analyze 한 번에 |
+
+- **검증**(`run --ticks 3`): setup(빈) → tick1 전원 미션1 통과 → tick2 fast/mid 미션2·병목 2명 WAF 실패 → tick3 일부 미션3 → analyze(평균 61%·완주 1·병목 2, 학생별 통합 피드백+추천 직무). API 반영 확인(활성 배틀 progress·s1 통합 피드백). `--ai` 로 통합 피드백을 claude 라이브 작성(라이브 분석 장면용).
+
+### 두 가지 데이터 준비 경로
+- `seed_demo_cohort.py` — **원샷 풀 시드**(정적 최종 상태, 리허설/빠른 세팅).
+- `orchestrate_demo.py` — **CC 오케스트레이션**(setup → student 틱 라이브 → analyze, 촬영용).
+
+### 촬영 러너(권장)
+1. `orchestrate_demo.py setup` — 교수 관제 대시보드 열어두면 "학생 0/빈 상태".
+2. `orchestrate_demo.py student` 를 3~5회 — 대시보드 새로고침마다 완성도·병목이 **실시간처럼** 채워짐(Scene 1: 학생 실습).
+3. `orchestrate_demo.py analyze --ai` — CC가 분석·피드백·추천 생성(Scene 2). 콘솔 내레이션을 화면에.
+4. 교수 관제 대시보드 드릴다운(Scene 3) → 학생 로그인 개인 대시보드(Scene 4).
+
+_작성: Claude Code. 상태: Phase 0·1·2 + G6 완료(v5). 전체 시연 흐름(데이터→대시보드→오케스트레이션) 준비 완료._
