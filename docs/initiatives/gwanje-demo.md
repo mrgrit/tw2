@@ -238,4 +238,12 @@ Admin '중앙 SIEM' 탭은 tw2 **자체 OpenSearch**(`OPENSEARCH_URL`)를 전제
 - **tw2 중앙 SIEM 탭** = tw2 코호트 문맥으로 stamp 된 학생 활동(학생/종류/시나리오 집계)
 - **tw2 관제 대시보드** = 그 위의 AI 분석(진도·병목·피드백·추천)
 
-_작성: Claude Code. 상태: Phase 0·1·2 + G6 + 검증/버그수정 + 중앙 SIEM(v7). AI 채점·피드백·중앙 SIEM 모두 가동._
+### v7.1 — 임베드 OpenSearch Dashboards (raw 데이터 수작업 분석)
+"AI 분석 외에 raw 로그를 사람이 직접 Discover 로 파고들 수도 있다"를 보여주는 임베드 iframe.
+- **OSD 컨테이너**: `tw2-osd`(opensearch-dashboards:2.11.1, 보안 비활성, docker net `tw2-siem` 로 tw2-opensearch 연결, `127.0.0.1:5602`). 임베드 차단 헤더 없음 확인.
+- **공개 터널**: `scripts/tw2-osd-tunnel.service`(systemd, cloudflared → 5602). ⚠ quick tunnel URL 은 재기동 시 바뀜 → 바뀌면 `.env` `OPENSEARCH_DASHBOARDS_URL` 갱신 + tw2-api 재기동.
+- **배선**: `.env` `OPENSEARCH_DASHBOARDS_URL=<터널>` → SIEM 탭 코호트 선택 시 `ensure_cohort_objects` 가 OSD 에 **data-view(dv-N)+저장검색(se-N)+대시보드(dash-N, raw 활동 표)** 멱등 생성 → iframe 렌더 + "새 탭" 딥링크.
+- **검증**: provisioned dv-3/se-3/dash-3, OSD 가 인덱스 116건 조회(김민수 nmap/whatweb 등 raw payload), 외부 터널 200.
+- **재시드 후**: `backfill_siem.py` 재실행 + SIEM 탭에서 코호트 재선택(객체 reconcile).
+
+_작성: Claude Code. 상태: Phase 0·1·2 + G6 + 검증/버그수정 + 중앙 SIEM + 임베드 OSD(v7.1). AI 채점·피드백·중앙 SIEM(네이티브+임베드 Dashboards) 모두 가동._
