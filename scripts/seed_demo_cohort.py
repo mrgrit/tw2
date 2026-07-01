@@ -129,8 +129,10 @@ async def main(purge_only: bool = False):
         s.add(section); await s.flush()
 
         # ── 교수 + 학생 + 멤버십 ──
+        # 교수: 관제 대시보드/피드백 등 admin-gated API 접근을 위해 admin 역할.
+        # (정식 instructor-RBAC 는 후속 과제 — 지금은 데모 편의상 admin.)
         prof = User(email=f"{INSTRUCTOR[1]}@{DEMO_DOMAIN}", name=INSTRUCTOR[0],
-                    password_hash=hash_password(DEMO_PW), role="student")  # 강사 UI는 멤버십 role로
+                    password_hash=hash_password(DEMO_PW), role="admin")
         s.add(prof); await s.flush()
         s.add(CohortMembership(cohort_id=section.id, user_id=prof.id, role="instructor"))
 

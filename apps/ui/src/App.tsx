@@ -8,6 +8,7 @@ import Battle from './pages/Battle.tsx'
 import MyWork from './pages/MyWork.tsx'
 import Leaderboard from './pages/Leaderboard.tsx'
 import Admin from './pages/Admin.tsx'
+import Monitor from './pages/Monitor.tsx'
 import Initiative from './pages/Initiative.tsx'
 import Training from './pages/Training.tsx'
 import Profile from './pages/Profile.tsx'
@@ -35,6 +36,7 @@ function NavBar() {
       <Link to="/mywork">내 워크북</Link>
       <Link to="/leaderboard">리더보드</Link>
       <Link to="/initiative">이니셔티브</Link>
+      {isAdmin() && <Link to="/monitor">관제 대시보드</Link>}
       {isAdmin() && <Link to="/admin">관리자</Link>}
       <div style={{ flex: 1 }} />
       <Link to="/profile" style={{ color: 'var(--fg-dim)', fontSize: 13 }}>
@@ -74,6 +76,7 @@ export default function App() {
           <Route path="/leaderboard" element={<RequireAuth><Leaderboard /></RequireAuth>} />
           <Route path="/initiative"  element={<RequireAuth><Initiative /></RequireAuth>} />
           <Route path="/training"    element={<RequireAuth><Training /></RequireAuth>} />
+          <Route path="/monitor"     element={<RequireAdmin><Monitor /></RequireAdmin>} />
           <Route path="/admin"       element={<RequireAdmin><Admin /></RequireAdmin>} />
         </Routes>
       </main>

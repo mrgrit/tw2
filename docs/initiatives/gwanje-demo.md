@@ -134,4 +134,23 @@
 - **주의**: `/monitoring/siem/{search,stats,ask}` 는 **중앙 OpenSearch** 경로라 `TUBEWAR_LAB_MONITOR=0`(기본)에서 `enabled:false`. 데모 대시보드는 **OpenSearch가 아니라 로컬 엔드포인트**(progress/clears/activity/feedback) 위에 만든다.
 - 검증 완료: `GET /monitoring/battles/1/progress` 가 학생별 완성도(100/75/50/25%)+병목 플래그를 정확히 반환.
 
-_작성: Claude Code. 상태: Phase 0 완료(v2). 다음 = Phase 1 교수 대시보드 시각화(위 로컬 엔드포인트 기반)._
+---
+
+## 10. Phase 1 완료 노트 (v3) — 교수 관제 대시보드
+
+**신규 메뉴 `관제 대시보드`(`/monitor`, admin 게이팅)** 추가 — `apps/ui/src/pages/Monitor.tsx`.
+
+- **접근**: `prof@demo.ac.kr`(admin) 로그인 → 상단 `관제 대시보드` 메뉴. (정식 instructor-RBAC 는 후속 — 지금은 교수를 admin 역할로.)
+- **화면 구성**(로컬 엔드포인트 기반, 차트 라이브러리 없이 순수 CSS):
+  - 배틀 선택 드롭다운(`/battles`).
+  - **KPI 4카드**: 학생 수 · 평균 완성도 · 완주 수 · 병목 학생 수.
+  - **완성도 분포**(버킷 막대) + **🚧 병목 랭킹**(클릭 시 드릴다운).
+  - **학생 카드 그리드**: 완성도 **링(conic-gradient)** + 미션 x/y + 병목/완주/진행중 배지. 카드 클릭 → 드릴다운.
+  - **드릴다운**: 병목 플래그 칩 + **피드백**(Markdown 렌더) + **활동 타임라인**(CMD/ALERT/LOG 배지, 실패 명령 빨강).
+- **데이터 소스**: `/battles`, `/monitoring/battles/{id}/progress`, `/monitoring/battles/{id}/activity?user_id=`, `/feedback?user_id=`.
+- **검증**: `tsc -b` 통과, 4개 엔드포인트 교수 토큰 E2E 확인(학생 7·병목 2·실패명령 5·피드백), UI 빌드·재기동 후 새 번들 서빙.
+
+### 다음(Phase 2 후보)
+학생 개인 대시보드(진도·히스토리·**통합 피드백**·**AI 추천 직무**) + G2 통합 피드백 파이프라인 + G3 추천 직무 API/카드.
+
+_작성: Claude Code. 상태: Phase 1 완료(v3). 데모 즉시 시연 가능(prof 로그인 → 관제 대시보드)._
