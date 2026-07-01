@@ -153,4 +153,19 @@
 ### 다음(Phase 2 후보)
 학생 개인 대시보드(진도·히스토리·**통합 피드백**·**AI 추천 직무**) + G2 통합 피드백 파이프라인 + G3 추천 직무 API/카드.
 
-_작성: Claude Code. 상태: Phase 1 완료(v3). 데모 즉시 시연 가능(prof 로그인 → 관제 대시보드)._
+---
+
+## 11. Phase 2 완료 노트 (v4) — 학생 대시보드 · 통합 피드백 · AI 추천 직무
+
+- **G3 AI 추천 직무**: `app/services/reco.py` — 채점 통과 제출의 mission_side/event_type + 시나리오 category → 강점 태그 → 직무 카탈로그(웹모의해킹·레드팀·SOC·DFIR·취약점진단·AI보안) 매칭·랭킹(근거 포함). `GET /me/recommendations`.
+  - 검증: s1(공격)→**웹 모의해킹 99% · 레드팀 89%**, s2(방어)→**SOC 99% · DFIR 95%**. 성향을 정확히 반영.
+- **G2 통합 피드백**: `feedback.integrate_feedback` — 건건(lab) 피드백 + 제출 통계 + 진도 + 추천 직무 → `scope=periodic` 통합 피드백. `POST /feedback/students/{id}/integrate`(교수, use_ai 옵션). 시드가 use_ai=False(결정론)로 학생마다 1건 생성.
+- **G5 학생 개인 대시보드**: `Dashboard.tsx` 재작성 — 완성도 링 + 통계(완료/통과율/점수) · **AI 추천 직무 카드**(적합도 막대·근거 칩) · **통합 피드백**(Markdown) · 세부 피드백(접이식) · **학습 히스토리**(미션·판정·점수). 데이터 없으면 온보딩.
+  - 데이터 소스: `/feedback/me`(통합의 basis.stats 로 진도) · `/me/recommendations` · `/me/submissions`.
+- 검증: `tsc -b` 통과, 백엔드 E2E(추천·통합·제출), UI 빌드·재기동, **터널 URL 유지**(Requires 제거 효과) 확인.
+- 교수 관제 대시보드 드릴다운의 피드백에 통합 피드백(추천 직무 포함)이 함께 노출 → 교수도 학생 추천 직무 확인 가능.
+
+### 남은 후속(선택)
+정식 instructor-RBAC(교수를 admin 대신 강사 역할로) · 통합 피드백/추천의 라이브 AI 생성(use_ai=True) 시연 · CC 오케스트레이션(G6, 학생 시뮬 러너).
+
+_작성: Claude Code. 상태: Phase 0·1·2 완료(v4). 학생/교수 양쪽 대시보드 시연 준비 완료._

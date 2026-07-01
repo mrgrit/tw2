@@ -18,8 +18,18 @@ from ..schemas import StudentSubmissionOut
 from ..security import get_current_user
 from ..services import workbook as wb
 from ..services import infra_render
+from ..services import reco
 
 router = APIRouter(prefix="/me", tags=["me"])
+
+
+@router.get("/recommendations")
+async def my_recommendations(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """내 실습 이력 기반 AI 추천 직무 — 강점 태그 매칭(결정론, 근거 포함)."""
+    return await reco.recommend_jobs(session, user.id)
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 

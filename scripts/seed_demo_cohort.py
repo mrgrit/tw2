@@ -285,6 +285,14 @@ async def main(purge_only: bool = False):
 
         await s.commit()
 
+        # ── 통합 피드백(scope=periodic) — 건건+통계+추천 종합. use_ai=False(결정론, 무료) ──
+        from app.services import feedback as fb_svc  # noqa: E402
+        for u in students:
+            await fb_svc.integrate_feedback(
+                s, user_id=u.id, cohort_id=section.id, battle_id=battle.id,
+                created_by=prof.id, use_ai=False)
+            counts["feedback"] += 1
+
         print("=== Phase 0 시드 완료 ===")
         print(f"코호트: {dept.name} > {course.name} > {section.name} (section id={section.id})")
         print(f"교수: {prof.email} / 학생 {len(students)}명 (비번 {DEMO_PW})")

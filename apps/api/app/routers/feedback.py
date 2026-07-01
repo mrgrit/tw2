@@ -75,6 +75,25 @@ async def create_feedback(
     return _out(fb)
 
 
+@router.post("/students/{target_user_id}/integrate", response_model=StudentFeedbackOut, status_code=201)
+async def integrate_feedback(
+    target_user_id: int,
+    cohort_id: int | None = None,
+    battle_id: int | None = None,
+    use_ai: bool = True,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> StudentFeedbackOut:
+    """건건(lab) 피드백 + 통계 + 추천 직무 → **통합 피드백**(scope=periodic) 생성."""
+    try:
+        fb = await fb_svc.integrate_feedback(
+            session, user_id=target_user_id, cohort_id=cohort_id,
+            battle_id=battle_id, created_by=admin.id, use_ai=use_ai)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return _out(fb)
+
+
 @router.post("/{feedback_id}/regenerate", response_model=StudentFeedbackOut, status_code=201)
 async def regenerate_feedback(
     feedback_id: int,

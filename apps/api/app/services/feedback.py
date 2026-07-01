@@ -140,6 +140,107 @@ async def generate_feedback(
     return fb
 
 
+def _integrate_summary(name: str, stats: dict, lab_points: list[str], jobs: list[dict]) -> str:
+    """통합 피드백 결정론 요약 — 건건 피드백·제출 통계·추천 직무를 근거로만 종합(날조 없음)."""
+    lines = [f"### 통합 학습 피드백 — {name}", ""]
+    lines.append(f"**종합 진도** {stats['completion']}% ({stats['done']}/{stats['total']} 미션) · "
+                 f"통과율 {stats['pass_rate']}% ({stats['passed']}/{stats['graded']}) · "
+                 f"획득 {stats['points']}점")
+    if jobs:
+        j = jobs[0]
+        lines.append(f"\n**강점 요약** — 실습 이력이 **{j['title']}**(적합도 {j['match']}%)에 가깝습니다"
+                     + (f" ({', '.join(j['why'])})." if j.get("why") else "."))
+    if stats.get("bottleneck"):
+        lines.append(f"\n**개선점** — 병목 신호({', '.join(stats['bottleneck'])})가 잡힌 단계를 "
+                     f"다시 점검하세요(명령 결과·로그 위주).")
+    elif stats["pass_rate"] < 100:
+        lines.append("\n**개선점** — 근거 서술을 더 구체화하면 부분 통과 미션을 만점권으로 올릴 수 있습니다.")
+    if lab_points:
+        lines.append("\n**세부 피드백 종합**")
+        for p in lab_points[:4]:
+            lines.append(f"- {p}")
+    if len(jobs) > 1:
+        lines.append("\n**추천 직무** — " + " · ".join(f"{j['title']}({j['match']}%)" for j in jobs))
+    return "\n".join(lines)
+
+
+async def integrate_feedback(
+    session: AsyncSession, *, user_id: int, cohort_id: int | None = None,
+    battle_id: int | None = None, created_by: int | None = None, use_ai: bool = True,
+) -> StudentFeedback:
+    """건건(lab) 피드백 + 제출 통계 + 진도 + 추천 직무 → **통합 피드백**(scope=periodic).
+
+    작성만 CC(옵션), 집계·근거는 결정론. claude 미가용/off 면 결정론 요약을 그대로 저장한다.
+    """
+    from ..models import StudentSubmission
+    from . import reco
+    u = await session.get(User, user_id)
+    if not u:
+        raise ValueError(f"user {user_id} not found")
+
+    labs = (await session.scalars(
+        select(StudentFeedback).where(
+            StudentFeedback.user_id == user_id, StudentFeedback.scope == "lab"
+        ).order_by(StudentFeedback.id)
+    )).all()
+    subs = (await session.scalars(
+        select(StudentSubmission).where(
+            StudentSubmission.user_id == user_id,
+            StudentSubmission.grade_status == "graded")
+    )).all()
+    prog = await session.scalar(
+        select(ProgressSnapshot).where(ProgressSnapshot.user_id == user_id)
+        .order_by(ProgressSnapshot.id.desc()).limit(1))
+    jobs = await reco.recommend_jobs(session, user_id)
+
+    graded = len(subs)
+    passed = sum(1 for s in subs if (s.verdict or "").lower() == "pass")
+    points = sum(int(s.awarded_points or 0) for s in subs)
+    stats = {
+        "completion": float(prog.completion) if prog else 0.0,
+        "done": prog.steps_done if prog else 0,
+        "total": prog.steps_total if prog else 0,
+        "graded": graded, "passed": passed,
+        "pass_rate": round(100 * passed / graded) if graded else 0,
+        "points": points,
+        "bottleneck": list((prog.bottleneck_flags or {}).keys()) if prog else [],
+    }
+    # 건건 피드백의 요지(첫 유의 문장) 추출 — 날조 없이 재사용
+    lab_points: list[str] = []
+    for f in labs:
+        for ln in (f.content_md or "").splitlines():
+            t = ln.strip().lstrip("#-* ").strip()
+            if len(t) > 12 and not t.startswith("###"):
+                lab_points.append(t[:110]); break
+
+    summary = _integrate_summary(u.name, stats, lab_points, jobs)
+    if use_ai:
+        payload = {"student": {"name": u.name}, "task": "여러 건건 피드백과 통계를 하나의 통합 피드백으로",
+                   "stats": stats, "lab_feedback_points": lab_points,
+                   "recommended_jobs": [{"title": j["title"], "match": j["match"], "why": j["why"]} for j in jobs]}
+        try:
+            content_md, model, cost = await _claude_feedback(payload)
+            if model == "deterministic-fallback":     # per-item fallback 은 부적합 → 통합 요약 사용
+                content_md, model, cost = summary, "integrate-rule", 0.0
+        except Exception:
+            content_md, model, cost = summary, "integrate-rule", 0.0
+    else:
+        content_md, model, cost = summary, "integrate-rule", 0.0
+
+    fb = StudentFeedback(
+        user_id=user_id, cohort_id=cohort_id, battle_id=battle_id,
+        scope="periodic", trigger="manual", content_md=content_md,
+        basis={"stats": stats, "lab_feedback_ids": [f.id for f in labs],
+               "recommended_jobs": [j["id"] for j in jobs]},
+        model=model, cost_usd=int(round(cost * 1_000_000)),
+        delivered_to="student", created_by=created_by,
+    )
+    session.add(fb)
+    await session.commit()
+    await session.refresh(fb)
+    return fb
+
+
 async def bottleneck_feedback_cb(session: AsyncSession, battle_id: int, user_id: int,
                                  progress: dict) -> None:
     """lab_monitor 의 stuck 학생 콜백 — 병목 트리거 피드백 작성.
