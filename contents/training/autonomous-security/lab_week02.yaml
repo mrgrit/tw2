@@ -1,0 +1,157 @@
+lab_id: autonomous-security-week02
+title: "W02 — LLM 에이전트 기초: 도구 선택(ReAct)·에이전트 루프·컨텍스트 관리"
+version: ai
+course: autonomous-security
+week: 2
+description: |
+  LLM 에이전트 기본. GPU LLM으로 ReAct 도구 선택(TOOL_SELECTED), 생각→행동→관찰 루프(AGENT_LOOP),
+  컨텍스트 관리(CONTEXT_MANAGED), 종합(Assessment).
+  bastion SubAgent의 기본 동작 — 도구·컨텍스트·루프 제어. el34 GPU로 실제 추론 확인.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 보안 (2주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W02 강의안 정독 — §0.5(ReAct·도구·컨텍스트·루프 제어)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "GPU ReAct 도구 선택(TOOL_SELECTED)"
+  - "ReAct 루프(AGENT_LOOP)"
+  - "컨텍스트 관리(CONTEXT_MANAGED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 도구 선택(ReAct) → TOOL_SELECTED
+      > **🎯 목표:** GPU LLM이 상황에 맞는 도구를 ReAct로 선택.
+      > **개념:** 에이전트는 도구 목록에서 상황에 맞는 것을 고른다.
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"You are a security agent with these tools: read_log(path), check_ip_reputation(ip), list_processes(host), block_ip(ip). Task: a SIEM alert reports repeated failed logins from IP 203.0.113.5. Think step by step (ReAct): state a one-line Thought, then choose the single most appropriate FIRST tool as Action with its argument. Do not block yet; investigate first. End with exactly TOOL_SELECTED on its own line.","stream":false,"options":{"num_predict":200}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'TOOL_SELECTED' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `TOOL_SELECTED` (LLM이 조사 도구를 선택; 대개 check_ip_reputation 또는 read_log).
+      🔎 에이전트는 "먼저 조사"라는 원칙에 따라 차단(block_ip)이 아니라 조사 도구(평판·로그)를 고른다. ReAct: 생각→도구 선택.
+    answer: |
+      Thought: I should investigate the source IP before taking action.
+      Action: check_ip_reputation("203.0.113.5")
+      TOOL_SELECTED
+    answer_detail: "GPU LLM이 ReAct로 조사 도구 선택 → TOOL_SELECTED."
+    verify:
+      type: output_contains
+      expect: TOOL_SELECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — ReAct 루프 → AGENT_LOOP
+      > **🎯 목표:** 생각→행동→관찰 루프가 목표까지 반복되는지 확인.
+      > **개념:** 관찰을 보고 다음 행동을 결정하며 수렴.
+      ```bash
+      python3 - <<'PY'
+      # ReAct 루프 트레이스(도구 결과에 따라 다음 행동)
+      trace=[{"thought":"investigate source IP","action":"check_ip_reputation(203.0.113.5)","obs":"malicious (known bruteforcer)"},
+             {"thought":"IP is malicious, check affected host","action":"read_log(/var/log/auth.log)","obs":"50 failed logins, 0 success"},
+             {"thought":"no success -> contain source","action":"block_ip(203.0.113.5)","obs":"blocked"}]
+      for i,s in enumerate(trace,1): print(f"  step{i}: T:{s['thought'][:28]} | A:{s['action']} | O:{s['obs'][:24]}")
+      # 각 행동이 이전 관찰에 근거하고 마지막이 결론 행동이면 루프 성립
+      grounded = all(trace[i]["action"] for i in range(len(trace)))
+      converged = "block" in trace[-1]["action"]
+      print(f"steps: {len(trace)}, converged: {converged}")
+      print("AGENT_LOOP" if grounded and converged and len(trace)>=3 else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `AGENT_LOOP` (생각→행동→관찰 3단계가 관찰에 근거해 결론까지 수렴).
+      🔎 각 행동이 이전 관찰에 근거(악성 확인→로그→차단). 관찰을 보고 다음을 결정하며 목표(봉쇄)에 수렴. ReAct 루프.
+    answer: |
+      step1: T:investigate source IP | A:check_ip_reputation(203.0.113.5) | O:malicious (known brutef
+      step2: T:IP is malicious, check affe | A:read_log(/var/log/auth.log) | O:50 failed logins, 0 su
+      step3: T:no success -> contain sourc | A:block_ip(203.0.113.5) | O:blocked
+      steps: 3, converged: True
+      AGENT_LOOP
+    answer_detail: "관찰 근거 ReAct 루프가 결론까지 수렴 → AGENT_LOOP."
+    verify:
+      type: output_contains
+      expect: AGENT_LOOP
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 컨텍스트 관리 → CONTEXT_MANAGED
+      > **🎯 목표:** 컨텍스트 창을 넘지 않게 관련 정보만 유지.
+      > **개념:** 넘치면 판단 흐려짐 — 선별·요약.
+      ```bash
+      python3 - <<'PY'
+      CONTEXT_LIMIT=1000  # 토큰(예시)
+      items=[{"info":"mission: investigate alert","tokens":50,"relevant":True},
+             {"info":"tool list","tokens":100,"relevant":True},
+             {"info":"latest observation (auth.log)","tokens":300,"relevant":True},
+             {"info":"old unrelated chat history","tokens":800,"relevant":False},
+             {"info":"knowledge: bruteforce TTP","tokens":200,"relevant":True}]
+      # 무관 항목 제거 + 관련 항목만 유지(요약)
+      kept=[x for x in items if x["relevant"]]
+      total=sum(x["tokens"] for x in kept)
+      for x in items: print(f"  {'KEEP' if x['relevant'] else 'DROP'} ({x['tokens']}tok): {x['info']}")
+      print(f"context after pruning: {total}/{CONTEXT_LIMIT} tokens")
+      # 무관 제거로 한도 내 + 관련 정보 보존
+      print("CONTEXT_MANAGED" if total<=CONTEXT_LIMIT and all(x['relevant'] for x in kept) else "OVERFLOW")
+      PY
+      ```
+      ✅ 마지막 줄 `CONTEXT_MANAGED` (무관 800토큰 제거 → 한도 내, 관련 정보 유지).
+      🔎 무관한 오래된 대화(800tok)를 버리고 관련 정보(임무·도구·관찰·지식)만 유지해 한도 내로. 명확한 컨텍스트가 정확한 판단.
+    answer: |
+      KEEP (50tok): mission: investigate alert
+      KEEP (100tok): tool list
+      KEEP (300tok): latest observation (auth.log)
+      DROP (800tok): old unrelated chat history
+      KEEP (200tok): knowledge: bruteforce TTP
+      context after pruning: 650/1000 tokens
+      CONTEXT_MANAGED
+    answer_detail: "무관 제거·관련 정보 유지로 컨텍스트 관리 → CONTEXT_MANAGED."
+    verify:
+      type: output_contains
+      expect: CONTEXT_MANAGED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W02 on LLM agents. Findings: the agent selected an investigation tool via ReAct reasoning (TOOL_SELECTED), ran a think-act-observe loop that converged to containment (AGENT_LOOP), and managed context by pruning irrelevant history to stay within the window (CONTEXT_MANAGED). Explain that an LLM agent uses ReAct (thought-action-observation) with tools, that context should keep only relevant information, and that loop control keeps it safe. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: LLM 에이전트=ReAct(생각·행동·관찰) 도구 루프. 관련 컨텍스트만 유지+루프 제어로 안정·안전. bastion SubAgent의 기본.
+      다음 주(W03)는 **Bastion 프로젝트 생명주기**.
+    answer: |
+      Assessment
+      An LLM agent uses ReAct (thought-action-observation) with tools, not a single call, and keeps only relevant context within the window.
+      Loop control (max steps, stop conditions, guardrails) keeps it safe; this is the basis of a bastion SubAgent.
+    answer_detail: "W02 LLM 에이전트 종합(Assessment). ReAct·도구·컨텍스트·루프 제어."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

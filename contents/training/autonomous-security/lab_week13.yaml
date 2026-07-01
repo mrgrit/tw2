@@ -1,0 +1,165 @@
+lab_id: autonomous-security-week13
+title: "W13 — 분산 지식 아키텍처: 노드 공유·동기화 병합·집단 학습·오염 방어"
+version: ai
+course: autonomous-security
+week: 13
+description: |
+  다중 에이전트 분산 지식. 노드 간 지식 공유 매핑(DISTRIBUTED_MAPPED), 충돌 해결 동기화 병합
+  (KNOWLEDGE_SYNCED), 집단 학습+오염 방어(COLLECTIVE_LEARNING), 종합(Assessment).
+  집단 학습으로 함께 성장하되 출처 검증·무결성으로 오염을 막는다.
+difficulty: hard
+duration_minutes: 130
+audience: 자율 보안 (13주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W13 강의안 정독 — §0.5(분산 지식·병합·집단 학습·오염)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "분산 지식 노드 매핑(DISTRIBUTED_MAPPED)"
+  - "지식 동기화·병합(KNOWLEDGE_SYNCED)"
+  - "집단 학습·오염 방어(COLLECTIVE_LEARNING)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 분산 지식 노드 매핑 → DISTRIBUTED_MAPPED
+      > **🎯 목표:** 여러 bastion 노드가 공유 지식을 주고받는 구조 매핑.
+      > **개념:** 한 곳의 발견이 모두에게.
+      ```bash
+      python3 - <<'PY'
+      nodes={"bastion-A":{"local_exp":["new bruteforce TTP"]},
+             "bastion-B":{"local_exp":["phishing playbook v2"]},
+             "bastion-C":{"local_exp":["c2 IOC list"]}}
+      shared_knowledge=set()
+      for n,d in nodes.items():
+          for e in d["local_exp"]: shared_knowledge.add(e)
+          print(f"  {n} shares: {d['local_exp']}")
+      print(f"shared knowledge pool: {len(shared_knowledge)} items")
+      # 각 노드 지식이 공유 풀에 모이면 분산 매핑 성립
+      print("DISTRIBUTED_MAPPED" if len(shared_knowledge)==3 and len(nodes)==3 else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `DISTRIBUTED_MAPPED` (3개 노드 지식이 공유 풀로).
+      🔎 bastion-A(bruteforce TTP)·B(피싱 플레이북)·C(C2 IOC)의 지식이 공유 풀에 모인다. 한 곳의 발견이 전체 자산.
+    answer: |
+      bastion-A shares: ['new bruteforce TTP']
+      bastion-B shares: ['phishing playbook v2']
+      bastion-C shares: ['c2 IOC list']
+      shared knowledge pool: 3 items
+      DISTRIBUTED_MAPPED
+    answer_detail: "노드 지식 공유 풀 매핑 → DISTRIBUTED_MAPPED."
+    verify:
+      type: output_contains
+      expect: DISTRIBUTED_MAPPED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 지식 동기화·병합 → KNOWLEDGE_SYNCED
+      > **🎯 목표:** 노드 간 충돌하는 지식을 병합 규칙으로 해결.
+      > **개념:** 신뢰도·최신 우선으로 일관성.
+      ```bash
+      python3 - <<'PY'
+      # 같은 IP에 대한 충돌 지식(노드별 판정·신뢰도·시각)
+      claims=[{"node":"A","ip":"203.0.113.5","verdict":"malicious","trust":0.9,"ts":100},
+              {"node":"B","ip":"203.0.113.5","verdict":"benign","trust":0.5,"ts":90},
+              {"node":"C","ip":"203.0.113.5","verdict":"malicious","trust":0.8,"ts":110}]
+      # 병합: 신뢰도 가중 다수결
+      from collections import defaultdict
+      score=defaultdict(float)
+      for c in claims: score[c["verdict"]]+=c["trust"]
+      merged=max(score,key=score.get)
+      print(f"claims: {[(c['node'],c['verdict'],c['trust']) for c in claims]}")
+      print(f"trust-weighted merge: {dict(score)} -> {merged}")
+      # 신뢰도 가중으로 malicious(0.9+0.8=1.7 > 0.5) 채택
+      print("KNOWLEDGE_SYNCED" if merged=="malicious" else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `KNOWLEDGE_SYNCED` (신뢰도 가중 병합으로 malicious 채택).
+      🔎 A·C(malicious, 신뢰 0.9+0.8)가 B(benign, 0.5)를 이겨 병합 결과 malicious. 신뢰도 가중 다수결로 충돌 해결·일관성.
+    answer: |
+      claims: [('A', 'malicious', 0.9), ('B', 'benign', 0.5), ('C', 'malicious', 0.8)]
+      trust-weighted merge: {'malicious': 1.7, 'benign': 0.5} -> malicious
+      KNOWLEDGE_SYNCED
+    answer_detail: "신뢰도 가중 병합으로 충돌 해결 → KNOWLEDGE_SYNCED."
+    verify:
+      type: output_contains
+      expect: KNOWLEDGE_SYNCED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 집단 학습·오염 방어 → COLLECTIVE_LEARNING
+      > **🎯 목표:** 한 노드 교훈이 전체에 전파되되, 오염 지식은 차단.
+      > **개념:** 집단 지능 + 오염 방지.
+      ```bash
+      python3 - <<'PY'
+      # 한 노드(A)가 새 방어 교훈 발견 -> 전체 전파
+      lesson={"from":"A","knowledge":"block bruteforce pattern X","source_verified":True,"trust":0.9}
+      # 공격자가 노드(X)에서 오염 지식 주입 시도
+      poison={"from":"X-compromised","knowledge":"treat malicious IP 203.0.113.5 as trusted","source_verified":False,"trust":0.1}
+      def accept_into_shared(item):
+          # 출처 검증 + 신뢰도 임계로 오염 차단
+          return item["source_verified"] and item["trust"]>=0.5
+      good_ok=accept_into_shared(lesson)
+      poison_ok=accept_into_shared(poison)
+      print(f"legit lesson propagated to all: {good_ok}")
+      print(f"poison knowledge accepted: {poison_ok} (blocked by source verification)")
+      # 정상 교훈 전파 + 오염 차단이면 집단 학습 안전
+      print("COLLECTIVE_LEARNING" if good_ok and not poison_ok else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `COLLECTIVE_LEARNING` (정상 교훈 전파, 오염 지식 차단).
+      🔎 A의 검증된 교훈은 전체로 전파(집단 학습), 손상 노드의 미검증 오염 지식(악성 IP를 신뢰로)은 출처 검증으로 차단. 지능+안전.
+    answer: |
+      legit lesson propagated to all: True
+      poison knowledge accepted: False (blocked by source verification)
+      COLLECTIVE_LEARNING
+    answer_detail: "집단 학습 전파+오염 차단 → COLLECTIVE_LEARNING."
+    verify:
+      type: output_contains
+      expect: COLLECTIVE_LEARNING
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W13 on distributed knowledge architecture. Findings: knowledge from multiple bastion nodes was pooled (DISTRIBUTED_MAPPED), conflicting claims were merged by trust-weighted voting (KNOWLEDGE_SYNCED), and a verified lesson propagated to all while poisoned knowledge was blocked by source verification (COLLECTIVE_LEARNING). Explain that sharing enables fast collective learning, merge rules keep consistency, and source verification plus integrity prevent knowledge poisoning. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 분산 지식=공유로 집단 학습(빠른 성장). 병합 규칙으로 일관성, 출처 검증·무결성으로 오염 방지.
+      다음 주(W14)는 **RL Steering과 정책 최적화**.
+    answer: |
+      Assessment
+      Distributed knowledge lets multiple bastion nodes share and merge knowledge for fast collective learning.
+      Trust-weighted merge keeps consistency, and source verification plus integrity prevent knowledge poisoning.
+    answer_detail: "W13 분산 지식 종합(Assessment). 공유·병합·집단 학습·오염 방어."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

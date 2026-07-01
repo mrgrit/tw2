@@ -1,0 +1,159 @@
+lab_id: autonomous-security-week15
+title: "W15 — 기말: 자율 Purple Team 순환·실행·핵심 원칙 종합"
+version: ai
+course: autonomous-security
+week: 15
+description: |
+  W01~W14 종합. 자율 Red→Blue→재검증 Purple 순환 설계(PURPLE_LOOP), 순환 실행으로 방어 강화
+  (CYCLE_EXECUTED), 자율 보안 핵심 원칙·안전 종합(SYNTHESIS), 최종 종합(Assessment).
+  능력과 안전을 함께 — 자율 보안의 결론.
+difficulty: hard
+duration_minutes: 150
+audience: 자율 보안 (15주차·기말)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W01~W14 실습 완료
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "자율 Purple 순환 설계(PURPLE_LOOP)"
+  - "Red→Blue→재검증 실행(CYCLE_EXECUTED)"
+  - "핵심 원칙 종합(SYNTHESIS)"
+  - "최종 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 자율 Purple 순환 설계 → PURPLE_LOOP
+      > **🎯 목표:** Red→Blue→재검증 닫힌 순환을 설계.
+      > **개념:** 공격에서 방어를 배우는 순환.
+      ```bash
+      python3 - <<'PY'
+      loop=[{"phase":"red","role":"autonomous attack finds vuln/path (W12, in-scope)"},
+            {"phase":"blue","role":"autonomous defense improves detection/response (W11)"},
+            {"phase":"verify","role":"red re-tests improved defense"}]
+      phases=[p["phase"] for p in loop]
+      for p in loop: print(f"  [{p['phase']:6}] {p['role']}")
+      # red->blue->verify 닫힌 순환(verify가 red로 되돌아감)
+      closed = phases==["red","blue","verify"]
+      print("PURPLE_LOOP" if closed else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `PURPLE_LOOP` (Red→Blue→재검증 닫힌 순환).
+      🔎 자율 Red(취약점 발견)→자율 Blue(방어 개선)→재검증(개선된 방어 재시험). 순환이 반복될수록 방어가 강해진다.
+    answer: |
+      [red   ] autonomous attack finds vuln/path (W12, in-scope)
+      [blue  ] autonomous defense improves detection/response (W11)
+      [verify] red re-tests improved defense
+      PURPLE_LOOP
+    answer_detail: "자율 Red→Blue→재검증 Purple 순환 설계 → PURPLE_LOOP."
+    verify:
+      type: output_contains
+      expect: PURPLE_LOOP
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — Red→Blue→재검증 실행 → CYCLE_EXECUTED
+      > **🎯 목표:** 순환을 실행해 방어가 강해지는지 확인.
+      > **개념:** 재검증에서 이전 공격이 막힌다.
+      ```bash
+      python3 - <<'PY'
+      # 1회차: Red가 SQL injection으로 침투 성공
+      red_round1={"attack":"sqli on /login","succeeded":True}
+      # Blue가 방어 개선(WAF 룰 + 입력 검증 배포)
+      blue_fix={"added":["WAF rule for sqli","input validation"],"deployed":True}
+      # 2회차: 같은 공격 재시험 -> 이제 막힘
+      def retest(attack, defenses):
+          return not ("sqli" in attack and "WAF rule for sqli" in defenses)  # 방어되면 실패
+      red_round2_succeeded = retest("sqli on /login", blue_fix["added"])
+      print(f"round1 Red sqli: succeeded={red_round1['succeeded']}")
+      print(f"Blue deployed: {blue_fix['added']}")
+      print(f"round2 Red sqli: succeeded={red_round2_succeeded} (defense now blocks it)")
+      # 1회차 성공 -> 개선 -> 2회차 차단이면 방어 강화 확인
+      print("CYCLE_EXECUTED" if red_round1["succeeded"] and not red_round2_succeeded else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `CYCLE_EXECUTED` (1회차 SQLi 성공 → Blue 개선 → 2회차 차단).
+      🔎 Red가 SQLi로 뚫음→Blue가 WAF 룰·입력 검증 배포→재검증에서 같은 공격 차단. 순환으로 방어가 실제로 강해졌다.
+    answer: |
+      round1 Red sqli: succeeded=True
+      Blue deployed: ['WAF rule for sqli', 'input validation']
+      round2 Red sqli: succeeded=False (defense now blocks it)
+      CYCLE_EXECUTED
+    answer_detail: "Purple 순환 실행으로 방어 강화 → CYCLE_EXECUTED."
+    verify:
+      type: output_contains
+      expect: CYCLE_EXECUTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 핵심 원칙 종합 → SYNTHESIS
+      > **🎯 목표:** 자율 보안 능력·안전 원칙이 통합됐는지 확인.
+      > **개념:** 능력과 안전을 함께.
+      ```bash
+      python3 - <<'PY'
+      capability={"agent_loop":True,"bastion_manager_subagent":True,"learning_memory_rl":True,
+                  "active_watcher":True,"distributed_purple":True}
+      safety={"guardrails":True,"audit_integrity":True,"reward_alignment":True,
+              "result_validation":True,"roe_scope":True,"poison_defense":True}
+      cap_ok=all(capability.values()); safe_ok=all(safety.values())
+      print(f"capability pillars: {sum(capability.values())}/{len(capability)} ok")
+      print(f"safety pillars: {sum(safety.values())}/{len(safety)} ok")
+      # 능력과 안전 모두 통합돼야 종합
+      print("SYNTHESIS" if cap_ok and safe_ok else "GAPS")
+      PY
+      ```
+      ✅ 마지막 줄 `SYNTHESIS` (능력 5+안전 6 원칙 모두 통합).
+      🔎 능력(루프·bastion·학습·능동성·협력)과 안전(가드레일·감사·정렬·검증·ROE·오염 방어)을 함께 통합. 과목의 결론: 능력+안전.
+    answer: |
+      capability pillars: 5/5 ok
+      safety pillars: 6/6 ok
+      SYNTHESIS
+    answer_detail: "자율 보안 능력·안전 원칙 종합 → SYNTHESIS. 과목 결론."
+    verify:
+      type: output_contains
+      expect: SYNTHESIS
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 최종 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a final capstone note for an autonomous security course. Findings: an autonomous Purple loop of Red -> Blue -> verify was designed (PURPLE_LOOP), executing it hardened defenses so a previously successful SQL injection was blocked on retest (CYCLE_EXECUTED), and both capability pillars (agent loop, bastion Manager/SubAgent, learning, active triggers, distributed Purple) and safety pillars (guardrails, audit integrity, reward alignment, result validation, ROE, poison defense) were integrated (SYNTHESIS). Conclude that autonomous security is the future of cyber defense but must build capability and safety together. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":340}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 자율 Purple=Red→Blue→재검증 순환으로 지속적 방어 강화. 자율 보안은 능력과 안전을 함께 구축해야 신뢰할 수 있다. 수고했습니다.
+      다음(ai-service-pentest)은 AI 서비스 모의해킹 과목.
+    answer: |
+      Assessment
+      An autonomous Purple loop (Red -> Blue -> verify) continuously hardens defenses, and autonomous security is the future of cyber defense.
+      It must build capability (agent loop, bastion, learning, active triggers, distributed Purple) and safety (guardrails, audit, alignment, validation, ROE, poison defense) together.
+    answer_detail: "W15 자율 Purple 기말 종합(Assessment). 순환·능력·안전 통합."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

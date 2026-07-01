@@ -1,0 +1,171 @@
+lab_id: autonomous-security-week01
+title: "W01 — 자율보안시스템 개론: 자율 루프 매핑·자율성 수준·가드레일"
+version: ai
+course: autonomous-security
+week: 1
+description: |
+  자율 보안 에이전트 기초. 인지→판단→행동→학습 루프 매핑(LOOP_MAPPED), 자율성 수준(human in/on/out of
+  loop) 평가(AUTONOMY_ASSESSED), 자율 행동 가드레일 설정(GUARDRAILS_SET), 종합(Assessment).
+  bastion 아키텍처(Manager+E.G, SubAgent+A2A)의 기반. 자율성과 안전의 균형.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 보안 입문 (1주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W01 강의안 정독 — §0.5(자율 루프·bastion·자율성 수준·가드레일)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "자율 보안 루프 매핑(LOOP_MAPPED)"
+  - "자율성 수준 평가(AUTONOMY_ASSESSED)"
+  - "가드레일 설정(GUARDRAILS_SET)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 자율 보안 루프 매핑 → LOOP_MAPPED
+      > **🎯 목표:** 자율 보안 에이전트의 인지→판단→행동→학습 루프를 매핑.
+      > **개념:** 매 순환마다 경험이 쌓여 개선.
+      ```bash
+      python3 - <<'PY'
+      loop=[{"phase":"perceive","example":"ingest SIEM alert / recon result"},
+            {"phase":"decide","example":"LLM + E.G plan response"},
+            {"phase":"act","example":"investigate / contain / attack step"},
+            {"phase":"learn","example":"store outcome in Experience DB"}]
+      phases=[s["phase"] for s in loop]
+      for s in loop: print(f"  [{s['phase']:8}] {s['example']}")
+      # 4단계 루프가 순환(learn->perceive)하면 매핑 완료
+      complete = phases==["perceive","decide","act","learn"]
+      print("LOOP_MAPPED" if complete else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `LOOP_MAPPED` (인지→판단→행동→학습 4단계 루프).
+      🔎 인지(이벤트 수집)→판단(LLM+E.G 계획)→행동(대응/공격)→학습(경험 DB 축적)→인지. 순환하며 개선.
+    answer: |
+      [perceive] ingest SIEM alert / recon result
+      [decide  ] LLM + E.G plan response
+      [act     ] investigate / contain / attack step
+      [learn   ] store outcome in Experience DB
+      LOOP_MAPPED
+    answer_detail: "자율 보안 루프(인지·판단·행동·학습) 매핑 → LOOP_MAPPED."
+    verify:
+      type: output_contains
+      expect: LOOP_MAPPED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 자율성 수준 평가 → AUTONOMY_ASSESSED
+      > **🎯 목표:** 행동 위험도에 따라 자율성 수준을 배정.
+      > **개념:** 위험 행동은 사람 승인, 안전 행동은 자율.
+      ```bash
+      python3 - <<'PY'
+      # 보안 행동별 위험도 → 자율성 수준
+      actions=[{"action":"collect logs / investigate","risk":"low"},
+               {"action":"quarantine host","risk":"high"},
+               {"action":"block IP at firewall","risk":"medium"},
+               {"action":"shut down production system","risk":"critical"}]
+      def level(risk):
+          return {"low":"human-out (autonomous)","medium":"human-on (supervised)",
+                  "high":"human-in (approval)","critical":"human-in (approval)"}[risk]
+      for a in actions: a["autonomy"]=level(a["risk"]); print(f"  {a['action']:32} [{a['risk']:8}] -> {a['autonomy']}")
+      # 위험할수록 사람 개입(critical/high는 승인)
+      correct = all(("human-in" in a["autonomy"]) for a in actions if a["risk"] in ("high","critical"))
+      print("AUTONOMY_ASSESSED" if correct else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `AUTONOMY_ASSESSED` (위험 행동=사람 승인, 안전 행동=자율).
+      🔎 조사(저위험)=완전 자율, IP 차단(중)=감독, 격리·종료(고/치명)=사람 승인. 위험도에 자율성 수준을 맞춘다.
+    answer: |
+      collect logs / investigate       [low     ] -> human-out (autonomous)
+      quarantine host                  [high    ] -> human-in (approval)
+      block IP at firewall             [medium  ] -> human-on (supervised)
+      shut down production system      [critical] -> human-in (approval)
+      AUTONOMY_ASSESSED
+    answer_detail: "행동 위험도별 자율성 수준 배정 → AUTONOMY_ASSESSED."
+    verify:
+      type: output_contains
+      expect: AUTONOMY_ASSESSED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 가드레일 설정 → GUARDRAILS_SET
+      > **🎯 목표:** 자율 행동의 안전 경계(가드레일)를 설정·검사.
+      > **개념:** 되돌릴 수 없는·범위 밖 행동을 차단.
+      ```bash
+      python3 - <<'PY'
+      GUARDRAILS={"allowed_targets":["10.20.30.0/24"],       # 범위 제한
+                  "forbidden_actions":["delete_data","disable_safety"],  # 금지
+                  "irreversible_needs_approval":True,
+                  "rate_limit_per_min":10}
+      def check(action):
+          if action["type"] in GUARDRAILS["forbidden_actions"]: return "BLOCK (forbidden)"
+          if action.get("target") and action["target"] not in GUARDRAILS["allowed_targets"]: return "BLOCK (out of scope)"
+          if action.get("irreversible") and GUARDRAILS["irreversible_needs_approval"]: return "APPROVAL required"
+          return "ALLOW"
+      tests=[{"type":"scan","target":"10.20.30.0/24"},
+             {"type":"delete_data","target":"10.20.30.0/24"},
+             {"type":"block","target":"8.8.8.8"},
+             {"type":"reimage","irreversible":True,"target":"10.20.30.0/24"}]
+      results=[check(t) for t in tests]
+      for t,r in zip(tests,results): print(f"  {t['type']:12} -> {r}")
+      # 금지·범위밖은 차단, 비가역은 승인, 정상은 허용
+      print("GUARDRAILS_SET" if results==["ALLOW","BLOCK (forbidden)","BLOCK (out of scope)","APPROVAL required"] else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `GUARDRAILS_SET` (금지·범위밖 차단, 비가역 승인, 정상 허용).
+      🔎 허용 범위·금지 행동·비가역 승인·속도 제한으로 자율 행동을 안전 경계 안에. 잘못된 자율 행동의 피해를 막는다.
+    answer: |
+      scan         -> ALLOW
+      delete_data  -> BLOCK (forbidden)
+      block        -> BLOCK (out of scope)
+      reimage      -> APPROVAL required
+      GUARDRAILS_SET
+    answer_detail: "자율 행동 가드레일(범위·금지·비가역·속도) 설정 → GUARDRAILS_SET."
+    verify:
+      type: output_contains
+      expect: GUARDRAILS_SET
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W01 of an autonomous security course. Findings: the perceive-decide-act-learn loop was mapped (LOOP_MAPPED), autonomy levels were assigned by action risk with high-risk actions requiring human approval (AUTONOMY_ASSESSED), and guardrails blocked forbidden and out-of-scope actions while requiring approval for irreversible ones (GUARDRAILS_SET). Explain the bastion architecture (Manager agent with knowledge graph and experience DB, SubAgent executing via A2A) and that autonomy needs guardrails and appropriate human-in/on/out-of-loop levels. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 자율 보안=인지·판단·행동·학습 루프(bastion: Manager+E.G, SubAgent+A2A). 자율성 수준+가드레일로 안전.
+      다음 주(W02)는 **LLM 에이전트 기초**.
+    answer: |
+      Assessment
+      Autonomous security runs a perceive-decide-act-learn loop; the bastion architecture uses a Manager agent (knowledge graph + experience DB) and a SubAgent executing via A2A.
+      Autonomy needs guardrails and risk-based human-in/on/out-of-loop levels so wrong autonomous actions are contained.
+    answer_detail: "W01 자율 보안 개론 종합(Assessment). 루프·bastion·자율성 수준·가드레일."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

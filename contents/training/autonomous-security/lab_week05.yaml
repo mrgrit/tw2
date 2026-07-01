@@ -1,0 +1,168 @@
+lab_id: autonomous-security-week05
+title: "W05 — Playbook 자동화: 플레이북 정의·조건 분기 실행·파라미터화 재사용"
+version: ai
+course: autonomous-security
+week: 5
+description: |
+  재사용 가능한 보안 플레이북. 트리거·단계·분기 정의(PLAYBOOK_DEFINED), 조건 분기 실행(PLAYBOOK_EXECUTED),
+  파라미터화 재사용(PLAYBOOK_REUSED), 종합(Assessment).
+  정형 절차 + LLM 적응 — 일관성·속도·감사·개선.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 보안 (5주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W05 강의안 정독 — §0.5(플레이북·트리거·분기·파라미터화)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "플레이북 정의(PLAYBOOK_DEFINED)"
+  - "조건 분기 실행(PLAYBOOK_EXECUTED)"
+  - "파라미터화 재사용(PLAYBOOK_REUSED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 플레이북 정의 → PLAYBOOK_DEFINED
+      > **🎯 목표:** 트리거·단계·분기·성공 기준을 갖춘 플레이북 정의.
+      > **개념:** 반복 임무를 재사용 절차로.
+      ```bash
+      python3 - <<'PY'
+      playbook={"name":"suspicious_ip_triage",
+                "trigger":"SIEM alert: repeated failed logins",
+                "params":["{ip}","{threshold}"],
+                "steps":["analyze auth log","check_ip_reputation({ip})","decide by reputation"],
+                "branches":{"malicious":"block + notify","benign":"log + close"},
+                "success":"decision made and recorded"}
+      required=["trigger","steps","branches","success"]
+      valid=all(playbook.get(k) for k in required) and len(playbook["branches"])>=2
+      for k in required: print(f"  {k}: {playbook[k]}")
+      print("PLAYBOOK_DEFINED" if valid else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `PLAYBOOK_DEFINED` (트리거·단계·분기·성공 기준 정의).
+      🔎 트리거(알림)·단계(분석·조회·판단)·분기(악성→차단/정상→종료)·성공 기준을 갖춘 재사용 플레이북. 파라미터({ip}) 포함.
+    answer: |
+      trigger: SIEM alert: repeated failed logins
+      steps: ['analyze auth log', 'check_ip_reputation({ip})', 'decide by reputation']
+      branches: {'malicious': 'block + notify', 'benign': 'log + close'}
+      success: decision made and recorded
+      PLAYBOOK_DEFINED
+    answer_detail: "트리거·단계·분기·성공 기준 플레이북 정의 → PLAYBOOK_DEFINED."
+    verify:
+      type: output_contains
+      expect: PLAYBOOK_DEFINED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 플레이북 실행 → PLAYBOOK_EXECUTED
+      > **🎯 목표:** 플레이북을 실행하며 조건에 따라 분기.
+      > **개념:** 관찰에 따라 다른 경로.
+      ```bash
+      python3 - <<'PY'
+      def run_playbook(ip, reputation):
+          trace=[]
+          trace.append(f"step1: analyze auth log for {ip}")
+          trace.append(f"step2: check_ip_reputation({ip}) -> {reputation}")
+          if reputation=="malicious":
+              trace.append("branch[malicious]: block + notify")
+              outcome="contained"
+          else:
+              trace.append("branch[benign]: log + close")
+              outcome="closed"
+          return trace, outcome
+      trace,outcome=run_playbook("203.0.113.5","malicious")
+      for t in trace: print(" ",t)
+      print(f"outcome: {outcome}")
+      # 악성 입력 -> 격리 분기 실행되면 성공
+      print("PLAYBOOK_EXECUTED" if outcome=="contained" else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `PLAYBOOK_EXECUTED` (악성 IP → 격리 분기 실행 → contained).
+      🔎 플레이북 실행: 로그 분석→평판 조회→악성이므로 격리 분기. 조건(관찰)에 따라 경로가 달라진다. 정형+적응.
+    answer: |
+      step1: analyze auth log for 203.0.113.5
+      step2: check_ip_reputation(203.0.113.5) -> malicious
+      branch[malicious]: block + notify
+      outcome: contained
+      PLAYBOOK_EXECUTED
+    answer_detail: "플레이북 조건 분기 실행 → PLAYBOOK_EXECUTED."
+    verify:
+      type: output_contains
+      expect: PLAYBOOK_EXECUTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 파라미터화 재사용 → PLAYBOOK_REUSED
+      > **🎯 목표:** 같은 플레이북을 다른 파라미터로 재사용.
+      > **개념:** 파라미터화가 재사용성을 높인다.
+      ```bash
+      python3 - <<'PY'
+      def run_playbook(ip, reputation):
+          if reputation=="malicious": return f"{ip}: contained"
+          return f"{ip}: closed"
+      # 하나의 플레이북을 여러 IP(파라미터)에 재사용
+      cases=[("203.0.113.5","malicious"),("198.51.100.7","benign"),("203.0.113.9","malicious")]
+      outcomes=[run_playbook(ip,rep) for ip,rep in cases]
+      for o in outcomes: print(" ",o)
+      # 파라미터만 바꿔 여러 케이스 일관 처리
+      reused = len(outcomes)==3 and any("contained" in o for o in outcomes) and any("closed" in o for o in outcomes)
+      print("PLAYBOOK_REUSED" if reused else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `PLAYBOOK_REUSED` (같은 플레이북을 3개 IP에 파라미터만 바꿔 재사용).
+      🔎 {ip} 파라미터만 바꿔 하나의 플레이북으로 여러 IP를 일관 처리. 파라미터화가 재사용성·확장성을 준다.
+    answer: |
+      203.0.113.5: contained
+      198.51.100.7: closed
+      203.0.113.9: contained
+      PLAYBOOK_REUSED
+    answer_detail: "파라미터화로 플레이북 재사용 → PLAYBOOK_REUSED."
+    verify:
+      type: output_contains
+      expect: PLAYBOOK_REUSED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W05 on security playbook automation. Findings: a suspicious-IP-triage playbook with trigger, steps, and branches was defined (PLAYBOOK_DEFINED), it executed with conditional branching to contain a malicious IP (PLAYBOOK_EXECUTED), and it was reused across multiple IPs via parameterization (PLAYBOOK_REUSED). Explain that playbooks structure repeated missions for consistency, speed, auditability, and improvement, and that LLM agents combine fixed procedure with situational adaptation. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 플레이북=반복 임무의 재사용 절차(트리거·단계·분기). 일관성·속도·감사·개선. LLM이 절차+적응 결합.
+      다음 주(W06)는 **PoW 작업증명과 블록체인**.
+    answer: |
+      Assessment
+      Playbooks structure repeated missions (trigger, steps, branches) for consistency, speed, auditability, and improvement.
+      LLM agents combine the fixed procedure with situational adaptation, and parameterization enables reuse across cases.
+    answer_detail: "W05 플레이북 종합(Assessment). 정의·분기 실행·파라미터화 재사용."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

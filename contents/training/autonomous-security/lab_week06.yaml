@@ -1,0 +1,173 @@
+lab_id: autonomous-security-week06
+title: "W06 — PoW 작업증명과 블록체인: 해시 체인 감사 로그·작업증명·변조 탐지"
+version: ai
+course: autonomous-security
+week: 6
+description: |
+  변조 불가 감사 로그. 에이전트 행동 해시 체인 구축(CHAIN_BUILT), 작업증명(nonce) 계산(POW_SOLVED),
+  블록 변조 시 체인 붕괴 탐지(TAMPER_DETECTED), 종합(Assessment).
+  실제 python 해시로 수행 — 해시 체인+PoW로 자율 에이전트 행동의 무결성.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 보안 (6주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W06 강의안 정독 — §0.5(해시 체인·PoW·변조 탐지)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "해시 체인 감사 로그 구축(CHAIN_BUILT)"
+  - "작업증명 계산(POW_SOLVED)"
+  - "변조 탐지(TAMPER_DETECTED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 해시 체인 감사 로그 → CHAIN_BUILT
+      > **🎯 목표:** 에이전트 행동을 해시 체인으로 연결.
+      > **개념:** 각 블록이 앞 블록 해시를 담아 사슬.
+      ```bash
+      python3 - <<'PY'
+      import hashlib
+      def h(s): return hashlib.sha256(s.encode()).hexdigest()
+      actions=["agent1: investigate alert #42","agent1: block_ip 203.0.113.5","agent2: quarantine host-7"]
+      chain=[]; prev="GENESIS"
+      for a in actions:
+          block={"action":a,"prev":prev}
+          block["hash"]=h(block["prev"]+block["action"])
+          chain.append(block); prev=block["hash"]
+      for i,b in enumerate(chain): print(f"  block{i}: {b['action'][:28]:28} prev={b['prev'][:8]} hash={b['hash'][:8]}")
+      # 각 블록이 앞 블록 해시를 prev로 담으면 체인 성립
+      linked=all(chain[i]["prev"]==chain[i-1]["hash"] for i in range(1,len(chain)))
+      print("CHAIN_BUILT" if linked and len(chain)==3 else "BROKEN")
+      PY
+      ```
+      ✅ 마지막 줄 `CHAIN_BUILT` (3개 행동 블록이 해시로 연결).
+      🔎 각 블록이 앞 블록의 hash를 prev로 담아 사슬. 에이전트 행동(조사·차단·격리)이 변조 불가 로그로 연결된다.
+    answer: |
+      block0: agent1: investigate alert #4  prev=GENESIS hash=<8자리>
+      block1: agent1: block_ip 203.0.113.5  prev=<8자리> hash=<8자리>
+      block2: agent2: quarantine host-7     prev=<8자리> hash=<8자리>
+      CHAIN_BUILT
+    answer_detail: "에이전트 행동 해시 체인 구축 → CHAIN_BUILT."
+    verify:
+      type: output_contains
+      expect: CHAIN_BUILT
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 작업증명 계산 → POW_SOLVED
+      > **🎯 목표:** 해시가 조건(앞자리 0)을 만족하는 nonce를 찾는다.
+      > **개념:** 계산 비용이 변조를 비싸게 만든다.
+      ```bash
+      python3 - <<'PY'
+      import hashlib
+      def h(s): return hashlib.sha256(s.encode()).hexdigest()
+      block_data="agent1: block_ip 203.0.113.5"
+      DIFFICULTY="00"   # 해시가 '00'으로 시작(16진), 시행착오로 탐색
+      nonce=0
+      while True:
+          digest=h(f"{block_data}{nonce}")
+          if digest.startswith(DIFFICULTY): break
+          nonce+=1
+      print(f"block: {block_data}")
+      print(f"found nonce={nonce}, hash={digest[:12]}... (starts with {DIFFICULTY})")
+      # nonce로 조건 만족 해시를 찾으면 PoW 성공
+      print("POW_SOLVED" if digest.startswith(DIFFICULTY) else "FAILED")
+      PY
+      ```
+      ✅ 마지막 줄 `POW_SOLVED` (해시가 '00'으로 시작하는 nonce 발견).
+      🔎 해시가 '00'으로 시작하는 nonce를 시행착오로 탐색(계산 비용). 변조하려면 이 PoW를 다시 풀어야 해서 비싸다 — 변조 억제.
+    answer: |
+      block: agent1: block_ip 203.0.113.5
+      found nonce=<정수>, hash=00...<12자리>... (starts with 00)
+      POW_SOLVED
+    answer_detail: "조건 만족 nonce 탐색(작업증명) → POW_SOLVED."
+    verify:
+      type: output_contains
+      expect: POW_SOLVED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 변조 탐지 → TAMPER_DETECTED
+      > **🎯 목표:** 블록 변조 시 체인이 깨지는지 검증.
+      > **개념:** 변조하면 해시 불일치로 드러난다.
+      ```bash
+      python3 - <<'PY'
+      import hashlib
+      def h(s): return hashlib.sha256(s.encode()).hexdigest()
+      actions=["investigate #42","block_ip 203.0.113.5","quarantine host-7"]
+      chain=[]; prev="GENESIS"
+      for a in actions:
+          b={"action":a,"prev":prev}; b["hash"]=h(prev+a); chain.append(b); prev=b["hash"]
+      # 공격자가 block1을 변조(차단 기록을 지움)
+      chain[1]["action"]="(deleted evidence)"
+      # 검증: 각 블록 hash 재계산 + prev 일치 확인
+      def verify(chain):
+          prev="GENESIS"
+          for i,b in enumerate(chain):
+              if b["prev"]!=prev: return i  # prev 불일치
+              if b["hash"]!=h(prev+b["action"]): return i  # 해시 불일치(변조)
+              prev=b["hash"]
+          return -1
+      bad=verify(chain)
+      print(f"tampered block1 action -> '(deleted evidence)'")
+      print(f"verification: broken at block index {bad}" if bad>=0 else "chain valid")
+      print("TAMPER_DETECTED" if bad>=0 else "UNDETECTED")
+      PY
+      ```
+      ✅ 마지막 줄 `TAMPER_DETECTED` (block1 변조 → 해시 불일치로 탐지).
+      🔎 공격자가 차단 기록을 지우려 block1을 변조하면, 재계산한 해시가 저장된 해시와 안 맞아 그 지점에서 변조가 드러난다.
+    answer: |
+      tampered block1 action -> '(deleted evidence)'
+      verification: broken at block index 1
+      TAMPER_DETECTED
+    answer_detail: "블록 변조 시 해시 불일치로 탐지 → TAMPER_DETECTED."
+    verify:
+      type: output_contains
+      expect: TAMPER_DETECTED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W06 on proof of work and blockchain for autonomous security audit logs. Findings: agent actions were linked into a hash chain (CHAIN_BUILT), a proof-of-work nonce meeting a difficulty target was computed (POW_SOLVED), and tampering with a block was detected by hash mismatch (TAMPER_DETECTED). Explain that a hash chain makes logs tamper-evident, proof of work makes tampering expensive, and this gives trustworthy accountability for autonomous agent actions. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 해시 체인이 로그를 변조 불가로, PoW가 변조를 비싸게. 자율 에이전트 행동의 신뢰할 수 있는 책임 추적.
+      다음 주(W07)는 **강화학습(RL)과 보상**.
+    answer: |
+      Assessment
+      A hash chain makes agent-action logs tamper-evident, and proof of work makes tampering expensive by requiring re-computation.
+      This gives trustworthy accountability for autonomous agent actions and resists evidence deletion.
+    answer_detail: "W06 PoW/블록체인 종합(Assessment). 해시 체인·작업증명·변조 탐지."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

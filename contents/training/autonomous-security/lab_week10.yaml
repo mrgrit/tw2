@@ -1,0 +1,163 @@
+lab_id: autonomous-security-week10
+title: "W10 — Schedule과 Watcher: 이벤트 Watcher·스마트 스케줄·트리거 발동"
+version: ai
+course: autonomous-security
+week: 10
+description: |
+  능동적 자율성. 이벤트 Watcher 설계(WATCHER_SET), cron 대신 스마트 스케줄(SCHEDULE_SET), 중요도·하트비트·
+  이상 기반 트리거 발동(TRIGGER_FIRED), 종합(Assessment).
+  gwanje 원칙(salience>=5 | heartbeat>=25분 | 이상 즉시, cron 금지)으로 잡음 없이 능동적.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 보안 (10주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W10 강의안 정독 — §0.5(Watcher·스마트 트리거·cron 금지)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "이벤트 Watcher 설계(WATCHER_SET)"
+  - "스마트 스케줄(SCHEDULE_SET)"
+  - "트리거 발동 로직(TRIGGER_FIRED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — Watcher 설계 → WATCHER_SET
+      > **🎯 목표:** 이벤트 조건을 감시하는 Watcher를 정의.
+      > **개념:** 조건 만족 시 에이전트 발동.
+      ```bash
+      python3 - <<'PY'
+      watcher={"name":"siem_spike_watcher",
+               "condition":"alerts_per_min > 20 OR new_critical_ioc",
+               "on_fire":"launch triage agent with playbook suspicious_ip_triage",
+               "guardrail":"max 5 launches/hour"}
+      required=["condition","on_fire","guardrail"]
+      valid=all(watcher.get(k) for k in required)
+      for k in required: print(f"  {k}: {watcher[k]}")
+      print("WATCHER_SET" if valid else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `WATCHER_SET` (조건·발동 행동·가드레일 포함 Watcher).
+      🔎 조건(알림 급증 또는 신규 critical IOC)·발동(트리아지 에이전트)·가드레일(시간당 5회 제한). 이벤트 기반 능동 감시.
+    answer: |
+      condition: alerts_per_min > 20 OR new_critical_ioc
+      on_fire: launch triage agent with playbook suspicious_ip_triage
+      guardrail: max 5 launches/hour
+      WATCHER_SET
+    answer_detail: "이벤트 Watcher(조건·발동·가드레일) 설계 → WATCHER_SET."
+    verify:
+      type: output_contains
+      expect: WATCHER_SET
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 스마트 스케줄 → SCHEDULE_SET
+      > **🎯 목표:** cron 무조건 실행 대신 스마트 트리거 스케줄.
+      > **개념:** 의미 있을 때만 발동.
+      ```bash
+      python3 - <<'PY'
+      # 나쁜 예(cron)와 좋은 예(스마트) 비교
+      naive={"type":"cron","rule":"* * * * * (every minute, always run+report)"}
+      smart={"type":"smart_trigger",
+             "fire_if":["salience >= 5","heartbeat >= 25min","immediate anomaly"],
+             "else":"stay silent"}
+      # 스마트 스케줄은 무조건 아님(else silent) + 다중 조건
+      is_smart = smart["type"]=="smart_trigger" and "stay silent" in smart["else"] and len(smart["fire_if"])>=3
+      print(f"naive: {naive['rule']}")
+      print(f"smart: fire if {smart['fire_if']}, else {smart['else']}")
+      print("SCHEDULE_SET" if is_smart else "CRON_SPAM")
+      PY
+      ```
+      ✅ 마지막 줄 `SCHEDULE_SET` (cron 아닌 스마트 트리거: 중요도·하트비트·이상 시에만).
+      🔎 cron(매분 무조건)은 잡음. 스마트 트리거는 salience≥5·하트비트≥25분·즉시 이상일 때만 발동, 아니면 침묵. gwanje 원칙.
+    answer: |
+      naive: * * * * * (every minute, always run+report)
+      smart: fire if ['salience >= 5', 'heartbeat >= 25min', 'immediate anomaly'], else stay silent
+      SCHEDULE_SET
+    answer_detail: "cron 대신 스마트 트리거 스케줄 → SCHEDULE_SET."
+    verify:
+      type: output_contains
+      expect: SCHEDULE_SET
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 트리거 발동 로직 → TRIGGER_FIRED
+      > **🎯 목표:** 중요도·하트비트·이상으로 발동 여부를 판정.
+      > **개념:** 셋 중 하나면 발동, 아니면 침묵.
+      ```bash
+      python3 - <<'PY'
+      def should_fire(salience, minutes_since_last, anomaly):
+          if anomaly: return True, "immediate anomaly"
+          if salience >= 5: return True, f"salience {salience} >= 5"
+          if minutes_since_last >= 25: return True, f"heartbeat {minutes_since_last}min >= 25"
+          return False, "stay silent"
+      cases=[{"salience":7,"mins":3,"anomaly":False},   # 중요도 발동
+             {"salience":2,"mins":30,"anomaly":False},  # 하트비트 발동
+             {"salience":1,"mins":5,"anomaly":True},    # 이상 발동
+             {"salience":1,"mins":5,"anomaly":False}]   # 침묵
+      results=[]
+      for c in cases:
+          fire,reason=should_fire(c["salience"],c["mins"],c["anomaly"])
+          results.append(fire); print(f"  sal={c['salience']} mins={c['mins']} anomaly={c['anomaly']} -> {'FIRE' if fire else 'silent'} ({reason})")
+      # 3개 발동 + 1개 침묵이면 로직 정상
+      print("TRIGGER_FIRED" if results==[True,True,True,False] else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `TRIGGER_FIRED` (중요도·하트비트·이상은 발동, 조용하면 침묵).
+      🔎 salience≥5·하트비트≥25분·즉시 이상 중 하나면 발동, 다 아니면 침묵. 중요한 건 즉시, 조용할 땐 최소 — 잡음 없는 능동성.
+    answer: |
+      sal=7 mins=3 anomaly=False -> FIRE (salience 7 >= 5)
+      sal=2 mins=30 anomaly=False -> FIRE (heartbeat 30min >= 25)
+      sal=1 mins=5 anomaly=True -> FIRE (immediate anomaly)
+      sal=1 mins=5 anomaly=False -> silent (stay silent)
+      TRIGGER_FIRED
+    answer_detail: "중요도·하트비트·이상 트리거 발동 로직 → TRIGGER_FIRED."
+    verify:
+      type: output_contains
+      expect: TRIGGER_FIRED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W10 on schedules and watchers in autonomous security. Findings: an event watcher with condition, action, and a rate guardrail was set (WATCHER_SET), a smart-trigger schedule replaced naive cron (SCHEDULE_SET), and trigger logic fired only on salience>=5, heartbeat>=25min, or immediate anomaly, staying silent otherwise (TRIGGER_FIRED). Explain that watchers and schedules make the system active, that naive cron causes noise and alert fatigue, and that smart triggers fire only when meaningful. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: Watcher(이벤트)·Schedule(주기)이 능동성을. cron은 잡음 — 스마트 트리거(중요도·하트비트·이상)로 잡음 없이 능동적.
+      다음 주(W11)는 **자율 Blue Agent**.
+    answer: |
+      Assessment
+      Watchers (event-driven) and schedules make the system active; naive cron causes noise and alert fatigue.
+      Smart triggers fire only on high salience, heartbeat timeout, or immediate anomaly, staying silent otherwise.
+    answer_detail: "W10 Schedule/Watcher 종합(Assessment). 능동성·스마트 트리거·cron 금지."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

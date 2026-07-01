@@ -1,0 +1,164 @@
+lab_id: autonomous-security-week11
+title: "W11 — 자율 Blue Agent: 방어 파이프라인·자율 분류·자율성 수준 대응"
+version: ai
+course: autonomous-security
+week: 11
+description: |
+  자율 방어 에이전트. 탐지→분류→조사→대응 파이프라인(BLUE_PIPELINE), 심각도·보강 자율 분류(TRIAGE_DONE),
+  위험도별 자율성 수준 대응(RESPONSE_EXECUTED), 종합(Assessment).
+  기계 속도·24/7·일관성 — 저위험 자율, 고위험 승인, 감사 로그.
+difficulty: hard
+duration_minutes: 130
+audience: 자율 보안 (11주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W11 강의안 정독 — §0.5(Blue 파이프라인·분류·자율성 수준)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "Blue 파이프라인(BLUE_PIPELINE)"
+  - "자율 분류(TRIAGE_DONE)"
+  - "자율성 수준 대응(RESPONSE_EXECUTED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — Blue 파이프라인 → BLUE_PIPELINE
+      > **🎯 목표:** 탐지→분류→조사→대응 파이프라인을 구성.
+      > **개념:** 각 단계에 W02~W10 기술.
+      ```bash
+      python3 - <<'PY'
+      pipeline=[{"stage":"detect","tech":"Watcher (W10)"},
+                {"stage":"triage","tech":"severity + enrichment + episodic memory (W09)"},
+                {"stage":"investigate","tech":"ReAct loop + playbook (W02,W05)"},
+                {"stage":"respond","tech":"autonomy-level actions + audit log (W01,W06)"}]
+      stages=[s["stage"] for s in pipeline]
+      for s in pipeline: print(f"  [{s['stage']:11}] {s['tech']}")
+      complete = stages==["detect","triage","investigate","respond"]
+      print("BLUE_PIPELINE" if complete else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `BLUE_PIPELINE` (탐지·분류·조사·대응 4단계).
+      🔎 탐지(Watcher)→분류(심각도·보강·일화)→조사(ReAct·플레이북)→대응(자율성 수준·감사). 배운 기술을 방어로 통합.
+    answer: |
+      [detect     ] Watcher (W10)
+      [triage     ] severity + enrichment + episodic memory (W09)
+      [investigate] ReAct loop + playbook (W02,W05)
+      [respond    ] autonomy-level actions + audit log (W01,W06)
+      BLUE_PIPELINE
+    answer_detail: "자율 Blue 파이프라인 구성 → BLUE_PIPELINE."
+    verify:
+      type: output_contains
+      expect: BLUE_PIPELINE
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 자율 분류 → TRIAGE_DONE
+      > **🎯 목표:** 심각도·보강으로 진짜 위협만 조사로, 오탐은 자동 종료.
+      > **개념:** 분류가 잡음의 관문.
+      ```bash
+      python3 - <<'PY'
+      alerts=[{"id":"A","rule":"bruteforce","ip_reputation":"malicious","asset":"critical"},
+              {"id":"B","rule":"port scan","ip_reputation":"internal-scanner(known)","asset":"low"},
+              {"id":"C","rule":"malware c2","ip_reputation":"malicious","asset":"critical"}]
+      def triage(a):
+          # 보강: 알려진 내부 스캐너 + 저가치 자산이면 오탐 종료
+          if "known" in a["ip_reputation"] and a["asset"]=="low": return "auto-close (false positive)"
+          if a["ip_reputation"]=="malicious": return "escalate to investigation"
+          return "monitor"
+      escalated=[]
+      for a in alerts:
+          v=triage(a); print(f"  {a['id']} ({a['rule']}): {v}")
+          if "escalate" in v: escalated.append(a["id"])
+      # 진짜 위협(A,C)만 조사, 오탐(B) 자동 종료
+      print("TRIAGE_DONE" if escalated==["A","C"] else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `TRIAGE_DONE` (악성 A·C는 조사로, 알려진 스캐너 B는 자동 종료).
+      🔎 IP 평판·자산 중요도로 보강 분류: 악성+중요 자산(A·C)은 조사, 알려진 내부 스캐너+저가치(B)는 오탐 자동 종료. 잡음 제거.
+    answer: |
+      A (bruteforce): escalate to investigation
+      B (port scan): auto-close (false positive)
+      C (malware c2): escalate to investigation
+      TRIAGE_DONE
+    answer_detail: "심각도·보강 자율 분류(오탐 종료) → TRIAGE_DONE."
+    verify:
+      type: output_contains
+      expect: TRIAGE_DONE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 자율성 수준 대응 → RESPONSE_EXECUTED
+      > **🎯 목표:** 위험도별 자율성 수준으로 대응(저위험 자율, 고위험 승인).
+      > **개념:** 속도와 안전의 균형.
+      ```bash
+      python3 - <<'PY'
+      responses=[{"action":"collect forensic evidence","risk":"low"},
+                 {"action":"block malicious IP","risk":"medium"},
+                 {"action":"isolate production host","risk":"high"}]
+      def execute(r):
+          if r["risk"]=="low": return "AUTO-EXECUTED (logged)"
+          if r["risk"]=="medium": return "EXECUTED with supervision (logged)"
+          return "QUEUED for human approval (logged)"
+      for r in responses: r["outcome"]=execute(r); print(f"  {r['action']:28} [{r['risk']:6}] -> {r['outcome']}")
+      # 저위험 자율, 고위험은 승인 대기 + 모두 로그
+      correct = "AUTO" in responses[0]["outcome"] and "approval" in responses[2]["outcome"] and all("logged" in r["outcome"] for r in responses)
+      print("RESPONSE_EXECUTED" if correct else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `RESPONSE_EXECUTED` (저위험 자율, 중위험 감독, 고위험 승인 대기, 모두 로그).
+      🔎 증거 수집(저위험)=자율, IP 차단(중)=감독, 호스트 격리(고)=사람 승인 대기. 위험도별 자율성 수준+감사 로그. 빠르되 안전.
+    answer: |
+      collect forensic evidence    [low   ] -> AUTO-EXECUTED (logged)
+      block malicious IP           [medium] -> EXECUTED with supervision (logged)
+      isolate production host      [high  ] -> QUEUED for human approval (logged)
+      RESPONSE_EXECUTED
+    answer_detail: "위험도별 자율성 수준 대응+감사 로그 → RESPONSE_EXECUTED."
+    verify:
+      type: output_contains
+      expect: RESPONSE_EXECUTED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W11 on building an autonomous Blue (defense) agent. Findings: a detect-triage-investigate-respond pipeline was built (BLUE_PIPELINE), autonomous triage escalated real threats and auto-closed a known-scanner false positive (TRIAGE_DONE), and responses executed by autonomy level with low-risk auto, high-risk queued for approval, all logged (RESPONSE_EXECUTED). Explain the value (machine speed, 24/7, consistency) and risk (auto-responding to false positives), and that guardrails, autonomy levels, and audit logs keep it safe. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 자율 Blue=탐지·분류·조사·대응 파이프라인. 저위험 자율·고위험 승인·감사 로그로 빠르되 안전.
+      다음 주(W12)는 **자율 Red Agent**.
+    answer: |
+      Assessment
+      An autonomous Blue agent runs detect-triage-investigate-respond at machine speed, 24/7, and consistently.
+      Triage filters false positives, responses use autonomy levels (low auto, high approval), and audit logs plus guardrails keep it safe.
+    answer_detail: "W11 자율 Blue 종합(Assessment). 파이프라인·분류·자율성 수준 대응."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

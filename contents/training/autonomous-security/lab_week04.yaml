@@ -1,0 +1,165 @@
+lab_id: autonomous-security-week04
+title: "W04 — SubAgent와 원격 실행: A2A 위임·원격 수행·결과 검증"
+version: ai
+course: autonomous-security
+week: 4
+description: |
+  Manager-SubAgent 실행 구조. A2A 임무 명세 위임(A2A_DELEGATED), SubAgent 원격 실행·보고(REMOTE_EXECUTED),
+  Manager 결과 검증(RESULT_VALIDATED), 종합(Assessment).
+  분리로 관심사·안전·병렬·효율, 검증으로 SubAgent 오류를 잡는다.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 보안 (4주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W04 강의안 정독 — §0.5(A2A·임무 명세·결과 검증)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "A2A 임무 위임(A2A_DELEGATED)"
+  - "SubAgent 원격 실행(REMOTE_EXECUTED)"
+  - "Manager 결과 검증(RESULT_VALIDATED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — A2A 위임 → A2A_DELEGATED
+      > **🎯 목표:** Manager가 명확한 임무 명세를 SubAgent에 위임.
+      > **개념:** 명세=계약(목표·도구·제약·성공 기준).
+      ```bash
+      python3 - <<'PY'
+      task_spec={"goal":"enumerate open ports on 10.20.30.10",
+                 "tools":["nmap_scan"],
+                 "context":"el34 internal subnet recon",
+                 "constraints":["scope=10.20.30.0/24","no exploitation","rate-limited"],
+                 "success_criteria":"port list returned"}
+      # 명세가 목표·도구·제약·성공 기준을 모두 포함하면 유효 위임
+      required=["goal","tools","constraints","success_criteria"]
+      valid=all(task_spec.get(k) for k in required)
+      for k in required: print(f"  {k}: {task_spec[k]}")
+      print("A2A_DELEGATED" if valid else "INVALID_SPEC")
+      PY
+      ```
+      ✅ 마지막 줄 `A2A_DELEGATED` (목표·도구·제약·성공 기준 포함 명세 위임).
+      🔎 명확한 임무 명세(목표·도구·범위 제약·성공 기준)를 A2A로 위임. 모호하면 SubAgent가 엉뚱한 일 — 명확한 계약이 핵심.
+    answer: |
+      goal: enumerate open ports on 10.20.30.10
+      tools: ['nmap_scan']
+      constraints: ['scope=10.20.30.0/24', 'no exploitation', 'rate-limited']
+      success_criteria: port list returned
+      A2A_DELEGATED
+    answer_detail: "명확한 임무 명세 A2A 위임 → A2A_DELEGATED."
+    verify:
+      type: output_contains
+      expect: A2A_DELEGATED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 원격 실행 → REMOTE_EXECUTED
+      > **🎯 목표:** SubAgent가 범위 내에서 원격 실행하고 결과를 보고.
+      > **개념:** 제한 권한·범위로 격리 실행.
+      ```bash
+      python3 - <<'PY'
+      task_spec={"goal":"enumerate ports on 10.20.30.10","constraints":["scope=10.20.30.0/24"]}
+      # SubAgent 원격 실행(el34 bastion) 결과
+      result={"target":"10.20.30.10","in_scope":True,
+              "output":{"open_ports":[22,80,443]},"actions_taken":["nmap_scan"],"errors":[]}
+      # 범위 내 실행 + 산출물 반환
+      in_scope = result["in_scope"]
+      produced = bool(result["output"].get("open_ports"))
+      print(f"target {result['target']} in scope: {in_scope}")
+      print(f"result: {result['output']}, actions: {result['actions_taken']}")
+      print("REMOTE_EXECUTED" if in_scope and produced and not result["errors"] else "FAILED")
+      PY
+      ```
+      ✅ 마지막 줄 `REMOTE_EXECUTED` (범위 내 원격 실행, 포트 목록 반환).
+      🔎 SubAgent가 범위(10.20.30.0/24) 내에서 nmap 실행 후 열린 포트를 반환. 제한 권한·범위로 격리 실행.
+    answer: |
+      target 10.20.30.10 in scope: True
+      result: {'open_ports': [22, 80, 443]}, actions: ['nmap_scan']
+      REMOTE_EXECUTED
+    answer_detail: "SubAgent 범위 내 원격 실행·보고 → REMOTE_EXECUTED."
+    verify:
+      type: output_contains
+      expect: REMOTE_EXECUTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 결과 검증 → RESULT_VALIDATED
+      > **🎯 목표:** Manager가 SubAgent 결과를 검증(정합성·가드레일·달성).
+      > **개념:** 신뢰하되 검증 — SubAgent도 틀린다.
+      ```bash
+      python3 - <<'PY'
+      task_spec={"goal":"enumerate ports on 10.20.30.10","constraints":["scope=10.20.30.0/24","no exploitation"]}
+      # 두 결과: 정상 vs 가드레일 위반(범위 밖 + 익스플로잇)
+      results=[{"id":"good","target":"10.20.30.10","actions":["nmap_scan"],"ports":[22,80]},
+               {"id":"bad","target":"8.8.8.8","actions":["nmap_scan","exploit_attempt"],"ports":[]}]
+      def validate(r):
+          in_scope = r["target"].startswith("10.20.30.")
+          no_exploit = "exploit_attempt" not in r["actions"]
+          achieved = bool(r["ports"])
+          if not in_scope: return "REJECT (out of scope)"
+          if not no_exploit: return "REJECT (guardrail: exploitation)"
+          if not achieved: return "REJECT (goal not met)"
+          return "ACCEPT"
+      verdicts=[validate(r) for r in results]
+      for r,v in zip(results,verdicts): print(f"  {r['id']}: {v}")
+      # 정상은 수용, 위반은 거부해야 검증 동작
+      print("RESULT_VALIDATED" if verdicts[0]=="ACCEPT" and verdicts[1].startswith("REJECT") else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `RESULT_VALIDATED` (정상 결과 수용, 범위밖·익스플로잇 결과 거부).
+      🔎 Manager가 결과의 범위·가드레일·목표 달성을 검증. 정상은 수용, 범위 밖+익스플로잇(가드레일 위반) 결과는 거부. 신뢰하되 검증.
+    answer: |
+      good: ACCEPT
+      bad: REJECT (out of scope)
+      RESULT_VALIDATED
+    answer_detail: "Manager가 SubAgent 결과 검증(위반 거부) → RESULT_VALIDATED."
+    verify:
+      type: output_contains
+      expect: RESULT_VALIDATED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W04 on SubAgents and remote execution. Findings: the Manager delegated a clear task spec via A2A (A2A_DELEGATED), the SubAgent executed in scope remotely and returned results (REMOTE_EXECUTED), and the Manager validated results, accepting the good one and rejecting an out-of-scope exploitation result (RESULT_VALIDATED). Explain that separating Manager and SubAgent gives concern-separation, safety, parallelism, and remote efficiency, and that results must be validated (trust but verify). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: Manager가 A2A로 SubAgent에 위임→원격 실행→결과 검증. 분리로 안전·병렬·효율, 검증으로 오류를 잡는다.
+      다음 주(W05)는 **Playbook 자동화**.
+    answer: |
+      Assessment
+      The Manager delegates a clear task spec via A2A, the SubAgent executes in scope remotely, and the Manager validates results (trust but verify).
+      Separation gives concern-separation, safety, parallelism, and remote efficiency.
+    answer_detail: "W04 SubAgent 종합(Assessment). A2A 위임·원격 실행·결과 검증."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

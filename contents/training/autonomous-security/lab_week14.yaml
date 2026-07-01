@@ -1,0 +1,168 @@
+lab_id: autonomous-security-week14
+title: "W14 — RL Steering과 정책 최적화: 인간 피드백 조종·제약 최적화·배포 전 평가"
+version: ai
+course: autonomous-security
+week: 14
+description: |
+  정렬된 정책 최적화. 인간 피드백(RLHF) 정책 조종(POLICY_STEERED), 안전 제약 하 보상 최적화
+  (CONSTRAINED_OPTIMIZED), 배포 전 오프라인 평가(POLICY_IMPROVED), 종합(Assessment).
+  보상만 좇는 위험 없이 능력↑ 안전 유지 — W07 보상 해킹의 실전 해법.
+difficulty: hard
+duration_minutes: 130
+audience: 자율 보안 (14주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W14 강의안 정독 — §0.5(RLHF·제약 최적화·오프라인 평가)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "인간 피드백 정책 조종(POLICY_STEERED)"
+  - "제약 최적화(CONSTRAINED_OPTIMIZED)"
+  - "배포 전 정책 평가(POLICY_IMPROVED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 인간 피드백 정책 조종 → POLICY_STEERED
+      > **🎯 목표:** 사람이 행동 쌍을 비교 평가해 정책 선호를 조종.
+      > **개념:** 명세하기 힘든 좋은 행동을 선호로 학습.
+      ```bash
+      python3 - <<'PY'
+      # 행동 쌍에 대한 인간 선호(A가 B보다 나음)
+      preferences=[("investigate_then_act","act_immediately"),  # 조사 우선 선호
+                   ("investigate_then_act","ignore_alert"),
+                   ("escalate_high_risk","auto_high_risk")]      # 고위험 승인 선호
+      # 선호로 보상 보정: 선호된 행동에 +
+      pref_reward={}
+      for better,worse in preferences:
+          pref_reward[better]=pref_reward.get(better,0)+1
+          pref_reward[worse]=pref_reward.get(worse,0)-1
+      preferred=max(pref_reward,key=pref_reward.get)
+      for a,s in sorted(pref_reward.items(),key=lambda x:-x[1]): print(f"  {a}: pref_score {s:+d}")
+      # 조사 우선이 인간 선호로 가장 높은 점수
+      print("POLICY_STEERED" if preferred=="investigate_then_act" else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `POLICY_STEERED` (인간 선호로 '조사 우선'이 최고 점수).
+      🔎 사람이 행동 쌍을 비교(조사 우선 > 즉시 행동)해 선호를 학습. 명세하기 힘든 좋은 행동을 인간 피드백으로 조종. RLHF.
+    answer: |
+      investigate_then_act: pref_score +2
+      escalate_high_risk: pref_score +1
+      ...
+      POLICY_STEERED
+    answer_detail: "인간 피드백(RLHF)으로 정책 선호 조종 → POLICY_STEERED."
+    verify:
+      type: output_contains
+      expect: POLICY_STEERED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 제약 최적화 → CONSTRAINED_OPTIMIZED
+      > **🎯 목표:** 안전 제약을 지키는 정책 중 보상 최대를 선택.
+      > **개념:** 제약이 보상 해킹을 막는다.
+      ```bash
+      python3 - <<'PY'
+      # 후보 정책들 (탐지 보상, 오탐률) — 제약: 오탐률 <= 5%
+      FP_LIMIT=0.05
+      policies=[{"name":"aggressive","reward":100,"fp_rate":0.40},   # 높은 보상 but 오탐 40%(제약 위반=보상 해킹)
+                {"name":"balanced","reward":80,"fp_rate":0.03},       # 제약 만족
+                {"name":"conservative","reward":50,"fp_rate":0.01}]   # 제약 만족
+      # 제약(오탐<=5%) 만족하는 정책 중 보상 최대
+      feasible=[p for p in policies if p["fp_rate"]<=FP_LIMIT]
+      best=max(feasible,key=lambda p:p["reward"]) if feasible else None
+      for p in policies:
+          ok="feasible" if p["fp_rate"]<=FP_LIMIT else "REJECTED (fp>5% = reward hacking)"
+          print(f"  {p['name']:12} reward={p['reward']} fp={p['fp_rate']:.0%} -> {ok}")
+      print(f"selected: {best['name']}")
+      # aggressive(제약 위반)는 배제, balanced 선택
+      print("CONSTRAINED_OPTIMIZED" if best["name"]=="balanced" else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `CONSTRAINED_OPTIMIZED` (오탐 40% aggressive 배제, 제약 만족 balanced 선택).
+      🔎 오탐률 ≤5% 제약을 만족하는 정책 중 보상 최대(balanced). 높은 보상이라도 제약 위반(aggressive, 오탐 40%)은 배제 — 보상 해킹 원천 차단.
+    answer: |
+      aggressive   reward=100 fp=40% -> REJECTED (fp>5% = reward hacking)
+      balanced     reward=80 fp=3% -> feasible
+      conservative reward=50 fp=1% -> feasible
+      selected: balanced
+      CONSTRAINED_OPTIMIZED
+    answer_detail: "안전 제약 하 보상 최적화 → CONSTRAINED_OPTIMIZED."
+    verify:
+      type: output_contains
+      expect: CONSTRAINED_OPTIMIZED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 배포 전 정책 평가 → POLICY_IMPROVED
+      > **🎯 목표:** 새 정책을 오프라인 평가해 성능↑·안전 유지 확인 후 배포.
+      > **개념:** 검증 후에만 배포.
+      ```bash
+      python3 - <<'PY'
+      old={"detection_rate":0.75,"fp_rate":0.04,"safety_violations":0}
+      new={"detection_rate":0.85,"fp_rate":0.03,"safety_violations":0}   # 성능↑ 안전 유지
+      # 오프라인 평가: 성능 개선 AND 안전 미악화(위반 0 유지)
+      improved = new["detection_rate"]>old["detection_rate"]
+      safe_preserved = new["fp_rate"]<=old["fp_rate"] and new["safety_violations"]<=old["safety_violations"]
+      print(f"detection: {old['detection_rate']:.0%} -> {new['detection_rate']:.0%}")
+      print(f"fp_rate: {old['fp_rate']:.0%} -> {new['fp_rate']:.0%}, safety violations: {new['safety_violations']}")
+      deploy = improved and safe_preserved
+      print(f"deploy decision: {'DEPLOY' if deploy else 'HOLD'}")
+      print("POLICY_IMPROVED" if deploy else "HOLD")
+      PY
+      ```
+      ✅ 마지막 줄 `POLICY_IMPROVED` (탐지율 75→85%, 오탐·위반 미악화 → 배포).
+      🔎 새 정책을 배포 전 오프라인 평가: 탐지율↑(75→85%) AND 오탐·안전 위반 미악화. 성능 향상+안전 유지 확인 후에만 배포.
+    answer: |
+      detection: 75% -> 85%
+      fp_rate: 4% -> 3%, safety violations: 0
+      deploy decision: DEPLOY
+      POLICY_IMPROVED
+    answer_detail: "배포 전 평가(성능↑·안전 유지) → POLICY_IMPROVED."
+    verify:
+      type: output_contains
+      expect: POLICY_IMPROVED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W14 on RL steering and policy optimization. Findings: human feedback steered the policy toward investigate-first (POLICY_STEERED), constrained optimization selected the best policy under a false-positive limit rejecting an aggressive reward-hacking policy (CONSTRAINED_OPTIMIZED), and offline evaluation approved deployment because detection improved while safety was preserved (POLICY_IMPROVED). Explain that naive RL only maximizes reward and is risky, while steering with human feedback, constraints, stability, and offline evaluation gives aligned optimization. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: RL Steering=인간 피드백·제약·안정성·평가로 정렬된 최적화. 보상만 좇는 위험 없이 능력↑ 안전 유지. W07 보상 해킹 해법.
+      다음 주(W15)는 **기말 — 자율 Purple Team**.
+    answer: |
+      Assessment
+      Naive RL only maximizes reward and risks reward hacking; steering with human feedback, safety constraints, stability, and offline evaluation gives aligned optimization.
+      Capability improves while safety is preserved, and policies deploy only after passing evaluation.
+    answer_detail: "W14 RL Steering 종합(Assessment). 인간 피드백·제약 최적화·배포 전 평가."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout
