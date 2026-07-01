@@ -216,4 +216,26 @@
 ### 데모 상태
 - 재시드로 클린 복구(배틀 #11 ffa, 완주 2·병목 2). 테스트용 solo 배틀 전부 제거.
 
-_작성: Claude Code. 상태: Phase 0·1·2 + G6 + 실제 플로우 검증/버그수정(v6). PATH 버그 수정으로 AI 채점·피드백 정상화._
+---
+
+## 14. 중앙 SIEM 활성화 (v7) — tw2 자체 OpenSearch
+
+Admin '중앙 SIEM' 탭은 tw2 **자체 OpenSearch**(`OPENSEARCH_URL`)를 전제로 함 — el34 Wazuh 와 별개(스키마·망 다름). 기본 미설정이라 비어있던 것을 로컬 컨테이너로 띄워 배선.
+
+- **컨테이너**: `tw2-opensearch`(opensearchproject/opensearch:2.11.1, 보안 비활성, `127.0.0.1:9210`, restart=unless-stopped).
+  ```bash
+  docker run -d --name tw2-opensearch -p 127.0.0.1:9210:9200 \
+    -e discovery.type=single-node -e DISABLE_SECURITY_PLUGIN=true \
+    -e OPENSEARCH_JAVA_OPTS="-Xms512m -Xmx512m" opensearchproject/opensearch:2.11.1
+  ```
+- **배선**: `.env` 에 `OPENSEARCH_URL=http://127.0.0.1:9210` → tw2-api 재기동 → `siem_export.is_enabled()`=true.
+- **백필**: `scripts/backfill_siem.py --cohort 3 [--reset]` — DB 활동(activity_events)을 코호트 stamp 후 물리 인덱스(`tubewar-activity-{course_ref}`)에 적재. seed/orchestrate 는 SIEM 으로 안 보내므로 **재시드 후 이 스크립트 재실행** 필요.
+- **검증**: `/monitoring/siem/stats?cohort_id=3` → total 116, by_kind(command 94·alert 11·log 11), pivot(병목 학생 alert 3 vs 정상 1), by_scenario·by_day 정상. `/siem/search` 로그 테이블 OK.
+- **UI**: Admin → **중앙 SIEM** 탭 → 코호트(관제시연 A반/course) 선택 → 통계·타임라인·학생×종류 피벗·검색 표.
+
+### 촬영에서 SIEM 이중 표현
+- **el34 Wazuh Discover** = 인프라 원시 탐지 로그(실시간 공격 흔적)
+- **tw2 중앙 SIEM 탭** = tw2 코호트 문맥으로 stamp 된 학생 활동(학생/종류/시나리오 집계)
+- **tw2 관제 대시보드** = 그 위의 AI 분석(진도·병목·피드백·추천)
+
+_작성: Claude Code. 상태: Phase 0·1·2 + G6 + 검증/버그수정 + 중앙 SIEM(v7). AI 채점·피드백·중앙 SIEM 모두 가동._
