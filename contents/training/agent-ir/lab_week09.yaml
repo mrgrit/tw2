@@ -1,0 +1,175 @@
+lab_id: agent-ir-week09
+title: "W09 — 실시간 탐지: 선언적 탐지 룰 작성·테스트·오탐 튜닝"
+version: ai
+course: agent-ir
+week: 9
+description: |
+  탐지 로직을 실시간 룰로. 선언적 탐지 룰 작성(RULE_WRITTEN), 공격·정상 이벤트 테스트(RULE_TESTED),
+  오탐 측정·임계 튜닝(FP_TUNED), 종합(Assessment).
+  이벤트 즉시 판정으로 AI 속도를 따라간다 — 정확성·성능·유지보수 균형.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (9주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W09 강의안 정독 — §0.5(실시간·선언 룰·오탐 튜닝)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "선언적 탐지 룰 작성(RULE_WRITTEN)"
+  - "공격·정상 이벤트 테스트(RULE_TESTED)"
+  - "오탐 측정·임계 튜닝(FP_TUNED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 탐지 룰 작성 → RULE_WRITTEN
+      > **🎯 목표:** 선언적 탐지 룰(조건·임계·group_by)을 작성.
+      > **개념:** 무엇을 잡을지 선언 — Sigma식 구조.
+      ```bash
+      python3 - <<'PY'
+      # 선언적 탐지 룰 (SQLi 변형 폭증)
+      rule={"title":"sqli_mutation_burst",
+            "selection":{"uri":"/login","body_any":["'","OR","UNION"]},
+            "condition":{"count_gt":8, "within_s":60},
+            "group_by":"source_ip",
+            "action":"alert+preempt_block(approval)"}
+      # 룰 유효성: 필수 필드 존재
+      required=["title","selection","condition","group_by","action"]
+      valid=all(k in rule for k in required) and rule["condition"]["count_gt"]>0
+      print("rule:", rule["title"])
+      for k in required: print(f"  {k}: {rule[k]}")
+      print("RULE_WRITTEN" if valid else "INVALID_RULE")
+      PY
+      ```
+      ✅ 마지막 줄 `RULE_WRITTEN` (선언적 룰 필수 필드 완비).
+      🔎 조건(count>8/60s)·그룹(source_ip)·조치(선제 차단+승인)를 선언. 구현이 아니라 무엇을.
+    answer: |
+      rule: sqli_mutation_burst
+        title: sqli_mutation_burst
+        selection: {'uri': '/login', 'body_any': ["'", 'OR', 'UNION']}
+        condition: {'count_gt': 8, 'within_s': 60}
+        group_by: source_ip
+        action: alert+preempt_block(approval)
+      RULE_WRITTEN
+    answer_detail: "선언적 탐지 룰(조건·그룹·조치) 작성 → RULE_WRITTEN."
+    verify:
+      type: output_contains
+      expect: RULE_WRITTEN
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 룰 테스트 → RULE_TESTED
+      > **🎯 목표:** 공격·정상 이벤트로 룰 매칭 확인.
+      > **개념:** 참양성(공격 잡음)·미탐(정상 통과) 확인.
+      ```bash
+      python3 - <<'PY'
+      # 룰 엔진(단순): selection 매칭 + 임계
+      def matches_selection(e):
+          return e["uri"]=="/login" and any(t in e["body"] for t in ["'","OR","UNION"])
+      def run_rule(events):
+          from collections import defaultdict
+          by_src=defaultdict(int)
+          for e in events:
+              if matches_selection(e): by_src[e["src"]]+=1
+          return {s:c for s,c in by_src.items() if c>8}
+      # 공격 트래픽 (한 출처 SQLi 변형 10회)
+      attack=[{"src":"A","uri":"/login","body":f"' OR {i}={i}"} for i in range(10)]
+      # 정상 트래픽 (로그인 정상 3회)
+      normal=[{"src":"B","uri":"/login","body":"user=alice&pw=secret"} for _ in range(3)]
+      alerts_attack=run_rule(attack); alerts_normal=run_rule(normal)
+      print("attack alerts:", alerts_attack)
+      print("normal alerts:", alerts_normal)
+      # 공격은 잡고 정상은 통과 = 룰 정상 작동
+      print("RULE_TESTED" if alerts_attack and not alerts_normal else "MISBEHAVING")
+      PY
+      ```
+      ✅ 마지막 줄 `RULE_TESTED` (공격 트래픽 경보, 정상 트래픽 통과).
+      🔎 참양성(공격 A 잡음)+미탐 없음(정상 B 통과) = 룰 정상. 테스트로 작동 검증.
+    answer: |
+      attack alerts: {'A': 10}
+      normal alerts: {}
+      RULE_TESTED
+    answer_detail: "공격 경보·정상 통과 → RULE_TESTED. 참양성+미탐 없음."
+    verify:
+      type: output_contains
+      expect: RULE_TESTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 오탐 튜닝 → FP_TUNED
+      > **🎯 목표:** 정상 트래픽 오탐 측정 → 임계 튜닝.
+      > **개념:** 오탐과 놓침의 최적점.
+      ```bash
+      python3 - <<'PY'
+      # 정상 버스트(예: 사용자가 빠르게 재시도) — 임계가 낮으면 오탐
+      normal_burst_count=6   # 정상 사용자가 60초에 6회 로그인 재시도
+      attack_count=10        # 공격은 10회
+      # 임계 5는 정상도 잡음(오탐), 임계 8은 정상 통과·공격 잡음
+      for thresh in [5, 8]:
+          fp = normal_burst_count>thresh
+          tp = attack_count>thresh
+          print(f"  threshold {thresh}: normal_alert(FP)={fp}, attack_alert(TP)={tp}")
+      # 튜닝: 임계 8이 오탐 없이 공격 탐지
+      tuned=8
+      fp_at_tuned = normal_burst_count>tuned; tp_at_tuned = attack_count>tuned
+      print(f"tuned threshold={tuned}: FP={fp_at_tuned}, TP={tp_at_tuned}")
+      print("FP_TUNED" if not fp_at_tuned and tp_at_tuned else "NEEDS_WORK")
+      PY
+      ```
+      ✅ 마지막 줄 `FP_TUNED` (임계 8로 튜닝: 정상 버스트 통과, 공격 탐지).
+      🔎 임계 5는 정상 재시도(6회)도 오탐. 8로 올리면 오탐 없이 공격(10회) 탐지 — 최적점.
+    answer: |
+      threshold 5: normal_alert(FP)=True, attack_alert(TP)=True
+      threshold 8: normal_alert(FP)=False, attack_alert(TP)=True
+      tuned threshold=8: FP=False, TP=True
+      FP_TUNED
+    answer_detail: "임계 튜닝(5→8)으로 오탐 제거·공격 탐지 유지 → FP_TUNED. 오탐·놓침 최적점."
+    verify:
+      type: output_contains
+      expect: FP_TUNED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W09 on real-time detection rule engineering. Findings: a declarative rule was written with condition/group/action (RULE_WRITTEN), tested to alert on attack traffic and pass normal traffic (RULE_TESTED), and its threshold was tuned from 5 to 8 to remove a false positive while keeping detection (FP_TUNED). Explain the three concerns accuracy/performance/maintenance and that real-time rules must be tested and tuned as attacks evolve. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 실시간 룰은 이벤트 즉시 판정. 정확성·성능·유지보수 균형, 테스트로 오탐 튜닝, 진화에 갱신.
+      다음 주(W10)는 **기만과 지연 — 능동 방어**.
+    answer: |
+      Assessment
+      Real-time detection rules judge events instantly to match AI speed, balancing accuracy, performance, and maintenance.
+      Write declaratively, test on attack/normal traffic, tune thresholds to cut false positives, and update as attacks evolve.
+    answer_detail: "W09 실시간 탐지 룰 종합(Assessment). 선언·테스트·오탐 튜닝·유지보수."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

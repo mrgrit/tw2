@@ -1,0 +1,170 @@
+lab_id: agent-ir-week13
+title: "W13 — 에이전트 IR 사고 보고서: 구조화 생성·IOC 추출·교훈 환류"
+version: ai
+course: agent-ir
+week: 13
+description: |
+  사고를 방어 자산으로. 구조화 사고 보고서 생성(REPORT_GENERATED), IOC 추출(IOCS_EXTRACTED),
+  교훈을 탐지로 환류(LESSONS_CODIFIED), 종합(Assessment).
+  기존 틀+에이전트 조각(템포·능력·자동화·탐지지연). IOC/TTP를 구조화해 다음 방어로.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (13주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W13 강의안 정독 — §0.5(보고서 구성·IOC·환류)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "구조화 사고 보고서 생성(REPORT_GENERATED)"
+  - "IOC 추출(IOCS_EXTRACTED)"
+  - "교훈을 탐지로 환류(LESSONS_CODIFIED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 사고 보고서 생성 → REPORT_GENERATED
+      > **🎯 목표:** 구조화된 사고 보고서(타임라인·근본원인·에이전트 조각) 생성.
+      > **개념:** 기존 틀 + 에이전트 조각(템포·능력·자동화·탐지지연).
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      facts="Attack from 185.220.101.42: recon 10:00, sqli on /login 10:02, www-data login 10:03. Detected 10:05. Fully automated agent."
+      prompt=('Output JSON only: {"timeline":"<one line>","root_cause":"<one line>","tempo_minutes":<int>,"automation":"<manual|automated>","detection_delay_min":<int>}. '
+              f'Summarize this incident: {facts}')
+      b={"model":"gemma3:4b","prompt":prompt,"stream":False,"format":"json","options":{"num_predict":150,"temperature":0.1}}
+      d=json.loads(json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=70)).get("response","{}"))
+      required=["timeline","root_cause","automation"]
+      print("report fields:", {k:d.get(k) for k in required})
+      print("REPORT_GENERATED" if all(d.get(k) for k in required) else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `REPORT_GENERATED` (타임라인·근본원인·자동화 등 구조화 보고서 생성).
+      🔎 기존 틀(타임라인·근본원인)에 에이전트 조각(템포·자동화·탐지지연)을 더한 구조화 보고서.
+    answer: |
+      report fields: {'timeline': 'recon->sqli->lateral', 'root_cause': 'SQL injection on /login', 'automation': 'automated'}
+      REPORT_GENERATED
+    answer_detail: "구조화 사고 보고서(타임라인·근본원인·에이전트 조각) 생성 → REPORT_GENERATED."
+    verify:
+      type: output_contains
+      expect: REPORT_GENERATED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — IOC 추출 → IOCS_EXTRACTED
+      > **🎯 목표:** 사고에서 IP·해시·경로 등 IOC를 구조화 추출.
+      > **개념:** 교훈을 지표로 — 즉시 탐지 자산.
+      ```bash
+      python3 - <<'PY'
+      import re
+      incident_text=("Attacker 185.220.101.42 hit /login with payload hash a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4, "
+                     "dropped /tmp/.backdoor.sh, added user support2.")
+      IOC_PATTERNS={"ip":re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"),
+                    "hash":re.compile(r"\b[a-f0-9]{32}\b"),
+                    "path":re.compile(r"/(?:tmp|etc|var)/\S+"),
+                    "account":re.compile(r"user (\w+)")}
+      iocs={}
+      for kind,rx in IOC_PATTERNS.items():
+          m=rx.findall(incident_text)
+          if m: iocs[kind]=m
+      for k,v in iocs.items(): print(f"  {k}: {v}")
+      # IP·해시·경로 등 3종 이상 추출되면 성공
+      print("IOCS_EXTRACTED" if len(iocs)>=3 else "FEW_IOCS")
+      PY
+      ```
+      ✅ 마지막 줄 `IOCS_EXTRACTED` (IP·해시·경로·계정 IOC 구조화 추출).
+      🔎 IOC(출처 IP·페이로드 해시·심은 파일·계정)를 구조화. 같은 공격 재발 시 즉시 탐지 자산.
+    answer: |
+      ip: ['185.220.101.42']
+      hash: ['a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4']
+      path: ['/tmp/.backdoor.sh,']
+      account: ['support2']
+      IOCS_EXTRACTED
+    answer_detail: "사고에서 IP·해시·경로·계정 IOC 구조화 추출 → IOCS_EXTRACTED. 즉시 탐지 자산."
+    verify:
+      type: output_contains
+      expect: IOCS_EXTRACTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 교훈 환류 → LESSONS_CODIFIED
+      > **🎯 목표:** IOC→룰, TTP→탐지 로직으로 환류.
+      > **개념:** 사고→방어 개선 — 다음을 막는다.
+      ```bash
+      python3 - <<'PY'
+      # 사고 교훈을 방어 개선으로 환류
+      iocs={"ip":["185.220.101.42"], "hash":["a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"], "path":["/tmp/.backdoor.sh"]}
+      ttps=["sqli on /login", "www-data privilege abuse"]
+      feedback=[]
+      # IOC → 실시간 룰(W09)
+      for ip in iocs["ip"]: feedback.append(("realtime_rule", f"block/alert source {ip}"))
+      for h in iocs["hash"]: feedback.append(("waf_rule", f"block payload hash {h[:8]}..."))
+      # TTP → 탐지 로직/Bastion 코치(W11)
+      for t in ttps: feedback.append(("detection_logic", f"harden against: {t}"))
+      # 근본 원인 → 패치
+      feedback.append(("patch", "parameterize /login queries (root cause)"))
+      for target,action in feedback: print(f"  [{target}] {action}")
+      # IOC·TTP·패치가 모두 환류되면 성공
+      kinds={t for t,_ in feedback}
+      print("LESSONS_CODIFIED" if {"realtime_rule","detection_logic","patch"}.issubset(kinds) else "PARTIAL")
+      PY
+      ```
+      ✅ 마지막 줄 `LESSONS_CODIFIED` (IOC→룰, TTP→탐지 로직, 근본원인→패치 환류).
+      🔎 사고 하나가 실시간 룰·WAF 룰·탐지 로직·패치 여러 방어 개선으로. 사고→다음 방어의 루프 완성.
+    answer: |
+      [realtime_rule] block/alert source 185.220.101.42
+      [waf_rule] block payload hash a1b2c3d4...
+      [detection_logic] harden against: sqli on /login
+      [detection_logic] harden against: www-data privilege abuse
+      [patch] parameterize /login queries (root cause)
+      LESSONS_CODIFIED
+    answer_detail: "IOC→룰, TTP→탐지 로직, 근본원인→패치 환류 → LESSONS_CODIFIED. 사고→방어 개선."
+    verify:
+      type: output_contains
+      expect: LESSONS_CODIFIED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W13 on agent IR incident reports. Findings: a structured report captured timeline, root cause, and agent-specific fields like tempo and automation (REPORT_GENERATED), IOCs (ip/hash/path/account) were extracted (IOCS_EXTRACTED), and lessons were fed back as real-time rules, detection logic, and a patch (LESSONS_CODIFIED). Explain that agent incidents add tempo/capability/automation/detection-delay to the classic template, and that feeding IOC/TTP back into detection turns an incident into a defense asset. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":340}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 사고 보고서=기존 틀+에이전트 조각. IOC/TTP를 탐지로 환류하면 사고가 방어 자산이 된다.
+      다음 주(W14)는 **모의 실사고 — 다단계 Agentic APT 대응**.
+    answer: |
+      Assessment
+      Agent incident reports add tempo, capability, automation, and detection-delay to the classic timeline/root-cause/IOC template.
+      Feeding IOCs and TTPs back into real-time rules and detection logic turns each incident into a defense asset.
+    answer_detail: "W13 사고 보고서 종합(Assessment). 에이전트 조각·IOC/TTP 환류·방어 자산."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

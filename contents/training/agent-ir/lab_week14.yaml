@@ -1,0 +1,174 @@
+lab_id: agent-ir-week14
+title: "W14 — 모의 실사고: 다단계 Agentic APT 킬체인 매핑·단계 대응·봉쇄 검증"
+version: ai
+course: agent-ir
+week: 14
+description: |
+  W01~W13 통합 모의 실사고. APT 킬체인 매핑(KILLCHAIN_MAPPED), 단계 적합 대응(STAGE_RESPONSE),
+  실물 bastion 봉쇄 검증(CONTAINED), 종합 문서화(Assessment).
+  정찰→침투→측면이동→지속성→유출을 킬체인 전체로 인식·대응. 불완전 정보에서 최선 판단.
+difficulty: hard
+duration_minutes: 180
+audience: 에이전트 IR (14주차·모의 실사고)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100, X-API-Key ccc-api-key-2026
+  - W01~W13 실습 완료
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "APT 킬체인 매핑(KILLCHAIN_MAPPED)"
+  - "단계 적합 대응(STAGE_RESPONSE)"
+  - "실물 bastion 봉쇄 검증(CONTAINED)"
+  - "종합 문서화(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 킬체인 매핑 → KILLCHAIN_MAPPED
+      > **🎯 목표:** 관측 흔적을 APT 킬체인 단계에 매핑해 진행도 판단.
+      > **개념:** 어느 단계까지 왔나 — 늦을수록 긴급.
+      ```bash
+      python3 - <<'PY'
+      # 관측된 흔적들(한 캠페인)
+      observations=["port scan from 185.x","sqli on /login succeeded","www-data logged into db VM",
+                    "new cron job update-check","large outbound transfer to 185.x"]
+      KILLCHAIN=[("recon",["scan","enumerat"]),("exploit",["sqli","payload"]),
+                 ("lateral",["logged into","internal"]),("persistence",["cron","new user","ssh key"]),
+                 ("exfiltration",["outbound","transfer","exfil"])]
+      def stage(obs):
+          for st,kws in KILLCHAIN:
+              if any(k in obs.lower() for k in kws): return st
+          return "?"
+      reached=[stage(o) for o in observations]
+      order=[s for s,_ in KILLCHAIN]
+      furthest=max((order.index(s) for s in reached if s in order), default=-1)
+      print("mapped stages:", reached)
+      print(f"furthest stage reached: {order[furthest]}")
+      # 유출 단계까지 도달 = 최고 긴급
+      print("KILLCHAIN_MAPPED" if order[furthest]=="exfiltration" else "PARTIAL_CHAIN")
+      PY
+      ```
+      ✅ 마지막 줄 `KILLCHAIN_MAPPED` (흔적이 정찰~유출 전 킬체인에 매핑, 유출까지 도달).
+      🔎 흔적을 킬체인에 매핑하면 진행도가 보인다. 유출 단계 = 최고 긴급 → 즉시 격리 필요.
+    answer: |
+      mapped stages: ['recon', 'exploit', 'lateral', 'persistence', 'exfiltration']
+      furthest stage reached: exfiltration
+      KILLCHAIN_MAPPED
+    answer_detail: "흔적을 APT 킬체인에 매핑, 유출까지 도달 판단 → KILLCHAIN_MAPPED."
+    verify:
+      type: output_contains
+      expect: KILLCHAIN_MAPPED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 단계별 대응 → STAGE_RESPONSE
+      > **🎯 목표:** 각 킬체인 단계에 적합한 대응을 판단(긴급도).
+      > **개념:** 같은 위협도 단계에 따라 대응·긴급도 다름.
+      ```bash
+      python3 - <<'PY'
+      RESPONSE={"recon":("monitor/early-block","low"),
+                "exploit":("preempt-block/patch","medium"),
+                "lateral":("isolate VM","high"),
+                "persistence":("remove foothold/reimage","high"),
+                "exfiltration":("emergency isolate/block egress","critical")}
+      reached=["recon","exploit","lateral","persistence","exfiltration"]
+      plan=[]
+      for st in reached:
+          action,urgency=RESPONSE[st]
+          gate = "APPROVAL_REQUIRED" if urgency in ("high","critical") else "AUTO/monitor"
+          plan.append((st,action,urgency,gate))
+          print(f"  [{st:12}] {action:32} urgency={urgency:8} {gate}")
+      # 유출 단계(critical)에 긴급 격리 대응이 있으면 성공
+      crit=[p for p in plan if p[2]=="critical"]
+      print("STAGE_RESPONSE" if crit and "isolate" in crit[0][1] else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `STAGE_RESPONSE` (각 단계 적합 대응, 유출=긴급 격리(승인)).
+      🔎 정찰=감시, 유출=긴급 격리. 위험 대응은 승인 게이트, 긴급 단계는 승인 우선순위 상향.
+    answer: |
+      [recon       ] monitor/early-block              urgency=low      AUTO/monitor
+      [exploit     ] preempt-block/patch              urgency=medium   AUTO/monitor
+      [lateral     ] isolate VM                       urgency=high     APPROVAL_REQUIRED
+      [persistence ] remove foothold/reimage          urgency=high     APPROVAL_REQUIRED
+      [exfiltration] emergency isolate/block egress   urgency=critical APPROVAL_REQUIRED
+      STAGE_RESPONSE
+    answer_detail: "각 킬체인 단계 적합 대응(유출=긴급 격리·승인) → STAGE_RESPONSE."
+    verify:
+      type: output_contains
+      expect: STAGE_RESPONSE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 실물 봉쇄 검증 → CONTAINED
+      > **🎯 목표:** 실물 bastion으로 봉쇄 수단(관찰·화이트리스트)이 가용함을 검증.
+      > **개념:** 대응은 실물 실행 계층으로 — 봉쇄가 실제 가능한가.
+      ### 💻 그대로 입력
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c \
+        'curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/skills;
+         echo; curl -s -X POST -H "X-API-Key: ccc-api-key-2026" -H "content-type: application/json" -d "{\"target\":\"secu\",\"command\":\"rm -rf /\"}" http://localhost:9100/exec' 2>/dev/null \
+       | python3 -c "import sys,json
+      lines=[l for l in sys.stdin.read().splitlines() if l.strip().startswith('{')]
+      skills={s['id'] for s in json.loads(lines[0])['skills']}
+      danger_blocked='must start with' in lines[1]
+      # 봉쇄 수단: 관찰 skill(nft/wazuh) 가용 + 위험 명령은 차단(안전)
+      contain_ready = 'nft.list_ruleset' in skills and 'wazuh.alerts' in skills and danger_blocked
+      print('containment skills (nft/wazuh) available:', 'nft.list_ruleset' in skills and 'wazuh.alerts' in skills)
+      print('dangerous command blocked by whitelist:', danger_blocked)
+      print('CONTAINED' if contain_ready else 'NOT_READY')"
+      ```
+      ✅ 마지막 줄 `CONTAINED` (봉쇄 관찰 skill 가용 + 위험 명령 차단(안전 실행 계층)).
+      ### 🔎 실물 bastion이 봉쇄 수단(방화벽 규칙 관찰·SIEM)을 제공하고, 위험 명령은 화이트리스트가 막는다(안전한 봉쇄).
+    answer: |
+      containment skills (nft/wazuh) available: True
+      dangerous command blocked by whitelist: True
+      CONTAINED
+    answer_detail: "실물 bastion 봉쇄 skill 가용+위험 명령 차단 → CONTAINED. 안전한 봉쇄 실행 계층."
+    verify:
+      type: output_contains
+      expect: CONTAINED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 문서화 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short incident report for W14, a simulated multi-stage Agentic APT. Findings: observations mapped across the full kill chain reaching exfiltration (KILLCHAIN_MAPPED), stage-appropriate responses were planned with emergency isolation for exfiltration behind approval (STAGE_RESPONSE), and the real bastion provided containment skills while blocking dangerous commands (CONTAINED). Explain that APTs must be seen as a whole kill chain, later stages need more urgent response, and defenders must act on incomplete information with reversible actions first. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":340}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: APT는 킬체인 전체로 인식. 늦은 단계일수록 긴급 대응. 불완전 정보에서 가역 조치 먼저·빠른 판단·로깅.
+      다음 주(W15)는 기말 **종합 Purple + Mythos-readiness**.
+    answer: |
+      Assessment
+      The Agentic APT was mapped across the full kill chain to exfiltration; later stages demanded more urgent, approval-gated responses.
+      Defenders acted on incomplete information with reversible actions first, and the real bastion provided safe containment.
+    answer_detail: "W14 모의 APT 종합(Assessment). 킬체인 인식·단계 대응·봉쇄·불완전 정보 판단."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

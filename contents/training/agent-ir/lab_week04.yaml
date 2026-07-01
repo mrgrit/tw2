@@ -1,0 +1,153 @@
+lab_id: agent-ir-week04
+title: "W04 — 자동 익스플로잇 개발: 변형 폭증·차단 스파이크·선제 차단"
+version: ai
+course: agent-ir
+week: 4
+description: |
+  익스플로잇 완성 전 개발 흔적 탐지. 페이로드 변형 폭증(MUTATION_BURST), WAF 차단·에러 스파이크
+  (BLOCK_SPIKE), 상관 후 선제 차단(PREEMPT_BLOCK), 종합(Assessment).
+  AI는 세션 안에서 시행착오로 익스플로잇 개발 — 변형 폭증+차단 스파이크가 지문.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (4주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W04 강의안 정독 — §0.5(개발 루프·변형·스파이크·선제 차단)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "페이로드 변형 폭증 탐지(MUTATION_BURST)"
+  - "WAF 차단·에러 스파이크 탐지(BLOCK_SPIKE)"
+  - "상관 후 선제 차단(PREEMPT_BLOCK)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 페이로드 변형 폭증 → MUTATION_BURST
+      > **🎯 목표:** 짧은 시간 한 지점에 많은 변형 페이로드를 탐지.
+      > **개념:** 변형 다양성×속도가 개발 지문 — 사람은 그렇게 많이 못 던진다.
+      ```bash
+      python3 - <<'PY'
+      # 60초간 /login 으로 온 페이로드들(같은 출처)
+      payloads=["' OR 1=1","' OR '1'='1' --","admin'--","' UNION SELECT 1","' OR 1=1#",
+                "') OR ('1'='1","'; DROP TABLE users--","' OR 1=1 LIMIT 1","1' AND '1'='1","' OR sleep(5)--"]
+      # 서로 다른 변형 수(다양성) — 같은 공격 유형(SQLi)의 여러 변형
+      unique=len(set(payloads)); window=60
+      print(f"distinct payload mutations on /login in {window}s: {unique}")
+      # 60초에 SQLi 변형 8개 이상 = 자동 익스플로잇 개발
+      print("MUTATION_BURST" if unique>=8 else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `MUTATION_BURST` (60초에 SQLi 변형 10개 → 자동 개발).
+      🔎 같은 지점(/login)에 많은 변형이 빠르게 = AI가 익스플로잇을 조정 중. 사람은 이 다양성·속도 불가.
+    answer: |
+      distinct payload mutations on /login in 60s: 10
+      MUTATION_BURST
+    answer_detail: "짧은 시간 많은 변형 페이로드 탐지 → MUTATION_BURST. 변형 다양성×속도 지문."
+    verify:
+      type: output_contains
+      expect: MUTATION_BURST
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 차단·에러 스파이크 → BLOCK_SPIKE
+      > **🎯 목표:** WAF 차단율·에러율 급증을 탐지.
+      > **개념:** 개발은 대부분 실패 → 차단·에러로 남는다.
+      ```bash
+      python3 - <<'PY'
+      # 분당 WAF 차단 수 (기준선 vs 현재)
+      baseline_blocks_per_min=2      # 정상 시
+      current_blocks_per_min=35      # 익스플로잇 개발 중
+      spike_ratio=current_blocks_per_min/max(1,baseline_blocks_per_min)
+      # 앱 에러율도 함께
+      baseline_err=0.01; current_err=0.30
+      print(f"WAF blocks/min: baseline {baseline_blocks_per_min} -> current {current_blocks_per_min} ({spike_ratio:.0f}x)")
+      print(f"app error rate: baseline {baseline_err:.2f} -> current {current_err:.2f}")
+      # 차단 10배 이상 급증 + 에러율 급등 = 개발 실패 흔적
+      print("BLOCK_SPIKE" if spike_ratio>=10 and current_err>0.1 else "STABLE")
+      PY
+      ```
+      ✅ 마지막 줄 `BLOCK_SPIKE` (차단 17배 급증 + 에러율 급등 → 개발 실패 흔적).
+      🔎 기준선(W01) 대비 차단·에러 급증. 정상 트래픽은 이런 스파이크를 안 만든다.
+    answer: |
+      WAF blocks/min: baseline 2 -> current 35 (18x)
+      app error rate: baseline 0.01 -> current 0.30
+      BLOCK_SPIKE
+    answer_detail: "WAF 차단율·에러율 급증 탐지 → BLOCK_SPIKE. 개발 실패의 흔적."
+    verify:
+      type: output_contains
+      expect: BLOCK_SPIKE
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 선제 차단 판단 → PREEMPT_BLOCK
+      > **🎯 목표:** 변형 폭증+차단 스파이크 상관 → 선제 차단 결정(승인).
+      > **개념:** 성공을 선제 — 익스플로잇 완성 전에 출처 차단.
+      ```bash
+      python3 - <<'PY'
+      # 두 신호 상관 (같은 출처)
+      signals={"mutation_burst":True, "block_spike":True, "source":"185.220.101.42"}
+      # 두 개발 신호가 동시 = 익스플로잇 개발 확정 → 선제 차단(위험 조치=승인)
+      dev_confirmed = signals["mutation_burst"] and signals["block_spike"]
+      action = f"block {signals['source']}" if dev_confirmed else "monitor"
+      gate = "APPROVAL_REQUIRED" if "block" in action else "AUTO"
+      print(f"development signals correlated: mutation={signals['mutation_burst']}, spike={signals['block_spike']}")
+      print(f"decision: {action} ({gate}) — preempt before exploit completes")
+      print("PREEMPT_BLOCK" if dev_confirmed and gate=="APPROVAL_REQUIRED" else "WAIT")
+      PY
+      ```
+      ✅ 마지막 줄 `PREEMPT_BLOCK` (개발 신호 상관 → 선제 차단, 승인 게이트).
+      🔎 변형 폭증+차단 스파이크가 한 출처에서 동시 = 개발 확정. 40번째 변형 성공 전에 선제 차단(승인).
+    answer: |
+      development signals correlated: mutation=True, spike=True
+      decision: block 185.220.101.42 (APPROVAL_REQUIRED) — preempt before exploit completes
+      PREEMPT_BLOCK
+    answer_detail: "변형 폭증+차단 스파이크 상관으로 선제 차단 결정(승인) → PREEMPT_BLOCK. 완성 전 차단."
+    verify:
+      type: output_contains
+      expect: PREEMPT_BLOCK
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W04 on detecting automated exploit development. Findings: a burst of distinct payload mutations on one endpoint was detected (MUTATION_BURST), WAF blocks and error rate spiked far above baseline (BLOCK_SPIKE), and correlating both signals justified a preemptive block behind an approval gate (PREEMPT_BLOCK). Explain that AI develops exploits by trial-and-error in-session, and detecting mutation burst plus block spike lets you block before the exploit completes. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: AI는 세션 안에서 시행착오로 익스플로잇 개발. 변형 폭증+차단 스파이크로 완성 전 선제 차단.
+      다음 주(W05)는 **측면이동과 지속성** 탐지.
+    answer: |
+      Assessment
+      AI develops exploits by in-session trial-and-error; detect the mutation burst plus block/error spike to act before completion.
+      Correlating both signals from one source justifies a preemptive block (with approval) before the exploit succeeds.
+    answer_detail: "W04 익스플로잇 개발 탐지 종합(Assessment). 변형 폭증·차단 스파이크·선제 차단."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

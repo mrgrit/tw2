@@ -1,0 +1,162 @@
+lab_id: agent-ir-week05
+title: "W05 — 측면이동과 지속성: 동서 트래픽·비정상 인증·지속성 흔적 탐지"
+version: ai
+course: agent-ir
+week: 5
+description: |
+  침투 후 확산·발판 탐지. 동서 트래픽 이상(LATERAL_DETECTED), 비정상 인증(AUTH_ANOMALY),
+  지속성 흔적(PERSIST_FOUND), 대응 종합(Assessment).
+  정상 내부 동작 기준선 대비 편차로 측면이동·지속성을 잡아 확산 차단·발판 제거.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (5주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W05 강의안 정독 — §0.5(측면이동·지속성·기준선 편차)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "동서 트래픽 이상 탐지(LATERAL_DETECTED)"
+  - "비정상 인증 탐지(AUTH_ANOMALY)"
+  - "지속성 흔적 탐지(PERSIST_FOUND)"
+  - "대응 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 동서 트래픽 이상 → LATERAL_DETECTED
+      > **🎯 목표:** 정상 연결 지도 대비 비정상 내부 연결을 탐지.
+      > **개념:** web→내부 VM 연결은 측면이동 신호.
+      ```bash
+      python3 - <<'PY'
+      # 정상 연결 지도(기준선): 누가 누구에게 연결하는 게 정상인가
+      normal_map={("web","siem"):False, ("web","db"):False, ("web","external"):True, ("siem","db"):True}
+      # 관측된 연결
+      observed=[("web","external"),("web","db"),("web","siem")]
+      lateral=[c for c in observed if not normal_map.get(c, False)]
+      for c in observed:
+          ok = normal_map.get(c, False)
+          print(f"  {c[0]} -> {c[1]}: {'normal' if ok else 'ABNORMAL (lateral?)'}")
+      print("lateral connections:", lateral)
+      print("LATERAL_DETECTED" if lateral else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `LATERAL_DETECTED` (web→db, web→siem 비정상 내부 연결 = 측면이동).
+      🔎 정상은 web→외부 응답만. web이 내부 VM에 연결하면 측면이동 의심.
+    answer: |
+      web -> external: normal
+      web -> db: ABNORMAL (lateral?)
+      web -> siem: ABNORMAL (lateral?)
+      lateral connections: [('web', 'db'), ('web', 'siem')]
+      LATERAL_DETECTED
+    answer_detail: "정상 연결 지도 대비 비정상 내부 연결 탐지 → LATERAL_DETECTED. 측면이동."
+    verify:
+      type: output_contains
+      expect: LATERAL_DETECTED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 비정상 인증 → AUTH_ANOMALY
+      > **🎯 목표:** 서비스 계정 이상 로그인·비정상 시간을 탐지.
+      > **개념:** 정상 인증 패턴 편차 — 측면이동은 인증을 동반.
+      ```bash
+      python3 - <<'PY'
+      # 정상 인증 패턴(기준선): 서비스 계정은 대화형 로그인 안 함, 업무시간만
+      auth_events=[{"user":"www-data","type":"interactive","hour":3,"src":"web"},
+                   {"user":"admin","type":"interactive","hour":10,"src":"bastion"}]
+      SERVICE_ACCOUNTS={"www-data","nobody","mysql"}
+      anomalies=[]
+      for e in auth_events:
+          reasons=[]
+          if e["user"] in SERVICE_ACCOUNTS and e["type"]=="interactive": reasons.append("service acct interactive")
+          if e["hour"]<6 or e["hour"]>22: reasons.append("off-hours")
+          if reasons: anomalies.append((e["user"], reasons))
+      for u,r in anomalies: print(f"  {u}: {r}")
+      print("AUTH_ANOMALY" if anomalies else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `AUTH_ANOMALY` (www-data 대화형 로그인 + 새벽 3시 = 비정상).
+      🔎 서비스 계정(www-data)은 대화형 로그인 안 한다. 훔친 자격으로 이동 중인 신호.
+    answer: |
+      www-data: ['service acct interactive', 'off-hours']
+      AUTH_ANOMALY
+    answer_detail: "서비스 계정 대화형·비정상 시간 로그인 탐지 → AUTH_ANOMALY. 정상 패턴 편차."
+    verify:
+      type: output_contains
+      expect: AUTH_ANOMALY
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 지속성 흔적 → PERSIST_FOUND
+      > **🎯 목표:** 정상 구성 대비 추가된 계정·크론·키를 탐지.
+      > **개념:** 시스템 변경 감사 — 발판을 찾아 제거.
+      ```bash
+      python3 - <<'PY'
+      # 정상 구성 스냅샷(기준선) vs 현재
+      baseline={"users":{"root","admin","www-data"}, "cron":{"logrotate"}, "ssh_keys":1}
+      current ={"users":{"root","admin","www-data","support2"}, "cron":{"logrotate","update-check"}, "ssh_keys":2}
+      new_users=current["users"]-baseline["users"]
+      new_cron=current["cron"]-baseline["cron"]
+      new_keys=current["ssh_keys"]-baseline["ssh_keys"]
+      print("new users:", new_users)
+      print("new cron jobs:", new_cron)
+      print("added ssh keys:", new_keys)
+      persistence = bool(new_users) or bool(new_cron) or new_keys>0
+      print("PERSIST_FOUND" if persistence else "CLEAN")
+      PY
+      ```
+      ✅ 마지막 줄 `PERSIST_FOUND` (새 계정 support2 + 새 크론 update-check + 추가 SSH 키).
+      🔎 정상 구성 대비 추가된 것 = 지속성 발판. 계정·크론·키를 감사해 찾아 제거(승인).
+    answer: |
+      new users: {'support2'}
+      new cron jobs: {'update-check'}
+      added ssh keys: 1
+      PERSIST_FOUND
+    answer_detail: "정상 구성 대비 추가 계정·크론·키 탐지 → PERSIST_FOUND. 지속성 발판."
+    verify:
+      type: output_contains
+      expect: PERSIST_FOUND
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W05 on lateral movement and persistence. Findings: abnormal east-west connections were detected against a normal connection map (LATERAL_DETECTED), a service account had an off-hours interactive login (AUTH_ANOMALY), and new users/cron/ssh-keys were found versus a baseline (PERSIST_FOUND). Explain that these mean a breach already happened, so the goal shifts to containing spread (isolate) and removing persistence (with approval), all via baseline deviation. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 측면이동·지속성은 이미 침투된 상태. 기준선 편차로 확산 차단(격리)·발판 제거(승인).
+      다음 주(W06)는 **회피·다형성·역탐지** 대응.
+    answer: |
+      Assessment
+      Lateral movement and persistence mean a breach already occurred; detect them by baseline deviation.
+      The goal shifts to containing spread (isolate) and removing persistence (new accounts/cron/keys) with approval.
+    answer_detail: "W05 측면이동·지속성 종합(Assessment). 기준선 편차·확산 차단·발판 제거."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

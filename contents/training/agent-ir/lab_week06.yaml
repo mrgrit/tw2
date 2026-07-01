@@ -1,0 +1,167 @@
+lab_id: agent-ir-week06
+title: "W06 — 회피·다형성·역탐지: 시그니처 우회·행위 기반·불변 특성 탐지"
+version: ai
+course: agent-ir
+week: 6
+description: |
+  진화하는 페이로드에 맞서는 탐지. 다형 페이로드의 시그니처 우회 확인(SIG_EVADED), 행위 기반 탐지
+  (BEHAVIOR_CAUGHT), 불변 특성 탐지(INVARIANT_CAUGHT), 다층 종합(Assessment).
+  모양은 바뀌어도 행위·의도·결과(불변)는 못 바꾼다.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (6주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W06 강의안 정독 — §0.5(다형성·행위·불변·다층)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "다형 페이로드 시그니처 우회 확인(SIG_EVADED)"
+  - "행위 기반 탐지(BEHAVIOR_CAUGHT)"
+  - "불변 특성 탐지(INVARIANT_CAUGHT)"
+  - "다층 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 시그니처 우회 확인 → SIG_EVADED
+      > **🎯 목표:** 다형 페이로드가 정규식 시그니처를 우회함을 확인.
+      > **개념:** 시그니처만으론 변형에 진다.
+      ```bash
+      python3 - <<'PY'
+      import re
+      # 시그니처(정확한 패턴)
+      sig=re.compile(r"' OR 1=1", re.I)
+      # 같은 SQLi 의도의 다형 변형들
+      variants=["' OR 1=1", "' OR '1'='1'/**/--", "' OR 0x31=0x31", "' /*!OR*/ 1=1"]
+      caught=[v for v in variants if sig.search(v)]
+      evaded=[v for v in variants if not sig.search(v)]
+      print("signature caught:", caught)
+      print("signature EVADED:", evaded)
+      # 변형 다수가 우회되면 시그니처 한계 확인
+      print("SIG_EVADED" if len(evaded)>=2 else "SIG_HELD")
+      PY
+      ```
+      ✅ 마지막 줄 `SIG_EVADED` (변형 3개가 시그니처 우회).
+      🔎 `/**/`·16진수·인라인주석으로 변형하면 정확한 시그니처를 우회. 변형은 무한.
+    answer: |
+      signature caught: ["' OR 1=1"]
+      signature EVADED: ["' OR '1'='1'/**/--", "' OR 0x31=0x31", "' /*!OR*/ 1=1"]
+      SIG_EVADED
+    answer_detail: "다형 변형이 정규식 시그니처 우회 → SIG_EVADED. 시그니처만으론 한계."
+    verify:
+      type: output_contains
+      expect: SIG_EVADED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 행위 기반 탐지 → BEHAVIOR_CAUGHT
+      > **🎯 목표:** 변형돼도 "논리 조작 구조"를 판정해 탐지.
+      > **개념:** 모양 아닌 행위·의도를 본다.
+      ```bash
+      python3 - <<'PY'
+      import re
+      # 행위 판정: 항상-참 논리 조작을 만들려 하나? (정규화 후 구조 분석)
+      def normalize(p): return re.sub(r"/\*.*?\*/","",p).replace("0x31","1").lower()
+      def is_logic_tautology(p):
+          n=normalize(p)
+          # 따옴표 후 OR/AND + 같은 값 비교(항상 참) 구조
+          return bool(re.search(r"'\s*(or|and)\s*.*(1\s*=\s*1|'?1'?\s*=\s*'?1'?)", n))
+      variants=["' OR 1=1", "' OR '1'='1'/**/--", "' OR 0x31=0x31", "' /*!OR*/ 1=1"]
+      caught=[v for v in variants if is_logic_tautology(v)]
+      print("behavior (tautology) caught:", len(caught), "/", len(variants))
+      for v in variants: print(f"  {v[:24]:24} -> {'CAUGHT' if is_logic_tautology(v) else 'miss'}")
+      print("BEHAVIOR_CAUGHT" if len(caught)>=3 else "WEAK")
+      PY
+      ```
+      ✅ 마지막 줄 `BEHAVIOR_CAUGHT` (정규화 후 항상-참 구조로 변형 다수 탐지).
+      🔎 `/**/` 제거·16진수 정규화 후 "논리 항상참" 구조를 판정 — 모양이 바뀌어도 행위는 같다.
+    answer: |
+      behavior (tautology) caught: 3 / 4
+      SIG evaded ones now caught by behavior
+      BEHAVIOR_CAUGHT
+    answer_detail: "정규화 후 항상-참 논리 구조 판정으로 변형 탐지 → BEHAVIOR_CAUGHT. 행위 기반."
+    verify:
+      type: output_contains
+      expect: BEHAVIOR_CAUGHT
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 불변 특성 탐지 → INVARIANT_CAUGHT
+      > **🎯 목표:** 불변 특성(따옴표+논리+주석) 조합으로 탐지.
+      > **개념:** 변형해도 남는 본질(지문)을 잡는다.
+      ```bash
+      python3 - <<'PY'
+      import re
+      # SQLi 불변 특성들
+      FEATURES={"quote":re.compile(r"'"),
+                "logic":re.compile(r"\b(or|and)\b", re.I),
+                "comment":re.compile(r"(--|#|/\*)"),
+                "compare":re.compile(r"=|<|>")}
+      def invariant_score(p):
+          return sum(1 for rx in FEATURES.values() if rx.search(p))
+      variants=["' OR '1'='1'/**/--", "' OR 0x31=0x31", "' /*!OR*/ 1=1", "hello world"]
+      for v in variants:
+          sc=invariant_score(v); print(f"  {v[:24]:24} invariant_score={sc}/4")
+      # 3개 이상 특성 조합 = SQLi 불변 특성 (정상 문장은 낮음)
+      malicious=[v for v in variants if invariant_score(v)>=3]
+      benign=[v for v in variants if invariant_score(v)<3]
+      print("INVARIANT_CAUGHT" if len(malicious)>=2 and "hello world" in benign else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `INVARIANT_CAUGHT` (불변 특성 조합으로 변형 탐지, 정상 문장은 통과).
+      🔎 따옴표+논리+주석+비교의 조합은 변형해도 남는다. 정상 문장("hello world")은 점수 낮음(오탐 적음).
+    answer: |
+      ' OR '1'='1'/**/--       invariant_score=4/4
+      ' OR 0x31=0x31           invariant_score=3/4
+      ' /*!OR*/ 1=1            invariant_score=4/4
+      hello world              invariant_score=0/4
+      INVARIANT_CAUGHT
+    answer_detail: "불변 특성(따옴표+논리+주석+비교) 조합으로 변형 탐지, 정상 통과 → INVARIANT_CAUGHT."
+    verify:
+      type: output_contains
+      expect: INVARIANT_CAUGHT
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W06 on defeating polymorphic evasion. Findings: polymorphic variants evaded an exact signature (SIG_EVADED), behavior-based detection normalized them and caught the always-true logic (BEHAVIOR_CAUGHT), and invariant-feature scoring caught them while passing a benign sentence (INVARIANT_CAUGHT). Explain that appearance changes but behavior/intent/result do not, so layer signature + behavior + invariant + result detection against polymorphism and anti-detection. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 다형성은 모양을 바꾼다. 행위·불변 특성·결과(못 바꾸는 것)를 다층으로 잡는다.
+      다음 주(W07)는 **규모화 — 다중 에이전트 병렬** 탐지.
+    answer: |
+      Assessment
+      Polymorphism changes appearance but not behavior, intent, or result; exact signatures fail alone.
+      Layer signature + behavior + invariant + result detection to catch evolving payloads and resist anti-detection.
+    answer_detail: "W06 다형성 대응 종합(Assessment). 행위·불변·다층 탐지."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

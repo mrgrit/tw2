@@ -1,0 +1,163 @@
+lab_id: agent-ir-week10
+title: "W10 — 기만과 지연: 디코이 상호작용·타르핏 지연·공격 비용 정량화"
+version: ai
+course: agent-ir
+week: 10
+description: |
+  능동 방어로 공격자 비용 올리기. 디코이 접촉 고신뢰 탐지(DECOY_TRIGGERED), 타르핏 지연(DELAY_APPLIED),
+  공격 비용 증가 정량화(COST_RAISED), 합법 경계 종합(Assessment).
+  기만(거의 오탐 0 신호)+지연(AI 속도 이점 깎기). 자기 자산 안에서만.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (10주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W10 강의안 정독 — §0.5(기만·지연·비용·합법 경계)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "디코이 상호작용 고신뢰 탐지(DECOY_TRIGGERED)"
+  - "타르핏 지연 적용(DELAY_APPLIED)"
+  - "공격 비용 증가 정량화(COST_RAISED)"
+  - "합법 경계 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 디코이 상호작용 탐지 → DECOY_TRIGGERED
+      > **🎯 목표:** 디코이(가짜 계정·파일) 접촉을 고신뢰 경보로.
+      > **개념:** 정상은 안 건드림 → 접촉=공격(거의 오탐 0).
+      ```bash
+      python3 - <<'PY'
+      # 디코이 자산(정상 사용자는 접근할 이유 없음)
+      decoys={"user:admin_backup", "file:/root/passwords.xlsx", "endpoint:/internal/debug"}
+      # 접근 로그
+      accesses=[{"src":"185.x","target":"file:/root/passwords.xlsx"},
+                {"src":"10.0.0.5","target":"file:/var/www/index.html"}]
+      alerts=[a for a in accesses if a["target"] in decoys]
+      for a in accesses:
+          hit=a["target"] in decoys
+          print(f"  {a['src']} -> {a['target']}: {'DECOY HIT (high-confidence)' if hit else 'normal asset'}")
+      # 디코이 접촉이 있으면 고신뢰 공격 경보
+      print("DECOY_TRIGGERED" if alerts else "NO_HIT")
+      PY
+      ```
+      ✅ 마지막 줄 `DECOY_TRIGGERED` (185.x가 미끼 파일 접촉 = 고신뢰 공격).
+      🔎 정상 사용자는 /root/passwords.xlsx 미끼를 건드릴 이유 없다. 접촉 자체가 거의 오탐 없는 공격 신호.
+    answer: |
+      185.x -> file:/root/passwords.xlsx: DECOY HIT (high-confidence)
+      10.0.0.5 -> file:/var/www/index.html: normal asset
+      DECOY_TRIGGERED
+    answer_detail: "디코이 접촉을 고신뢰 공격 경보로 → DECOY_TRIGGERED. 접촉=공격(거의 오탐 0)."
+    verify:
+      type: output_contains
+      expect: DECOY_TRIGGERED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 타르핏 지연 → DELAY_APPLIED
+      > **🎯 목표:** 의심 연결에 지연을 적용(응답 시간 증가).
+      > **개념:** AI 속도를 늦춘다 — 속도 이점 제거.
+      ```bash
+      python3 - <<'PY'
+      # 연결별 응답 지연 정책 (의심 출처는 타르핏)
+      SUSPECT={"185.x"}
+      def response_delay_s(src):
+          return 8.0 if src in SUSPECT else 0.05   # 의심=8초 타르핏, 정상=50ms
+      conns=["185.x","10.0.0.5","185.x"]
+      delays=[(c, response_delay_s(c)) for c in conns]
+      for c,d in delays: print(f"  {c}: response delay {d}s {'(TARPIT)' if d>1 else '(normal)'}")
+      # 의심 연결에 큰 지연이 적용되면 타르핏 작동
+      tarpit_applied = any(d>1 for c,d in delays if c in SUSPECT)
+      # 정상은 영향 없음
+      normal_ok = all(d<0.1 for c,d in delays if c not in SUSPECT)
+      print("DELAY_APPLIED" if tarpit_applied and normal_ok else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `DELAY_APPLIED` (의심 185.x에 8초 타르핏, 정상은 50ms 영향 없음).
+      🔎 의심 연결만 늦춘다(정상 사용자 영향 없이). AI의 분 단위 공격이 타르핏으로 늘어져 속도 이점 상실.
+    answer: |
+      185.x: response delay 8.0s (TARPIT)
+      10.0.0.5: response delay 0.05s (normal)
+      185.x: response delay 8.0s (TARPIT)
+      DELAY_APPLIED
+    answer_detail: "의심 연결에 타르핏 지연, 정상 영향 없음 → DELAY_APPLIED. AI 속도 이점 깎기."
+    verify:
+      type: output_contains
+      expect: DELAY_APPLIED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 공격 비용 정량화 → COST_RAISED
+      > **🎯 목표:** 지연·기만으로 공격 시간·비용 증가 측정.
+      > **개념:** 비용>이득이면 공격자 포기 — 방어를 경제 문제로.
+      ```bash
+      python3 - <<'PY'
+      # 공격에 필요한 요청 수 × 요청당 시간
+      requests=100
+      baseline_time = requests*0.05      # 지연 없을 때(초)
+      tarpit_time   = requests*8.0       # 타르핏 적용 시(초)
+      # 디코이로 낭비한 시간(가짜 자산 조사)
+      decoy_waste = 300                  # 초
+      total_with_defense = tarpit_time + decoy_waste
+      cost_multiplier = total_with_defense/max(1,baseline_time)
+      print(f"baseline attack time: {baseline_time:.0f}s")
+      print(f"with tarpit+decoy: {total_with_defense:.0f}s ({cost_multiplier:.0f}x)")
+      # 공격 비용이 크게 증가하면 능동 방어 효과
+      print("COST_RAISED" if cost_multiplier>=10 else "MARGINAL")
+      PY
+      ```
+      ✅ 마지막 줄 `COST_RAISED` (공격 시간 5초→1100초, 220배 증가).
+      🔎 타르핏+디코이로 공격 비용이 수백 배. 비용이 이득을 넘으면 공격자는 다른 표적으로 옮기거나 포기.
+    answer: |
+      baseline attack time: 5s
+      with tarpit+decoy: 1100s (220x)
+      COST_RAISED
+    answer_detail: "타르핏+디코이로 공격 비용 220배 증가 → COST_RAISED. 비용>이득이면 포기."
+    verify:
+      type: output_contains
+      expect: COST_RAISED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합(합법 경계) → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W10 on active defense. Findings: touching a decoy asset gave a high-confidence alert with near-zero false positives (DECOY_TRIGGERED), a tarpit added large delays only to suspect connections without affecting normal users (DELAY_APPLIED), and attacker cost rose ~220x (COST_RAISED). Explain that deception and delay raise attacker cost to make them give up, and stress the legal boundary: only your own assets, never hack back. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 능동 방어=기만(거의 오탐 0)+지연(속도 깎기). 공격 비용을 올려 포기시킨다. 자기 자산만·역해킹 금지.
+      다음 주(W11)는 **Purple Round 1 — Claude Code가 Bastion을 코치**.
+    answer: |
+      Assessment
+      Active defense uses deception (near-zero-FP decoy signals) and delay (tarpits that erase the AI speed advantage) to raise attacker cost until they give up.
+      Legal boundary: only your own assets, never hack back.
+    answer_detail: "W10 능동 방어 종합(Assessment). 기만·지연·비용 증가, 합법 경계."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

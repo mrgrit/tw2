@@ -1,0 +1,170 @@
+lab_id: agent-ir-week12
+title: "W12 — Purple Round 2: Experience→Playbook 자동 승격(자기 개선 루프)"
+version: ai
+course: agent-ir
+week: 12
+description: |
+  Bastion 자기 개선. 대응 경험 축적(EXP_ACCUMULATED), 반복 성공 승격 후보 식별(CANDIDATE_FOUND),
+  기준 통과 Playbook 승격(PROMOTED), 안전장치 종합(Assessment).
+  경험→승격→개선 루프. 승격 기준(반복·성공률·부작용)으로 잘못된·오염된 학습 방지.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (12주차·Purple)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W12 강의안 정독 — §0.5(자기 개선 루프·승격 기준·안전장치)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "대응 경험 축적(EXP_ACCUMULATED)"
+  - "반복 성공 승격 후보 식별(CANDIDATE_FOUND)"
+  - "Playbook 승격(PROMOTED)"
+  - "안전장치 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 경험 축적 → EXP_ACCUMULATED
+      > **🎯 목표:** 대응 결과(절차·성공/실패)를 Experience DB에 축적.
+      > **개념:** 개선의 원료 — 각 대응의 결과를 기록.
+      ```bash
+      python3 - <<'PY'
+      # Experience DB (대응 절차, 결과, 부작용)
+      experiences=[{"proc":"investigate_then_block","outcome":"success","side_effect":False},
+                   {"proc":"investigate_then_block","outcome":"success","side_effect":False},
+                   {"proc":"immediate_block","outcome":"success","side_effect":True},
+                   {"proc":"investigate_then_block","outcome":"success","side_effect":False},
+                   {"proc":"investigate_then_block","outcome":"fail","side_effect":False},
+                   {"proc":"investigate_then_block","outcome":"success","side_effect":False},
+                   {"proc":"immediate_block","outcome":"fail","side_effect":True}]
+      from collections import defaultdict
+      by_proc=defaultdict(list)
+      for e in experiences: by_proc[e["proc"]].append(e)
+      for proc,evs in by_proc.items():
+          print(f"  {proc}: {len(evs)} records")
+      print("EXP_ACCUMULATED" if len(experiences)>=5 else "INSUFFICIENT")
+      PY
+      ```
+      ✅ 마지막 줄 `EXP_ACCUMULATED` (7건 대응 경험 축적).
+      🔎 각 대응의 절차·성공/실패·부작용을 기록. 이 원료가 승격 판단의 근거.
+    answer: |
+      investigate_then_block: 5 records
+      immediate_block: 2 records
+      EXP_ACCUMULATED
+    answer_detail: "대응 경험(절차·결과·부작용) 축적 → EXP_ACCUMULATED. 개선의 원료."
+    verify:
+      type: output_contains
+      expect: EXP_ACCUMULATED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 승격 후보 식별 → CANDIDATE_FOUND
+      > **🎯 목표:** 반복·성공률·부작용 기준으로 승격 후보 선별.
+      > **개념:** 아무 성공이나 아님 — 검증된 것만.
+      ```bash
+      python3 - <<'PY'
+      from collections import defaultdict
+      experiences=[{"proc":"investigate_then_block","outcome":"success","side_effect":False}]*4 + \
+                  [{"proc":"investigate_then_block","outcome":"fail","side_effect":False}] + \
+                  [{"proc":"immediate_block","outcome":"success","side_effect":True}] + \
+                  [{"proc":"immediate_block","outcome":"fail","side_effect":True}]
+      by_proc=defaultdict(list)
+      for e in experiences: by_proc[e["proc"]].append(e)
+      # 승격 기준: 반복>=5, 성공률>=0.8, 부작용률 낮음
+      candidates=[]
+      for proc,evs in by_proc.items():
+          n=len(evs); succ=sum(1 for e in evs if e["outcome"]=="success")/n; se=sum(1 for e in evs if e["side_effect"])/n
+          meets = n>=5 and succ>=0.8 and se<=0.2
+          print(f"  {proc}: n={n} success={succ:.2f} side_effect={se:.2f} -> {'CANDIDATE' if meets else 'no'}")
+          if meets: candidates.append(proc)
+      print("CANDIDATE_FOUND" if candidates else "NO_CANDIDATE")
+      PY
+      ```
+      ✅ 마지막 줄 `CANDIDATE_FOUND` (investigate_then_block: 반복5·성공80%·부작용0 → 후보).
+      🔎 immediate_block은 부작용률 높아 탈락. 기준(반복·성공률·부작용) 통과한 것만 후보.
+    answer: |
+      investigate_then_block: n=5 success=0.80 side_effect=0.00 -> CANDIDATE
+      immediate_block: n=2 success=0.50 side_effect=1.00 -> no
+      CANDIDATE_FOUND
+    answer_detail: "반복·성공률·부작용 기준으로 승격 후보 선별 → CANDIDATE_FOUND. 검증된 것만."
+    verify:
+      type: output_contains
+      expect: CANDIDATE_FOUND
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — Playbook 승격 → PROMOTED
+      > **🎯 목표:** 기준 통과 후보를 playbook으로 승격(승인).
+      > **개념:** 경험→표준 절차 — 검증된 것만 표준이 된다.
+      ```bash
+      python3 - <<'PY'
+      # 승격 후보를 playbook으로 codify (오염 검증 + 승인)
+      candidate={"proc":"investigate_then_block","n":5,"success":0.80,"side_effect":0.0}
+      # 오염 검증: 결정론 대조(이 절차가 실제로 위협을 처리했나 - side_effect 낮고 성공 높음)
+      integrity_ok = candidate["success"]>=0.8 and candidate["side_effect"]<=0.2
+      # 중요 playbook은 사람 승인
+      promotion={"playbook":candidate["proc"],"source":"auto-promoted from experience",
+                 "evidence":f"n={candidate['n']}, success={candidate['success']}",
+                 "integrity_verified":integrity_ok, "human_approval":"APPROVAL_REQUIRED"}
+      for k,v in promotion.items(): print(f"  {k}: {v}")
+      promoted = integrity_ok and promotion["human_approval"]=="APPROVAL_REQUIRED"
+      print("PROMOTED" if promoted else "REJECTED")
+      PY
+      ```
+      ✅ 마지막 줄 `PROMOTED` (경험 검증+승인 게이트 통과 → playbook 승격).
+      🔎 오염 검증(성공률·부작용 대조)+사람 승인 후 승격. 다음부턴 Manager가 이 playbook 우선 사용.
+    answer: |
+      playbook: investigate_then_block
+      source: auto-promoted from experience
+      evidence: n=5, success=0.8
+      integrity_verified: True
+      human_approval: APPROVAL_REQUIRED
+      PROMOTED
+    answer_detail: "경험 검증+승인 게이트 통과로 playbook 승격 → PROMOTED. 경험→표준 절차."
+    verify:
+      type: output_contains
+      expect: PROMOTED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W12 on Bastion auto-promoting experience to playbooks. Findings: response experiences were accumulated (EXP_ACCUMULATED), a candidate passed promotion criteria of repetition, success rate, and low side effects (CANDIDATE_FOUND), and it was promoted to a playbook after integrity verification and an approval gate (PROMOTED). Explain the self-improvement loop experience->promote->improve, and the safeguards against wrong or poisoned learning (criteria, integrity checks, approval, regression). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":340}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 경험→승격→개선 루프로 Bastion이 자기 개선. 승격 기준·오염 검증·승인·회귀로 잘못된 학습 방지.
+      다음 주(W13)는 **에이전트 IR 사고 보고서**.
+    answer: |
+      Assessment
+      Bastion self-improves via an experience->promote->improve loop, turning repeatedly successful responses into playbooks.
+      Safeguards (repetition/success/side-effect criteria, integrity checks, approval, regression) prevent wrong or poisoned learning.
+    answer_detail: "W12 자동 승격 종합(Assessment). 자기 개선 루프·승격 기준·안전장치."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

@@ -1,0 +1,170 @@
+lab_id: agent-ir-week07
+title: "W07 — 규모화: low-and-slow 회피·협조 캠페인 상관·역할 분할 식별"
+version: ai
+course: agent-ir
+week: 7
+description: |
+  다중 에이전트 병렬 공격 탐지. 개별 출처 임계 이하 회피(LOW_AND_SLOW), 여러 출처 표적·시간 상관
+  (CAMPAIGN_CORRELATED), 역할 분할 식별(ROLE_SPLIT), 종합(Assessment).
+  개별은 조용해도 협조(같은 표적·시간·분할 역할)는 못 숨긴다 — 다출처 상관.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (7주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W07 강의안 정독 — §0.5(규모화·low-and-slow·다출처 상관)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "low-and-slow 회피 확인(LOW_AND_SLOW)"
+  - "협조 캠페인 상관(CAMPAIGN_CORRELATED)"
+  - "역할 분할 식별(ROLE_SPLIT)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — low-and-slow 회피 확인 → LOW_AND_SLOW
+      > **🎯 목표:** 개별 출처가 속도 임계 이하로 회피함을 확인.
+      > **개념:** 단일 출처 관점의 한계 — 각자 조용하면 속도 탐지 우회.
+      ```bash
+      python3 - <<'PY'
+      # 여러 출처, 각자 분당 요청 수(속도 임계 30/min)
+      sources={"185.x.A":8, "185.x.B":7, "185.x.C":8, "185.x.D":7, "185.x.E":8}
+      THRESHOLD=30
+      per_source_alert=[s for s,r in sources.items() if r>THRESHOLD]
+      total=sum(sources.values())
+      print(f"per-source rates: {sources}")
+      print(f"per-source alerts (>{THRESHOLD}/min): {per_source_alert}")
+      print(f"combined rate: {total}/min (but split across {len(sources)} sources)")
+      # 개별은 다 임계 이하지만 합치면 임계 초과 = low-and-slow 회피
+      print("LOW_AND_SLOW" if not per_source_alert and total>THRESHOLD else "DETECTED_BY_RATE")
+      PY
+      ```
+      ✅ 마지막 줄 `LOW_AND_SLOW` (개별은 임계 이하지만 합계는 초과 → 속도 탐지 회피).
+      🔎 5개 출처가 각 7~8회(합계 38)면 개별로는 임계 이하 정상. 단일 출처 속도 탐지(W03)는 이걸 놓친다.
+    answer: |
+      per-source rates: {'185.x.A': 8, '185.x.B': 7, '185.x.C': 8, '185.x.D': 7, '185.x.E': 8}
+      per-source alerts (>30/min): []
+      combined rate: 38/min (but split across 5 sources)
+      LOW_AND_SLOW
+    answer_detail: "개별 출처 임계 이하, 합계는 분산 → LOW_AND_SLOW. 단일 출처 탐지 회피."
+    verify:
+      type: output_contains
+      expect: LOW_AND_SLOW
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 협조 캠페인 상관 → CAMPAIGN_CORRELATED
+      > **🎯 목표:** 여러 출처의 같은 표적·시간을 상관.
+      > **개념:** 협조는 못 숨긴다 — 공유 표적·시간대.
+      ```bash
+      python3 - <<'PY'
+      # 여러 출처의 활동(표적, 시간대)
+      activity=[{"src":"A","target":"/login","window":"10:00-10:05"},
+                {"src":"B","target":"/login","window":"10:00-10:05"},
+                {"src":"C","target":"/login","window":"10:01-10:06"},
+                {"src":"D","target":"/other","window":"14:00-14:05"}]
+      # 같은 표적 + 겹치는 시간대로 그룹핑
+      from collections import defaultdict
+      groups=defaultdict(list)
+      for a in activity:
+          if a["target"]=="/login" and a["window"].startswith("10:0"):
+              groups["/login@10:00"].append(a["src"])
+      campaign=groups["/login@10:00"]
+      print("sources hitting /login around 10:00:", campaign)
+      # 3개 이상 출처가 같은 표적·시간 = 협조 캠페인
+      print("CAMPAIGN_CORRELATED" if len(campaign)>=3 else "ISOLATED")
+      PY
+      ```
+      ✅ 마지막 줄 `CAMPAIGN_CORRELATED` (A·B·C가 같은 표적·시간대 = 협조 캠페인).
+      🔎 개별은 조용해도 같은 표적(/login)·시간(10:00)으로 묶으면 협조가 드러난다. D는 다른 표적/시간→무관.
+    answer: |
+      sources hitting /login around 10:00: ['A', 'B', 'C']
+      CAMPAIGN_CORRELATED
+    answer_detail: "여러 출처의 같은 표적·시간 상관 → CAMPAIGN_CORRELATED. 협조 캠페인."
+    verify:
+      type: output_contains
+      expect: CAMPAIGN_CORRELATED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 역할 분할 식별 → ROLE_SPLIT
+      > **🎯 목표:** 각 출처의 역할(정찰·익스플로잇·확산)을 식별·조합.
+      > **개념:** 합치면 완전한 공격 체인.
+      ```bash
+      python3 - <<'PY'
+      # 캠페인 내 각 출처의 행동 → 역할 분류
+      behaviors={"A":"port scan and path enumeration",
+                 "B":"sql injection payloads",
+                 "C":"internal connection attempts"}
+      def role(b):
+          if "scan" in b or "enumerat" in b: return "recon"
+          if "injection" in b or "payload" in b: return "exploit"
+          if "internal" in b or "lateral" in b: return "spread"
+          return "unknown"
+      roles={s:role(b) for s,b in behaviors.items()}
+      for s,r in roles.items(): print(f"  {s}: {r}")
+      chain=set(roles.values())
+      # recon+exploit+spread 역할이 다 있으면 완전한 공격 체인
+      complete = {"recon","exploit","spread"}.issubset(chain)
+      print("attack chain roles:", chain)
+      print("ROLE_SPLIT" if complete else "PARTIAL_CHAIN")
+      PY
+      ```
+      ✅ 마지막 줄 `ROLE_SPLIT` (A=정찰, B=익스플로잇, C=확산 → 완전한 공격 체인).
+      🔎 개별로는 "불완전한 공격"이지만, 역할을 조합하면 정찰→익스플로잇→확산 완전 체인. 캠페인 의도 확인.
+    answer: |
+      A: recon
+      B: exploit
+      C: spread
+      attack chain roles: {'recon', 'exploit', 'spread'}
+      ROLE_SPLIT
+    answer_detail: "각 출처 역할(정찰·익스플로잇·확산) 조합으로 완전 체인 식별 → ROLE_SPLIT."
+    verify:
+      type: output_contains
+      expect: ROLE_SPLIT
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W07 on defending against scaled multi-agent attacks. Findings: individual sources stayed under the rate threshold (LOW_AND_SLOW), but correlating same target and time window grouped them into one campaign (CAMPAIGN_CORRELATED), and role classification showed recon+exploit+spread forming a complete attack chain (ROLE_SPLIT). Explain that scaling splits roles across low-and-slow sources, so multi-source correlation by shared target/time/role is the answer, defending patterns not single IPs. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 규모화는 역할을 low-and-slow 출처로 나눈다. 표적·시간·역할 다출처 상관으로 캠페인(패턴)을 방어.
+      다음 주(W08)는 **중간평가 — Blue Team Agent IR CTF**.
+    answer: |
+      Assessment
+      Scaling splits roles across low-and-slow sources that evade per-source rate detection.
+      Multi-source correlation by shared target, time, and role reveals the campaign; defend patterns, not single IPs.
+    answer_detail: "W07 규모화 종합(Assessment). low-and-slow·다출처 상관·역할 분할·패턴 방어."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

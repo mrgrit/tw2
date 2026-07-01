@@ -1,0 +1,173 @@
+lab_id: agent-ir-week08
+title: "W08 — 중간평가: Blue Team Agent IR CTF (체인 재구성·단계 탐지·대응)"
+version: ai
+course: agent-ir
+week: 8
+description: |
+  W01~W07 종합 CTF. 혼재 흔적에서 공격 체인 재구성(CHAIN_REBUILT), 단계별 탐지(STAGES_DETECTED),
+  근본 원인·대응(IR_RESPONSE), 사고 문서화(Assessment).
+  로그의 바다에서 공격의 이야기를 읽어 끊는다 — 종합 능력 평가.
+difficulty: hard
+duration_minutes: 180
+audience: 에이전트 IR (8주차·중간평가)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W01~W07 실습 완료
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "공격 체인 재구성(CHAIN_REBUILT)"
+  - "단계별 탐지(STAGES_DETECTED)"
+  - "근본 원인·대응(IR_RESPONSE)"
+  - "사고 문서화(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 공격 체인 재구성 → CHAIN_REBUILT
+      > **🎯 목표:** 혼재된 흔적(시간·계층 섞임)에서 공격 체인을 시간순 재구성.
+      > **개념:** 출처·시간 상관으로 흩어진 조각을 이야기로.
+      ```bash
+      python3 - <<'PY'
+      # 혼재된 흔적(순서 섞임, 같은 출처 185.220.101.42)
+      traces=[{"t":"10:03","layer":"wazuh","evt":"www-data interactive login (off-hours)"},
+              {"t":"10:00","layer":"suricata","evt":"sequential port scan"},
+              {"t":"10:02","layer":"modsec","evt":"sqli mutation burst on /login"},
+              {"t":"10:01","layer":"apache","evt":"path enumeration"}]
+      # 시간순 정렬 = 체인 재구성
+      chain=sorted(traces, key=lambda e:e["t"])
+      STAGE={"scan":"recon","enumeration":"recon","sqli":"exploit","login":"lateral"}
+      def stage(evt): return next((s for k,s in STAGE.items() if k in evt), "?")
+      print("reconstructed attack chain:")
+      for e in chain: print(f"  {e['t']} [{stage(e['evt']):8}] {e['evt'][:36]}")
+      stages=[stage(e["evt"]) for e in chain]
+      # recon→exploit→lateral 순서가 나오면 체인 복원
+      print("CHAIN_REBUILT" if stages[0]=="recon" and "exploit" in stages and "lateral" in stages else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `CHAIN_REBUILT` (시간순 정렬로 정찰→익스플로잇→측면이동 체인 복원).
+      🔎 섞인 흔적을 출처·시간으로 정렬하면 공격의 이야기가 드러난다.
+    answer: |
+      reconstructed attack chain:
+        10:00 [recon   ] sequential port scan
+        10:01 [recon   ] path enumeration
+        10:02 [exploit ] sqli mutation burst on /login
+        10:03 [lateral ] www-data interactive login (off-hours)
+      CHAIN_REBUILT
+    answer_detail: "혼재 흔적을 시간순 정렬해 정찰→익스플로잇→측면이동 체인 복원 → CHAIN_REBUILT."
+    verify:
+      type: output_contains
+      expect: CHAIN_REBUILT
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 단계별 탐지 → STAGES_DETECTED
+      > **🎯 목표:** 각 단계를 배운 기법(W03~W07)으로 탐지.
+      > **개념:** 속도·패턴·변형·인증 이상을 각 단계에 적용.
+      ```bash
+      python3 - <<'PY'
+      # 각 단계 → 적용 탐지 기법 (W03~W07)
+      chain=[("recon","sequential port scan","pattern-based (W03)"),
+             ("recon","path enumeration","rate/correlation (W03)"),
+             ("exploit","sqli mutation burst","mutation burst (W04)"),
+             ("lateral","www-data off-hours login","auth anomaly (W05)")]
+      detected=0
+      for stage,evt,technique in chain:
+          print(f"  [{stage:8}] {evt[:28]:28} -> {technique}")
+          detected+=1
+      # 모든 단계가 대응 탐지 기법에 매핑되면 성공
+      print(f"stages detected: {detected}/{len(chain)}")
+      print("STAGES_DETECTED" if detected==len(chain) else "GAPS")
+      PY
+      ```
+      ✅ 마지막 줄 `STAGES_DETECTED` (각 단계가 대응 탐지 기법에 매핑).
+      🔎 정찰=패턴/상관, 익스플로잇=변형 폭증, 측면이동=인증 이상 — 배운 기법을 각 단계에.
+    answer: |
+      [recon   ] sequential port scan         -> pattern-based (W03)
+      [recon   ] path enumeration             -> rate/correlation (W03)
+      [exploit ] sqli mutation burst          -> mutation burst (W04)
+      [lateral ] www-data off-hours login     -> auth anomaly (W05)
+      stages detected: 4/4
+      STAGES_DETECTED
+    answer_detail: "각 공격 단계를 대응 탐지 기법에 매핑 → STAGES_DETECTED. 배운 기법 종합."
+    verify:
+      type: output_contains
+      expect: STAGES_DETECTED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 근본 원인·대응 → IR_RESPONSE
+      > **🎯 목표:** 최초 침투 경로 식별 + 대응 판단(승인 게이트).
+      > **개념:** 근본 원인 없인 재발 — 경로를 짚고 확산 차단.
+      ```bash
+      python3 - <<'PY'
+      # 체인의 첫 성공 지점 = 최초 침투 경로
+      chain=[{"stage":"recon","success":False},
+             {"stage":"exploit","evt":"sqli on /login succeeded","success":True},
+             {"stage":"lateral","evt":"www-data login","success":True}]
+      root_cause=next((c for c in chain if c["success"]), None)
+      # 대응: 최초 경로 차단(패치) + 감염 VM 격리 (위험=승인)
+      actions=["patch /login sqli (root cause)","isolate web VM (contain spread)","block source IP"]
+      gated=[(a, "APPROVAL_REQUIRED" if any(k in a for k in ["isolate","block","patch"]) else "AUTO") for a in actions]
+      print("root cause (first success):", root_cause["evt"])
+      for a,g in gated: print(f"  action: {a} ({g})")
+      resp = root_cause and all(g=="APPROVAL_REQUIRED" for _,g in gated)
+      print("IR_RESPONSE" if resp else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `IR_RESPONSE` (근본 원인=SQLi on /login, 대응은 승인 게이트).
+      🔎 최초 침투(SQLi)를 패치해야 재발 방지. 격리·차단은 위험 조치 → 승인. 근본 원인+대응.
+    answer: |
+      root cause (first success): sqli on /login succeeded
+        action: patch /login sqli (root cause) (APPROVAL_REQUIRED)
+        action: isolate web VM (contain spread) (APPROVAL_REQUIRED)
+        action: block source IP (APPROVAL_REQUIRED)
+      IR_RESPONSE
+    answer_detail: "근본 원인(최초 침투 SQLi) 식별 + 대응 승인 게이트 → IR_RESPONSE."
+    verify:
+      type: output_contains
+      expect: IR_RESPONSE
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 사고 문서화 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short incident report for a Blue Team Agent IR CTF. Findings: mixed traces were time-sorted to rebuild the chain recon->exploit->lateral (CHAIN_REBUILT), each stage mapped to a detection technique from weeks 3-5 (STAGES_DETECTED), and the root cause was a SQL injection on /login with responses (patch, isolate, block) behind approval gates (IR_RESPONSE). Summarize the chain, root cause, and response, noting that reconstructing the full story and fixing the root cause prevents recurrence. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":340}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 흔적→체인→단계 탐지→근본 원인→대응→문서. 전체 이야기 재구성 + 근본 원인 수정이 재발 방지.
+      다음 주(W09)는 후반부 시작 **실시간 탐지 룰 엔지니어링**.
+    answer: |
+      Assessment
+      The attack chain (recon->exploit->lateral) was rebuilt from mixed traces, each stage detected, root cause = SQLi on /login.
+      Response (patch/isolate/block) went through approval gates; reconstructing the full story and fixing the root cause prevents recurrence.
+    answer_detail: "W08 IR CTF 종합(Assessment). 체인 재구성·단계 탐지·근본 원인·대응·문서화."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

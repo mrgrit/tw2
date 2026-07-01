@@ -1,0 +1,172 @@
+lab_id: agent-ir-week02
+title: "W02 — 공격자 해부: Tool-use 루프 재구성·능력 경계·방어 관찰 지점"
+version: ai
+course: agent-ir
+week: 2
+description: |
+  AI 공격자의 내부 해부. 흔적에서 tool-use 루프 재구성(LOOP_RECON), 능력 경계 매핑(BOUNDARY_MAP),
+  el34 방어 관찰 지점 매핑(OBSERVE_POINT), 종합(Assessment).
+  도구 사용마다 흔적 → 방어의 관찰 기회. 능력 경계=방어 표적 목록.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (2주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100, X-API-Key ccc-api-key-2026
+  - W02 강의안 정독 — §0.5(tool-use 루프·능력 경계·관찰 지점)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "공격 흔적에서 tool-use 루프 재구성(LOOP_RECON)"
+  - "공격자 능력 경계 매핑(BOUNDARY_MAP)"
+  - "el34 방어 관찰 지점 매핑(OBSERVE_POINT)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — tool-use 루프 재구성 → LOOP_RECON
+      > **🎯 목표:** 공격 흔적(이벤트 시퀀스)에서 정찰→도구→관찰 루프를 재구성.
+      > **개념:** 공격자의 순환을 복원 — 같은 출처의 흔적을 시간순 연결.
+      ```bash
+      python3 - <<'PY'
+      # el34 로그에서 뽑은 공격 흔적(같은 출처 185.220.101.42, 시간순)
+      traces=[{"t":"10:00","src":"185.220.101.42","layer":"suricata","evt":"port scan 1-1000"},
+              {"t":"10:01","src":"185.220.101.42","layer":"apache","evt":"GET / (fingerprint)"},
+              {"t":"10:02","src":"185.220.101.42","layer":"modsec","evt":"UNION SELECT (sqli attempt)"},
+              {"t":"10:03","src":"185.220.101.42","layer":"wazuh","evt":"auth failure x10"}]
+      # 같은 출처를 시간순 연결 = tool-use 루프 복원
+      by_src={}
+      for e in traces: by_src.setdefault(e["src"],[]).append((e["t"],e["evt"]))
+      src="185.220.101.42"; loop=by_src[src]
+      print(f"attacker {src} tool-use loop:")
+      for t,evt in loop: print(f"  {t} -> {evt}")
+      # 정찰(scan/fingerprint)→공격(sqli)→접근(auth) 순환이 복원되면 성공
+      stages = [evt for _,evt in loop]
+      print("LOOP_RECON" if len(stages)>=4 and any("scan" in s for s in stages) and any("sqli" in s.lower() or "select" in s.lower() for s in stages) else "PARTIAL")
+      PY
+      ```
+      ✅ 마지막 줄 `LOOP_RECON` (같은 출처 흔적을 시간순 연결해 공격 루프 복원).
+      🔎 정찰(스캔·핑거프린트)→공격(SQLi)→접근(로그인) 순환. 출처 상관이 재구성의 열쇠.
+    answer: |
+      attacker 185.220.101.42 tool-use loop:
+        10:00 -> port scan 1-1000
+        10:01 -> GET / (fingerprint)
+        10:02 -> UNION SELECT (sqli attempt)
+        10:03 -> auth failure x10
+      LOOP_RECON
+    answer_detail: "같은 출처 흔적을 시간순 연결해 정찰→공격→접근 루프 복원 → LOOP_RECON."
+    verify:
+      type: output_contains
+      expect: LOOP_RECON
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 능력 경계 매핑 → BOUNDARY_MAP
+      > **🎯 목표:** 관찰된 도구 사용 → 공격자 능력 경계 도출.
+      > **개념:** 실제 쓴 도구만 위협 — 능력 경계=방어 표적 목록.
+      ```bash
+      python3 - <<'PY'
+      # 관찰된 도구 사용 → 공격자가 실제 가진 능력
+      observed=["port scan","web fingerprint","sqli payload","credential bruteforce"]
+      CAPABILITY={"port scan":"network scanner","web fingerprint":"http client",
+                  "sqli payload":"web exploit tool","credential bruteforce":"auth bruteforcer"}
+      boundary=sorted(set(CAPABILITY[o] for o in observed if o in CAPABILITY))
+      # 관찰 안 된 능력(예: 커널 익스플로잇)은 경계 밖 → 현재 위협 아님
+      not_observed=["kernel exploit","physical access"]
+      print("attacker capability boundary (observed tools):")
+      for c in boundary: print("  -", c)
+      print("outside boundary (not observed):", not_observed)
+      print("BOUNDARY_MAP" if len(boundary)>=3 else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `BOUNDARY_MAP` (관찰된 도구로 공격자 능력 경계 도출).
+      🔎 관찰된 도구=현재 위협 표적. 관찰 안 된 능력은 (지금은) 경계 밖. 방어 자원을 표적에 집중.
+    answer: |
+      attacker capability boundary (observed tools):
+        - auth bruteforcer
+        - http client
+        - network scanner
+        - web exploit tool
+      outside boundary (not observed): ['kernel exploit', 'physical access']
+      BOUNDARY_MAP
+    answer_detail: "관찰된 도구 사용으로 공격자 능력 경계 도출 → BOUNDARY_MAP. 방어 표적 목록."
+    verify:
+      type: output_contains
+      expect: BOUNDARY_MAP
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 방어 관찰 지점 매핑 → OBSERVE_POINT
+      > **🎯 목표:** 각 공격 도구를 el34 관찰 지점(bastion skill)에 매핑(실물 확인).
+      > **개념:** 다층 관찰 — 각 도구의 흔적 위치를 skill로.
+      ### 💻 그대로 입력
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c \
+        'curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/skills' 2>/dev/null \
+       | python3 -c "import sys,json
+      skills={s['id'] for s in json.load(sys.stdin)['skills']}
+      # 공격 도구 → 관찰 지점(skill) 매핑
+      MAP=[('port scan','suricata.tail_eve'),('sqli payload','apache.error_log'),('credential bruteforce','wazuh.alerts')]
+      ok=True
+      for tool,skill in MAP:
+          present = skill in skills
+          print(f'  {tool:22} -> {skill:22} [{\"available\" if present else \"MISSING\"}]')
+          ok = ok and present
+      print('OBSERVE_POINT' if ok else 'MISSING_SKILL')"
+      ```
+      ✅ 마지막 줄 `OBSERVE_POINT` (각 공격 도구가 실물 bastion 관찰 skill에 매핑).
+      ### 🔎 port scan→suricata, sqli→apache, bruteforce→wazuh. 다층 관찰로 공격 루프 어느 단계든 포착.
+    answer: |
+      port scan              -> suricata.tail_eve     [available]
+      sqli payload           -> apache.error_log      [available]
+      credential bruteforce  -> wazuh.alerts          [available]
+      OBSERVE_POINT
+    answer_detail: "공격 도구를 실물 bastion 관찰 skill에 매핑 → OBSERVE_POINT. 다층 관찰."
+    verify:
+      type: output_contains
+      expect: OBSERVE_POINT
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W02 on dissecting an AI attacker. Findings: same-source traces were linked to reconstruct the attacker tool-use loop scan->fingerprint->sqli->auth (LOOP_RECON), observed tools defined the capability boundary (BOUNDARY_MAP), and each attack tool mapped to an el34 observation skill suricata/apache/wazuh (OBSERVE_POINT). Explain that tools leave artifacts so every tool use is a detection chance, and multi-layer observation catches any loop stage. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 공격자=tool-use 루프, 능력은 도구에 한정. 도구 사용마다 흔적 → 다층 관찰 지점에서 잡는다.
+      다음 주(W03)는 **초지능 정찰** 탐지.
+    answer: |
+      Assessment
+      An AI attacker runs a tool-use loop; its capability is bounded by its tools, and every tool use leaves an artifact.
+      Defense maps each tool to an observation point (suricata/apache/wazuh) so any loop stage can be caught.
+    answer_detail: "W02 공격자 해부 종합(Assessment). tool-use 루프·능력 경계·다층 관찰 지점."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

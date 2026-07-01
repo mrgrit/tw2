@@ -1,0 +1,163 @@
+lab_id: agent-ir-week03
+title: "W03 — 초지능 정찰: 속도 탐지·패턴 탐지·정찰 흔적 상관(조기 경보)"
+version: ai
+course: agent-ir
+week: 3
+description: |
+  공격 첫 단계 정찰의 조기 탐지. 속도 기반 탐지(RATE_ALERT), 패턴 기반 탐지(PATTERN_ALERT),
+  같은 출처 정찰 상관(RECON_CORRELATED), 종합(Assessment).
+  정찰에서 잡으면 나머지를 막는다 — 가장 이른 방어선으로 템포 격차를 좁힌다.
+difficulty: hard
+duration_minutes: 150
+audience: 에이전트 IR (3주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W03 강의안 정독 — §0.5(속도·패턴·상관·조기 탐지)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "속도 기반 정찰 탐지(RATE_ALERT)"
+  - "패턴 기반 정찰 탐지(PATTERN_ALERT)"
+  - "정찰 흔적 상관 조기 경보(RECON_CORRELATED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 속도 기반 탐지 → RATE_ALERT
+      > **🎯 목표:** 단위 시간당 탐색 수가 임계 초과 시 경보.
+      > **개념:** AI 속도가 곧 신호 — 60초에 100포트는 사람이 못 한다.
+      ```bash
+      python3 - <<'PY'
+      # Suricata 이벤트(같은 출처의 포트 접근 타임스탬프, 초)
+      accesses=[(185, t) for t in range(0, 60, 1)]  # 60초에 60회 (AI 스캔)
+      window=60; threshold=30   # 60초에 30회 초과면 정찰 의심
+      count=len([1 for _,t in accesses if t<window])
+      rate=count/window
+      print(f"port accesses in {window}s: {count} (threshold {threshold})")
+      print(f"rate: {rate:.2f}/s")
+      print("RATE_ALERT" if count>threshold else "NORMAL")
+      PY
+      ```
+      ✅ 마지막 줄 `RATE_ALERT` (60초 60회 > 임계 30 → 속도 경보).
+      🔎 AI 정찰의 빠름이 곧 탐지 신호. 사람은 이 속도로 못 스캔한다.
+    answer: |
+      port accesses in 60s: 60 (threshold 30)
+      rate: 1.00/s
+      RATE_ALERT
+    answer_detail: "단위 시간당 탐색 수 임계 초과 → RATE_ALERT. AI 속도가 신호."
+    verify:
+      type: output_contains
+      expect: RATE_ALERT
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 패턴 기반 탐지 → PATTERN_ALERT
+      > **🎯 목표:** 순차 스캔 패턴(연속 포트)을 탐지한다.
+      > **개념:** 기계적 규칙성이 신호 — 조용한(느린) 정찰도 잡는다.
+      ```bash
+      python3 - <<'PY'
+      # 접근한 포트 순서 (느리지만 순차적 = 기계 스캔)
+      ports=[22,23,24,25,26,27,80,443]
+      # 연속 증가 시퀀스 길이로 순차성 측정
+      def longest_seq(ports):
+          best=cur=1
+          for i in range(1,len(ports)):
+              cur = cur+1 if ports[i]==ports[i-1]+1 else 1
+              best=max(best,cur)
+          return best
+      seq=longest_seq(sorted(set(ports)))
+      print(f"ports: {ports}")
+      print(f"longest sequential run: {seq}")
+      # 연속 포트 5개 이상 = 기계적 스캔 패턴
+      print("PATTERN_ALERT" if seq>=5 else "SCATTERED")
+      PY
+      ```
+      ✅ 마지막 줄 `PATTERN_ALERT` (연속 포트 22~27 시퀀스 → 기계 스캔 패턴).
+      🔎 사람은 산발적, 기계는 순차적. 규칙성으로 느린 정찰도 포착.
+    answer: |
+      ports: [22, 23, 24, 25, 26, 27, 80, 443]
+      longest sequential run: 6
+      PATTERN_ALERT
+    answer_detail: "연속 포트 순차 스캔 패턴 탐지 → PATTERN_ALERT. 기계적 규칙성이 신호."
+    verify:
+      type: output_contains
+      expect: PATTERN_ALERT
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 정찰 흔적 상관 → RECON_CORRELATED
+      > **🎯 목표:** 같은 출처의 여러 정찰 흔적을 상관해 조기 경보.
+      > **개념:** 흩어진 정찰을 하나로 — 개별은 정상, 상관하면 캠페인.
+      ```bash
+      python3 - <<'PY'
+      # 다계층 정찰 흔적(같은 출처 185.220.101.42)
+      traces=[{"layer":"suricata","evt":"sequential port scan"},
+              {"layer":"apache","evt":"path enumeration /admin /api /backup"},
+              {"layer":"apache","evt":"server header fingerprint"}]
+      src="185.220.101.42"
+      # 정찰 단계 커버리지
+      stages={"scan":any("scan" in t["evt"] for t in traces),
+              "enumerate":any("enumeration" in t["evt"] for t in traces),
+              "fingerprint":any("fingerprint" in t["evt"] for t in traces)}
+      covered=sum(stages.values())
+      print(f"source {src} recon stages: {stages}")
+      print(f"stages covered: {covered}/3")
+      # 정찰 2단계 이상이 한 출처에서 = 정찰 캠페인 조기 경보
+      print("RECON_CORRELATED" if covered>=2 else "ISOLATED")
+      PY
+      ```
+      ✅ 마지막 줄 `RECON_CORRELATED` (한 출처가 스캔+열거+핑거프린트 = 정찰 캠페인).
+      🔎 개별 이벤트는 정상 같아도, 같은 출처로 상관하면 정찰 단계가 드러난다 → 익스플로잇 전 조기 차단.
+    answer: |
+      source 185.220.101.42 recon stages: {'scan': True, 'enumerate': True, 'fingerprint': True}
+      stages covered: 3/3
+      RECON_CORRELATED
+    answer_detail: "같은 출처의 정찰 다단계 상관으로 캠페인 조기 경보 → RECON_CORRELATED."
+    verify:
+      type: output_contains
+      expect: RECON_CORRELATED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W03 on detecting AI reconnaissance. Findings: rate-based detection flagged a fast scan (RATE_ALERT), pattern-based detection caught a sequential port scan (PATTERN_ALERT), and correlating same-source traces revealed a recon campaign across scan/enumerate/fingerprint stages (RECON_CORRELATED). Explain that recon is the earliest defense chance and that speed, pattern, and correlation catch even quiet recon, narrowing the tempo gap. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 정찰은 가장 이른 방어 기회. 속도+패턴+상관으로 조기 탐지해 익스플로잇 전에 끊는다.
+      다음 주(W04)는 **자동 익스플로잇 개발** 탐지.
+    answer: |
+      Assessment
+      Reconnaissance is the earliest defense opportunity; rate, pattern, and correlation catch even quiet recon.
+      Detecting recon before exploitation narrows the tempo gap and cuts the attack early.
+    answer_detail: "W03 정찰 탐지 종합(Assessment). 속도·패턴·상관 조기 탐지."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

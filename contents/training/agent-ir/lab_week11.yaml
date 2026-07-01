@@ -1,0 +1,169 @@
+lab_id: agent-ir-week11
+title: "W11 — Purple Round 1: Claude Code가 Bastion을 코치(탐색·codify·자동 실행)"
+version: ai
+course: agent-ir
+week: 11
+description: |
+  클라이언트→서버 지식 이식. 클라이언트(사람+Claude Code) 탐지법 설계(EXPLORED), Bastion 코치·codify
+  (COACHED), 실물 Bastion 자동 실행(AUTOMATED), 종합(Assessment).
+  사람의 유연한 발견을 서버 E.G로 이식해 자동 대응 — harness engineering의 협업판.
+difficulty: hard
+duration_minutes: 160
+audience: 에이전트 IR (11주차·Purple)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100, X-API-Key ccc-api-key-2026
+  - W11 강의안 정독 — §0.5(코치 구조·codify·E.G 이식)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "클라이언트 탐지법 탐색·설계(EXPLORED)"
+  - "Bastion 코치·codify(COACHED)"
+  - "실물 Bastion 자동 실행(AUTOMATED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 클라이언트 탐색·설계 → EXPLORED
+      > **🎯 목표:** 사람+Claude Code(GPU 시연)로 신종 공격 탐지법을 설계.
+      > **개념:** 유연한 탐색으로 발견 — 클라이언트 하네스의 강점.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      # 클라이언트(Claude Code)가 신종 다형 SQLi 탐지법을 설계
+      prompt=('Output JSON only: {"detection":"<name>","observation_layer":"<apache|suricata|wazuh>","invariant_features":["<f1>","<f2>","<f3>"]}. '
+              'Design a detection for polymorphic SQL injection using invariant features (not exact signatures).')
+      b={"model":"gemma3:4b","prompt":prompt,"stream":False,"format":"json","options":{"num_predict":150,"temperature":0.2}}
+      d=json.loads(json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=70)).get("response","{}"))
+      print("detection:", d.get("detection"))
+      print("observation layer:", d.get("observation_layer"))
+      print("invariant features:", d.get("invariant_features"))
+      # 탐지 설계에 관찰 계층 + 불변 특성이 있으면 설계 완료
+      print("EXPLORED" if d.get("observation_layer") and len(d.get("invariant_features",[]))>=2 else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `EXPLORED` (클라이언트가 관찰 계층+불변 특성 기반 탐지 설계).
+      🔎 신종 공격은 정해진 룰이 없다. 사람+Claude Code가 유연히 탐색해 탐지법(불변 특성, W06)을 설계.
+    answer: |
+      detection: polymorphic_sqli_invariant
+      observation layer: apache
+      invariant features: ['quote+logic operator', 'comment sequence', 'always-true comparison']
+      EXPLORED
+    answer_detail: "클라이언트로 관찰 계층+불변 특성 탐지 설계 → EXPLORED. 유연한 탐색."
+    verify:
+      type: output_contains
+      expect: EXPLORED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — Bastion 코치(codify) → COACHED
+      > **🎯 목표:** 발견한 탐지법을 Bastion 룰/skill로 codify.
+      > **개념:** 발견을 자산으로 — 재사용·자동화·공유 가능.
+      ```bash
+      python3 - <<'PY'
+      # 클라이언트 발견(STEP2)을 Bastion E.G(룰)로 codify
+      discovery={"detection":"polymorphic_sqli_invariant","observation_layer":"apache",
+                 "invariant_features":["quote+logic","comment seq","always-true"]}
+      # Bastion 관찰 skill에 매핑 + 룰 형태로 codify
+      LAYER_SKILL={"apache":"apache.error_log","suricata":"suricata.tail_eve","wazuh":"wazuh.alerts"}
+      bastion_rule={"title":discovery["detection"],
+                    "skill":LAYER_SKILL[discovery["observation_layer"]],
+                    "match_invariants":discovery["invariant_features"],
+                    "min_features":2,
+                    "action":"alert+preempt_block(approval)"}
+      print("codified Bastion rule:")
+      for k,v in bastion_rule.items(): print(f"  {k}: {v}")
+      # skill 매핑 + 불변 특성 + 조치가 있으면 codify 완료
+      valid = bastion_rule["skill"] and bastion_rule["match_invariants"] and bastion_rule["action"]
+      print("COACHED" if valid else "CODIFY_FAILED")
+      PY
+      ```
+      ✅ 마지막 줄 `COACHED` (탐지 지식을 Bastion 룰(skill+불변 특성+조치)로 codify).
+      🔎 클라이언트 발견을 Bastion E.G의 룰로 이식. apache 계층→apache.error_log skill 매핑. 재사용 가능한 자산.
+    answer: |
+      codified Bastion rule:
+        title: polymorphic_sqli_invariant
+        skill: apache.error_log
+        match_invariants: ['quote+logic', 'comment seq', 'always-true']
+        min_features: 2
+        action: alert+preempt_block(approval)
+      COACHED
+    answer_detail: "발견 탐지법을 Bastion 룰(skill+불변특성+조치)로 codify → COACHED. E.G 이식."
+    verify:
+      type: output_contains
+      expect: COACHED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — Bastion 자동 실행 → AUTOMATED
+      > **🎯 목표:** codify한 지식을 실물 Bastion이 관찰 skill로 자동 적용(실물 확인).
+      > **개념:** 사람 발견→서버 자동 — codify한 skill이 Bastion에 실제 존재.
+      ### 💻 그대로 입력
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c \
+        'curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/skills' 2>/dev/null \
+       | python3 -c "import sys,json
+      skills={s['id']:s['target'] for s in json.load(sys.stdin)['skills']}
+      # codify한 룰이 참조하는 skill이 실물 Bastion에 있나
+      coached_skill='apache.error_log'
+      present = coached_skill in skills
+      print(f'coached rule skill: {coached_skill} -> {\"available on Bastion (target=\"+skills[coached_skill]+\")\" if present else \"MISSING\"}')
+      print('Bastion can now auto-run this detection on the web layer')
+      print('AUTOMATED' if present else 'NOT_AUTOMATED')"
+      ```
+      ✅ 마지막 줄 `AUTOMATED` (codify한 룰의 skill(apache.error_log)이 실물 Bastion에서 자동 실행 가능).
+      ### 🔎 클라이언트가 발견→codify한 탐지를, 실물 Bastion이 apache.error_log skill로 상시 자동 적용. 사람 발견→서버 자동.
+    answer: |
+      coached rule skill: apache.error_log -> available on Bastion (target=web)
+      Bastion can now auto-run this detection on the web layer
+      AUTOMATED
+    answer_detail: "codify한 룰의 skill이 실물 Bastion에서 자동 실행 가능 → AUTOMATED. 사람 발견→서버 자동."
+    verify:
+      type: output_contains
+      expect: AUTOMATED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W11 on Purple round 1 where Claude Code coaches Bastion. Findings: a client (human + Claude Code) designed an invariant-feature detection for polymorphic SQLi (EXPLORED), it was codified into a Bastion rule mapped to the apache.error_log skill (COACHED), and the real Bastion has that skill to auto-run it (AUTOMATED). Explain that the client harness explores/designs flexibly and the server harness (Bastion) automates, with knowledge transferred into the server E.G — the collaborative form of harness engineering. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":340}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 클라이언트(탐색·설계)→codify→서버(자동화). 사람 발견을 Bastion E.G로 이식해 자동 대응. 협업 harness engineering.
+      다음 주(W12)는 **Purple Round 2 — Experience→Playbook 자동 승격**.
+    answer: |
+      Assessment
+      The client harness (human + Claude Code) explores and designs a novel detection; it is codified into the server's E.G and Bastion automates it.
+      This collaborative harness engineering combines client flexibility with server-scale automation.
+    answer_detail: "W11 Purple 코치 종합(Assessment). 클라이언트 탐색→codify→서버 자동화, E.G 이식."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout
