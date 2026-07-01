@@ -1,0 +1,169 @@
+lab_id: aisec-week07
+title: "W07 — 클라이언트 사이드 하네스: CLAUDE.md 규칙·미니 하네스·서버와 비교"
+version: ai
+course: aisec
+week: 7
+description: |
+  클라이언트 사이드 하네스(Claude Code). CLAUDE.md식 규칙 반영(CLIENT_OK), 클라이언트 미니 하네스 실행
+  (LOCAL_RUN), 클라이언트 vs 서버 하네스 비교(COMPARED), 종합(Assessment).
+  CLAUDE.md=클라이언트 E.G, settings.json=권한. 탐색·개발엔 클라이언트, 자동화·감사엔 서버.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 에이전트 입문 (7주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W07 강의안 정독 — §0.5(Claude Code·CLAUDE.md·비교)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "CLAUDE.md식 규칙 반영(CLIENT_OK)"
+  - "클라이언트 미니 하네스 실행(LOCAL_RUN)"
+  - "클라이언트 vs 서버 비교(COMPARED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — CLAUDE.md 규칙 반영 → CLIENT_OK
+      > **🎯 목표:** CLAUDE.md식 규칙(E.G)을 에이전트가 지키는지 확인.
+      > **개념:** 규칙·지식이 클라이언트 하네스의 E.G(프로젝트 규칙을 매 세션 준수).
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      # CLAUDE.md 규칙(프로젝트 지침)을 system으로 주입
+      claude_md=("PROJECT RULES (CLAUDE.md):\n"
+                 "- You are a security assistant for the el34 project.\n"
+                 "- Always start every answer with the tag [SEC].\n"
+                 "- Never suggest running destructive commands.")
+      b={"model":"gemma3:4b","system":claude_md,"prompt":"How do I check who is logged in on a host?","stream":False,"options":{"num_predict":50,"temperature":0.2}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=70)).get("response","").strip()
+      print("agent:", r[:80])
+      # CLAUDE.md 규칙([SEC] 태그)을 지키면 클라이언트 하네스 E.G 작동
+      print("CLIENT_OK" if "[SEC]" in r else "RULE_IGNORED")
+      PY
+      ```
+      ✅ 마지막 줄 `CLIENT_OK` (CLAUDE.md 규칙([SEC] 태그)을 준수).
+      🔎 CLAUDE.md가 클라이언트 하네스의 규칙·지식(E.G). 매 세션 이 규칙을 지킨다.
+    answer: |
+      agent: [SEC] Use the 'who' or 'w' command to list logged-in users.
+      CLIENT_OK
+    answer_detail: "CLAUDE.md 규칙([SEC] 태그)을 준수 → CLIENT_OK. CLAUDE.md=클라이언트 E.G."
+    verify:
+      type: output_contains
+      expect: CLIENT_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 클라이언트 미니 하네스 실행 → LOCAL_RUN
+      > **🎯 목표:** 규칙+로컬 도구+권한을 가진 미니 하네스로 작업 수행.
+      > **개념:** 단말에서 유연 실행(로컬 도구·권한).
+      ```bash
+      python3 - <<'PY'
+      # 클라이언트 미니 하네스: CLAUDE.md 규칙 + 로컬 도구(Bash/Read) + settings.json 권한
+      RULES=["[SEC] tag", "no destructive commands"]
+      local_tools={"who":lambda:"root pts/0","read_file":lambda p:f"contents of {p}"}
+      PERMISSIONS={"allow":{"who","read_file"}, "deny":{"rm","dd","mkfs"}}
+      def run(cmd):
+          name=cmd.split()[0]
+          if name in PERMISSIONS["deny"]: return "DENIED (settings.json)"
+          if name in local_tools: return local_tools[name]()
+          return "not a local tool"
+      print("rule check: outputs tagged [SEC], destructive denied")
+      print("who ->", run("who"))
+      print("rm -rf / ->", run("rm -rf /"))
+      ok = run("who")=="root pts/0" and "DENIED" in run("rm -rf /")
+      print("LOCAL_RUN" if ok else "FAIL")
+      PY
+      ```
+      ✅ 마지막 줄 `LOCAL_RUN` (로컬 도구 실행 + 권한이 위험 명령 차단).
+      🔎 클라이언트 하네스도 Permissions(settings.json)로 위험 명령을 막는다 — 서버 화이트리스트에 대응.
+    answer: |
+      rule check: outputs tagged [SEC], destructive denied
+      who -> root pts/0
+      rm -rf / -> DENIED (settings.json)
+      LOCAL_RUN
+    answer_detail: "규칙+로컬 도구+권한 미니 하네스 실행, 위험 명령 차단 → LOCAL_RUN."
+    verify:
+      type: output_contains
+      expect: LOCAL_RUN
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 클라이언트 vs 서버 비교 → COMPARED
+      > **🎯 목표:** 작업별 적합 하네스를 매핑한다(결정론).
+      > **개념:** 성격에 맞게 선택 — 탐색·개발=클라이언트, 자동화·감사=서버.
+      ```bash
+      python3 - <<'PY'
+      # 작업 → 적합 하네스 매핑
+      tasks=[("interactive code exploration","client"),
+             ("24/7 multi-VM monitoring","server"),
+             ("one-off deep investigation","client"),
+             ("scheduled repetitive response","server")]
+      RULES={"client":["interactive","exploration","one-off","deep"], "server":["24/7","multi-vm","scheduled","repetitive"]}
+      correct=0
+      for task,expected in tasks:
+          pick="server" if any(k in task.lower() for k in RULES["server"]) else "client"
+          mark="OK" if pick==expected else "X"
+          if pick==expected: correct+=1
+          print(f"  {task[:34]:34} -> {pick:6} [{mark}]")
+      print("COMPARED" if correct==len(tasks) else "MISMATCH")
+      PY
+      ```
+      ✅ 마지막 줄 `COMPARED` (작업별 적합 하네스 매핑 일치).
+      🔎 탐색·1회성 심층=클라이언트, 상시·다중·정형=서버. 둘을 함께 쓴다(탐색→정형화→서버 이관).
+    answer: |
+      interactive code exploration       -> client [OK]
+      24/7 multi-VM monitoring           -> server [OK]
+      one-off deep investigation         -> client [OK]
+      scheduled repetitive response      -> server [OK]
+      COMPARED
+    answer_detail: "작업별 적합 하네스(클라이언트/서버) 매핑 → COMPARED. 성격에 맞게 선택."
+    verify:
+      type: output_contains
+      expect: COMPARED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W07 on the client-side harness (Claude Code). Findings: the agent followed CLAUDE.md project rules by tagging answers [SEC] (CLIENT_OK), a client mini-harness ran local tools while permissions denied a destructive command (LOCAL_RUN), and tasks mapped correctly to client vs server harnesses (COMPARED). Explain that CLAUDE.md is the client harness E.G and settings.json is its permissions, and that exploration suits the client while automation suits the server. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: Claude Code=클라이언트 하네스. CLAUDE.md=E.G, settings.json=권한. 탐색은 클라이언트, 자동화는 서버.
+      다음 주(W08)는 **나만의 보안 에이전트 구축**(중간 실습).
+    answer: |
+      Assessment
+      Claude Code is a client-side harness: CLAUDE.md holds its rules/knowledge (E.G) and settings.json holds permissions.
+      Use the client for exploration/development and the server (Bastion) for automation/audit; combine them.
+    answer_detail: "W07 클라이언트 하네스 종합(Assessment). CLAUDE.md=E.G, 비교, 공통 권한 안전선."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

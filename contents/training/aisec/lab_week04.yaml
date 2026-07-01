@@ -1,0 +1,181 @@
+lab_id: aisec-week04
+title: "W04 — 에이전트 하네스 개론: 미니 하네스 구축·실행·bastion 7대 구성요소 매핑"
+version: ai
+course: aisec
+week: 4
+description: |
+  LLM을 실제로 일하게 만드는 운영 골격 '하네스'. 미니 하네스(Tools·Permissions·Memory) 구축(HARNESS_BUILT),
+  하네스로 에이전트 안전 실행(HARNESS_RUN), 실물 el34-bastion 7대 구성요소 매핑(MAPPED), 종합(Assessment).
+  하네스=동작 방식, E.G=경험/지식. Manager가 harness engineering으로 자동 조립.
+difficulty: medium
+duration_minutes: 140
+audience: AI 보안 에이전트 입문 (4주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100, X-API-Key ccc-api-key-2026
+  - W04 강의안 정독 — §0.5(7대 구성요소·harness engineering·E.G)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "미니 하네스(Tools·Permissions·Memory) 구축(HARNESS_BUILT)"
+  - "하네스로 에이전트 안전 실행(HARNESS_RUN)"
+  - "실물 bastion 7대 구성요소 매핑(MAPPED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 미니 하네스 구축 → HARNESS_BUILT
+      > **🎯 목표:** Tools·Permissions·Memory를 가진 미니 하네스 프레임워크를 만든다.
+      > **개념:** 7대 구성요소의 축소판 — LLM을 안전하게 일하게 하는 골격.
+      ```bash
+      python3 - <<'PY'
+      # 미니 하네스: Tools(도구 등록) + Permissions(화이트리스트) + Memory(기록)
+      class MiniHarness:
+          def __init__(self):
+              self.tools={"read_log":lambda s:f"log[{s}]: 20 failed logins",
+                          "get_reputation":lambda ip:f"{ip}: malicious(92)",
+                          "block_ip":lambda ip:f"BLOCKED {ip}"}
+              self.SAFE={"read_log","get_reputation"}   # Permissions: 안전 도구
+              self.RISKY={"block_ip"}                    # 위험 도구: 승인 필요
+              self.memory=[]                             # Memory: 실행 기록
+          def call(self, name, arg, approved=False):
+              if name in self.RISKY and not approved:
+                  self.memory.append((name,arg,"APPROVAL_REQUIRED")); return "APPROVAL_REQUIRED"
+              if name not in self.tools:
+                  self.memory.append((name,arg,"UNKNOWN")); return "UNKNOWN_TOOL"
+              out=self.tools[name](arg); self.memory.append((name,arg,"ok")); return out
+      h=MiniHarness()
+      print("tools:", list(h.tools)); print("safe:", h.SAFE, "risky:", h.RISKY)
+      built = len(h.tools)==3 and h.RISKY and hasattr(h,"memory")
+      print("HARNESS_BUILT" if built else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `HARNESS_BUILT` (Tools+Permissions+Memory 골격 완성).
+      🔎 도구 등록(Tools)·안전/위험 구분(Permissions)·기록(Memory) — 7대 구성요소의 핵심 3개.
+    answer: |
+      tools: ['read_log', 'get_reputation', 'block_ip']
+      safe: {'read_log', 'get_reputation'} risky: {'block_ip'}
+      HARNESS_BUILT
+    answer_detail: "Tools·Permissions·Memory를 가진 미니 하네스 구축 → HARNESS_BUILT."
+    verify:
+      type: output_contains
+      expect: HARNESS_BUILT
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 하네스로 에이전트 실행 → HARNESS_RUN
+      > **🎯 목표:** LLM이 도구 결정 → 하네스가 권한 검사 → 실행 → 기억 기록.
+      > **개념:** 권한·기억이 붙은 안전한 실행.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      # 하네스(STEP2 축약)
+      tools={"read_log":lambda s:"20 failed logins","get_reputation":lambda ip:"malicious(92)","block_ip":lambda ip:"BLOCKED"}
+      RISKY={"block_ip"}; memory=[]
+      def call(name,arg,approved=False):
+          if name in RISKY and not approved: memory.append((name,"gated")); return "APPROVAL_REQUIRED"
+          if name not in tools: return "UNKNOWN"
+          o=tools[name](arg); memory.append((name,"ok")); return o
+      # LLM이 도구 결정
+      sysp='Tools: read_log(service), get_reputation(ip), block_ip(ip). Reply JSON only: {"tool":"..","arg":".."}'
+      b={"model":"gemma3:4b","system":sysp,"prompt":"Check reputation of 185.220.101.42","stream":False,"format":"json","options":{"num_predict":40,"temperature":0.1}}
+      d=json.loads(json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=70)).get("response","{}"))
+      # 하네스가 권한 검사 후 실행
+      result=call(d.get("tool"), d.get("arg"))
+      print("LLM chose:", d.get("tool"), "| harness result:", result, "| memory:", memory)
+      # 위험 도구 시도도 확인
+      gated=call("block_ip","185.220.101.42")
+      print("block_ip without approval:", gated)
+      print("HARNESS_RUN" if result and gated=="APPROVAL_REQUIRED" else "FAIL")
+      PY
+      ```
+      ✅ 마지막 줄 `HARNESS_RUN` (LLM 결정→권한 검사→실행→기억; 위험 도구는 승인 대기).
+      🔎 하네스가 LLM과 실제 실행 사이에서 권한·기억을 관리한다 — 이것이 운영 골격.
+    answer: |
+      LLM chose: get_reputation | harness result: malicious(92) | memory: [('get_reputation', 'ok')]
+      block_ip without approval: APPROVAL_REQUIRED
+      HARNESS_RUN
+    answer_detail: "LLM 결정→하네스 권한 검사→실행→기억, 위험 도구 승인 대기 → HARNESS_RUN."
+    verify:
+      type: output_contains
+      expect: HARNESS_RUN
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 실물 bastion 7대 구성요소 매핑 → MAPPED
+      > **🎯 목표:** 실물 el34-bastion의 skills/permissions를 7대 구성요소에 매핑(실물 조회).
+      > **개념:** 하네스는 실물에 구현돼 있다.
+      ### 💻 그대로 입력
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c \
+        'curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/skills' 2>/dev/null \
+       | python3 -c "import sys,json
+      skills=json.load(sys.stdin)['skills']
+      # 7대 구성요소 매핑
+      mapping={'Skills':[s['id'] for s in skills],
+               'Tools':'/exec(화이트리스트)',
+               'Permissions':'화이트리스트+승인 게이트',
+               'Agents':'SubAgent(secu/web/siem/attacker)',
+               'Memory':'E.G(Experience DB)'}
+      for k,v in mapping.items(): print(f'  {k:12}: {v}')
+      print('MAPPED' if len(skills)>=3 else 'NO_SKILLS')"
+      ```
+      ✅ 마지막 줄 `MAPPED` (실물 bastion skills를 7대 구성요소에 매핑).
+      ### 🔎 실물 bastion = Skills(wazuh.alerts 등) + Tools(/exec) + Permissions(화이트리스트) + Agents(SubAgent) + Memory(E.G).
+    answer: |
+      Skills      : ['nft.list_ruleset', 'suricata.tail_eve', 'apache.error_log', 'wazuh.alerts', 'attacker.nmap']
+      Tools       : /exec(화이트리스트)
+      Permissions : 화이트리스트+승인 게이트
+      Agents      : SubAgent(secu/web/siem/attacker)
+      Memory      : E.G(Experience DB)
+      MAPPED
+    answer_detail: "실물 bastion skills/permissions를 7대 구성요소에 매핑 → MAPPED. 하네스는 실물 구현."
+    verify:
+      type: output_contains
+      expect: MAPPED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합(harness engineering + E.G) → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W04 of an AI security agent course on harnesses. Findings: a mini harness with tools, permissions, and memory was built (HARNESS_BUILT), it ran an agent that chose a tool while a risky tool required approval (HARNESS_RUN), and the real el34-bastion skills mapped to the seven harness components (MAPPED). Explain the 7 components briefly and that a Manager does harness engineering (auto-assembling components) plus E.G (experience and knowledge). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 하네스=7대 구성요소 운영 골격(동작 방식). Manager가 조립(harness engineering)하고 E.G(경험·지식)를 얹는다.
+      다음 주(W05)는 서버 사이드 하네스 실물 **Bastion** 구축.
+    answer: |
+      Assessment
+      A harness (tools, skills, hooks, memory, agents, tasks, permissions) makes an LLM actually work safely.
+      A Manager does harness engineering (auto-assembling components) and adds E.G (experience + knowledge).
+    answer_detail: "W04 하네스 종합(Assessment). 7대 구성요소, harness engineering + E.G."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

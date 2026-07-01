@@ -1,0 +1,167 @@
+lab_id: aisec-week01
+title: "W01 — AI 에이전트란: Perceive→Decide→Act·ReAct·보안 triage"
+version: ai
+course: aisec
+week: 1
+description: |
+  첫 보안 에이전트를 만든다. Perceive→Decide→Act 순환(PDA_OK), ReAct 패턴(REACT_OK),
+  보안 경보 triage(TRIAGED), 종합(Assessment). 스크립트와 달리 상황을 보고 판단하는 에이전트의 심장을 손으로.
+difficulty: easy
+duration_minutes: 120
+audience: AI 보안 에이전트 입문 (1주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W01 강의안 정독 — §0.5(PDA·ReAct·triage)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "Perceive→Decide→Act 순환 실행(PDA_OK)"
+  - "ReAct 패턴(Thought/Action) 생성(REACT_OK)"
+  - "보안 경보 triage(TRIAGED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — Perceive→Decide→Act 순환 → PDA_OK
+      > **🎯 목표:** 로그(관찰)를 LLM이 판단(결정)해 조치(행동)를 내는 1회 순환.
+      > **개념:** 에이전트의 심장 — 관찰→결정→행동.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      # Perceive: 로그 관찰
+      log="20 failed SSH logins from 185.220.101.42 in 60s."
+      # Decide: LLM이 행동 결정 (JSON)
+      sysp='You are a security agent. Given a log, decide ONE action. Reply JSON only: {"action":"block|monitor|ignore","reason":"..."}'
+      b={"model":"gemma3:4b","system":sysp,"prompt":f"Log: {log}","stream":False,"format":"json","options":{"num_predict":60,"temperature":0.1}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      d=json.loads(json.load(urllib.request.urlopen(req,timeout=70)).get("response","{}"))
+      # Act: 결정된 행동 (여기선 출력; 위험 행동은 승인 게이트)
+      print("Perceive:", log)
+      print("Decide:", d.get("action"), "-", str(d.get("reason"))[:40])
+      print("Act:", "-> "+d.get("action")+"(185.220.101.42)")
+      print("PDA_OK" if d.get("action") in ("block","monitor") else "IGNORED")
+      PY
+      ```
+      ✅ 마지막 줄 `PDA_OK` (관찰→결정(block/monitor)→행동 순환 완료).
+      🔎 스크립트라면 고정 조건이지만, 에이전트는 로그를 읽고 판단한다. block은 위험 행동 → 승인 게이트(W04+).
+    answer: |
+      Perceive: 20 failed SSH logins from 185.220.101.42 in 60s.
+      Decide: monitor - repeated failed logins suggest a brute force
+      Act: -> monitor(185.220.101.42)
+      PDA_OK
+    answer_detail: "로그 관찰→LLM 결정→행동 순환 → PDA_OK. 에이전트의 심장."
+    verify:
+      type: output_contains
+      expect: PDA_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — ReAct 패턴 → REACT_OK
+      > **🎯 목표:** LLM이 Thought(생각)/Action(행동) 형식으로 다음 행동을 생성한다.
+      > **개념:** 생각→행동→관찰을 반복 — 결과를 보고 다음을 정한다.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      sysp=('You are a ReAct security agent. Reply with exactly two lines:\n'
+            'Thought: <one line>\nAction: <tool_name>(<arg>)')
+      b={"model":"gemma3:4b","system":sysp,"prompt":"Investigate repeated 401 errors on the web server.","stream":False,"options":{"num_predict":60,"temperature":0.2}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=70)).get("response","").strip()
+      print(r[:160])
+      print("REACT_OK" if ("Thought" in r and "Action" in r) else "NO_REACT")
+      PY
+      ```
+      ✅ 마지막 줄 `REACT_OK` (Thought/Action 형식 생성).
+      🔎 Action의 결과(Observe)를 다시 넣으면 다음 Thought로 이어져 순환한다.
+    answer: |
+      Thought: Analyze the web server logs for the source of repeated 401 errors.
+      Action: log_analyzer(web_server_auth)
+      REACT_OK
+    answer_detail: "LLM이 Thought/Action 형식으로 다음 행동 생성 → REACT_OK. 생각→행동→관찰 반복."
+    verify:
+      type: output_contains
+      expect: REACT_OK
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 보안 triage → TRIAGED
+      > **🎯 목표:** 경보 목록을 심각도로 분류한다(결정론 검증).
+      > **개념:** 판단이 필요한 반복 업무 자동화 — 에이전트의 대표 보안 역할.
+      ```bash
+      python3 - <<'PY'
+      # 경보 목록을 규칙으로 심각도 분류(에이전트 판단의 결정론 검증판)
+      alerts=[{"id":1,"msg":"root login success from external ip"},
+              {"id":2,"msg":"single 404 not found"},
+              {"id":3,"msg":"sql injection attempt on /login"},
+              {"id":4,"msg":"health check ok"}]
+      HIGH=["root login","sql injection","privilege"]; LOW=["404","health check"]
+      def sev(m):
+          ml=m.lower()
+          if any(h in ml for h in HIGH): return "HIGH"
+          if any(l in ml for l in LOW): return "LOW"
+          return "MED"
+      ranked=sorted(alerts, key=lambda a:{"HIGH":0,"MED":1,"LOW":2}[sev(a["msg"])])
+      for a in ranked: print(f"  [{sev(a['msg']):4}] #{a['id']} {a['msg'][:40]}")
+      highs=[a for a in alerts if sev(a["msg"])=="HIGH"]
+      print("TRIAGED" if len(highs)==2 else "MISCLASSIFIED")
+      PY
+      ```
+      ✅ 마지막 줄 `TRIAGED` (root login·SQLi가 HIGH로 분류, 사람이 먼저 볼 순서로 정렬).
+      🔎 실무에선 LLM이 넓게 분류하고 이런 결정론 규칙으로 검증(넓게 훑고 좁혀 확정).
+    answer: |
+      [HIGH] #1 root login success from external ip
+      [HIGH] #3 sql injection attempt on /login
+      [MED ] #... (기타)
+      [LOW ] #2 single 404 not found
+      TRIAGED
+    answer_detail: "경보를 심각도로 분류·정렬(root login·SQLi=HIGH) → TRIAGED. 판단 반복 업무 자동화."
+    verify:
+      type: output_contains
+      expect: TRIAGED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W01 of an AI security agent course. Findings: a Perceive-Decide-Act cycle turned a log into a decision and action (PDA_OK), a ReAct agent produced Thought/Action steps (REACT_OK), and a triage step ranked alerts by severity (TRIAGED). Explain how an agent differs from a fixed script and give 3 points (perceive-decide-act loop, verify LLM decisions deterministically, approval for risky actions). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":300}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 에이전트는 관찰→결정→행동을 스스로 돈다. 스크립트와 달리 판단하지만, 판단은 검증·승인으로 감싼다.
+      다음 주(W02)는 에이전트가 도구를 부르는 **Tool Calling**.
+    answer: |
+      Assessment
+      An agent runs a perceive-decide-act loop and judges by situation, unlike a fixed script.
+      Points: (1) perceive-decide-act loop, (2) verify LLM decisions deterministically, (3) approval for risky actions.
+    answer_detail: "W01 에이전트 종합(Assessment). PDA·ReAct·triage, 판단+검증+승인."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

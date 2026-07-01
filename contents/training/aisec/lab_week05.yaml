@@ -1,0 +1,152 @@
+lab_id: aisec-week05
+title: "W05 — 서버 사이드 하네스 (1) Bastion: Manager–SubAgent·skill 선택·화이트리스트"
+version: ai
+course: aisec
+week: 5
+description: |
+  서버 사이드 하네스 실물 Bastion 조작. bastion 하네스 상태·능력(BASTION_OK), Manager의 skill 선택
+  harness engineering(SKILL_PICKED), SubAgent 화이트리스트 실행(PERM_OK), 실행 흐름 종합(Assessment).
+  Manager(계획)+SubAgent(VM별 실행)+A2A+화이트리스트로 다중 VM을 안전하게.
+difficulty: medium
+duration_minutes: 140
+audience: AI 보안 에이전트 입문 (5주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100, X-API-Key ccc-api-key-2026
+  - W05 강의안 정독 — §0.5(Manager–SubAgent·실행 흐름·화이트리스트)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "bastion 하네스 상태·능력 조회(BASTION_OK)"
+  - "Manager skill 선택 재현(SKILL_PICKED)"
+  - "SubAgent 화이트리스트 실행(PERM_OK)"
+  - "실행 흐름 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — bastion 하네스 조작 → BASTION_OK
+      > **🎯 목표:** 실물 bastion `/health`·`/skills`로 서버 하네스 상태·능력 확인.
+      > **개념:** 서버 사이드 하네스의 실물 표면(SubAgent skills).
+      ### 💻 그대로 입력
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c \
+        'curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/health; echo;
+         curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/skills' 2>/dev/null \
+       | python3 -c "import sys,json
+      lines=[l for l in sys.stdin.read().splitlines() if l.strip().startswith('{')]
+      health=json.loads(lines[0]); skills=json.loads(lines[1])
+      print('service:', health.get('service'), 'llm_configured:', health.get('llm_configured'))
+      print('SubAgent skills:', [(s['id'],s['target']) for s in skills['skills']][:3], '...')
+      print('BASTION_OK' if health.get('status')=='ok' and len(skills['skills'])>=5 else 'NO')"
+      ```
+      ✅ 마지막 줄 `BASTION_OK` (bastion 상태 ok + SubAgent skills 5종).
+      ### 🔎 skill의 target(secu/web/siem/attacker)이 곧 SubAgent가 담당하는 VM이다.
+    answer: |
+      service: el34-bastion llm_configured: False
+      SubAgent skills: [('nft.list_ruleset', 'secu'), ('suricata.tail_eve', 'secu'), ('apache.error_log', 'web')] ...
+      BASTION_OK
+    answer_detail: "bastion /health·/skills로 서버 하네스 상태·SubAgent 능력 확인 → BASTION_OK."
+    verify:
+      type: output_contains
+      expect: BASTION_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — Manager skill 선택 → SKILL_PICKED
+      > **🎯 목표:** GPU Manager가 작업에 맞는 SubAgent skill을 선택(harness engineering).
+      > **개념:** Manager가 작업→skill을 자동 조립. (el34-bastion은 llm 미탑재라 GPU로 시연.)
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request, re
+      GPU="http://211.170.162.139:10934/api/generate"
+      SKILLS="nft.list_ruleset(secu), suricata.tail_eve(secu), apache.error_log(web), wazuh.alerts(siem), attacker.nmap(attacker)"
+      sysp=f"You are a Bastion Manager. Skills: {SKILLS}. For the task, reply ONLY: SKILL: <skill.id>"
+      b={"model":"gemma3:4b","system":sysp,"prompt":"Task: review web server error logs for attack traces.","stream":False,"options":{"num_predict":25,"temperature":0.2}}
+      req=urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"})
+      r=json.load(urllib.request.urlopen(req,timeout=70)).get("response","")
+      m=re.search(r"SKILL:\s*([a-z._]+)",r); sk=m.group(1) if m else r[:30]
+      print("Manager picked:", sk)
+      print("SKILL_PICKED" if "apache" in str(sk) else "OTHER:"+str(sk))
+      PY
+      ```
+      ✅ 마지막 줄 `SKILL_PICKED` (Manager가 웹 로그 작업에 apache.error_log 선택).
+      🔎 Manager가 작업→skill→SubAgent(web)를 자동 조립 = harness engineering.
+    answer: |
+      Manager picked: apache.error_log
+      SKILL_PICKED
+    answer_detail: "Manager가 웹 로그 작업에 apache.error_log(web SubAgent) 선택 → SKILL_PICKED. harness engineering."
+    verify:
+      type: output_contains
+      expect: SKILL_PICKED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — SubAgent 화이트리스트 실행 → PERM_OK
+      > **🎯 목표:** `/exec`로 안전 명령 실행·위험 명령 차단 확인.
+      > **개념:** SubAgent는 Permissions(화이트리스트) 안에서만 실행.
+      ### 💻 그대로 입력
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c '
+        curl -s -X POST -H "X-API-Key: ccc-api-key-2026" -H "content-type: application/json" -d "{\"target\":\"web\",\"command\":\"uptime\"}" http://localhost:9100/exec;
+        echo; curl -s -X POST -H "X-API-Key: ccc-api-key-2026" -H "content-type: application/json" -d "{\"target\":\"web\",\"command\":\"cat /etc/shadow\"}" http://localhost:9100/exec' 2>/dev/null \
+       | python3 -c "import sys
+      t=sys.stdin.read()
+      safe_ran=('\"rc\":0' in t) or ('rc\": 0' in t)
+      danger_blocked='must start with' in t
+      print('safe(uptime) ran:', safe_ran, '| danger(cat shadow) blocked:', danger_blocked)
+      print('PERM_OK' if safe_ran and danger_blocked else 'CHECK')"
+      ```
+      ✅ 마지막 줄 `PERM_OK` (uptime 실행, cat /etc/shadow 차단).
+      ### 🔎 Manager가 뭘 지시하든 SubAgent 화이트리스트가 위험 명령을 막는다(LLM≠실행 권한, 서버판).
+    answer: |
+      safe(uptime) ran: True | danger(cat shadow) blocked: True
+      PERM_OK
+    answer_detail: "SubAgent가 화이트리스트 안(uptime)만 실행, 위험(cat shadow) 차단 → PERM_OK."
+    verify:
+      type: output_contains
+      expect: PERM_OK
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합(실행 흐름) → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W05 on the server-side Bastion harness. Findings: bastion exposed status and SubAgent skills (BASTION_OK), a Manager picked apache.error_log for a web-log task (SKILL_PICKED), and a SubAgent ran uptime but a whitelist blocked reading /etc/shadow (PERM_OK). Explain the Manager-SubAgent structure with A2A and the project->plan->execute->evidence->report flow, and that the whitelist is the server-side safety line. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: Bastion = Manager(계획·E.G) + SubAgent(VM 실행) + A2A + 화이트리스트. 작업→계획→실행→증거→보고.
+      다음 주(W06)는 **Playbook + RL**로 서버 하네스를 고도화.
+    answer: |
+      Assessment
+      Bastion is a server-side harness: a Manager plans and does harness engineering, SubAgents execute per VM via A2A, and a whitelist is the safety line.
+      Flow: project -> plan -> execute -> evidence -> report, all logged for audit.
+    answer_detail: "W05 Bastion 종합(Assessment). Manager–SubAgent·A2A·화이트리스트·실행 흐름."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

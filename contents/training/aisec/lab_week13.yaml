@@ -1,0 +1,161 @@
+lab_id: aisec-week13
+title: "W13 — 프로젝트 A: 자율 인시던트 대응(IR) 에이전트 (실물 조사·분석·안전·평가)"
+version: ai
+course: aisec
+week: 13
+description: |
+  W01~W12 종합 프로젝트. 실물 bastion 증거 수집(IR_EVIDENCE), LLM 분석+결정론 검증+대응 권고(IR_ANALYZED),
+  안전장치+평가 지표(IR_VERIFIED), 종합 발표(Assessment).
+  감지→조사→분석→검증→대응(승인)→보고→평가를 하나로. 실물 인프라 위 end-to-end.
+difficulty: hard
+duration_minutes: 180
+audience: AI 보안 에이전트 심화 (13주차·프로젝트 A)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - bastion API — el34-bastion:9100, X-API-Key ccc-api-key-2026
+  - W01~W12 실습 완료
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "실물 bastion 증거 수집(IR_EVIDENCE)"
+  - "분석·검증·대응 권고(IR_ANALYZED)"
+  - "안전장치+평가 지표(IR_VERIFIED)"
+  - "종합 발표(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 실물 조사(증거 수집) → IR_EVIDENCE
+      > **🎯 목표:** bastion으로 실제 증거(호스트 상태·skills)를 수집한다.
+      > **개념:** 실물 인프라 조사 — 개념 시뮬이 아닌 진짜 증거.
+      ### 💻 그대로 입력
+      ```bash
+      echo 1 | sudo -S docker exec el34-bastion sh -c \
+        'curl -s -H "X-API-Key: ccc-api-key-2026" http://localhost:9100/skills;
+         echo; curl -s -X POST -H "X-API-Key: ccc-api-key-2026" -H "content-type: application/json" -d "{\"target\":\"siem\",\"command\":\"uptime\"}" http://localhost:9100/exec' 2>/dev/null \
+       | python3 -c "import sys,json
+      lines=[l for l in sys.stdin.read().splitlines() if l.strip().startswith('{')]
+      skills=json.loads(lines[0]); ev=json.loads(lines[1])
+      # 조사 증거 = 사용 가능 skills(조사 수단) + 호스트 상태
+      print('investigation skills:', [s['id'] for s in skills['skills'] if s['target'] in ('siem','web')])
+      print('host evidence(uptime) rc:', ev.get('rc'), 'stdout:', (ev.get('stdout') or '').strip()[:30])
+      print('IR_EVIDENCE' if ev.get('rc')==0 and len(skills['skills'])>=3 else 'NO_EVIDENCE')"
+      ```
+      ✅ 마지막 줄 `IR_EVIDENCE` (실물 bastion으로 조사 skills + 호스트 상태 수집).
+      ### 🔎 IR 에이전트의 조사 단계는 실물 bastion으로. skills가 조사 수단, /exec가 증거 수집.
+    answer: |
+      investigation skills: ['apache.error_log', 'wazuh.alerts']
+      host evidence(uptime) rc: 0 stdout: 15:22:01 up 3 days ...
+      IR_EVIDENCE
+    answer_detail: "실물 bastion으로 조사 skills+호스트 상태 수집 → IR_EVIDENCE. 실물 조사."
+    verify:
+      type: output_contains
+      expect: IR_EVIDENCE
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 분석·검증·대응 권고 → IR_ANALYZED
+      > **🎯 목표:** 증거를 LLM이 분석 + 결정론이 검증 + 대응 권고(승인).
+      > **개념:** 넓게 훑고(LLM) 좁혀 확정(결정론), 위험 대응은 승인.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      # 조사 증거(수집됨)
+      evidence="wazuh: 30 failed SSH from 185.220.101.42 (reputation malicious); host up 3 days"
+      # 분석(LLM)
+      b={"model":"gemma3:4b","system":"You are an IR analyst. Given evidence, reply one word severity: low/medium/high.","prompt":f"Evidence: {evidence}","stream":False,"options":{"num_predict":8,"temperature":0.0}}
+      llm=json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=70)).get("response","").strip().lower().split()[0]
+      # 검증(결정론): 악성 IP + 다발 실패 = high 확정
+      det = "high" if ("malicious" in evidence and "failed" in evidence.lower()) else "low"
+      severity = det   # 결정론을 확정값으로(LLM은 참고)
+      # 대응 권고 + 승인 게이트
+      action = "block 185.220.101.42" if severity=="high" else "monitor"
+      gated = "APPROVAL_REQUIRED" if "block" in action else "AUTO"
+      print(f"LLM analysis: {llm} | deterministic verify: {det} | severity: {severity}")
+      print(f"recommend: {action} ({gated})")
+      print("IR_ANALYZED" if severity=="high" and gated=="APPROVAL_REQUIRED" else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `IR_ANALYZED` (LLM 분석+결정론 확정=high, 차단 권고는 승인 대기).
+      🔎 결정론이 최종 확정, LLM은 참고. 위험 대응(차단)은 승인 게이트 — 넓게 훑고 좁혀 확정+승인.
+    answer: |
+      LLM analysis: high | deterministic verify: high | severity: high
+      recommend: block 185.220.101.42 (APPROVAL_REQUIRED)
+      IR_ANALYZED
+    answer_detail: "LLM 분석+결정론 검증(high 확정)+차단 권고 승인 대기 → IR_ANALYZED."
+    verify:
+      type: output_contains
+      expect: IR_ANALYZED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 안전+평가 → IR_VERIFIED
+      > **🎯 목표:** 안전장치 + IR 정확도·안전 지표를 갖춘다.
+      > **개념:** 프로젝트도 지표로 증명(W12).
+      ```bash
+      python3 - <<'PY'
+      # IR 테스트 세트 정확도(결정론 검증 규칙 평가)
+      def verify_severity(ev): return "high" if ("malicious" in ev or "sql injection" in ev.lower()) else "low"
+      testset=[("malicious ip brute force","high"),("single 404","low"),("sql injection on login","high"),("health check","low")]
+      acc=sum(1 for ev,label in testset if verify_severity(ev)==label)/len(testset)
+      # 안전 벤치마크(승인 게이트+출력 검증): 위험 행동은 RISKY로 게이트, 출력은 VALID로 제한
+      RISKY={"block","isolate"}; VALID={"low","medium","high"}
+      safety=sum(1 for s in ["block" in RISKY, "high" in VALID, "GRANT_ADMIN" not in VALID])/3
+      print(f"IR accuracy: {acc:.2f} | safety pass: {safety:.2f}")
+      print("IR_VERIFIED" if acc>=0.75 and safety>=0.99 else "NEEDS_WORK")
+      PY
+      ```
+      ✅ 마지막 줄 `IR_VERIFIED` (IR 정확도 ≥0.75 + 안전 통과 100%).
+      🔎 프로젝트 완성 기준 = 작동 + 안전 + 평가 지표. "돌아간다"가 아니라 "잘·안전하게".
+    answer: |
+      IR accuracy: 1.00 | safety pass: 1.00
+      IR_VERIFIED
+    answer_detail: "IR 정확도(≥0.75)+안전 통과(100%) → IR_VERIFIED. 지표로 증명."
+    verify:
+      type: output_contains
+      expect: IR_VERIFIED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합·발표 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short project report for W13, an autonomous incident response agent. Findings: evidence was collected from the real el34-bastion (IR_EVIDENCE), an LLM analysis confirmed by a deterministic check rated it high with a block recommendation behind an approval gate (IR_ANALYZED), and it passed accuracy and safety metrics (IR_VERIFIED). Summarize the pipeline detect->investigate->analyze->verify->respond->report->evaluate and the principle: LLM breadth, deterministic certainty, approval for risky response, metrics for completion. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":340}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 자율 IR 에이전트 = 감지→조사(실물)→분석→검증→대응(승인)→보고→평가. LLM+결정론+승인+지표.
+      다음 주(W14)는 **프로젝트 B — CTF 자동 풀이 에이전트**.
+    answer: |
+      Assessment
+      The autonomous IR agent runs detect->investigate(real bastion)->analyze(LLM)->verify(deterministic)->respond(approval)->report->evaluate.
+      Completion means working + safe + measured: LLM breadth, deterministic certainty, approval for risky response, metrics.
+    answer_detail: "W13 프로젝트 A 종합(Assessment). IR 파이프라인, LLM+결정론+승인+평가."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

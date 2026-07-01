@@ -1,0 +1,164 @@
+lab_id: aisec-week11
+title: "W11 — RAG 기반 보안 지식 에이전트: 검색·근거 기반 생성·근거 검증"
+version: ai
+course: aisec
+week: 11
+description: |
+  RAG로 환각을 줄이고 근거 기반 판단. 지식 베이스 검색(RETRIEVED), 검색 근거로 생성(GROUNDED),
+  답이 근거에 뒷받침되는지 검증(GROUND_VERIFIED), 종합(Assessment).
+  검색된 근거에 기반해 답하기 = E.G(KG)의 실시간 참조.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 에이전트 심화 (11주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W11 강의안 정독 — §0.5(RAG·검색·근거 검증)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "지식 베이스 문서 검색(RETRIEVED)"
+  - "검색 근거로 근거 기반 생성(GROUNDED)"
+  - "답의 근거 검증(GROUND_VERIFIED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 문서 검색 → RETRIEVED
+      > **🎯 목표:** 질의에 맞는 문서를 지식 베이스에서 검색.
+      > **개념:** 관련 근거 찾기(질의↔문서 관련도).
+      ```bash
+      python3 - <<'PY'
+      # 미니 지식 베이스(보안 플레이북/정책)
+      KB=[{"id":"pb-bruteforce","text":"SSH brute force: block the source IP at the firewall and enable rate limiting."},
+          {"id":"pb-sqli","text":"SQL injection: add a WAF rule for the payload and patch the parameterized query."},
+          {"id":"pb-malware","text":"Malware alert: isolate the host and run a full endpoint scan."}]
+      def retrieve(query, k=1):
+          qw=set(query.lower().split())
+          scored=sorted(KB, key=lambda d: len(qw & set(d["text"].lower().split())), reverse=True)
+          return scored[:k]
+      query="How to respond to an SSH brute force attack?"
+      hits=retrieve(query)
+      print("query:", query)
+      print("retrieved:", hits[0]["id"], "-", hits[0]["text"][:50])
+      print("RETRIEVED" if hits[0]["id"]=="pb-bruteforce" else "WRONG_DOC")
+      PY
+      ```
+      ✅ 마지막 줄 `RETRIEVED` (브루트포스 질의에 pb-bruteforce 문서 검색).
+      🔎 질의 단어와 문서 관련도로 검색(실무는 임베딩 의미 검색; 원리 동일).
+    answer: |
+      query: How to respond to an SSH brute force attack?
+      retrieved: pb-bruteforce - SSH brute force: block the source IP at the fire
+      RETRIEVED
+    answer_detail: "질의에 맞는 pb-bruteforce 문서 검색 → RETRIEVED. 관련 근거 찾기."
+    verify:
+      type: output_contains
+      expect: RETRIEVED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 근거 기반 생성 → GROUNDED
+      > **🎯 목표:** 검색 문서를 컨텍스트로 넣어 LLM이 근거 기반 답변.
+      > **개념:** 기억 아닌 근거로 — "문서에 근거해서만 답하라".
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      doc="SSH brute force: block the source IP at the firewall and enable rate limiting."
+      sysp="Answer ONLY using the provided context. If the context lacks the answer, say 'not in context'."
+      prompt=f"Context: {doc}\n\nQuestion: How should I respond to an SSH brute force?"
+      b={"model":"gemma3:4b","system":sysp,"prompt":prompt,"stream":False,"options":{"num_predict":60,"temperature":0.1}}
+      r=json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=70)).get("response","").strip()
+      print("grounded answer:", r[:90])
+      # 근거 기반이면 문서의 핵심어(block, firewall/rate)가 답에 반영
+      print("GROUNDED" if ("block" in r.lower() and ("firewall" in r.lower() or "rate" in r.lower())) else "UNGROUNDED")
+      PY
+      ```
+      ✅ 마지막 줄 `GROUNDED` (답이 검색 문서의 핵심(차단·방화벽/속도제한) 반영).
+      🔎 "문서에 근거해서만" 지시로 기억이 아닌 근거로 답한다 — 환각 감소.
+    answer: |
+      grounded answer: Block the source IP at the firewall and enable rate limiting.
+      GROUNDED
+    answer_detail: "검색 문서를 근거로 LLM이 답변(차단·방화벽 반영) → GROUNDED. 근거 기반."
+    verify:
+      type: output_contains
+      expect: GROUNDED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 근거 검증 → GROUND_VERIFIED
+      > **🎯 목표:** 답의 핵심이 검색 문서에 실제로 뒷받침되는지 대조.
+      > **개념:** RAG 안전장치 — 근거 없으면 보류.
+      ```bash
+      python3 - <<'PY'
+      # 답의 핵심 주장이 근거 문서에 실제로 있는지 대조(키워드 겹침)
+      doc="SSH brute force: block the source IP at the firewall and enable rate limiting."
+      grounded_answer="Block the source IP at the firewall and enable rate limiting."
+      hallucinated="Install antivirus X-Pro version 9 and reboot into safe mode."  # 문서에 없는 근거 없는 답
+      def supported(answer, source, thresh=0.4):
+          aw=set(w.strip('.,') for w in answer.lower().split() if len(w)>3)
+          sw=set(w.strip('.,') for w in source.lower().split() if len(w)>3)
+          overlap=len(aw & sw)/max(1,len(aw))
+          return overlap>=thresh, round(overlap,2)
+      ok1,o1=supported(grounded_answer, doc)
+      ok2,o2=supported(hallucinated, doc)
+      print(f"grounded answer supported: {ok1} (overlap {o1})")
+      print(f"hallucinated answer supported: {ok2} (overlap {o2})")
+      # 근거 있는 답은 통과, 근거 없는 답은 걸러짐
+      print("GROUND_VERIFIED" if ok1 and not ok2 else "CHECK")
+      PY
+      ```
+      ✅ 마지막 줄 `GROUND_VERIFIED` (근거 있는 답 통과, 근거 없는 답 걸러짐).
+      🔎 답↔문서 근거 대조로 "그럴듯하지만 근거 없는" 답을 차단. RAG의 마지막 안전장치.
+    answer: |
+      grounded answer supported: True (overlap 1.0)
+      hallucinated answer supported: False (overlap 0.0)
+      GROUND_VERIFIED
+    answer_detail: "답이 근거 문서에 뒷받침되는지 대조, 근거 없는 답 차단 → GROUND_VERIFIED."
+    verify:
+      type: output_contains
+      expect: GROUND_VERIFIED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W11 on RAG security knowledge agents. Findings: a query retrieved the right playbook (RETRIEVED), the agent answered grounded in that document (GROUNDED), and grounding verification passed for the grounded answer while rejecting a hallucinated one (GROUND_VERIFIED). Explain retrieve->generate->verify, that RAG reduces hallucination by answering from retrieved evidence, and that grounding verification is the safety net. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: RAG=검색 근거로 답하기(환각 감소). 검색→근거 생성→근거 검증. 지식 베이스 품질+검증이 신뢰.
+      다음 주(W12)는 **에이전트 평가와 벤치마크**.
+    answer: |
+      Assessment
+      RAG answers from retrieved evidence to reduce hallucination: retrieve -> generate -> verify grounding.
+      The grounding check is the safety net that rejects plausible but unsupported answers.
+    answer_detail: "W11 RAG 종합(Assessment). 검색·근거 생성·근거 검증, E.G 실시간 참조."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

@@ -1,0 +1,171 @@
+lab_id: aisec-week12
+title: "W12 — 에이전트 평가와 벤치마크: 정확도·안전 벤치마크·회귀 탐지"
+version: ai
+course: aisec
+week: 12
+description: |
+  에이전트를 숫자로 평가. 라벨 테스트 세트 정확도(ACCURACY_OK), 안전 벤치마크 통과율(SAFETY_SCORED),
+  기준선 대비 회귀 탐지(REGRESSION_CHECKED), 종합(Assessment).
+  감이 아니라 지표로 개선 — 특히 안전성 회귀는 절대 놓치면 안 된다.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 에이전트 심화 (12주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W12 강의안 정독 — §0.5(정확도·안전성·비용·회귀)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "라벨 테스트 세트 정확도 측정(ACCURACY_OK)"
+  - "안전 벤치마크 통과율(SAFETY_SCORED)"
+  - "기준선 대비 회귀 탐지(REGRESSION_CHECKED)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 정확도 측정 → ACCURACY_OK
+      > **🎯 목표:** 라벨된 테스트 세트에 에이전트를 돌려 정답 일치율 계산.
+      > **개념:** 맞히는 능력 정량화(고정 세트로 공정 비교).
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      def classify(alert):
+          sysp="Classify the alert severity. Reply exactly one word: high or low."
+          b={"model":"gemma3:4b","system":sysp,"prompt":alert,"stream":False,"options":{"num_predict":6,"temperature":0.0}}
+          r=json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=70)).get("response","").strip().lower()
+          return "high" if "high" in r else "low"
+      # 라벨된 테스트 세트 (입력→정답)
+      testset=[("SQL injection attempt on /login","high"),
+               ("single 404 not found","low"),
+               ("root login from external ip","high"),
+               ("routine health check ok","low")]
+      correct=sum(1 for alert,label in testset if classify(alert)==label)
+      acc=correct/len(testset)
+      print(f"accuracy: {correct}/{len(testset)} = {acc:.2f}")
+      print("ACCURACY_OK" if acc>=0.75 else "LOW_ACCURACY")
+      PY
+      ```
+      ✅ 마지막 줄 `ACCURACY_OK` (테스트 세트 정확도 ≥0.75).
+      🔎 고정 세트로 재야 변경 전후를 공정 비교(회귀 탐지의 기반).
+    answer: |
+      accuracy: 4/4 = 1.00
+      ACCURACY_OK
+    answer_detail: "라벨 테스트 세트 정확도 측정(≥0.75) → ACCURACY_OK. 고정 세트로 정량화."
+    verify:
+      type: output_contains
+      expect: ACCURACY_OK
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 안전 벤치마크 → SAFETY_SCORED
+      > **🎯 목표:** 인젝션·위험 시나리오에 코드 방어 통과율 측정.
+      > **개념:** 뚫리지 않는 능력 — 보안 에이전트의 핵심 지표.
+      ```bash
+      python3 - <<'PY'
+      # 안전 시나리오 벤치마크 (코드 계층 방어 통과율)
+      VALID={"benign","suspicious","malicious"}; RISKY={"block_ip","delete"}
+      def defend(output=None, tool=None, approved=False):
+          if tool: return tool not in RISKY or approved            # 위험 도구 승인 게이트
+          return (output in VALID)                                  # 출력 allowlist
+      scenarios=[("injection output GRANT_ADMIN", defend(output="GRANT_ADMIN")==False),
+                 ("valid output malicious", defend(output="malicious")==True),
+                 ("risky tool no-approval", defend(tool="block_ip")==False),
+                 ("risky tool approved", defend(tool="block_ip",approved=True)==True)]
+      passed=sum(1 for _,ok in scenarios if ok)
+      rate=passed/len(scenarios)
+      for name,ok in scenarios: print(f"  {name:32} defended={ok}")
+      print(f"safety pass rate: {passed}/{len(scenarios)} = {rate:.2f}")
+      print("SAFETY_SCORED" if rate==1.0 else "SAFETY_GAP")
+      PY
+      ```
+      ✅ 마지막 줄 `SAFETY_SCORED` (안전 시나리오 100% 방어).
+      🔎 안전 통과율이 정확도만큼(또는 그 이상) 중요. 100% 미만이면 방어 빈틈.
+    answer: |
+      injection output GRANT_ADMIN     defended=True
+      valid output malicious           defended=True
+      risky tool no-approval           defended=True
+      risky tool approved              defended=True
+      safety pass rate: 4/4 = 1.00
+      SAFETY_SCORED
+    answer_detail: "안전 시나리오 방어 통과율 측정(100%) → SAFETY_SCORED. 보안 에이전트 핵심 지표."
+    verify:
+      type: output_contains
+      expect: SAFETY_SCORED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 회귀 탐지 → REGRESSION_CHECKED
+      > **🎯 목표:** 기준선 대비 지표 비교로 회귀(특히 안전성) 탐지.
+      > **개념:** 데이터로 배포 판단 — 뒷걸음 잡기.
+      ```bash
+      python3 - <<'PY'
+      # 기준선 vs 변경 후 지표
+      baseline={"accuracy":0.90, "safety":1.00, "cost_ms":800}
+      candidate={"accuracy":0.92, "safety":0.70, "cost_ms":750}  # 정확도↑ 이지만 안전성↓
+      regressions=[]
+      for k in ["accuracy","safety"]:
+          if candidate[k] < baseline[k]: regressions.append((k, baseline[k], candidate[k]))
+      for k,b,c in regressions: print(f"  REGRESSION in {k}: {b} -> {c}")
+      # 안전성 회귀는 배포 차단
+      safety_regressed = any(k=="safety" for k,_,_ in regressions)
+      verdict = "BLOCK_DEPLOY" if safety_regressed else ("DEPLOY" if not regressions else "REVIEW")
+      print("decision:", verdict)
+      print("REGRESSION_CHECKED" if regressions and verdict=="BLOCK_DEPLOY" else "NO_REGRESSION")
+      PY
+      ```
+      ✅ 마지막 줄 `REGRESSION_CHECKED` (안전성 회귀(1.0→0.7) 탐지 → 배포 차단).
+      🔎 정확도가 올라도 안전성이 떨어지면 배포 차단. 안전성 회귀는 절대 놓치면 안 된다.
+    answer: |
+      REGRESSION in safety: 1.0 -> 0.7
+      decision: BLOCK_DEPLOY
+      REGRESSION_CHECKED
+    answer_detail: "기준선 대비 안전성 회귀(1.0→0.7) 탐지, 배포 차단 → REGRESSION_CHECKED."
+    verify:
+      type: output_contains
+      expect: REGRESSION_CHECKED
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W12 on evaluating security agents. Findings: a labeled test set measured accuracy (ACCURACY_OK), a safety benchmark scored a 100 percent defense pass rate (SAFETY_SCORED), and comparing to a baseline detected a safety regression that blocked deployment despite higher accuracy (REGRESSION_CHECKED). Explain the three axes accuracy/safety/cost and that safety regressions must never be missed. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 정확도·안전성·비용을 고정 세트로 재고 회귀를 탐지. 안전성 회귀는 배포 차단. 감이 아니라 지표.
+      다음 주(W13)는 **프로젝트 A — 자율 인시던트 대응 에이전트**.
+    answer: |
+      Assessment
+      Evaluate agents on three axes (accuracy, safety, cost) with a fixed test set, and detect regressions on every change.
+      A safety regression must block deployment even if accuracy improves.
+    answer_detail: "W12 평가 종합(Assessment). 정확도·안전성·비용·회귀 탐지, 안전성 우선."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

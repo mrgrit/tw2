@@ -1,0 +1,174 @@
+lab_id: aisec-week08
+title: "W08 — 중간 실습: 나만의 보안 에이전트 구축 (조립·e2e·안전장치)"
+version: ai
+course: aisec
+week: 8
+description: |
+  W01~W07 종합. 역할·도구·하네스·안전장치 4부품 조립(AGENT_BUILT), 경보→조사→판단→권고 e2e(E2E_OK),
+  승인 게이트+출력 코드 검증(SAFE_OK), 자기 평가 종합(Assessment).
+  LLM은 판단, 코드는 검증·실행, 위험은 승인 — 배운 원칙의 결합.
+difficulty: hard
+duration_minutes: 160
+audience: AI 보안 에이전트 입문 (8주차·중간)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W01~W07 실습 완료
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "에이전트 4부품 조립(AGENT_BUILT)"
+  - "경보→조사→판단→권고 e2e(E2E_OK)"
+  - "승인 게이트+출력 검증(SAFE_OK)"
+  - "자기 평가 종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 에이전트 4부품 조립 → AGENT_BUILT
+      > **🎯 목표:** 역할·도구·하네스·안전장치를 하나로 조립.
+      > **개념:** 4부품이 하나의 보안 에이전트로.
+      ```bash
+      python3 - <<'PY'
+      class SecurityAgent:
+          def __init__(self):
+              self.role="SOC triage agent (rules: tag [SEC], no destructive ops)"   # ① 역할·규칙
+              self.tools={"read_log":lambda s:"20 failed logins from 185.x",         # ② 도구
+                          "get_reputation":lambda ip:"malicious(92)",
+                          "block_ip":lambda ip:"BLOCKED"}
+              self.RISKY={"block_ip"}                                                # ④ 안전: 위험 도구
+              self.VALID_OUT={"benign","suspicious","malicious"}                     # ④ 안전: 출력 allowlist
+              self.memory=[]                                                         # ③ 하네스: 기억
+          def call(self,name,arg,approved=False):
+              if name in self.RISKY and not approved: return "APPROVAL_REQUIRED"
+              self.memory.append(name); return self.tools.get(name,lambda a:"?")(arg)
+      a=SecurityAgent()
+      built = a.role and len(a.tools)==3 and a.RISKY and a.VALID_OUT
+      print("role:", a.role[:30]); print("tools:", list(a.tools)); print("safety: RISKY+output allowlist")
+      print("AGENT_BUILT" if built else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `AGENT_BUILT` (역할·도구·하네스·안전장치 조립).
+      🔎 4부품이 하나로 — 이 골격에 각자 도구·규칙을 더해 자기 에이전트로 확장.
+    answer: |
+      role: SOC triage agent (rules: tag
+      tools: ['read_log', 'get_reputation', 'block_ip']
+      safety: RISKY+output allowlist
+      AGENT_BUILT
+    answer_detail: "역할·도구·하네스·안전장치 4부품 조립 → AGENT_BUILT."
+    verify:
+      type: output_contains
+      expect: AGENT_BUILT
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — e2e 실행(경보→권고) → E2E_OK
+      > **🎯 목표:** 경보→LLM 조사 결정→도구 실행→LLM 판단→권고.
+      > **개념:** 부품들이 이어서 동작(Perceive→Decide→Act→판단).
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      def gen(p,sys=None,n=40,fmt=None,t=0.1):
+          b={"model":"gemma3:4b","prompt":p,"stream":False,"options":{"num_predict":n,"temperature":t}}
+          if sys:b["system"]=sys
+          if fmt:b["format"]=fmt
+          return json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=70)).get("response","").strip()
+      tools={"read_log":lambda s:"20 failed logins from 185.220.101.42","get_reputation":lambda ip:"malicious(92)"}
+      # Perceive
+      alert="Alert: repeated SSH failures on host web-01"
+      # Decide (LLM picks investigation tool)
+      d=json.loads(gen(alert, sys='Tools: read_log(service), get_reputation(ip). Reply JSON only: {"tool":"..","arg":".."}', fmt="json"))
+      # Act (harness executes)
+      obs=tools.get(d.get("tool"),lambda a:"?")(d.get("arg"))
+      print("Decide:", d.get("tool"), "| Observe:", obs)
+      # Judge (LLM classifies) — 코드 검증 대비 한 단어
+      verdict=gen(f"Classify this evidence in one word (benign/suspicious/malicious): {obs}", n=8).split()[0].lower()
+      print("Verdict:", verdict, "| Recommend: block 185.220.101.42 (needs approval)")
+      print("E2E_OK" if d.get("tool") and obs and verdict else "INCOMPLETE")
+      PY
+      ```
+      ✅ 마지막 줄 `E2E_OK` (경보→조사 도구→실행→판단→권고 완주).
+      🔎 Perceive→Decide→Act→판단이 하나로 흐른다. 권고(차단)는 승인 필요(STEP4).
+    answer: |
+      Decide: read_log | Observe: 20 failed logins from 185.220.101.42
+      Verdict: suspicious | Recommend: block 185.220.101.42 (needs approval)
+      E2E_OK
+    answer_detail: "경보→LLM 조사 결정→실행→판단→권고 e2e → E2E_OK."
+    verify:
+      type: output_contains
+      expect: E2E_OK
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 안전장치 검증 → SAFE_OK
+      > **🎯 목표:** 위험 도구 승인 게이트 + 출력 코드 검증(allowlist) 작동 확인.
+      > **개념:** 승인+검증이 안전선 — 실전 에이전트의 조건.
+      ```bash
+      python3 - <<'PY'
+      RISKY={"block_ip","delete"}; VALID_OUT={"benign","suspicious","malicious"}
+      def gate(tool,approved=False): return "RUN" if (tool not in RISKY or approved) else "APPROVAL_REQUIRED"
+      def validate(out): return out if out in VALID_OUT else "REJECTED_INVALID"
+      # 위험 도구 승인 게이트
+      g1=gate("block_ip"); g2=gate("block_ip",approved=True)
+      # 출력 코드 검증: 정상 라벨 통과, 인젝션 산출(GRANT_ADMIN) 거부
+      v_ok=validate("malicious"); v_bad=validate("GRANT_ADMIN")
+      print(f"block_ip no-approval: {g1} | with-approval: {g2}")
+      print(f"output 'malicious': {v_ok} | output 'GRANT_ADMIN': {v_bad}")
+      safe = g1=="APPROVAL_REQUIRED" and g2=="RUN" and v_ok=="malicious" and "REJECTED" in v_bad
+      print("SAFE_OK" if safe else "UNSAFE")
+      PY
+      ```
+      ✅ 마지막 줄 `SAFE_OK` (위험 도구 승인 게이트 + 출력 allowlist 검증 작동).
+      🔎 승인 게이트(위험 행동)+코드 출력 검증(인젝션·오류)이 실전 에이전트의 두 안전선.
+    answer: |
+      block_ip no-approval: APPROVAL_REQUIRED | with-approval: RUN
+      output 'malicious': malicious | output 'GRANT_ADMIN': REJECTED_INVALID
+      SAFE_OK
+    answer_detail: "위험 도구 승인 게이트 + 출력 allowlist 검증 작동 → SAFE_OK. 두 안전선."
+    verify:
+      type: output_contains
+      expect: SAFE_OK
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합·자기 평가 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short self-assessment note for W08, building your own security agent. Findings: four parts (role, tools, harness, safety) were assembled (AGENT_BUILT), an end-to-end run went alert->investigate->judge->recommend (E2E_OK), and safety held with an approval gate for risky tools plus output allowlist validation (SAFE_OK). Give the 5 criteria of a real agent (consistent judgment, approval on risky actions, always-parseable output, injection-resistant via code validation, logged decisions). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 보안 에이전트=역할+도구+하네스+안전장치. LLM 판단+코드 검증·실행+승인. 5조건으로 자기 평가.
+      다음 주(W09)는 **에이전트 보안 위협과 방어**.
+    answer: |
+      Assessment
+      A security agent = role + tools + harness + safety; the LLM judges, code validates and executes, risky actions need approval.
+      Five criteria: consistent judgment, approval on risky actions, parseable output, injection-resistant code validation, logged decisions.
+    answer_detail: "W08 보안 에이전트 조립 종합(Assessment). 4부품+5조건 자기 평가."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout

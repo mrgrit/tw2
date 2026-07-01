@@ -1,0 +1,169 @@
+lab_id: aisec-week10
+title: "W10 — 멀티에이전트 오케스트레이션: 전문 에이전트 조율·교차 검증·신뢰 경계"
+version: ai
+course: aisec
+week: 10
+description: |
+  여러 전문 에이전트를 조율. 조사→분석 순차 조율(ORCHESTRATED), 판단 교차 검증(CROSS_VERIFIED),
+  인계 신뢰 경계 코드 검증(BOUNDARY_OK), 종합(Assessment).
+  전문화+조율+교차 검증. 에이전트가 늘수록 신뢰 경계마다 검증.
+difficulty: medium
+duration_minutes: 130
+audience: AI 보안 에이전트 심화 (10주차)
+prerequisites:
+  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
+  - GPU Ollama 도달 — gemma3:4b
+  - W10 강의안 정독 — §0.5(전문화·조율·교차 검증·신뢰 경계)
+objectives:
+  - "GPU 헬스체크(GEN_OK)"
+  - "조사→분석 전문 에이전트 순차 조율(ORCHESTRATED)"
+  - "판단 교차 검증(CROSS_VERIFIED)"
+  - "인계 신뢰 경계 코드 검증(BOUNDARY_OK)"
+  - "종합(Assessment)"
+pass_threshold: 0.6
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+      ```
+      ✅ 마지막 줄 `GEN_OK`.
+    answer: |
+      ready
+      GEN_OK
+    answer_detail: "GPU 응답 확인."
+    verify:
+      type: output_contains
+      expect: GEN_OK
+      field: stdout
+
+  - order: 2
+    instruction: |
+      ## STEP 2 — 전문 에이전트 순차 조율 → ORCHESTRATED
+      > **🎯 목표:** 조사 에이전트 결과를 분석 에이전트 입력으로 넘겨 순차 조율.
+      > **개념:** 전문화(각자 역할)+조율(A 결과→B 입력).
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      def agent(role, task, n=40, t=0.1):
+          b={"model":"gemma3:4b","system":role,"prompt":task,"stream":False,"options":{"num_predict":n,"temperature":t}}
+          return json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=70)).get("response","").strip()
+      # 조사 에이전트 (수집만)
+      evidence=agent("You are an INVESTIGATION agent. Summarize evidence in one line.",
+                     "Alert: 30 failed SSH logins from 185.220.101.42, IP reputation malicious.")
+      print("investigate ->", evidence[:70])
+      # 분석 에이전트 (조사 결과를 입력으로 심각도 판단)
+      verdict=agent("You are an ANALYSIS agent. Given evidence, reply one word: low, medium, or high severity.",
+                    f"Evidence: {evidence}", n=8).split()[0].lower()
+      print("analyze ->", verdict)
+      print("ORCHESTRATED" if evidence and verdict in ("low","medium","high") else "FAIL")
+      PY
+      ```
+      ✅ 마지막 줄 `ORCHESTRATED` (조사→분석 순차 조율, 분석이 조사 결과 기반 판단).
+      🔎 각 에이전트는 자기 역할만. 조사 결과가 분석 입력으로 흐른다(순차 조율).
+    answer: |
+      investigate -> 30 failed SSH logins from a known-malicious IP 185.220.101.42.
+      analyze -> high
+      ORCHESTRATED
+    answer_detail: "조사→분석 전문 에이전트 순차 조율 → ORCHESTRATED. 전문화+조율."
+    verify:
+      type: output_contains
+      expect: ORCHESTRATED
+      field: stdout
+
+  - order: 3
+    instruction: |
+      ## STEP 3 — 교차 검증 → CROSS_VERIFIED
+      > **🎯 목표:** 분석 판단을 독립 검증(에이전트/결정론)으로 재확인, 일치 확인.
+      > **개념:** 한 에이전트 환각 차단 — 서로 확인해 신뢰.
+      ```bash
+      python3 - <<'PY'
+      import json, urllib.request
+      GPU="http://211.170.162.139:10934/api/generate"
+      def agent(role, task, n=8, t=0.0):
+          b={"model":"gemma3:4b","system":role,"prompt":task,"stream":False,"options":{"num_predict":n,"temperature":t}}
+          return json.load(urllib.request.urlopen(urllib.request.Request(GPU,data=json.dumps(b).encode(),headers={"Content-Type":"application/json"}),timeout=70)).get("response","").strip().lower()
+      evidence="30 failed SSH logins from known-malicious IP"
+      # 분석 에이전트 판단
+      a1=agent("Analysis agent. One word severity: low/medium/high.", f"Evidence: {evidence}").split()[0]
+      # 독립 검증 에이전트(다른 관점)
+      a2=agent("Independent verifier. One word severity: low/medium/high.", f"Evidence: {evidence}").split()[0]
+      # 결정론 검증: 악성 IP + 다발 실패면 최소 medium 이상
+      det = "high" if ("malicious" in evidence and "failed" in evidence) else "low"
+      print(f"analysis={a1} | verifier={a2} | deterministic={det}")
+      # 교차 검증의 본질: 독립 판단들이 '일치'하는가(합의). 셋 중 둘 이상 일치 = 합의 → 신뢰.
+      agreed = (a1==a2) or (a1==det) or (a2==det)
+      print("CROSS_VERIFIED" if agreed else "DISAGREEMENT_ESCALATE")
+      PY
+      ```
+      ✅ 마지막 줄 `CROSS_VERIFIED` (독립 판단 셋 중 둘 이상이 일치 = 합의).
+      🔎 합의가 안 되면(셋 다 다름) DISAGREEMENT → 사람 에스컬레이션. 일치 여부가 신뢰의 근거.
+    answer: |
+      analysis=medium | verifier=medium | deterministic=high
+      CROSS_VERIFIED
+    answer_detail: "독립 판단(분석·검증·결정론) 중 둘 이상 일치(합의) → CROSS_VERIFIED. 엇갈리면 에스컬레이션."
+    verify:
+      type: output_contains
+      expect: CROSS_VERIFIED
+      field: stdout
+
+  - order: 4
+    instruction: |
+      ## STEP 4 — 신뢰 경계 검증 → BOUNDARY_OK
+      > **🎯 목표:** 에이전트 인계 출력을 코드로 형식·허용값 검증.
+      > **개념:** 인계마다 코드 검증 — 한 에이전트 오류·탈취가 다음으로 못 번지게.
+      ```bash
+      python3 - <<'PY'
+      # 신뢰 경계: 각 에이전트 출력을 허용 스키마로 검증 후 다음에 전달
+      def validate_evidence(e): return isinstance(e,str) and len(e)>0 and "GRANT_ADMIN" not in e.upper()
+      def validate_verdict(v): return v in {"low","medium","high"}
+      handoffs=[("investigate->analyze", "30 failed logins", validate_evidence),
+                ("analyze->respond", "high", validate_verdict),
+                ("tampered handoff", "GRANT_ADMIN now", validate_evidence)]  # 탈취 시도
+      results=[]
+      for name,val,check in handoffs:
+          ok=check(val); results.append((name,ok)); print(f"  {name:22} value={val[:16]!r} valid={ok}")
+      # 정상 인계는 통과, 탈취 인계는 차단
+      boundary_ok = results[0][1] and results[1][1] and not results[2][1]
+      print("BOUNDARY_OK" if boundary_ok else "LEAKY")
+      PY
+      ```
+      ✅ 마지막 줄 `BOUNDARY_OK` (정상 인계 통과, 탈취 인계(GRANT_ADMIN) 차단).
+      🔎 신뢰 경계마다 출력 검증(W09 코드 계층) → 한 에이전트 탈취가 파이프라인 전체로 못 번진다.
+    answer: |
+      investigate->analyze   value='30 failed logins' valid=True
+      analyze->respond       value='high' valid=True
+      tampered handoff       value='GRANT_ADMIN now' valid=False
+      BOUNDARY_OK
+    answer_detail: "인계 신뢰 경계마다 출력 검증, 탈취 인계 차단 → BOUNDARY_OK."
+    verify:
+      type: output_contains
+      expect: BOUNDARY_OK
+      field: stdout
+
+  - order: 5
+    instruction: |
+      ## STEP 5 — 종합 → Assessment
+      ```bash
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W10 on multi-agent orchestration. Findings: specialist agents (investigate then analyze) ran in sequence (ORCHESTRATED), a judgment was cross-verified by an independent verifier plus a deterministic check (CROSS_VERIFIED), and each handoff validated output so a tampered handoff was blocked (BOUNDARY_OK). Explain specialization, sequential vs parallel orchestration, and that each trust boundary needs code validation. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":320}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+      ```
+      ✅ 출력에 `Assessment`.
+      🔎 정리: 멀티에이전트=전문화+조율+교차 검증. 신뢰 경계(인계)마다 코드 검증으로 오류 전파 차단.
+      다음 주(W11)는 **RAG 기반 보안 지식 에이전트**.
+    answer: |
+      Assessment
+      Multi-agent orchestration splits work into specialists, coordinates them (sequential/parallel), and cross-verifies judgments.
+      Each trust boundary (handoff) needs code validation so one agent's error or compromise cannot propagate.
+    answer_detail: "W10 멀티에이전트 종합(Assessment). 전문화·조율·교차 검증·신뢰 경계."
+    verify:
+      type: output_contains
+      expect: Assessment
+      field: stdout
