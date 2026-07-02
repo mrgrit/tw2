@@ -2,17 +2,17 @@
 
 > **본 주차의 한 줄 요약**
 >
-> Manager가 계획(W03)을 세우면, 실제 작업은 **SubAgent**가 수행한다. 이 위임과 원격 실행 구조가 이번 주 주제다.
-> 핵심은 **A2A(Agent-to-Agent) 통신** — Manager와 SubAgent가 에이전트끼리 **구조화된 메시지**로 임무를 주고받는다:
-> Manager가 ① **임무 명세**(목표·도구·컨텍스트·제약·가드레일)를 SubAgent에 위임(delegate)하고, SubAgent가 ② **원격
-> 실행**(el34 bastion 등에서 실제 작업 수행) 후 ③ **결과 보고**(수행 내역·산출물·상태)를 Manager에 반환한다. 왜
-> SubAgent로 분리하나? ① **관심사 분리**(Manager는 큰 그림·조율, SubAgent는 집중된 실행), ② **격리·안전**(SubAgent는
-> 제한된 권한·범위로 실행돼 폭주해도 Manager가 통제 — 가드레일 W01), ③ **병렬·확장**(여러 SubAgent를 병렬로 여러
-> 임무에), ④ **원격 실행**(SubAgent가 대상 환경 가까이에서 실행해 효율적). 중요한 안전 원칙은 Manager가 SubAgent의
-> **결과를 검증**해야 한다는 것이다 — SubAgent가 실수하거나(환각·오류) 예상 밖 행동을 할 수 있으므로, 결과를 그대로
-> 믿지 말고 **정합성·가드레일 위반·목표 달성**을 확인한다. 실습에서는 A2A 위임을 구성하고(마커 `A2A_DELEGATED`),
-> 원격 실행 모델을 이해하며(마커 `REMOTE_EXECUTED`), 결과를 검증한다(마커 `RESULT_VALIDATED`). A2A는 이 위임-실행-
-> 보고-검증 사이클을 구조화한다 — bastion에서 Manager-SubAgent 협업이 자율 임무 수행의 실행 엔진이다.
+> Manager(bastion)가 계획(W03)을 세우면, 실제 명령은 각 VM의 **SubAgent**가 실행한다. 이 위임과 원격 실행 구조가
+> 이번 주 주제다. 핵심은 **A2A(Agent-to-Agent) 프로토콜** — Manager와 SubAgent가 HTTP로 통신한다. 각 VM
+> (attacker·secu·web·siem·manager)에는 SubAgent가 상주하며(**SSH 온보딩**으로 설치, 포트 **8002**), Manager는
+> ① 사전점검 `GET http://{vm_ip}:8002/health`로 SubAgent 생존을 확인하고, ② `POST http://{vm_ip}:8002/a2a/run_script`에
+> `{"script": "...bash..."}`를 보내 원격 실행하며, ③ `{"stdout":..., "stderr":..., "returncode":0}`를 받는다
+> (`run_command`). 왜 SubAgent로 분리하나? ① **관심사 분리**(Manager는 계획·분석 gpt-oss:120b, SubAgent는 경량 실행
+> gemma3:4b), ② **격리·안전**(SubAgent는 대상 VM 범위로 실행 → 위험 작업은 Manager가 `_assess_risk`→승인으로 통제),
+> ③ **원격·자산 근접**(각 VM 위에서 docker exec/ssh로 자산에 작용), ④ **확장**(여러 VM에 병렬). 중요한 안전 원칙은
+> Manager가 결과를 **분석·검증(VALIDATING)**하고 **EvidenceDB**에 기록한다는 것 — 실행이 성공했는지, 목표를 채웠는지를
+> 그대로 믿지 않고 확인한다. 실습에서는 A2A 위임을 구성하고(마커 `A2A_DELEGATED`), 원격 실행 모델을 이해하며(마커
+> `REMOTE_EXECUTED`), 결과를 검증한다(마커 `RESULT_VALIDATED`).
 
 ---
 
@@ -20,75 +20,79 @@
 
 본 주차 종료 시 학생은 다음 5가지를 **본인 손으로** 할 수 있어야 한다.
 
-1. Manager-SubAgent 분리의 이유(관심사·안전·병렬·효율)를 설명한다.
-2. **A2A 위임**(임무 명세)을 명확한 계약으로 구성한다(마커 `A2A_DELEGATED`).
-3. SubAgent의 **원격 실행** 모델을 이해한다(마커 `REMOTE_EXECUTED`).
-4. SubAgent **결과를 검증**한다(마커 `RESULT_VALIDATED`).
-5. "신뢰하되 검증"이 왜 자율 안전의 핵심인지 종합한다(마커 `Assessment`).
+1. Manager-SubAgent 분리의 이유(관심사·안전·원격·확장)를 설명한다.
+2. **A2A 위임**(대상 VM·명령 명세)을 구성한다(마커 `A2A_DELEGATED`).
+3. SubAgent의 **원격 실행** 모델(`/health`·`/a2a/run_script`)을 이해한다(마커 `REMOTE_EXECUTED`).
+4. 실행 **결과를 검증**한다(마커 `RESULT_VALIDATED`).
+5. "신뢰하되 검증(VALIDATING·EvidenceDB)"이 왜 자율 안전의 핵심인지 종합한다(마커 `Assessment`).
 
-> **이 주차의 시선** — 계획(Manager)과 실행(SubAgent)이 어떻게 대화하고, Manager가 왜 결과를 검증해야 하는지가
-> 핵심이다. 위임만 하고 검증하지 않으면 SubAgent의 오류가 그대로 통과된다.
+> **이 주차의 시선** — 계획(Manager)과 실행(SubAgent)이 A2A로 어떻게 대화하는지, Manager가 왜 결과를 검증·기록하는지가
+> 핵심이다. 위임만 하고 검증하지 않으면 실행 오류가 그대로 통과한다.
 
 ---
 
-## 0. 용어 해설 (SubAgent·원격 실행)
+## 0. 용어 해설 (SubAgent·A2A)
 
 | 용어 | 영문 | 뜻 | 비유 |
 |------|------|----|------|
-| **A2A** | Agent-to-Agent | 에이전트끼리 구조화 메시지로 통신 | 요원 간 무전 |
-| **위임** | Delegation | Manager가 SubAgent에 임무를 넘김 | 작전 하달 |
-| **임무 명세** | Task Spec | 목표·도구·컨텍스트·제약·성공기준 정의 | 작전 명령서 |
-| **원격 실행** | Remote Execution | 대상 환경(el34 bastion) 가까이에서 실행 | 현장 파견 수행 |
-| **격리** | Isolation | 제한 권한·범위로 실행해 피해를 가둠 | 방화구획 |
-| **결과 검증** | Result Validation | 산출물의 정합성·가드레일·달성 확인 | 검수 |
-| **신뢰하되 검증** | Trust but Verify | 결과를 그대로 믿지 않고 확인 | 이중 확인 |
+| **SubAgent** | SubAgent | 각 VM에 상주하는 원격 실행기(포트 8002) | 현장 파견 요원 |
+| **A2A** | Agent-to-Agent | Manager↔SubAgent HTTP 프로토콜 | 무전 |
+| **온보딩** | Onboarding | SSH로 SubAgent 설치·역할 SW 배포 | 요원 배치 |
+| **health_check** | — | `GET /health`로 SubAgent 생존 확인 | 생존 신호 |
+| **run_command** | — | `POST /a2a/run_script`로 원격 실행 | 명령 전달 |
+| **격리** | Isolation | 대상 VM 범위로 제한 실행 | 방화구획 |
+| **VALIDATING** | — | 결과를 분석·검증하고 EvidenceDB 기록 | 검수·기록 |
 
-> **헷갈리기 쉬운 한 쌍 — 위임 vs 검증.** *위임*은 임무를 넘기는 것, *검증*은 돌아온 결과를 확인하는 것이다. 위임만
-> 하고 검증하지 않으면 SubAgent의 환각·오류가 그대로 반영된다. 자율 시스템의 안전은 이 검증 고리에서 나온다.
+> **헷갈리기 쉬운 한 쌍 — 위임 vs 검증.** *위임*은 SubAgent에 명령을 넘기는 것, *검증(VALIDATING)*은 돌아온
+> `{stdout,stderr,returncode}`를 LLM으로 분석하고 EvidenceDB에 기록하는 것이다. 위임만 하고 검증하지 않으면 실패·
+> 오판이 통과된다.
 
 ---
 
 ## 0.5 신입생 친화 핵심 개념
 
-### 0.5.1 A2A 위임-실행-보고-검증
+### 0.5.1 A2A 위임-실행-검증
 
 ```mermaid
 graph TD
-    M["Manager"] -->|"① 임무 명세 (A2A)"| S["SubAgent"]
-    S -->|"② 원격 실행"| T["el34 bastion / 대상"]
+    M["Manager (bastion)<br/>gpt-oss:120b"] -->|"① health_check<br/>GET :8002/health"| S["SubAgent (VM)<br/>gemma3:4b"]
+    M -->|"② run_command<br/>POST :8002/a2a/run_script"| S
+    S -->|"docker exec / ssh"| T["자산(로그·서비스·규칙)"]
     T --> S
-    S -->|"③ 결과 보고 (A2A)"| M
-    M -->|"④ 검증"| V["정합성 · 가드레일 · 달성"]
+    S -->|"③ {stdout,stderr,returncode}"| M
+    M -->|"④ VALIDATING"| V["LLM 분석 → EvidenceDB"]
     style M fill:#1f6feb,color:#fff
     style V fill:#3fb950,color:#fff
 ```
 
-Manager가 임무를 위임 → SubAgent가 원격 실행 → 결과 보고 → Manager 검증. A2A가 이 흐름을 구조화한다. 마지막
-검증 단계가 없으면 SubAgent의 오류가 그대로 통과한다.
+Manager가 생존 확인 후 스크립트를 위임 → SubAgent가 VM에서 실행 → 결과 반환 → Manager가 분석·기록. 위임과 실행이
+분리돼 안전·확장이 오른다.
 
-### 0.5.2 임무 명세 — 위임의 계약
+### 0.5.2 온보딩과 A2A 프로토콜
 
-Manager가 SubAgent에 넘기는 명세는 명확해야 한다: **목표**(무엇을)·**도구**(무엇으로)·**컨텍스트**(배경)·**제약·
-가드레일**(하지 말 것·범위)·**성공 기준**(언제 완료). 명세가 모호하면 SubAgent가 엉뚱한 일을 한다 — 좋은 위임은
-명확한 계약이다.
+- **온보딩**: Manager가 각 VM에 **SSH로 접속해 SubAgent를 설치**하고 역할별 소프트웨어를 배포한다(포트 8002 개방).
+- **health_check**: `GET :8002/health`로 실행 전 생존 확인(죽은 VM에 명령 낭비 방지).
+- **run_command**: `POST :8002/a2a/run_script {"script":...}` → `{"stdout","stderr","returncode"}`.
+
+명세가 명확해야(대상 VM·명령) 옳은 VM에서 옳은 작업이 실행된다.
 
 ### 0.5.3 왜 분리하나
 
-- **관심사 분리**: Manager=조율·계획, SubAgent=집중 실행.
-- **격리·안전**: SubAgent는 제한 권한·범위로 실행 → 폭주해도 통제(가드레일).
-- **병렬·확장**: 여러 SubAgent로 여러 임무 동시 수행.
-- **원격 효율**: 대상 환경 가까이(el34 bastion)에서 실행.
+- **관심사 분리**: Manager=계획·분석(gpt-oss:120b), SubAgent=경량 실행(gemma3:4b).
+- **격리·안전**: SubAgent는 대상 VM 범위로 실행, 위험 작업은 Manager `_assess_risk`→승인.
+- **원격·자산 근접**: 각 VM 위에서 docker exec/ssh로 자산에 직접 작용.
+- **확장**: 여러 VM에 병렬 위임.
 
-### 0.5.4 결과 검증 — 신뢰하되 검증
+### 0.5.4 결과 검증 — VALIDATING
 
-SubAgent도 틀릴 수 있다(LLM 환각·도구 오류·예상 밖 행동). Manager는 결과를 그대로 믿지 말고 검증한다: **정합성**
-(결과가 말이 되나)·**가드레일 위반**(범위·금지 어겼나)·**목표 달성**(요구를 채웠나). 검증 실패면 재위임·수정한다.
-"신뢰하되 검증(trust but verify)"이 자율 시스템 안전의 핵심이다(agent-ir·ai-security와 연결).
+SubAgent 실행도 실패·오판이 가능하다(returncode≠0·부분 성공·환각). Manager는 결과를 그대로 믿지 않고 **VALIDATING**
+단계에서 LLM으로 분석하고 **EvidenceDB(evidence-first)**에 기록한다: 성공했나(returncode·출력), 목표를 채웠나. 실패면
+재시도·수정. "신뢰하되 검증"이 자율 시스템 안전의 핵심이다.
 
 ### 0.5.5 el34 맥락
 
-el34 bastion은 SubAgent가 원격 실행하는 환경이다. 이번 실습은 **A2A 위임·원격 실행·결과 검증 로직**을 결정론
-시뮬로 익힌다. 실제 bastion 원격 실행은 이후 통합 실습에서 다룬다.
+el34의 각 VM에 SubAgent가 상주해 A2A로 명령을 실행한다. 이번 실습은 **A2A 위임·원격 실행·결과 검증 로직**을 결정론
+시뮬로 익힌다(실제 A2A 실행은 이후 통합 실습).
 
 ---
 
@@ -96,22 +100,22 @@ el34 bastion은 SubAgent가 원격 실행하는 환경이다. 이번 실습은 *
 
 ### 1.1 A2A 위임 (A2A_DELEGATED)
 
-- **한 줄 정의**: 목표·도구·제약·성공기준을 담은 임무 명세를 SubAgent에 전달한다.
-- **왜 중요한가**: 명세가 위임의 계약이다. 모호하면 SubAgent가 엉뚱하게 실행한다.
-- **el34 맥락에서 어떻게**: 임무 명세(목표·도구·가드레일·성공기준)를 구조화해 위임하면 `A2A_DELEGATED`.
-- **한계/주의**: 제약·가드레일을 명세에 포함해야 SubAgent 격리가 성립한다.
+- **한 줄 정의**: 대상 VM과 실행 스크립트를 명세로 SubAgent에 전달한다.
+- **왜 중요한가**: 대상 VM이 불명확하면 잘못된 VM으로 라우팅된다(bastion 프롬프트 원칙 "대상 VM을 명시하라").
+- **bastion에서 어떻게**: `POST {vm}:8002/a2a/run_script`에 명확한 스크립트를 위임하면 `A2A_DELEGATED`.
+- **한계/주의**: 위험 스크립트는 위임 전 `_assess_risk`→승인을 거친다.
 
 ### 1.2 원격 실행 (REMOTE_EXECUTED)
 
-- **한 줄 정의**: SubAgent가 대상 환경(bastion)에서 제한 권한으로 작업을 수행한다.
-- **핵심**: 격리된 범위 내 실행 + 결과 산출물 회수. 폭주해도 Manager가 통제.
-- **판정**: 원격 실행이 범위 내에서 이뤄지고 결과가 반환되면 `REMOTE_EXECUTED`.
+- **한 줄 정의**: SubAgent가 대상 VM에서 스크립트를 실행하고 결과를 반환한다.
+- **핵심**: health_check 후 실행, docker exec/ssh로 자산 작용, `{stdout,stderr,returncode}` 회수.
+- **판정**: 격리된 범위에서 실행·회수되면 `REMOTE_EXECUTED`.
 
 ### 1.3 결과 검증 (RESULT_VALIDATED)
 
-- **한 줄 정의**: 돌아온 결과의 정합성·가드레일·목표 달성을 확인한다.
-- **핵심**: 정합성(말이 되나)·가드레일 위반 여부·목표 충족을 점검. 실패면 재위임.
-- **판정**: 결과가 세 기준으로 검증되면 `RESULT_VALIDATED`.
+- **한 줄 정의**: 반환 결과를 분석해 성공·목표 달성을 확인하고 기록한다.
+- **핵심**: returncode·출력을 LLM으로 분석(VALIDATING), EvidenceDB에 저장. 실패면 재시도.
+- **판정**: 결과가 검증·기록되면 `RESULT_VALIDATED`.
 
 ---
 
@@ -122,31 +126,31 @@ el34 bastion은 SubAgent가 원격 실행하는 환경이다. 이번 실습은 *
 
 ### 미션 1 — GPU 헬스체크 → `GEN_OK`
 
-> **왜 하는가?** Manager/SubAgent의 추론 엔진(LLM)이 응답하는지 확인한다.
+> **왜 하는가?** SubAgent LLM(gemma3:4b) 도달·응답 확인.
 > **무엇을 아는가?** Ollama 응답 형식·도달성.
 > **결과 해석** — 정상 `GEN_OK` / 비정상 `GEN_EMPTY`·연결 오류.
-> **실전 활용** — 에이전트 구동 전 LLM 백엔드 확인.
+> **실전 활용** — 종합 소견 작성에 사용.
 
 ### 미션 2 — A2A 위임 → `A2A_DELEGATED`
 
-> **왜 하는가?** 위임의 계약인 임무 명세를 명확히 구성한다.
-> **무엇을 아는가?** 목표·도구·제약·가드레일·성공기준을 담은 명세.
+> **왜 하는가?** 대상 VM·명령을 명확히 위임하는 법을 익힌다.
+> **무엇을 아는가?** run_script 명세(대상 VM·스크립트).
 > **결과 해석** — 정상: 명세 위임 + `A2A_DELEGATED`.
-> **실전 활용** — Manager의 임무 위임 프로토콜 설계.
+> **실전 활용** — Manager의 원격 명령 프로토콜.
 
 ### 미션 3 — 원격 실행 → `REMOTE_EXECUTED`
 
-> **왜 하는가?** SubAgent가 격리된 범위에서 원격 실행하는 모델을 이해한다.
-> **무엇을 아는가?** 제한 권한 실행·결과 회수.
+> **왜 하는가?** SubAgent 원격 실행 모델(`/health`·`/a2a/run_script`)을 이해한다.
+> **무엇을 아는가?** 사전점검·실행·결과 회수.
 > **결과 해석** — 정상: 범위 내 실행 + `REMOTE_EXECUTED`.
-> **실전 활용** — bastion 원격 실행·격리 설계.
+> **실전 활용** — A2A 원격 실행·격리 설계.
 
 ### 미션 4 — 결과 검증 → `RESULT_VALIDATED`
 
-> **왜 하는가?** SubAgent 오류를 잡기 위해 결과를 검증한다.
-> **무엇을 아는가?** 정합성·가드레일·목표 달성 확인.
-> **결과 해석** — 정상: 검증 통과 + `RESULT_VALIDATED`.
-> **실전 활용** — 자율 실행의 안전 게이트("신뢰하되 검증").
+> **왜 하는가?** 실행 오류를 잡기 위해 결과를 검증·기록한다.
+> **무엇을 아는가?** returncode·출력 분석, EvidenceDB 기록.
+> **결과 해석** — 정상: 검증·기록 + `RESULT_VALIDATED`.
+> **실전 활용** — 자율 실행의 안전 게이트(VALIDATING).
 
 ### 미션 5 — 종합 소견 → `Assessment`
 
@@ -159,16 +163,16 @@ el34 bastion은 SubAgent가 원격 실행하는 환경이다. 이번 실습은 *
 
 ## 3. 흔한 오해·관제자 노트
 
-- **"위임하면 끝이다."** — 결과 검증이 필수다. SubAgent도 틀린다.
-- **"명세는 대충 넘겨도 된다."** — 모호하면 엉뚱한 실행. 명확한 계약이 필요하다.
-- **"SubAgent에 전권을 준다."** — 제한 권한·범위·가드레일로 격리한다.
-- **"검증은 속도를 늦춘다."** — 검증 없는 자율은 오류를 증폭한다. 안전이 지속 가능성이다.
-- **관제(Blue) 관점** — Manager가 (1) 명확한 임무 명세로 위임하는가, (2) SubAgent가 범위 내에서 실행하는가, (3)
-  결과가 정합성·가드레일·달성으로 검증되는가, (4) 검증 실패 시 재위임·정지 경로가 있는가를 점검한다.
+- **"위임하면 끝이다."** — VALIDATING으로 결과를 검증·기록한다. SubAgent도 실패한다.
+- **"대상 VM은 알아서 정해진다."** — 대상 VM을 명시해야 옳은 곳에서 실행된다(라우팅 오류 방지).
+- **"SubAgent에 전권을 준다."** — 대상 VM 범위로 격리하고 위험 작업은 Manager 승인.
+- **"검증은 속도를 늦춘다."** — 검증 없는 자율은 오류를 증폭한다. EvidenceDB 기록이 사후 추적의 기반.
+- **관제(Blue) 관점** — (1) health_check로 생존 확인 후 실행하는가, (2) 위험 스크립트에 승인이 걸리는가, (3) 결과가
+  VALIDATING·EvidenceDB로 검증·기록되는가, (4) 대상 VM 격리가 지켜지는가를 점검한다.
 
 ---
 
 ## 4. 다음 주차 (W05) 예고 — Playbook 자동화
 
-W04가 "SubAgent 실행 구조"였다면, W05는 **Playbook 자동화**를 다룬다. 반복되는 보안 임무를 재사용 가능한
-플레이북(정형 워크플로)으로 구조화해, 자율 에이전트가 일관되게 실행하도록 만드는 법을 익힌다.
+W04가 "SubAgent A2A 실행 구조"였다면, W05는 **Playbook 자동화**를 다룬다. bastion의 정적 Playbook(YAML)과 동적
+Playbook 생성으로 반복 보안 임무를 재사용 가능하게 구조화하는 법을 익힌다.
