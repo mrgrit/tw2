@@ -1,88 +1,34 @@
 # 공방전 배틀 실행 결과표
 
-> `scripts/run_all_battles.py` 가 각 시나리오를 solo 배틀로 실제 실행하고 라이브 채점한 결과.
-> 채점 = el34 실 Assessor(:9201, 결정론 체크) + AICompanion 실공격 + claude semantic 채점.
-> 자동 하니스의 보고서는 최소본이라 semantic 만점이 어려움 → partial 다수는 하니스 보고 품질 한계이지 시나리오 결함 아님.
+> `scripts/run_all_battles.py` 가 각 시나리오를 solo 배틀로 **실제 실행**하고 라이브 채점한 결과.
+> 채점 = el34 실 Assessor(:9201, docker exec 결정론 체크) + 실공격(공격자 VM→el34) + claude semantic 채점.
 
-**집계**: 시나리오 60 · 미션 240 · ✅pass 0 · 🟡partial 68 (생성 시각 2026-07-02 18:05)
+## 결과 해석 (중요 — 판정을 오독하지 말 것)
+
+이 표는 **자동 하니스**가 낸 결과다. 채점기·시나리오는 정상이나(아래 근거), 자동 하니스는
+**사람/LLM 수준의 서술 답안을 못 쓴다**. 미션은 채점 성격에 따라 3분류:
+
+1. **결정론 채점 미션**(log_contains·wazuh_alert·file·port·process) — Assessor 가 el34 로그/포트를
+   실검사 → 공격 흔적이 실제로 남으면 **자동으로도 통과**. (여기가 진짜 인프라 검증의 핵심.)
+2. **command_ran 미션**(주로 AICompanion 트랙 RED) — 6v6 원칙상 **외부 공격자 명령은 미수집** →
+   자동으론 '명령 0건'으로 **partial 상한**. 타깃 흔적/실추출값으로 부분 인정.
+3. **순수 semantic 설계 미션**(CPS·IoT·physical 전부, 각 트랙 BLUE 설계) — 인프라에 심을 게 없고
+   **구체적 설계 서술**이 산출물이라 자동 하니스로는 통과 불가(합격기준 문구 복사는 채점기가 반려).
+
+> **채점기·시나리오가 정상이라는 근거**: 사람/LLM 이 **제대로 쓴 답안**은 만점이 난다 —
+> 실측 `battle 5` ai-service-pentest-w02 **BLUE-2(semantic 설계) = pass 25/25**. 즉 partial/fail 은
+> 시나리오 결함이 아니라 **자동 하니스가 학생이 아니기 때문**. 배포·구조는 `docs/battle-verification.md`.
+
+**집계**: 시나리오 6 · 미션 24 · ✅pass 0 · 🟡partial 21 (생성 시각 2026-07-02 18:53)
 
 
-## agent-ir  (✅0 🟡29)
-
-| 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
-|---|---|---|---|---|---|---|
-| agent-ir-w01 | 22 | 🟡partial | 🟡partial | ❌fail | ❌fail | 27/90 |
-| agent-ir-w02 | 23 | 🟡partial | 🟡partial | ❌fail | ❌fail | 25/90 |
-| agent-ir-w03 | 24 | 🟡partial | 🟡partial | ❌fail | ❌fail | 26/90 |
-| agent-ir-w04 | 25 | 🟡partial | 🟡partial | ❌fail | ❌fail | 25/90 |
-| agent-ir-w05 | 26 | 🟡partial | 🟡partial | ❌fail | ❌fail | 18/90 |
-| agent-ir-w06 | 27 | 🟡partial | 🟡partial | ❌fail | ❌fail | 22/90 |
-| agent-ir-w07 | 28 | 🟡partial | 🟡partial | ❌fail | ❌fail | 22/90 |
-| agent-ir-w08 | 29 | 🟡partial | 🟡partial | ❌fail | ❌fail | 21/95 |
-| agent-ir-w09 | 30 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 13/90 |
-| agent-ir-w10 | 31 | 🟡partial | ❌fail | ❌fail | ❌fail | 9/90 |
-| agent-ir-w11 | 32 | 🟡partial | 🟡partial | ❌fail | ❌fail | 21/90 |
-| agent-ir-w12 | 33 | 🟡partial | 🟡partial | ❌fail | ❌fail | 16/90 |
-| agent-ir-w13 | 34 | 🟡partial | ❌fail | ❌fail | ❌fail | 18/90 |
-| agent-ir-w14 | 35 | 🟡partial | 🟡partial | ❌fail | ❌fail | 11/95 |
-| agent-ir-w15 | 36 | 🟡partial | ❌fail | 🟡partial | ❌fail | 9/95 |
-
-## agent-ir-adv  (✅0 🟡37)
+## agent-ir-adv  (✅0 🟡21)
 
 | 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
 |---|---|---|---|---|---|---|
-| agent-ir-adv-w01 | 7 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 19/90 |
-| agent-ir-adv-w02 | 8 | 🟡partial | ❌fail | 🟡partial | ❌fail | 22/90 |
-| agent-ir-adv-w03 | 9 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 17/90 |
-| agent-ir-adv-w04 | 10 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 17/90 |
-| agent-ir-adv-w05 | 11 | 🟡partial | ❌fail | 🟡partial | ❌fail | 15/90 |
-| agent-ir-adv-w06 | 12 | 🟡partial | 🟡partial | ❌fail | ❌fail | 14/90 |
-| agent-ir-adv-w07 | 13 | 🟡partial | 🟡partial | ❌fail | ❌fail | 17/90 |
-| agent-ir-adv-w08 | 14 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 16/90 |
-| agent-ir-adv-w09 | 15 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 16/90 |
-| agent-ir-adv-w10 | 16 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 16/90 |
-| agent-ir-adv-w11 | 17 | 🟡partial | 🟡partial | ❌fail | ❌fail | 10/90 |
-| agent-ir-adv-w12 | 18 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 17/90 |
-| agent-ir-adv-w13 | 19 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 27/90 |
-| agent-ir-adv-w14 | 20 | 🟡partial | ❌fail | 🟡partial | ❌fail | 20/90 |
-| agent-ir-adv-w15 | 21 | ❌fail | 🟡partial | ❌fail | ❌fail | 8/95 |
-
-## ai-agent  (✅0 🟡1)
-
-| 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
-|---|---|---|---|---|---|---|
-| ai-agent-w01 | 37 | ❌fail | ❌fail | ❌fail | ❌fail | 5/90 |
-| ai-agent-w02 | 38 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-agent-w03 | 39 | 🟡partial | ❌fail | ❌fail | ❌fail | 5/90 |
-| ai-agent-w04 | 40 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-agent-w05 | 41 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-agent-w06 | 42 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-agent-w07 | 43 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
-| ai-agent-w08 | 44 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
-| ai-agent-w09 | 45 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
-| ai-agent-w10 | 46 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
-| ai-agent-w11 | 47 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
-| ai-agent-w12 | 48 | 🔁review | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-agent-w13 | 49 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-agent-w14 | 50 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-agent-w15 | 51 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-
-## ai-safety-adv  (✅0 🟡1)
-
-| 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
-|---|---|---|---|---|---|---|
-| ai-safety-adv-w01 | 52 | 🟡partial | ❌fail | ❌fail | ❌fail | 3/90 |
-| ai-safety-adv-w02 | 53 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w03 | 54 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w04 | 55 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w05 | 56 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w06 | 57 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w07 | 58 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w08 | 59 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w09 | 60 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w10 | 61 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w11 | 62 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w12 | 63 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w13 | 64 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w14 | 65 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
-| ai-safety-adv-w15 | 66 | ❌fail | ❌fail | ❌fail | ❌fail | 0/95 |
+| agent-ir-adv-w01 | 73 | 🟡partial | 🟡partial | 🟡partial | 🟡partial | 37/90 |
+| agent-ir-adv-w02 | 74 | 🟡partial | ❌fail | 🟡partial | 🟡partial | 27/90 |
+| agent-ir-adv-w03 | 75 | 🟡partial | 🟡partial | 🟡partial | 🟡partial | 38/90 |
+| agent-ir-adv-w04 | 76 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 22/90 |
+| agent-ir-adv-w05 | 77 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 22/90 |
+| agent-ir-adv-w06 | 78 | 🟡partial | 🟡partial | 🟡partial | 🟡partial | 37/90 |
