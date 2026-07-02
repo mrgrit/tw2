@@ -1,38 +1,48 @@
 lab_id: autonomous-systems-week12
-title: "W12 — V2X/자동차: CAN/V2X 취약성·위조 안전 메시지 탐지·PKI/오작동 탐지"
+title: "W12 — V2X/자동차: BSM 로그 분석·위조 안전 메시지 탐지·1609.2 PKI/오작동 탐지"
 version: ai
 course: autonomous-systems
 week: 12
 description: |
-  차량 내부(CAN)·외부(V2X) 보안. CAN 무인증·V2X 무서명 취약성(V2X_VULNERABLE), 위조 V2X 안전 메시지
-  탐지(MESSAGE_SPOOFED), PKI 서명·오작동 탐지 방어(V2X_SECURED), 종합(Assessment).
-  ⚠️ 차량 CAN·V2X는 실물·안전·인가 필요 — 취약성·탐지·방어 로직 결정론 시뮬.
-difficulty: hard
-duration_minutes: 130
-audience: 자율 시스템 보안 (12주차)
+  V2X(차량-사물 통신)는 차량이 서로 **BSM**(기본 안전 메시지: 위치·속도·방향)을 방송해 충돌을 예방한다. 문제는
+  메시지가 **인증되지 않으면** 공격자가 유령 차량·가짜 급제동을 방송해 주변 차량을 급감속·회피시켜 사고를 유발한다는
+  것이다. 이번 주는 **실제 아티팩트(BSM 수신 로그)로** (1) 무인증 구조를 확인하고, (2) 물리적으로 불가능한 위조
+  메시지를 `awk` 로 탐지하며, (3) IEEE 1609.2 PKI 서명 검증 + 오작동 탐지로 위조가 거부됨을 확인한다.
+
+  모든 명령은 사람이 한 줄씩 직접 입력한다. el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서 실행하며,
+  분석 아티팩트(BSM 로그)는 이 실습이 `/tmp` 에 직접 만든다.
+difficulty: medium
+duration_minutes: 120
+audience: 자율 시스템 (12주차)
 prerequisites:
-  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
-  - GPU Ollama 도달 — gemma3:4b
-  - W12 강의안 정독 — §0.5(CAN·V2X·PKI·오작동 탐지)
+  - "el34 호스트 접속: `ssh ccc@{{TARGET_IP}}` (비밀번호 `1`)"
+  - "GPU Ollama 도달 — http://211.170.162.139:10934 (gemma3:4b), 종합용"
+  - "도구: grep·awk·python3 (el34 에 존재)"
+  - "W12 강의안 정독 — §0.5(V2X·BSM·1609.2 PKI·오작동 탐지)"
 objectives:
-  - "GPU 헬스체크(GEN_OK)"
-  - "CAN/V2X 취약성 평가(V2X_VULNERABLE)"
-  - "위조 V2X 안전 메시지 탐지(MESSAGE_SPOOFED)"
-  - "PKI 서명·오작동 탐지 방어(V2X_SECURED)"
-  - "종합(Assessment)"
+  - "GPU 응답 확인 (GEN_OK)"
+  - "BSM 로그에서 무인증(무서명) 구조 확인 (V2X_VULNERABLE)"
+  - "물리적으로 불가능한 위조 안전 메시지 탐지 (MESSAGE_SPOOFED)"
+  - "1609.2 PKI 검증·오작동 탐지로 위조 거부 (V2X_SECURED)"
+  - "종합 소견 (Assessment)"
 pass_threshold: 0.6
 
 steps:
 
   - order: 1
     instruction: |
-      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ## 🎯 MISSION
+      종합용 GPU(gemma3) 응답 확인.
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
         -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
       ```
-      ✅ 마지막 줄 `GEN_OK`.
+      ## 📋 확인 사항 — 마지막 줄 `GEN_OK`
+      ## 🔍 결과 해석 — 정상 `GEN_OK` / 비정상 `GEN_EMPTY`·연결오류
+    hint: "curl /api/generate → response 있으면 GEN_OK."
+    category: survey
     answer: |
       ready
       GEN_OK
@@ -44,102 +54,144 @@ steps:
 
   - order: 2
     instruction: |
-      ## STEP 2 — CAN/V2X 취약성 → V2X_VULNERABLE
-      > **🎯 목표:** 내부 CAN·외부 V2X의 무인증을 평가.
-      > **개념:** 둘 다 무인증이면 메시지 주입·위조.
+      ## 🎯 MISSION
+      **BSM 수신 로그**를 만들고, 안전 메시지에 **서명/인증서가 없음(무인증)**을 확인한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      vehicle={"can":{"auth":False,"domain_separation":False},
-               "v2x":{"message_signing":False,"misbehavior_detection":False}}
-      issues=[]
-      if not vehicle["can"]["auth"]: issues.append("CAN no auth (message injection)")
-      if not vehicle["can"]["domain_separation"]: issues.append("no domain gateway (infotainment -> brakes)")
-      if not vehicle["v2x"]["message_signing"]: issues.append("V2X unsigned (forged safety messages)")
-      if not vehicle["v2x"]["misbehavior_detection"]: issues.append("no misbehavior detection")
-      for i in issues: print("  issue:", i)
-      print("V2X_VULNERABLE" if len(issues)>=3 else "SECURE")
-      PY
+      LOG=/tmp/v2x_bsm_STU42.log
+      # 1) BSM 로그: id, 위치(lat/lon), 속도, 이벤트, 서명 유무.
+      cat > "$LOG" <<'EOF'
+      t=1.0 id=V-A lat=37.3010 lon=127.0100 speed=60 event=none  sig=absent
+      t=1.1 id=V-B lat=37.3009 lon=127.0102 speed=58 event=none  sig=absent
+      t=1.2 id=V-A lat=37.3011 lon=127.0101 speed=60 event=none  sig=absent
+      EOF
+
+      # 2) 각 메시지의 서명 여부를 확인한다(안전 메시지가 서명 없이 방송되는지).
+      echo "[서명 상태]"; awk '{print "  ", $1, $2, $(NF)}' "$LOG"
+
+      # 3) 판정: 모든 BSM 이 서명 없음(sig=absent)이면 무인증 = 위조 가능.
+      T=$(wc -l < "$LOG"); A=$(grep -c "sig=absent" "$LOG")
+      test "$A" = "$T" && echo V2X_VULNERABLE || echo SIGNED
       ```
-      ✅ 마지막 줄 `V2X_VULNERABLE` (CAN 무인증·미분리 + V2X 무서명·탐지없음).
-      🔎 CAN 무인증(주입)·도메인 미분리(인포→브레이크)+V2X 무서명(위조)·오작동 미탐지. 내부·외부 모두 취약.
+      ## 📋 확인 사항
+      - 모든 BSM 이 `sig=absent`
+      - 마지막 줄 `V2X_VULNERABLE`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — BSM 이 서명 없이 방송되면, 누구나 임의 차량을 사칭해 위치·속도·긴급 이벤트를 방송할 수
+      > 있다. 주변 차량은 이를 믿고 제동·회피하므로, 무인증 V2X 는 원격 유발 사고의 통로다.
+
+      ## 🔍 결과 해석 — 정상 `V2X_VULNERABLE`
+    hint: "BSM 로그 생성 → 모든 메시지 sig=absent 확인 → V2X_VULNERABLE."
+    category: recon
     answer: |
-      issue: CAN no auth (message injection)
-      issue: no domain gateway (infotainment -> brakes)
-      issue: V2X unsigned (forged safety messages)
-      issue: no misbehavior detection
+      [서명 상태]
+         t=1.0 id=V-A sig=absent
+         t=1.1 id=V-B sig=absent
+         t=1.2 id=V-A sig=absent
       V2X_VULNERABLE
-    answer_detail: "CAN/V2X 무인증 취약성 → V2X_VULNERABLE."
+    answer_detail: "모든 BSM 이 무서명 = 임의 차량 사칭 가능. 무인증 V2X 는 원격 사고 유발 통로."
     verify:
       type: output_contains
       expect: V2X_VULNERABLE
       field: stdout
+      semantic:
+        intent: "BSM 로그에서 무인증(무서명) 구조 확인."
+        success_criteria:
+          - "안전 메시지 무서명 확인"
+          - "V2X_VULNERABLE 출력"
 
   - order: 3
     instruction: |
-      ## STEP 3 — 위조 V2X 메시지 탐지 → MESSAGE_SPOOFED
-      > **🎯 목표:** 물리적으로 불가능·모순된 V2X 안전 메시지를 탐지.
-      > **개념:** 위조 경고가 연쇄 사고 유발.
+      ## 🎯 MISSION
+      로그에 섞인 **위조 안전 메시지**를 `awk` 로 탐지한다 — 물리적으로 불가능한 값(순간이동·비현실적 감속)을 가진
+      유령 차량/가짜 급제동.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # 수신한 V2X 기본 안전 메시지(BSM)들
-      messages=[{"id":"veh-A","pos":(0,0),"prev_pos":(0,-10),"dt":1,"speed_mps":10},   # 정상
-                {"id":"ghost-B","pos":(0,5),"prev_pos":(0,500),"dt":1,"speed_mps":10},  # 순간이동(불가능)
-                {"id":"veh-C","event":"HARD_BRAKE","radar_confirms":False}]             # 센서와 모순
-      spoofed=[]
-      for m in messages:
-          if "prev_pos" in m:
-              jump=(((m["pos"][0]-m["prev_pos"][0]))**2+((m["pos"][1]-m["prev_pos"][1]))**2)**0.5
-              if jump/m["dt"] > m["speed_mps"]*3: spoofed.append((m["id"],f"impossible jump {jump:.0f}m/s")); print(f"  SPOOF: {m['id']} {jump:.0f}m in {m['dt']}s (>3x claimed speed)")
-          if m.get("event")=="HARD_BRAKE" and not m.get("radar_confirms"):
-              spoofed.append((m["id"],"brake warning contradicts radar")); print(f"  SPOOF: {m['id']} HARD_BRAKE but radar sees nothing")
-      print("MESSAGE_SPOOFED" if len(spoofed)>=2 else "CONSISTENT")
-      PY
+      LOG=/tmp/v2x_spoof_STU42.log
+      # 정상 BSM + 위조: 같은 id 가 0.1초 만에 순간이동, 그리고 유령 차량의 급제동(HARD_BRAKE) 방송.
+      cat > "$LOG" <<'EOF'
+      t=2.0 id=V-A lat=37.3010 lon=127.0100 speed=60 event=none       sig=absent
+      t=2.1 id=V-A lat=37.3500 lon=127.0600 speed=60 event=none       sig=absent
+      t=2.2 id=GHOST lat=37.3011 lon=127.0101 speed=0 event=HARD_BRAKE sig=absent
+      EOF
+
+      # 1) 같은 id 의 0.1초 간 위치 점프(순간이동)를 계산한다.
+      awk '{split($3,a,"="); split($4,b,"="); id=$2; lat=a[2]+0;
+            if(prev[id]!=""){ d=lat-prev[id]; if(d<0)d=-d;
+              if(d>0.01) printf "  %s 순간이동 Δlat=%.4f  <-- 위조!\n", id, d }
+            prev[id]=lat }' "$LOG"
+      # 2) 급제동/정지(speed=0 HARD_BRAKE) 유령 차량 방송을 표시한다.
+      awk '/HARD_BRAKE/{print "  가짜 급제동 방송:", $2, $5, $6}' "$LOG"
+
+      # 3) 판정: 순간이동 또는 유령 급제동이 있으면 위조 메시지.
+      awk '{split($3,a,"="); id=$2; lat=a[2]+0; if(prev[id]!=""){d=lat-prev[id]; if(d<0)d=-d; if(d>0.01)f=1} prev[id]=lat} /HARD_BRAKE/{f=1} END{print (f?"MESSAGE_SPOOFED":"PLAUSIBLE")}' "$LOG"
       ```
-      ✅ 마지막 줄 `MESSAGE_SPOOFED` (순간이동 유령 차량 + 센서와 모순된 급정거 경고).
-      🔎 물리적으로 불가능한 위치 점프(유령 차량)·자기 센서와 모순된 경고는 위조. 오작동 탐지로 배제해 연쇄 사고 방지.
+      ## 📋 확인 사항
+      - `V-A 순간이동 Δlat=0.0490 <-- 위조!`, `가짜 급제동 방송: id=GHOST speed=0 event=HARD_BRAKE`
+      - 마지막 줄 `MESSAGE_SPOOFED`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — 공격자는 존재하지 않는 유령 차량이 바로 앞에서 급정거했다고 방송해 뒤차를 급제동·급회피
+      > 시켜 추돌을 유발한다. 하지만 **물리 정합성**(한 차량이 0.1초에 5km 이동 불가, 유령의 급출현)이 위조의 흔적이다.
+
+      ## 🔍 결과 해석 — 정상 `MESSAGE_SPOOFED` + 위조 식별
+    hint: "awk 로 같은 id 순간이동(Δlat>0.01) 또는 HARD_BRAKE 유령 차량 탐지 → MESSAGE_SPOOFED."
+    category: exploit
     answer: |
-      SPOOF: ghost-B 495m in 1s (>3x claimed speed)
-      SPOOF: veh-C HARD_BRAKE but radar sees nothing
+      V-A 순간이동 Δlat=0.0490  <-- 위조!
+      가짜 급제동 방송: id=GHOST speed=0 event=HARD_BRAKE
       MESSAGE_SPOOFED
-    answer_detail: "물리 모순 V2X 메시지 탐지 → MESSAGE_SPOOFED."
+    answer_detail: "같은 차량의 물리 불가능 순간이동 + 유령 차량 급제동 방송 = 위조 안전 메시지. 물리 정합성으로 탐지."
     verify:
       type: output_contains
       expect: MESSAGE_SPOOFED
       field: stdout
+      semantic:
+        intent: "물리적으로 불가능한 위조 안전 메시지 탐지."
+        success_criteria:
+          - "순간이동 또는 유령 급제동 등 위조 식별"
+          - "MESSAGE_SPOOFED 출력"
 
   - order: 4
     instruction: |
-      ## STEP 4 — PKI 서명·오작동 탐지 방어 → V2X_SECURED
-      > **🎯 목표:** PKI 서명(진위)+오작동 탐지(정합성)로 이중 방어.
-      > **개념:** 서명으로 위조자 차단, 탐지로 거짓 정보 배제.
+      ## 🎯 MISSION
+      **IEEE 1609.2 PKI 서명 검증 + 오작동 탐지**가 적용된 로그와 대비한다 — 유효 인증서 없는 위조 메시지가 거부됨.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      def secure(vehicle):
-          return {"can":{"auth":True,"domain_separation":True},
-                  "v2x":{"message_signing":True,"misbehavior_detection":True,"pseudonym_rotation":True}}
-      before={"can":{"auth":False,"domain_separation":False},"v2x":{"message_signing":False,"misbehavior_detection":False}}
-      after=secure(before)
-      # 방어 후 메시지 처리: 무서명 위조자 거부 + 서명됐어도 모순되면 오작동 탐지
-      def accept(v2x, msg):
-          if v2x["message_signing"] and not msg.get("signed"): return False   # 위조자 서명 없음 -> 거부
-          if v2x["misbehavior_detection"] and msg.get("contradicts_sensors"): return False  # 모순 -> 배제
-          return True
-      forged={"signed":False}                       # 위조자
-      insider_lie={"signed":True,"contradicts_sensors":True}  # 정당 참여자의 거짓
-      r1=accept(after["v2x"], forged); r2=accept(after["v2x"], insider_lie)
-      print(f"forged (unsigned) accepted: {r1}")
-      print(f"signed-but-contradictory accepted: {r2}")
-      secured = not r1 and not r2 and after["can"]["auth"]
-      print("V2X_SECURED" if secured else "CHECK")
-      PY
+      SLOG=/tmp/v2x_pki_STU42.log
+      # 각 BSM 에 1609.2 인증서 검증 결과 + 오작동 탐지(MBD) 판정.
+      cat > "$SLOG" <<'EOF'
+      t=3.0 id=V-A  cert=valid(1609.2)  mbd=plausible   action=accept
+      t=3.1 id=V-A  cert=valid(1609.2)  mbd=plausible   action=accept
+      t=3.2 id=GHOST cert=none          mbd=implausible action=reject(무인증서+물리모순)
+      EOF
+      echo "[검증 통과]"; grep "action=accept" "$SLOG"
+      echo "[위조 거부]"; grep "action=reject" "$SLOG"
+      # 판정: 인증서 검증 + 오작동 탐지로 위조가 거부되면 방어 성립.
+      grep -q "cert=none" "$SLOG" && grep -q "action=reject" "$SLOG" && echo V2X_SECURED || echo NO_PKI
       ```
-      ✅ 마지막 줄 `V2X_SECURED` (무서명 위조 거부 + 서명됐어도 모순 메시지 배제 + CAN 인증).
-      🔎 PKI 서명이 위조자를 차단하고, 오작동 탐지가 정당 참여자의 거짓(센서 모순)까지 배제. 서명+정합성 이중 방어.
+      ## 📋 확인 사항
+      - 정상 차량 `cert=valid(1609.2) accept`, 유령 `cert=none ... reject`
+      - 마지막 줄 `V2X_SECURED`
+
+      ## 💡 왜 이걸 하는가?
+      IEEE 1609.2 는 각 BSM 에 **단기 익명 인증서**로 서명해 사칭을 막고(프라이버시 보존), **오작동 탐지(MBD)**는
+      서명이 유효해도 물리적으로 모순된 메시지를 걸러 인증서 오남용까지 차단한다. 서명+정합성의 이중 방어다.
+
+      ## 🔍 결과 해석 — 정상 `V2X_SECURED`
+    hint: "1609.2 로그 생성 → 위조가 cert=none + action=reject 확인 → V2X_SECURED."
+    category: defense
     answer: |
-      forged (unsigned) accepted: False
-      signed-but-contradictory accepted: False
+      [검증 통과]
+      t=3.0 id=V-A  cert=valid(1609.2)  mbd=plausible   action=accept
+      [위조 거부]
+      t=3.2 id=GHOST cert=none          mbd=implausible action=reject(무인증서+물리모순)
       V2X_SECURED
-    answer_detail: "PKI 서명+오작동 탐지 이중 방어 → V2X_SECURED."
+    answer_detail: "1609.2 인증서 서명(사칭 차단)+오작동 탐지(물리 모순 차단)로 위조 거부. 서명+정합성 이중 방어."
     verify:
       type: output_contains
       expect: V2X_SECURED
@@ -147,20 +199,30 @@ steps:
 
   - order: 5
     instruction: |
-      ## STEP 5 — 종합 → Assessment
+      ## 🎯 MISSION
+      W12 발견(무인증 BSM·위조 안전 메시지·PKI/오작동 탐지)을 소견으로 정리한다. (정리: `rm -f /tmp/v2x_*STU42.log`)
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"gemma3:4b","prompt":"Write a short note for W12 on V2X and vehicle security. Findings: unauthenticated CAN and unsigned V2X were vulnerable (V2X_VULNERABLE), forged V2X safety messages (a teleporting ghost vehicle and a brake warning contradicting radar) were detected (MESSAGE_SPOOFED), and PKI message signing plus misbehavior detection secured it (V2X_SECURED). Explain that CAN is internal and V2X is external, forged V2X messages can cause chain accidents, and defense combines signing (authenticity) with misbehavior detection (consistency). Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 12 of an autonomous systems course on V2X and automotive security. Facts: a BSM log showed safety messages broadcast without signatures (V2X_VULNERABLE); awk detected a spoofed message where one vehicle teleported about 5 km in 0.1 s and a ghost vehicle broadcast a hard-brake event, physically impossible forgeries (MESSAGE_SPOOFED); with IEEE 1609.2 certificate verification plus misbehavior detection, the forged message with no certificate and implausible physics was rejected (V2X_SECURED). Explain that unauthenticated V2X lets attackers broadcast ghost vehicles and fake emergency braking to cause crashes, and defense uses 1609.2 short-lived anonymous certificates for signing plus misbehavior detection for physical plausibility. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
       ```
-      ✅ 출력에 `Assessment`.
-      🔎 정리: 차량은 CAN(내부)·V2X(외부) 무인증에 취약. CAN 도메인 분리·SecOC + V2X PKI 서명·오작동 탐지로 방어.
-      다음 주(W13)는 **AI 모델 공격/방어**.
+      ## 📋 확인 사항 — 첫머리에 `Assessment`
+      ## 🔍 결과 해석 — 정상 첫 줄 `Assessment` / 비정상 `[형식 미준수 — 재실행]`
+
+      ---
+      **다음 주(W13) 예고** — AI 모델 공격/방어(적대적 섭동·로버스트니스·적대적 학습).
+    hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
+    category: report
     answer: |
       Assessment
-      Vehicles must secure internal CAN (message injection) and external V2X (forged safety messages causing chain accidents).
-      Defense combines PKI signing (authenticity) with misbehavior detection (consistency), plus CAN domain separation and SecOC.
-    answer_detail: "W12 V2X/자동차 종합(Assessment). CAN·V2X·PKI·오작동 탐지."
+      A BSM log showed safety messages broadcast without signatures; awk detected a spoofed message where
+      one vehicle teleported ~5 km in 0.1 s and a ghost vehicle broadcast a hard-brake event — physically
+      impossible forgeries. With IEEE 1609.2 certificate verification plus misbehavior detection, the
+      forged message with no certificate and implausible physics was rejected. Unauthenticated V2X lets
+      attackers broadcast ghost vehicles and fake braking; defense uses 1609.2 signing plus misbehavior
+      detection for physical plausibility.
+    answer_detail: "W12 V2X 종합(Assessment): 무인증 BSM·위조 안전 메시지·1609.2 PKI/오작동 탐지."
     verify:
       type: output_contains
       expect: Assessment
