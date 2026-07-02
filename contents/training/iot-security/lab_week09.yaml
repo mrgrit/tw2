@@ -1,38 +1,48 @@
 lab_id: iot-security-week09
-title: "W09 — IP Camera 해킹: 기본 자격·인터넷 노출·무인증 RTSP·카메라 강화"
+title: "W09 — IP Camera 해킹: 스캔·설정 분석·무인증 RTSP·카메라 강화"
 version: ai
 course: iot-security
 week: 9
 description: |
-  IP 카메라 방어. 기본 자격·인터넷 노출 평가(CAMERA_EXPOSED), 무인증 RTSP 스트림 접근(STREAM_ACCESSIBLE),
-  자격 변경·RTSP 인증·네트워크 분리 강화(CAMERA_HARDENED), 종합(Assessment).
-  카메라는 대량 스캔(Shodan)의 최대 표적 — 기본 보안+노출 차단이 핵심.
+  IP 카메라는 IoT 침해의 대표 표적이다(Mirai 의 주 먹잇감). 이번 주는 **실제 아티팩트(포트 스캔 결과·장치 설정·
+  RTSP 응답)로** 카메라 노출을 분석한다. (1) 스캔 결과와 설정 파일에서 기본 자격·불필요 서비스(telnet)를 찾고,
+  (2) RTSP DESCRIBE 응답으로 **인증 없이 스트림 접근**이 되는지 판정하며, (3) 강화된 설정과 대비한다. 실제로는
+  Shodan/nmap 결과·펌웨어 설정·`ffprobe rtsp://...` 응답에 같은 분석을 적용한다.
+
+  모든 명령은 사람이 한 줄씩 직접 입력한다. el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서 실행하며,
+  분석 아티팩트(스캔·설정·RTSP 응답)는 이 실습이 `/tmp` 에 직접 만든다.
 difficulty: medium
 duration_minutes: 120
 audience: IoT 보안 (9주차)
 prerequisites:
-  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
-  - GPU Ollama 도달 — gemma3:4b
-  - W09 강의안 정독 — §0.5(RTSP·Shodan·네트워크 분리)
+  - "el34 호스트 접속: `ssh ccc@{{TARGET_IP}}` (비밀번호 `1`)"
+  - "GPU Ollama 도달 — http://211.170.162.139:10934 (gemma3:4b), 종합용"
+  - "도구: grep·awk·python3 (el34 에 존재)"
+  - "W09 강의안 정독 — §0.5(기본 자격·RTSP·노출·강화)"
 objectives:
-  - "GPU 헬스체크(GEN_OK)"
-  - "기본 자격·인터넷 노출 평가(CAMERA_EXPOSED)"
-  - "무인증 RTSP 스트림 접근(STREAM_ACCESSIBLE)"
-  - "자격 변경·RTSP 인증·네트워크 분리 강화(CAMERA_HARDENED)"
-  - "종합(Assessment)"
+  - "GPU 응답 확인 (GEN_OK)"
+  - "스캔·설정에서 기본 자격·불필요 서비스 노출 확인 (CAMERA_EXPOSED)"
+  - "RTSP 응답으로 무인증 스트림 접근 판정 (STREAM_ACCESSIBLE)"
+  - "강화 설정과 대비 (CAMERA_HARDENED)"
+  - "종합 소견 (Assessment)"
 pass_threshold: 0.6
 
 steps:
 
   - order: 1
     instruction: |
-      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ## 🎯 MISSION
+      종합용 GPU(gemma3) 응답 확인.
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
         -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
       ```
-      ✅ 마지막 줄 `GEN_OK`.
+      ## 📋 확인 사항 — 마지막 줄 `GEN_OK`
+      ## 🔍 결과 해석 — 정상 `GEN_OK` / 비정상 `GEN_EMPTY`·연결오류
+    hint: "curl /api/generate → response 있으면 GEN_OK."
+    category: survey
     answer: |
       ready
       GEN_OK
@@ -44,67 +54,106 @@ steps:
 
   - order: 2
     instruction: |
-      ## STEP 2 — 기본 자격·노출 평가 → CAMERA_EXPOSED
-      > **🎯 목표:** 카메라의 기본 자격·인터넷 직접 노출을 평가.
-      > **개념:** Shodan 대량 스캔의 표적 — 노출+기본 자격.
+      ## 🎯 MISSION
+      카메라 **포트 스캔 결과와 설정 파일**을 만들고, `grep` 으로 불필요 서비스(telnet)·기본 자격을 찾는다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # 카메라 설정
-      cam={"internet_facing":True,"upnp":True,"credentials":"admin/admin","firmware":"2019 (outdated)"}
-      DEFAULT_CREDS={"admin/admin","admin/12345","root/root","admin/(blank)"}
-      exposures=[]
-      if cam["internet_facing"]: exposures.append("directly internet-facing (Shodan-discoverable)")
-      if cam["upnp"]: exposures.append("UPnP auto port-forward")
-      if cam["credentials"] in DEFAULT_CREDS: exposures.append(f"default credentials ({cam['credentials']})")
-      if "2019" in cam["firmware"]: exposures.append("outdated firmware (known CVEs)")
-      for e in exposures: print("  exposure:", e)
-      print("CAMERA_EXPOSED" if len(exposures)>=3 else "SECURE")
-      PY
+      SCAN=/tmp/cam_scan_STU42.txt
+      CONF=/tmp/cam_config_STU42.txt
+      # 1) nmap 형식 스캔 결과 + 장치 설정을 만든다(펌웨어에서 추출한 것으로 가정).
+      cat > "$SCAN" <<'EOF'
+      Nmap scan report for 10.40.0.50 (IPCam-1080p)
+      PORT    STATE SERVICE
+      23/tcp  open  telnet
+      80/tcp  open  http
+      554/tcp open  rtsp
+      EOF
+      cat > "$CONF" <<'EOF'
+      device=IPCam-1080p
+      web_user=admin
+      web_pass=admin
+      telnet_enabled=1
+      rtsp_url=rtsp://10.40.0.50:554/stream1
+      rtsp_auth=none
+      EOF
+
+      # 2) 불필요/위험 서비스와 기본 자격을 찾는다.
+      echo "[telnet 노출?]"; grep -E "23/tcp\s+open|telnet_enabled=1" "$SCAN" "$CONF"
+      echo "[기본 자격?]"; grep -E "web_pass=(admin|1234|password|888888)" "$CONF"
+
+      # 3) 판정: telnet 노출 + 기본 자격이면 카메라 노출.
+      grep -Eq "telnet_enabled=1" "$CONF" && grep -Eq "web_pass=(admin|1234|password|888888)" "$CONF" && echo CAMERA_EXPOSED || echo OK
       ```
-      ✅ 마지막 줄 `CAMERA_EXPOSED` (인터넷 노출+UPnP+기본 자격+구형 펌웨어).
-      🔎 인터넷 직접 노출+UPnP+admin/admin+구형 펌웨어 = Shodan으로 대량 발견·장악되는 전형.
+      ## 📋 확인 사항
+      - telnet(23) 열림·`telnet_enabled=1`, `web_pass=admin`(기본 자격)
+      - 마지막 줄 `CAMERA_EXPOSED`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — 카메라가 telnet(23)을 켜두고 web 을 `admin/admin` 으로 두면, Mirai 류가 즉시 로그인해
+      > 봇넷에 편입시킨다(W11 로그의 그 흐름). 기본 자격 + 불필요 서비스는 IoT 침해의 1번 원인이다.
+
+      ## 🔍 결과 해석 — 정상 `CAMERA_EXPOSED`
+    hint: "스캔+설정 생성 → grep 로 telnet_enabled=1 + web_pass=admin 확인 → CAMERA_EXPOSED."
+    category: recon
     answer: |
-      exposure: directly internet-facing (Shodan-discoverable)
-      exposure: UPnP auto port-forward
-      exposure: default credentials (admin/admin)
-      exposure: outdated firmware (known CVEs)
+      [telnet 노출?]
+      23/tcp  open  telnet
+      telnet_enabled=1
+      [기본 자격?]
+      web_pass=admin
       CAMERA_EXPOSED
-    answer_detail: "카메라 기본 자격·인터넷 노출 평가 → CAMERA_EXPOSED."
+    answer_detail: "telnet(23) 노출 + 기본 자격(admin/admin) = Mirai 표적. IoT 침해 1번 원인."
     verify:
       type: output_contains
       expect: CAMERA_EXPOSED
       field: stdout
+      semantic:
+        intent: "스캔·설정에서 불필요 서비스·기본 자격 노출 확인."
+        success_criteria:
+          - "telnet 노출 + 기본 자격 확인"
+          - "CAMERA_EXPOSED 출력"
 
   - order: 3
     instruction: |
-      ## STEP 3 — 무인증 RTSP → STREAM_ACCESSIBLE
-      > **🎯 목표:** RTSP 스트림이 인증 없이 접근되는지 판정.
-      > **개념:** 웹에 인증 걸어도 RTSP가 열리면 영상이 샌다.
+      ## 🎯 MISSION
+      **RTSP DESCRIBE 응답**을 만들어, 인증 없이(401 없이) 스트림에 접근되는지 판정한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # 카메라 서비스 상태
-      services={"web_ui":{"auth":True},"rtsp":{"port":554,"auth":False},"onvif":{"auth":False}}
-      def streamable(svc):
-          return svc.get("auth")==False
-      accessible=[]
-      for name,svc in services.items():
-          if "rtsp" in name or "onvif" in name:
-              open_=streamable(svc)
-              print(f"  {name} (port {svc.get('port','')}): {'NO AUTH - stream accessible' if open_ else 'authenticated'}")
-              if open_: accessible.append(name)
-      print(f"  web_ui: {'authenticated' if services['web_ui']['auth'] else 'open'}")
-      # RTSP/ONVIF가 무인증이면 웹 인증과 무관하게 영상 노출
-      print("STREAM_ACCESSIBLE" if accessible else "PROTECTED")
-      PY
+      RESP=/tmp/rtsp_resp_STU42.txt
+      # 1) 무인증 카메라의 RTSP DESCRIBE 응답(200 OK, SDP 반환 = 인증 요구 안 함).
+      cat > "$RESP" <<'EOF'
+      RTSP/1.0 200 OK
+      CSeq: 2
+      Content-Type: application/sdp
+      Content-Base: rtsp://10.40.0.50:554/stream1
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H264/90000
+      EOF
+
+      # 2) 응답 코드 확인: 401(Unauthorized)이면 인증 요구, 200 OK 면 무인증 접근.
+      echo "[RTSP 상태]"; grep -E "RTSP/1.0 (200|401)" "$RESP"
+
+      # 3) 판정: 401 이 아니고 200 OK + SDP(스트림 설명)면 무인증 스트림 접근 가능.
+      grep -q "RTSP/1.0 200 OK" "$RESP" && ! grep -q "401" "$RESP" && grep -q "application/sdp" "$RESP" && echo STREAM_ACCESSIBLE || echo AUTH_REQUIRED
       ```
-      ✅ 마지막 줄 `STREAM_ACCESSIBLE` (RTSP·ONVIF 무인증 → 영상 직접 접근).
-      🔎 웹 UI에 인증이 있어도 RTSP(554)·ONVIF가 무인증이면 `rtsp://ip:554/`로 실시간 영상을 본다.
+      ## 📋 확인 사항
+      - `RTSP/1.0 200 OK` + `application/sdp`(스트림 설명 반환), 401 없음
+      - 마지막 줄 `STREAM_ACCESSIBLE`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — RTSP 가 인증 없이 `200 OK` + SDP 를 주면, `rtsp://ip:554/stream1` 만 알면 **누구나 실시간
+      > 영상**을 본다. Insecam 같은 사이트가 이런 무인증 카메라 수만 대를 그대로 중계한다(사생활 침해).
+
+      ## 🔍 결과 해석 — 정상 `STREAM_ACCESSIBLE`
+    hint: "RTSP 응답 생성 → 200 OK + application/sdp + 401 없음 이면 STREAM_ACCESSIBLE."
+    category: exploit
     answer: |
-      rtsp (port 554): NO AUTH - stream accessible
-      onvif (port ): NO AUTH - stream accessible
-      web_ui: authenticated
+      [RTSP 상태]
+      RTSP/1.0 200 OK
       STREAM_ACCESSIBLE
-    answer_detail: "무인증 RTSP/ONVIF 스트림 접근 → STREAM_ACCESSIBLE. 웹 인증과 무관."
+    answer_detail: "RTSP DESCRIBE 가 401 없이 200 OK+SDP 반환 = 무인증 스트림 접근. URL 만 알면 영상 노출."
     verify:
       type: output_contains
       expect: STREAM_ACCESSIBLE
@@ -112,30 +161,45 @@ steps:
 
   - order: 4
     instruction: |
-      ## STEP 4 — 카메라 강화 → CAMERA_HARDENED
-      > **🎯 목표:** 자격 변경·RTSP 인증·펌웨어·네트워크 분리로 강화.
-      > **개념:** 인터넷 직접 노출 금지가 근본.
+      ## 🎯 MISSION
+      **강화된 카메라 설정·RTSP 응답**을 만들어, telnet 차단·강한 자격·RTSP 401(인증 요구)을 확인한다(대비).
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      def harden(cam):
-          return {"internet_facing":False,"upnp":False,"credentials":"unique-strong-pw",
-                  "rtsp_auth":True,"firmware":"latest","network":"isolated VLAN (no internet)","access":"VPN only"}
-      before={"internet_facing":True,"upnp":True,"credentials":"admin/admin","rtsp_auth":False}
-      after=harden(before)
-      def exposed(cam):
-          return cam.get("internet_facing") or cam.get("credentials")=="admin/admin" or not cam.get("rtsp_auth")
-      print("before exposed:", exposed(before))
-      print("after exposed:", exposed(after), "(no internet, strong pw, RTSP auth, isolated VLAN, VPN access)")
-      print("CAMERA_HARDENED" if exposed(before) and not exposed(after) else "CHECK")
-      PY
+      HCONF=/tmp/cam_hardened_STU42.txt
+      HRESP=/tmp/rtsp_hardened_STU42.txt
+      cat > "$HCONF" <<'EOF'
+      web_user=admin
+      web_pass=Xk9$mPq2!vLz    # 고유·강한 자격
+      telnet_enabled=0
+      rtsp_auth=digest
+      EOF
+      cat > "$HRESP" <<'EOF'
+      RTSP/1.0 401 Unauthorized
+      CSeq: 2
+      WWW-Authenticate: Digest realm="IPCam", nonce="a1b2c3"
+      EOF
+
+      echo -n "telnet 차단: "; grep -q "telnet_enabled=0" "$HCONF" && echo OK || echo NO
+      echo -n "RTSP 인증 요구: "; grep -q "401 Unauthorized" "$HRESP" && echo OK || echo NO
+      grep -q "telnet_enabled=0" "$HCONF" && grep -q "401 Unauthorized" "$HRESP" && ! grep -q "web_pass=admin" "$HCONF" && echo CAMERA_HARDENED || echo STILL_EXPOSED
       ```
-      ✅ 마지막 줄 `CAMERA_HARDENED` (강한 자격+RTSP 인증+펌웨어+VLAN 분리+VPN).
-      🔎 인터넷 직접 노출 제거(UPnP 끄기·VLAN 분리·VPN 접근)+강한 자격+RTSP 인증+펌웨어 업데이트. 대량 스캔 표적에서 제외.
+      ## 📋 확인 사항
+      - `telnet 차단: OK`, `RTSP 인증 요구: OK`(401), 기본 자격 아님
+      - 마지막 줄 `CAMERA_HARDENED`
+
+      ## 💡 왜 이걸 하는가?
+      기본 자격 변경(장치별 고유)+불필요 서비스(telnet) 차단+RTSP 인증(digest)+인터넷 직접 노출 금지(VPN/포워딩 제거)+
+      펌웨어 업데이트가 카메라 방어의 기본이다.
+
+      ## 🔍 결과 해석 — 정상 `CAMERA_HARDENED`
+    hint: "강화 설정/응답 생성 → telnet_enabled=0 + RTSP 401 + 기본자격 아님 → CAMERA_HARDENED."
+    category: defense
     answer: |
-      before exposed: True
-      after exposed: False (no internet, strong pw, RTSP auth, isolated VLAN, VPN access)
+      telnet 차단: OK
+      RTSP 인증 요구: OK
       CAMERA_HARDENED
-    answer_detail: "자격 변경·RTSP 인증·네트워크 분리 강화 → CAMERA_HARDENED."
+    answer_detail: "강화(고유 자격·telnet 차단·RTSP digest 401)와 대비. 인터넷 직접 노출 금지·펌웨어 업데이트 병행."
     verify:
       type: output_contains
       expect: CAMERA_HARDENED
@@ -143,20 +207,29 @@ steps:
 
   - order: 5
     instruction: |
-      ## STEP 5 — 종합 → Assessment
+      ## 🎯 MISSION
+      W09 발견(기본 자격·telnet 노출·무인증 RTSP·강화)을 소견으로 정리한다. (정리: `rm -f /tmp/cam_*STU42.txt /tmp/rtsp_*STU42.txt`)
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"gemma3:4b","prompt":"Write a short note for W09 on IP camera hacking. Findings: an internet-facing camera with UPnP, default credentials, and outdated firmware was exposed (CAMERA_EXPOSED), its RTSP and ONVIF streams were accessible without auth despite a login on the web UI (STREAM_ACCESSIBLE), and changing credentials, requiring RTSP auth, updating firmware, and isolating on a VLAN with VPN access hardened it (CAMERA_HARDENED). Explain that cameras are mass-scanned via Shodan, RTSP can leak video even if the web UI is authenticated, and defense removes internet exposure and default credentials. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 9 of an IoT security course on IP camera hacking. Facts: a port scan and config showed open telnet and default web credentials admin/admin (CAMERA_EXPOSED); an RTSP DESCRIBE response returned 200 OK with SDP and no 401, so the live stream is accessible without authentication (STREAM_ACCESSIBLE); a hardened config disabled telnet, set strong unique credentials, and required RTSP digest auth returning 401 (CAMERA_HARDENED). Explain that IP cameras are a top Mirai target because of default credentials and exposed services, and that unauthenticated RTSP leaks live video, so defense changes credentials, disables telnet, enforces RTSP auth, avoids direct internet exposure, and updates firmware. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
       ```
-      ✅ 출력에 `Assessment`.
-      🔎 정리: IP 카메라는 기본 자격·무인증 RTSP·인터넷 노출로 대량 해킹. 자격 변경+RTSP 인증+노출 차단(VLAN·VPN)으로 방어.
-      다음 주(W10)는 **스마트홈 보안**.
+      ## 📋 확인 사항 — 첫머리에 `Assessment`
+      ## 🔍 결과 해석 — 정상 첫 줄 `Assessment` / 비정상 `[형식 미준수 — 재실행]`
+
+      ---
+      **다음 주(W10) 예고** — IoT 클라우드·앱 연동 보안(API·토큰·디바이스 바인딩).
+    hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
+    category: report
     answer: |
       Assessment
-      IP cameras are mass-scanned via Shodan; default credentials and unauthenticated RTSP leak video even if the web UI is authenticated.
-      Defense removes internet exposure (no UPnP, VLAN, VPN), changes credentials, requires RTSP auth, and updates firmware.
-    answer_detail: "W09 IP 카메라 종합(Assessment). 기본 자격·RTSP·노출 차단."
+      A scan and config showed open telnet and default credentials admin/admin; an RTSP DESCRIBE returned
+      200 OK with SDP and no 401, so the live stream is accessible without authentication. A hardened
+      config disabled telnet, set strong unique credentials, and required RTSP digest auth (401). IP
+      cameras are a top Mirai target; unauthenticated RTSP leaks live video, so change credentials,
+      disable telnet, enforce RTSP auth, avoid direct internet exposure, and update firmware.
+    answer_detail: "W09 IP 카메라 종합(Assessment): 기본자격·telnet·무인증 RTSP·강화."
     verify:
       type: output_contains
       expect: Assessment
