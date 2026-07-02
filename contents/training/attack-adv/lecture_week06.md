@@ -306,7 +306,7 @@ el34 호스트에서 **`docker exec -it -u ccc el34-web bash`(uid 1000 저권한
 
 ---
 
-## 6. 흔한 오해·관제자 노트
+## 6. 흔한 오해·블루팀 노트
 
 - **"privesc = 화려한 0day"** — 9할은 열거다. SUID·NOPASSWD·쓰기 cron 같은 오설정이 root를 내준다.
 - **"el34-attacker에서 하면 되지"** — attacker는 root라 올라갈 곳이 없다. el34-web의 ccc(uid 1000)로(§0.5.1).

@@ -125,7 +125,7 @@ SubAgent가 실행하고 결과·증거를 회신한다. 이 통신에도 인증
 
 ---
 
-## 2. 흔한 오해·관제자 노트
+## 2. 흔한 오해·블루팀 노트
 
 - **"bastion은 만능 AI"** — el34-bastion은 경량 실행기(llm_configured:false). Manager LLM 계획은 별도(GPU 시연).
 - **"SubAgent는 뭐든 실행"** — 화이트리스트 안에서만. 위험 명령은 코드가 차단.
