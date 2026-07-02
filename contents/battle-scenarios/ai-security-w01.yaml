@@ -1,0 +1,173 @@
+id: "ai-security-w01"
+category: "ai-security"
+title: "[AI보안활용 W1] 공격 로그 생성 vs LLM 기반 첫 로그 분석 (Ollama)"
+difficulty: "medium"
+time_limit: 2400
+battle_type: "1v1"
+description: |
+  AI 보안 활용 공방전 — **LLM(Ollama)을 방어에 활용**하는 첫걸음. Red는 el34에 공격해 분석할 로그를
+  만들고, Blue는 LLM으로 그 로그를 요약·해석하는 첫 로그 분석을 수행한다. LLM은 방어자의 도구다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(공격 로그 생성)와 Blue(LLM 로그 분석)를 모두 수행.
+    • duel : Red 학생이 공격 로그를 만들고, Blue 학생이 LLM으로 분석한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)을 공격한다. Red 채점은
+    **대상 탐지 흔적(Suricata/ModSec/Wazuh)** + 본인 명령 흔적 + 보고서. 고유 태그(`auto-red-<학번>`)로
+    귀속. Blue의 LLM 분석은 el34 GPU(Ollama)를 활용, 결과 품질로 semantic 채점.
+
+  ▸ 관점 — LLM은 로그를 요약·해석하지만 **확률적·환각 가능**하다. 방어자는 LLM 출력을 결정론적 근거
+    (원본 로그)로 검증한다.
+
+  ▸ 윤리 — 인가된 훈련 인프라(el34)에서만.
+
+# ───────────────────────── RED (공격 로그 생성) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 분석 대상 공격 로그 생성
+
+      Blue가 LLM으로 분석할 **명확한 공격 로그**를 만든다.
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM({{ATTACKER_IP}})에서 대상(192.168.0.161)에 정찰+웹 공격(SQLi/XSS)을 수행(고유 태그).
+      - 로그에 남을 특징(출처·UA·페이로드)을 명확히.
+
+      ### 권장 명령 (참고)
+      ```bash
+      nmap -sS -Pn 192.168.0.161 -p1-500 --reason
+      curl -A 'auto-red-<학번>-llm' "http://192.168.0.161/vulnerabilities/sqli/?id=1' OR '1'='1"
+      ```
+
+      ### 📌 채점 방식
+      대상 탐지 흔적 + 본인 명령 흔적 + **보고서의 공격 요약**(LLM 분석 대상).
+
+      ### ✅ 합격 기준
+      정찰+웹 공격으로 대상에 명확한 로그를 남기고, 공격 특징(출처·UA·페이로드)을 정리한다.
+    hint: "정찰+SQLi/XSS(태그 auto-red-<학번>-llm) → 명확한 로그 남기기. 공격 특징 정리. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "ax-1-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          분석 대상 로그 생성 — LLM 분석의 소재가 될 명확한 공격 로그를 만든다.
+        success_criteria:
+          - "대상 WAF/IPS에 공격 로그가 남고 고유 태그로 귀속됨"
+          - "정찰+웹 공격을 수행"
+          - "(설명) 공격 특징(출처·UA·페이로드)을 정리"
+        acceptable_methods:
+          - "정찰+웹 공격 + 특징 정리"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "특징 정리 없음"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 노이즈 섞기: LLM 분석 난이도 조성
+
+      정상처럼 보이는 요청을 공격에 섞어 **LLM 분석의 난이도**를 높인다(노이즈 속 공격 신호).
+
+      ### ✅ 합격 기준
+      정상 요청과 공격을 섞어 노이즈 있는 로그를 만들고, LLM이 신호를 골라내야 하는 난이도를 조성한다.
+    hint: "정상 요청+공격 섞어 노이즈 로그(태그) 생성 → LLM 분석 난이도 조성. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "ax-1-2", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          노이즈 조성 — 정상 속 공격 신호로 LLM 분석의 신호 대 잡음 문제를 만든다.
+        success_criteria:
+          - "대상 IPS/WAF에 노이즈+공격 흔적이 남고 고유 태그로 귀속됨"
+          - "정상 요청과 공격을 섞어 노이즈 로그를 생성"
+          - "(설명) LLM 분석 난이도(신호 대 잡음)를 조성"
+        acceptable_methods:
+          - "노이즈+공격 혼합 + 난이도 조성"
+        negative_signs:
+          - "노이즈 없이 공격만"
+
+# ───────────────────────── BLUE (LLM 로그 분석) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — LLM으로 로그 요약·공격 식별
+
+      el34 GPU(Ollama)의 LLM으로 Red 공격 로그를 **요약·해석**해 공격을 식별한다.
+
+      ### 어떻게
+      - Wazuh/Suricata에서 Red 공격 로그를 수집.
+      - LLM(Ollama)에 로그를 주고 요약·공격 유형·출처·심각도를 도출.
+      - LLM 출력을 원본 로그로 **검증**(환각 여부 확인).
+
+      ### ✅ 합격 기준
+      LLM으로 로그를 요약해 공격 유형·출처를 식별하고, LLM 출력을 원본 로그로 검증한다.
+    hint: "Wazuh/Suricata 로그 수집 → Ollama LLM으로 요약·유형·출처·심각도 도출 → 원본 로그로 검증(환각 확인)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "ax-1-3", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          LLM 로그 분석 — LLM으로 로그를 요약·해석하되 원본으로 검증해 환각을 방지.
+        success_criteria:
+          - "Wazuh/Suricata에서 Red 공격 로그를 수집·확인"
+          - "LLM으로 요약·공격 유형·출처·심각도를 도출"
+          - "(설명) LLM 출력을 원본 로그로 검증(환각 확인)"
+        acceptable_methods:
+          - "LLM 요약 + 원본 검증"
+        negative_signs:
+          - "로그 근거 없음"
+          - "LLM 출력을 검증 없이 신뢰"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — LLM 활용 원칙·결정론 검증 설계
+
+      LLM을 방어에 안전하게 쓰는 **활용 원칙과 결정론 검증**을 설계한다.
+
+      ### 무엇을
+      - **LLM 역할**: 요약·상관·초안 생성(속도·규모) — 사람/결정론 검증과 결합.
+      - **결정론 검증**: LLM 출력을 원본 로그·규칙·정규식으로 교차 검증(환각 차단).
+      - **한계 인식**: 확률성·환각·프롬프트 인젝션(로그 속 악성 문자열) 위험.
+      - **프라이버시·안전**: 민감 로그 처리 시 마스킹·로컬 모델(Ollama) 사용.
+
+      ### ✅ 합격 기준
+      LLM 역할·결정론 검증·한계 인식·프라이버시를 제시하고 "LLM은 보조, 결정론으로 검증" 원칙을
+      설명한다.
+    hint: "LLM 역할(요약·상관·초안)+결정론 검증(원본·규칙 교차)+한계(환각·로그 인젝션)+민감 로그 마스킹·로컬 모델. 'LLM 보조, 결정론 검증' 원칙."
+    verify:
+      type: "semantic"
+      expect: "llm_usage_principle"
+      semantic:
+        intent: |
+          LLM 활용 원칙 — LLM을 보조 도구로 쓰되 결정론 검증·한계 인식·프라이버시로 안전하게.
+        success_criteria:
+          - "LLM 역할(요약·상관·초안)과 결정론 검증(원본·규칙 교차)을 제시"
+          - "한계(환각·로그 속 인젝션)를 인식"
+          - "민감 로그 마스킹·로컬 모델을 제시"
+          - "(설명) 'LLM은 보조, 결정론으로 검증' 원칙 설명"
+        acceptable_methods:
+          - "LLM 역할 + 결정론 검증 + 한계 + 프라이버시"
+        negative_signs:
+          - "LLM 출력 맹신"
+          - "결정론 검증·한계 언급 없음"

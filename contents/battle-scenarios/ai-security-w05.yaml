@@ -1,0 +1,165 @@
+id: "ai-security-w05"
+category: "ai-security"
+title: "[AI보안활용 W5] 신규 공격 패턴 vs LLM 탐지 룰 자동 생성(Sigma·Wazuh)·품질 검증"
+difficulty: "hard"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  AI 보안 활용 공방전 — **LLM으로 탐지 룰(Sigma·Wazuh)을 자동 생성**하고 품질을 검증한다. Red는 기존
+  룰에 안 걸리는 신규 패턴을 만들고, Blue는 LLM으로 룰을 생성하되 오탐·미탐을 검증한다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(신규 패턴)와 Blue(LLM 룰 생성·검증)를 모두 수행.
+    • duel : Red 학생이 신규 공격 패턴을 만들고, Blue 학생이 LLM으로 탐지 룰을 생성·검증한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)을 공격한다. Red 채점은
+    **대상 탐지 흔적** + 본인 명령 흔적 + 보고서. Blue의 룰 생성·검증은 semantic.
+
+  ▸ 관점 — LLM은 룰 초안을 빠르게 만들지만, **오탐·미탐·구문 오류**가 있을 수 있다. 방어자는 생성 룰을
+    실제 로그로 검증(재현)해야 한다.
+
+  ▸ 윤리 — 인가된 훈련 인프라(el34)에서만.
+
+# ───────────────────────── RED (신규 공격 패턴) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 룰 생성 소재: 명확한 공격 패턴
+
+      Blue가 탐지 룰을 만들 수 있게, **명확한 특징을 가진 공격 패턴**을 만든다.
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM({{ATTACKER_IP}})에서 대상(192.168.0.161)에 특징적 공격(고유 UA·특정 페이로드)을
+        수행(고유 태그).
+
+      ### 📌 채점 방식
+      대상 탐지 흔적 + 본인 명령 흔적 + **보고서의 공격 특징**(룰 생성 소재).
+
+      ### ✅ 합격 기준
+      명확한 특징(UA·페이로드·경로)을 가진 공격 패턴을 만들어 대상에 흔적을 남기고 특징을 정리한다.
+    hint: "특징적 공격(고유 UA·특정 페이로드·경로, 태그) → 룰 생성 소재. 특징 정리. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "ax-5-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          룰 생성 소재 — 명확한 특징을 가진 공격 패턴으로 탐지 룰 생성의 근거를 제공.
+        success_criteria:
+          - "대상 WAF/IPS에 특징적 공격 흔적이 남고 고유 태그로 귀속됨"
+          - "명확한 특징(UA·페이로드·경로)을 가진 패턴을 생성"
+          - "(설명) 공격 특징을 정리"
+        acceptable_methods:
+          - "특징적 공격 + 특징 정리"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "특징 불명확"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 룰 회피 변형으로 미탐 유발
+
+      생성된 룰을 회피하는 **변형**을 만들어 미탐(false negative)을 유발하고, 룰의 일반화 부족을 드러낸다.
+
+      ### ✅ 합격 기준
+      원 패턴의 변형으로 룰 회피(미탐)를 시도하고, 룰이 표면에 과적합될 때의 일반화 부족을 분석한다.
+    hint: "원 패턴 변형(태그)으로 룰 회피·미탐 유발 + 룰 과적합·일반화 부족 분석. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "ax-5-2", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          룰 회피 — 변형으로 미탐을 유발해 룰의 일반화 부족을 드러냄.
+        success_criteria:
+          - "대상 IPS/WAF에 변형 흔적이 남고 고유 태그로 귀속됨"
+          - "변형으로 룰 회피(미탐)를 시도"
+          - "(설명) 룰 과적합·일반화 부족을 분석"
+        acceptable_methods:
+          - "변형 회피 + 일반화 분석"
+        negative_signs:
+          - "변형 없음"
+
+# ───────────────────────── BLUE (LLM 룰 생성·검증) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — LLM으로 Sigma/Wazuh 룰 생성·검증
+
+      LLM으로 Red 패턴을 잡는 **탐지 룰(Sigma/Wazuh)** 을 생성하고 실제 로그로 검증한다.
+
+      ### 어떻게
+      - Wazuh/Suricata에서 Red 공격 로그를 수집.
+      - LLM에 로그를 주고 Sigma/Wazuh 룰 초안 생성.
+      - 생성 룰을 실제 로그로 검증(탐지되나·구문 맞나·오탐 없나).
+
+      ### ✅ 합격 기준
+      LLM으로 탐지 룰을 생성하고 실제 로그로 검증(탐지·구문·오탐)해 작동을 확인한다.
+    hint: "Wazuh/Suricata 로그 → LLM으로 Sigma/Wazuh 룰 생성 → 실제 로그로 검증(탐지·구문·오탐)."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "ax-5-3", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          LLM 룰 생성·검증 — LLM으로 룰 초안을 만들고 실제 로그로 검증해 작동을 보증.
+        success_criteria:
+          - "Wazuh/Suricata에서 Red 공격 로그를 수집"
+          - "LLM으로 Sigma/Wazuh 룰을 생성"
+          - "(설명) 실제 로그로 검증(탐지·구문·오탐)"
+        acceptable_methods:
+          - "LLM 룰 생성 + 실제 로그 검증"
+        negative_signs:
+          - "로그 근거 없음"
+          - "룰 검증 없이 신뢰"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 룰 품질 검증·수명주기 설계
+
+      LLM 생성 룰의 **품질 검증·수명주기**를 설계한다.
+
+      ### 무엇을
+      - **품질 검증**: 탐지율(recall)·오탐(precision)·구문 유효성 자동 테스트, 변형 케이스로 일반화 검증.
+      - **일반화**: 표면 과적합 방지(불변 특성 기반 룰), Red 변형(미탐) 반영.
+      - **수명주기**: 생성→검증→배포→모니터링→튜닝→회귀 테스트, 버전 관리.
+      - **사람 검토**: 자동 배포 전 검토 게이트(오탐·과차단 위험).
+
+      ### ✅ 합격 기준
+      품질 검증·일반화·수명주기·사람 검토를 제시하고 "LLM 생성 룰은 검증·회귀 후 배포" 원칙을 설명한다.
+    hint: "품질 검증(recall/precision·구문·변형 케이스)+일반화(불변 특성·미탐 반영)+수명주기(생성→검증→배포→튜닝→회귀)+검토 게이트. 'LLM 룰은 검증 후 배포' 원칙."
+    verify:
+      type: "semantic"
+      expect: "rule_quality_lifecycle"
+      semantic:
+        intent: |
+          룰 품질·수명주기 — LLM 생성 룰을 검증·일반화·회귀·검토로 안전하게 운영.
+        success_criteria:
+          - "품질 검증(recall/precision·구문·변형 케이스)을 제시"
+          - "일반화(불변 특성·미탐 반영)를 제시"
+          - "수명주기(생성→검증→배포→튜닝→회귀)와 사람 검토 게이트를 제시"
+          - "(설명) 'LLM 생성 룰은 검증·회귀 후 배포' 원칙 설명"
+        acceptable_methods:
+          - "품질 검증 + 일반화 + 수명주기 + 검토"
+        negative_signs:
+          - "검증 없이 자동 배포"
+          - "일반화·회귀 언급 없음"

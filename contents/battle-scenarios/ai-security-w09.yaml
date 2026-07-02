@@ -1,0 +1,170 @@
+id: "ai-security-w09"
+category: "ai-security"
+title: "[AI보안활용 W9] Bastion 기본: 안전 실행 경계 공격 vs 구조·스킬·whitelist·Manager 하네스"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  AI 보안 활용 공방전 — bastion **기본 구조**(스킬·안전 실행 whitelist·Manager 하네스)를 구축한다. Red는
+  안전 실행 경계를 시험하고, Blue는 whitelist 기반 안전 실행과 Manager 하네스를 설계한다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(안전 실행 경계 시험)와 Blue(bastion 기본 구조)를 모두 수행.
+    • duel : Red 학생이 경계를 시험하고, Blue 학생이 안전 실행·하네스로 대응한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)을 공격하거나, 본인 인프라
+    에서 AICompanion 도구 경계를 시험(command_ran)한다. Blue의 하네스 설계는 semantic.
+
+  ▸ 관점 — bastion은 스킬(도구)을 whitelist·안전 실행으로 통제하고, Manager 하네스가 LLM 판단을 감싼다.
+
+  ▸ 윤리 — 인가된 훈련 인프라에서만.
+
+# ───────────────────────── RED (안전 실행 경계 시험) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 도구 실행 경계·whitelist 우회 시험
+
+      에이전트의 **안전 실행 경계**(whitelist·샌드박스)를 시험한다. AICompanion 도구로 무엇이 허용/차단
+      되는지 매핑한다.
+
+      ### 어디서 / 무엇을
+      - 본인 인프라에서 AICompanion `/api/tool/exec_python`에 안전/위험 코드를 보내 실행 경계(무해 실행 vs
+        WAF/샌드박스 차단)를 매핑.
+
+      ### 권장 명령 (참고)
+      ```bash
+      curl -s http://192.168.0.161:8007/api/tool/exec_python -H 'content-type: application/json' -d '{"code":"print(6*7)"}'
+      curl -s -o /dev/null -w '%{http_code}\n' http://192.168.0.161:8007/api/tool/exec_python -H 'content-type: application/json' -d '{"code":"__import__(\"os\").system(\"id\")"}'
+      ```
+
+      ### 📌 채점 방식
+      명령 흔적 + **보고서의 실행 경계 맵**(허용/차단).
+
+      ### ✅ 합격 기준
+      안전/위험 코드로 실행 경계를 매핑하고, whitelist·샌드박스가 무엇을 막는지 정리한다.
+    hint: "exec_python에 안전(print) vs 위험(os.system) 코드 → 허용/차단 경계 매핑. whitelist·샌드박스 정리. 채점=명령 흔적."
+    verify:
+      type: "command_ran"
+      expect: "api/tool"
+      checks:
+        - { id: "ax-9-1", type: "command_ran", target: "attacker",
+            params: { pattern: "tool" } }
+      semantic:
+        intent: |
+          안전 실행 경계 — whitelist·샌드박스가 도구 실행을 어떻게 제한하는지 매핑.
+        success_criteria:
+          - "본인 인프라 명령 로그에 도구 호출 흔적이 남음"
+          - "안전/위험 코드로 실행 경계를 매핑"
+          - "(설명) whitelist·샌드박스가 막는 것을 정리"
+        acceptable_methods:
+          - "실행 경계 매핑"
+        negative_signs:
+          - "명령 흔적 없음"
+          - "경계 맵 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 하네스 부재 시 위험 논증
+
+      만약 Manager 하네스·whitelist가 없다면 어떤 위험(임의 실행·권한 초과)이 생기는지 논증한다.
+
+      ### ✅ 합격 기준
+      하네스·whitelist 부재 시의 위험(임의 코드 실행·권한 초과·인젝션→실행)을 구체적으로 논증한다.
+    hint: "하네스·whitelist 없으면 임의 실행·권한 초과·인젝션→실행 위험 논증."
+    verify:
+      type: "command_ran"
+      expect: "api"
+      checks:
+        - { id: "ax-9-2", type: "command_ran", target: "attacker",
+            params: { pattern: "api" } }
+      semantic:
+        intent: |
+          하네스 부재 위험 — 안전 실행 통제가 없으면 임의 실행·권한 초과로 이어짐을 이해.
+        success_criteria:
+          - "본인 인프라 명령 로그에 관련 호출 흔적이 남음"
+          - "하네스·whitelist 부재 위험(임의 실행·권한 초과)을 논증"
+          - "(설명) 인젝션→실행 연쇄를 언급"
+        acceptable_methods:
+          - "부재 위험 논증"
+        negative_signs:
+          - "위험 논증 없음"
+
+# ───────────────────────── BLUE (bastion 기본 구조) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: secu
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — 스킬·안전 실행(whitelist)·샌드박스 설계
+
+      bastion **스킬(도구)과 안전 실행**을 설계한다.
+
+      ### 무엇을
+      - **스킬 정의**: 필요한 도구만 좁은 인터페이스로 정의(범용 실행 최소화).
+      - **whitelist**: 허용된 명령·API만 실행, 그 외 기본 거부(fail-closed).
+      - **샌드박스**: 도구 실행을 격리·최소 권한 환경에서, 자원·시간 제한.
+      - **승인 게이트**: 고위험 스킬은 사람 승인.
+
+      ### ✅ 합격 기준
+      스킬 정의·whitelist·샌드박스·승인 게이트를 제시하고 RED가 시험한 경계를 안전하게 강제한다.
+    hint: "스킬 정의(좁은 인터페이스)+whitelist(fail-closed)+샌드박스(격리·최소 권한·자원 제한)+고위험 승인 게이트. RED 경계 강제."
+    verify:
+      type: "semantic"
+      expect: "safe_execution"
+      semantic:
+        intent: |
+          안전 실행 설계 — 스킬·whitelist·샌드박스·승인으로 도구 실행을 안전하게 통제.
+        success_criteria:
+          - "스킬 정의(좁은 인터페이스)를 제시"
+          - "whitelist(fail-closed)·샌드박스(격리·최소 권한)를 제시"
+          - "고위험 승인 게이트를 제시하고 RED 경계 강제"
+        acceptable_methods:
+          - "스킬 + whitelist + 샌드박스 + 승인"
+        negative_signs:
+          - "whitelist·샌드박스 없음"
+          - "범용 실행 허용"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — Manager 하네스 설계
+
+      LLM 판단을 감싸는 **Manager 하네스**를 설계한다.
+
+      ### 무엇을
+      - **하네스 골격**: 입력 검증→컨텍스트 조립→스킬 선택(whitelist)→실행(샌드박스)→출력 검증→감사.
+      - **결정론 결합**: LLM 스킬 선택을 결정론 정책으로 검증(허용 스킬·인자 검증).
+      - **자율성 수준**: 조회 자율·변경 승인.
+      - **관찰·감사**: 모든 스킬 호출·결과 감사.
+
+      ### ✅ 합격 기준
+      하네스 골격·결정론 결합·자율성 수준·감사를 제시하고 "LLM은 하네스 안에서만 스킬을 쓴다" 원칙을
+      설명한다.
+    hint: "하네스 골격(입력 검증→컨텍스트→스킬 선택→실행→출력 검증→감사)+결정론 결합(허용 스킬·인자 검증)+자율성 수준+감사. 'LLM은 하네스 안에서만' 원칙."
+    verify:
+      type: "semantic"
+      expect: "manager_harness"
+      semantic:
+        intent: |
+          Manager 하네스 — LLM 스킬 사용을 결정론 골격으로 감싸 안전하게 통제.
+        success_criteria:
+          - "하네스 골격(입력 검증→…→감사)을 제시"
+          - "결정론 결합(허용 스킬·인자 검증)을 제시"
+          - "자율성 수준·감사를 제시"
+          - "(설명) 'LLM은 하네스 안에서만 스킬을 쓴다' 원칙 설명"
+        acceptable_methods:
+          - "하네스 골격 + 결정론 + 자율성 + 감사"
+        negative_signs:
+          - "하네스·게이트 없음"
+          - "감사 없음"

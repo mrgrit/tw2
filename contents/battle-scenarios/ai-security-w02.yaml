@@ -1,0 +1,167 @@
+id: "ai-security-w02"
+category: "ai-security"
+title: "[AI보안활용 W2] 구조화 로그 공격 생성 vs 결정성·구조화 출력 LLM 분석"
+difficulty: "medium"
+time_limit: 2400
+battle_type: "1v1"
+description: |
+  AI 보안 활용 공방전 — LLM(Ollama)의 **파라미터·결정성·구조화 출력**을 보안 분석에 맞게 다룬다. Red는
+  구조적으로 파싱 가능한 공격 로그를 만들고, Blue는 결정성(temperature 0)·구조화 출력(JSON)으로
+  일관된 분석을 수행한다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(구조화 로그 생성)와 Blue(결정성·구조화 출력 분석)를 모두 수행.
+    • duel : Red 학생이 로그를 만들고, Blue 학생이 결정적·구조화 LLM 분석을 수행한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)을 공격한다. Red 채점은
+    **대상 탐지 흔적** + 본인 명령 흔적 + 보고서. Blue의 LLM 분석은 el34 GPU 활용, 품질로 semantic 채점.
+
+  ▸ 관점 — 보안 분석은 **재현성**이 중요하다. temperature·seed로 결정성을 높이고, JSON 스키마로 구조화
+    출력을 강제해 파이프라인에 안전하게 연결한다.
+
+  ▸ 윤리 — 인가된 훈련 인프라(el34)에서만.
+
+# ───────────────────────── RED (구조화 로그 생성) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 파싱 가능한 다유형 공격 로그 생성
+
+      LLM이 구조화 추출할 수 있게 **여러 유형의 공격**(SQLi·XSS·경로 탐색 등)을 명확한 필드로 남긴다.
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM({{ATTACKER_IP}})에서 대상(192.168.0.161)에 여러 유형 공격(고유 태그)을 수행,
+        각 유형이 로그에 구분되게.
+
+      ### 📌 채점 방식
+      대상 탐지 흔적 + 본인 명령 흔적 + **보고서의 공격 유형 목록**(구조화 추출 대상).
+
+      ### ✅ 합격 기준
+      최소 2가지 유형 공격을 명확한 필드로 남기고, 구조화 추출 대상(유형·출처·페이로드)을 정리한다.
+    hint: "SQLi·XSS·경로 탐색 등 2+ 유형 공격(태그) → 구분되는 로그. 유형·출처·페이로드 정리. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "ax-2-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          구조화 로그 생성 — 여러 유형 공격을 구조화 추출 가능한 필드로 남김.
+        success_criteria:
+          - "대상 WAF/IPS에 다유형 공격 로그가 남고 고유 태그로 귀속됨"
+          - "최소 2가지 유형 공격을 명확한 필드로 남김"
+          - "(설명) 구조화 추출 대상(유형·출처·페이로드)을 정리"
+        acceptable_methods:
+          - "다유형 공격 + 필드 정리"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "단일 유형·필드 없음"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 재현성 테스트용 반복 로그
+
+      결정성 검증을 위해 **동일 공격을 반복**해, Blue가 같은 입력에 같은 분석 결과를 얻는지 테스트할 소재를 만든다.
+
+      ### ✅ 합격 기준
+      동일 공격을 여러 번 반복해 재현성 테스트 소재를 만들고, 반복이 로그에 동일하게 남음을 확인한다.
+    hint: "동일 공격 반복(태그)으로 재현성 테스트 소재 생성 + 로그 동일성 확인. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "ax-2-2", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          재현성 소재 — 동일 공격 반복으로 결정성 검증 소재를 제공.
+        success_criteria:
+          - "대상 IPS/WAF에 반복 공격 흔적이 남고 고유 태그로 귀속됨"
+          - "동일 공격을 반복 수행"
+          - "(설명) 로그 동일성(재현성 소재)을 확인"
+        acceptable_methods:
+          - "동일 공격 반복 + 동일성 확인"
+        negative_signs:
+          - "반복 없음"
+
+# ───────────────────────── BLUE (결정성·구조화 출력 분석) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — 결정적·구조화 출력으로 공격 추출
+
+      LLM을 **결정적(temperature 0)·구조화 출력(JSON)** 으로 설정해 Red 공격을 일관되게 추출한다.
+
+      ### 어떻게
+      - Wazuh/Suricata에서 Red 공격 로그를 수집.
+      - LLM(Ollama)에 낮은 temperature·JSON 스키마(유형·출처·심각도)로 구조화 추출.
+      - 반복 실행 시 같은 결과(재현성)를 확인.
+
+      ### ✅ 합격 기준
+      결정적·구조화 출력으로 공격을 추출하고, 반복 실행의 재현성을 확인한다.
+    hint: "Wazuh/Suricata 로그 → Ollama에 temperature 0·JSON 스키마(유형·출처·심각도)로 구조화 추출 → 반복 재현성 확인."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "ax-2-3", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          결정적·구조화 추출 — 낮은 temperature·JSON 스키마로 재현 가능한 구조화 분석.
+        success_criteria:
+          - "Wazuh/Suricata에서 Red 공격 로그를 수집"
+          - "결정적(temperature 0)·구조화 출력(JSON)으로 공격을 추출"
+          - "(설명) 반복 실행 재현성을 확인"
+        acceptable_methods:
+          - "결정성 설정 + 구조화 출력 + 재현성"
+        negative_signs:
+          - "로그 근거 없음"
+          - "구조화·재현성 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — LLM 파라미터·파이프라인 설계
+
+      보안 분석용 **LLM 파라미터·구조화 파이프라인**을 설계한다.
+
+      ### 무엇을
+      - **파라미터**: temperature/top-p 낮춰 결정성↑, seed 고정, max_tokens·모델 선택(정확도 vs 속도).
+      - **구조화 출력**: JSON 스키마 강제·검증(파싱 실패 처리), 파이프라인 안전 연결.
+      - **재현성·검증**: 같은 입력→같은 출력 테스트, 원본 교차 검증.
+      - **모델 선택**: 작업별 모델(요약·분류·추출)과 로컬(Ollama) 프라이버시.
+
+      ### ✅ 합격 기준
+      결정성 파라미터·구조화 출력·재현성 검증·모델 선택을 제시하고 "보안 분석은 재현성·구조화가 핵심"
+      원칙을 설명한다.
+    hint: "파라미터(temperature/seed 고정)+구조화 출력(JSON 스키마·검증)+재현성 테스트·원본 검증+작업별 모델·로컬. '재현성·구조화 핵심' 원칙."
+    verify:
+      type: "semantic"
+      expect: "llm_pipeline_design"
+      semantic:
+        intent: |
+          LLM 파라미터·파이프라인 — 결정성·구조화·재현성으로 보안 분석을 안정적 파이프라인에 연결.
+        success_criteria:
+          - "파라미터(temperature/seed·모델 선택)를 제시"
+          - "구조화 출력(JSON 스키마·검증)을 제시"
+          - "재현성 검증·원본 교차 검증을 제시"
+          - "(설명) '재현성·구조화가 핵심' 원칙 설명"
+        acceptable_methods:
+          - "파라미터 + 구조화 + 재현성 + 모델 선택"
+        negative_signs:
+          - "파라미터·구조화 언급 없음"
+          - "재현성 무시"

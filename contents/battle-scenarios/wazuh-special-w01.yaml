@@ -1,0 +1,176 @@
+id: "wazuh-special-w01"
+category: "wazuh-special"
+title: "[Wazuh특강 W1] 4대 보안시스템 공격 흔적 생성 vs Wazuh·KQL 통합 조회"
+difficulty: "medium"
+time_limit: 2400
+battle_type: "1v1"
+description: |
+  Wazuh 특강 공방전 — el34의 **4대 보안시스템(FW·IPS(Suricata)·WAF(ModSecurity)·SIEM(Wazuh))** 에
+  걸친 공격 흔적을, Wazuh 대시보드와 **KQL**로 한눈에 조회·상관하는 능력을 다룬다. Red는 여러 계층에
+  흔적을 남기고, Blue는 Wazuh/KQL로 통합 조회한다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(다계층 흔적 생성)와 Blue(Wazuh·KQL 통합 조회)를 모두 수행.
+    • duel : Red 학생이 여러 계층에 공격 흔적을 남기고, Blue 학생이 Wazuh로 상관 조회한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)을 공격한다. 패킷 흐름
+    FW→IPS→WAF→앱을 지나며 각 계층에 흔적이 남는다. Red 채점은 **대상 탐지 흔적(Suricata/ModSec/
+    Wazuh)** + 본인 명령 흔적 + 보고서. 고유 태그(`auto-red-<학번>`)로 귀속. Blue의 조회 설계는 semantic.
+
+  ▸ 관점 — Wazuh는 4대 시스템 로그를 중앙 수집한다. KQL로 출처·시각·rule·계층을 필터·상관해 하나의
+    공격을 여러 계층 관점에서 본다.
+
+  ▸ 윤리 — 인가된 훈련 인프라(el34)에서만.
+
+# ───────────────────────── RED (다계층 흔적 생성) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 4대 계층에 걸친 공격 흔적 생성
+
+      FW·IPS·WAF·SIEM 여러 계층에 흔적이 남도록 **성격이 다른 공격**을 수행한다.
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM({{ATTACKER_IP}})에서 대상(192.168.0.161)에 (1) 포트 스캔(IPS/Suricata), (2) 웹
+        공격 SQLi/XSS(WAF/ModSec), (3) 반복 접근(FW/SIEM 상관)을 수행(고유 태그).
+
+      ### 권장 명령 (참고)
+      ```bash
+      nmap -sS -Pn 192.168.0.161 -p1-1000 --reason
+      curl -A 'auto-red-<학번>-kql' "http://192.168.0.161/vulnerabilities/sqli/?id=1' OR '1'='1"
+      curl -A 'auto-red-<학번>-kql' "http://192.168.0.161/?x=<script>alert(1)</script>"
+      ```
+
+      ### 📌 채점 방식
+      대상 Suricata/ModSec/Wazuh 탐지 흔적 + 본인 명령 흔적 + **보고서에 어느 계층에 무슨 흔적을
+      남겼는지**.
+
+      ### ✅ 합격 기준
+      성격이 다른 공격으로 최소 2개 계층(IPS·WAF)에 탐지 흔적을 남기고, 계층별 흔적을 정리한다.
+    hint: "포트 스캔(IPS)+SQLi/XSS(WAF)+반복 접근(SIEM)을 태그로. 계층별 흔적 정리. 채점=대상 Suricata/ModSec 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "wz-1-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          다계층 흔적 생성 — 성격이 다른 공격이 FW·IPS·WAF·SIEM 여러 계층에 흔적을 남김을 실증.
+        success_criteria:
+          - "대상 IPS(Suricata)/WAF(ModSec)에 탐지 흔적이 남고 고유 태그로 귀속됨"
+          - "성격이 다른 공격으로 최소 2개 계층에 흔적을 남김"
+          - "(설명) 계층별 흔적을 정리"
+        acceptable_methods:
+          - "스캔+웹 공격(태그) + 계층별 정리"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "계층 구분 없음"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 조회 가능한 마커·필드 남기기
+
+      Blue가 KQL로 정확히 찾을 수 있게, **일관된 마커·식별 필드**(고유 UA·출처 IP·시각)를 남긴다.
+
+      ### ✅ 합격 기준
+      일관된 고유 마커(UA·태그)로 공격을 수행해 Wazuh에서 KQL로 필터 가능한 식별 필드(출처·UA·시각)를
+      남기고, 어떤 필드로 조회 가능한지 제시한다.
+    hint: "일관된 고유 UA/태그로 공격 → Wazuh KQL 필터 가능한 필드(출처 IP·UA·시각) 남기기. 조회 필드 제시. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "wz-1-2", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          조회 가능한 마커 — 일관된 식별 필드로 KQL 조회·상관이 쉬운 흔적을 남김.
+        success_criteria:
+          - "대상 WAF(ModSec)에 일관 마커 흔적이 남고 고유 태그로 귀속됨"
+          - "KQL로 필터 가능한 식별 필드(출처·UA·시각)를 남김"
+          - "(설명) 어떤 필드로 조회 가능한지 제시"
+        acceptable_methods:
+          - "일관 마커 공격 + 조회 필드 제시"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "일관 마커·필드 없음"
+
+# ───────────────────────── BLUE (Wazuh·KQL 통합 조회) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — Wazuh 대시보드·KQL로 공격 통합 조회
+
+      Wazuh 대시보드에서 **KQL**로 Red의 공격을 4대 시스템에 걸쳐 조회·상관한다.
+
+      ### 어떻게
+      - Wazuh(el34)에서 KQL로 출처 IP·UA·rule·시각을 필터해 Red의 스캔·웹 공격 경보를 찾는다.
+      - 같은 출처의 이벤트를 여러 계층(IPS·WAF)에서 묶어 하나의 공격으로 상관.
+
+      ### ✅ 합격 기준
+      KQL로 Red 공격을 찾아 출처·시각·rule을 제시하고, 여러 계층 이벤트를 하나로 상관한다.
+    hint: "Wazuh KQL로 출처 IP·UA·rule·시각 필터 → Red 스캔·웹 공격 경보 조회 + 여러 계층 이벤트 상관."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "wz-1-3", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          Wazuh·KQL 통합 조회 — KQL 필터로 다계층 공격을 찾아 하나로 상관.
+        success_criteria:
+          - "Wazuh에서 KQL로 Red 공격 경보를 찾아 출처·시각·rule을 제시"
+          - "여러 계층(IPS·WAF) 이벤트를 하나로 상관"
+          - "(설명) 사용한 KQL 필터(필드·조건)를 제시"
+        acceptable_methods:
+          - "KQL 필터 조회 + 다계층 상관"
+        negative_signs:
+          - "경보 근거 없음"
+          - "KQL·상관 설명 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 대시보드·저장 쿼리·알림 설계
+
+      반복 사용 가능한 **대시보드·저장 쿼리·알림**을 설계한다.
+
+      ### 무엇을
+      - **통합 대시보드**: 4대 시스템(FW·IPS·WAF·SIEM)을 한 화면에 — 계층별 패널·시계열·출처 Top-N.
+      - **저장 KQL 쿼리**: 자주 쓰는 조회(공격 출처·계층 상관)를 저장 쿼리로.
+      - **알림**: 임계·상관 조건 알림(스캔+웹 공격 동시 출처 등).
+      - **운영**: 필드 표준화(출처·UA)·인덱스 관리로 조회 성능.
+
+      ### ✅ 합격 기준
+      통합 대시보드·저장 쿼리·알림·운영을 제시하고 "4대 시스템을 한 화면에서 상관 조회" 원칙을 설명한다.
+    hint: "통합 대시보드(4대 시스템 패널·시계열·Top-N)+저장 KQL 쿼리+상관 알림+필드 표준화. '4대 시스템 한 화면 상관' 원칙."
+    verify:
+      type: "semantic"
+      expect: "dashboard_design"
+      semantic:
+        intent: |
+          Wazuh 대시보드·운영 — 통합 대시보드·저장 쿼리·알림으로 4대 시스템을 효율 조회.
+        success_criteria:
+          - "통합 대시보드(4대 시스템 패널·시계열·Top-N)를 제시"
+          - "저장 KQL 쿼리·상관 알림을 제시"
+          - "필드 표준화·인덱스 관리를 제시"
+          - "(설명) '4대 시스템을 한 화면에서 상관 조회' 원칙 설명"
+        acceptable_methods:
+          - "대시보드 + 저장 쿼리 + 알림 + 운영"
+        negative_signs:
+          - "단일 로그만·통합 관점 없음"
+          - "저장 쿼리·알림 없음"

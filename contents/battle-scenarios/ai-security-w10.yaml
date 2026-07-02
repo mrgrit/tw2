@@ -1,0 +1,166 @@
+id: "ai-security-w10"
+category: "ai-security"
+title: "[AI보안활용 W10] Bastion Playbook+RL: 대응 자동화 시험 vs Playbook·강화학습 steering 설계"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  AI 보안 활용 공방전 — bastion **Playbook과 강화학습(RL) steering**으로 대응을 표준화·개선한다. Red는
+  Playbook을 시험(예외·분기 유발)하고, Blue는 재사용 Playbook과 안전한 RL steering을 설계한다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(Playbook 시험)와 Blue(Playbook·RL steering)를 모두 수행.
+    • duel : Red 학생이 대응 자동화를 시험하고, Blue 학생이 Playbook·RL로 대응한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)을 공격한다. Red 채점은
+    **대상 탐지 흔적** + 본인 명령 흔적 + 보고서. Blue의 Playbook·RL 설계는 semantic.
+
+  ▸ 관점 — Playbook은 표준 대응 절차, RL steering은 경험으로 정책을 개선한다. 단 reward hacking을 막아야
+    한다(W14 심화).
+
+  ▸ 윤리 — 인가된 훈련 인프라(el34)에서만.
+
+# ───────────────────────── RED (Playbook 시험) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 대응 Playbook 트리거·예외 유발
+
+      Blue 대응 Playbook을 트리거하고 **예외·분기**를 유발하는 공격을 한다.
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM({{ATTACKER_IP}})에서 대상(192.168.0.161)에 Playbook이 다뤄야 할 공격 + 예외 케이스
+        (변형·경계)를 수행(고유 태그).
+
+      ### 📌 채점 방식
+      대상 탐지 흔적 + 본인 명령 흔적 + **보고서의 예외 케이스**(Playbook이 어떻게 다뤄야 하나).
+
+      ### ✅ 합격 기준
+      Playbook을 트리거하는 공격과 예외 케이스를 만들어 대상에 흔적을 남기고, 예외를 설명한다.
+    hint: "Playbook 대상 공격+예외 케이스(변형·경계, 태그) → Playbook 분기 유발. 예외 설명. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "ax-10-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          Playbook 시험 — 대응 자동화의 예외·분기를 유발해 견고성을 시험.
+        success_criteria:
+          - "대상 WAF/IPS에 공격+예외 흔적이 남고 고유 태그로 귀속됨"
+          - "Playbook 트리거 공격과 예외 케이스를 생성"
+          - "(설명) 예외를 설명"
+        acceptable_methods:
+          - "트리거 공격 + 예외 케이스"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "예외 없음"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — RL 정책 조종 시도 분석
+
+      RL steering을 **조종**하려는 시도를 분석한다: 반복 미끼로 정책을 원치 않는 방향으로 학습시키기
+      (reward hacking 유도).
+
+      ### ✅ 합격 기준
+      RL 정책 조종(미끼 반복·보상 게이밍 유도) 시도를 분석하고, 정책이 잘못 학습될 위험을 설명한다.
+    hint: "미끼 반복으로 RL 정책 조종·reward hacking 유도 시도 분석 + 잘못 학습 위험. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "ax-10-2", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          RL 정책 조종 — 미끼·보상 게이밍으로 정책을 오학습시키려는 위험을 이해.
+        success_criteria:
+          - "대상 IPS/WAF에 관련 흔적이 남고 고유 태그로 귀속됨"
+          - "RL 정책 조종 시도(미끼·보상 게이밍)를 분석"
+          - "(설명) 정책 오학습 위험을 설명"
+        acceptable_methods:
+          - "정책 조종 분석"
+        negative_signs:
+          - "조종 분석 없음"
+
+# ───────────────────────── BLUE (Playbook·RL steering) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — 대응 Playbook 설계·실행
+
+      Red 공격에 대한 **재사용 대응 Playbook**을 설계·실행한다.
+
+      ### 어떻게
+      - Wazuh/Suricata에서 Red 공격을 트리거로 Playbook 시작(조사→판정→대응 준비).
+      - 예외·분기(변형·경계) 처리와 승인 게이트를 포함.
+
+      ### ✅ 합격 기준
+      Red 공격을 트리거로 대응 Playbook(조사→판정→대응·예외 처리)을 실행하고 승인 게이트를 포함한다.
+    hint: "Wazuh/Suricata 공격 트리거→Playbook(조사→판정→대응 준비)+예외 분기+승인 게이트 실행."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "ax-10-3", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          대응 Playbook — 트리거→조사→판정→대응의 재사용 절차를 예외 처리·승인과 함께 실행.
+        success_criteria:
+          - "Wazuh/Suricata에서 Red 공격을 트리거로 Playbook 시작"
+          - "조사→판정→대응 준비와 예외 분기를 처리"
+          - "(설명) 승인 게이트를 포함"
+        acceptable_methods:
+          - "Playbook 실행 + 예외 + 승인"
+        negative_signs:
+          - "경보 근거 없음"
+          - "예외·승인 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 안전한 RL steering 설계 (reward hacking 방지)
+
+      경험으로 정책을 개선하는 **안전한 RL steering**을 설계한다.
+
+      ### 무엇을
+      - **성과 기반 보상**: 대리지표(활동량)가 아닌 실제 성과(진짜 위협 대응·오탐 감소)로 보상.
+      - **reward hacking 방지**: 부작용 페널티·다중 목표·안전 제약, 이상 정책 사람 검토.
+      - **경험→정책**: 검증된 경험만 정책 반영, 조종(미끼) 저항.
+      - **안전장치**: 정책 드리프트 모니터·롤백·감사.
+
+      ### ✅ 합격 기준
+      성과 기반 보상·reward hacking 방지·경험 검증·안전장치를 제시하고 "정책은 실제 성과·안전 제약으로
+      개선" 원칙을 설명한다.
+    hint: "성과 기반 보상(대리지표 X)+reward hacking 방지(부작용 페널티·제약·검토)+검증된 경험만 반영+드리프트 모니터·롤백. '실제 성과·안전 제약으로 개선' 원칙."
+    verify:
+      type: "semantic"
+      expect: "safe_rl_steering"
+      semantic:
+        intent: |
+          안전한 RL steering — 성과 기반 보상·제약·검증으로 정책을 개선하며 reward hacking을 방지.
+        success_criteria:
+          - "성과 기반 보상(대리지표 아님)을 제시"
+          - "reward hacking 방지(부작용 페널티·제약·검토)를 제시"
+          - "검증된 경험 반영·드리프트 모니터·롤백을 제시"
+          - "(설명) '실제 성과·안전 제약으로 개선' 원칙 설명"
+        acceptable_methods:
+          - "성과 보상 + 방지 + 검증 + 안전장치"
+        negative_signs:
+          - "대리지표 보상"
+          - "reward hacking 방지 없음"
