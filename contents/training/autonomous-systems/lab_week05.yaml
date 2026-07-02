@@ -44,8 +44,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -94,11 +95,28 @@ steps:
     hint: "NMEA 로그 생성 → awk 로 인접 좌표 위도 변화>1.0분(불가능) 탐지 → SPOOF_DETECTED."
     category: exploit
     answer: |
-      t=120001 lat=3730.101  Δlat=0.001
-      t=120002 lat=3730.102  Δlat=0.001
-      t=120003 lat=3745.900  Δlat=15.798  <-- 불가능한 점프!
-      t=120004 lat=3745.901  Δlat=0.001
-      SPOOF_DETECTED
+      LOG=/tmp/gps_nmea_STU42.log
+      # 1) NMEA GPRMC 로그를 만든다: 정상 이동(1초 간격) 후 갑자기 순간이동(스푸핑).
+      #    필드: $GPRMC,시각,상태,위도,N,경도,E,속도,침로,날짜,...
+      cat > "$LOG" <<'EOF'
+      $GPRMC,120000,A,3730.100,N,12701.000,E,5.0,090,300626,,*10
+      $GPRMC,120001,A,3730.101,N,12701.001,E,5.0,090,300626,,*11
+      $GPRMC,120002,A,3730.102,N,12701.002,E,5.0,090,300626,,*12
+      $GPRMC,120003,A,3745.900,N,12715.800,E,5.0,090,300626,,*13
+      $GPRMC,120004,A,3745.901,N,12715.801,E,5.0,090,300626,,*14
+      EOF
+      #  120002→120003 사이 위도 3730.1→3745.9 (약 29km) 를 1초에 이동 = 불가능(스푸핑)
+      
+      # 2) awk 로 인접 좌표의 위도 변화량(분 단위)을 계산해 임계 초과를 찾는다.
+      awk -F, '/GPRMC/{
+        lat=$4+0;
+        if(prev!=""){ d=lat-prev; if(d<0)d=-d;
+          printf "  t=%s lat=%.3f  Δlat=%.3f%s\n", $2, lat, d, (d>1.0?"  <-- 불가능한 점프!":"") }
+        prev=lat }' "$LOG"
+      
+      # 3) 판정: 1초에 위도 1.000분(≈1.8km) 초과 변화가 있으면 스푸핑.
+      J=$(awk -F, '/GPRMC/{lat=$4+0; if(prev!=""){d=lat-prev; if(d<0)d=-d; if(d>1.0)c++} prev=lat} END{print c+0}' "$LOG")
+      test "$J" -ge 1 && echo SPOOF_DETECTED || echo CLEAN
     answer_detail: "연속 NMEA 좌표에서 1초에 약 29km 점프(위도 Δ15.8분)=물리적으로 불가능 → 스푸핑."
     verify:
       type: output_contains
@@ -146,11 +164,20 @@ steps:
     hint: "GPS-IMU 불일치(delta_km) + SNR 균일(all-identical) 확인 → ANTISPOOF_APPLIED."
     category: defense
     answer: |
-      [GPS-IMU 불일치]
-      차이: 29.1 km (IMU와 불일치)
-      [SNR 균일성]
+      CHK=/tmp/gps_crosscheck_STU42.txt
+      # 1) 같은 시각의 GPS 좌표와 IMU 추정 위치, 그리고 위성 SNR 을 나란히 기록.
+      cat > "$CHK" <<'EOF'
+      t=120003 gps_lat=3745.900 imu_lat=3730.103 delta_km=29.1
       t=120003 sat_snr=52,52,52,52,52,52   note=all-identical(비정상)
-      ANTISPOOF_APPLIED
+      EOF
+      
+      # 2) GPS vs IMU 불일치(사람이 못 움직인 거리) 확인.
+      echo "[GPS-IMU 불일치]"; awk '/delta_km/{split($4,a,"="); print "  차이:", a[2], "km (IMU와 불일치)"}' "$CHK"
+      # 3) 위성 SNR 이 전부 동일한지(진짜 위성은 고도·거리 달라 SNR 제각각; 스푸퍼는 한 송신원이라 균일).
+      echo "[SNR 균일성]"; grep "all-identical" "$CHK"
+      
+      # 4) 판정: IMU 불일치(>1km) + SNR 균일이면 안티스푸핑이 스푸핑을 확증.
+      grep -q "delta_km=29" "$CHK" && grep -q "all-identical" "$CHK" && echo ANTISPOOF_APPLIED || echo INCONCLUSIVE
     answer_detail: "IMU 대조 불일치+위성 SNR 균일(단일 송신원)로 스푸핑 확증. 다중 검증이 핵심."
     verify:
       type: output_contains
@@ -188,12 +215,17 @@ steps:
     hint: "상태 로그에 spoof_flag=1 + nav_source=INS + gps_weight=0.0 → ALT_NAV_ENGAGED."
     category: defense
     answer: |
-      [항법 상태]
+      STATE=/tmp/nav_state_STU42.txt
+      # 스푸핑 플래그가 서면 항법 소스를 GPS→INS 로 전환하는 상태 로그.
+      cat > "$STATE" <<'EOF'
       spoof_flag=1
       nav_source=INS(inertial)      # GPS 무시, 관성항법으로 위치 추정
       action=hold_position_and_alert
       gps_weight=0.0
-      ALT_NAV_ENGAGED
+      EOF
+      echo "[항법 상태]"; cat "$STATE"
+      # 판정: 스푸핑 플래그 + 항법 소스가 INS 로 전환 + GPS 가중치 0 이면 대체 항법 가동.
+      grep -q "spoof_flag=1" "$STATE" && grep -q "nav_source=INS" "$STATE" && grep -q "gps_weight=0.0" "$STATE" && echo ALT_NAV_ENGAGED || echo STILL_GPS
     answer_detail: "스푸핑 확정 시 GPS 무시하고 INS 대체 항법 전환+안전 동작(호버/감속). 탐지→안전 대응."
     verify:
       type: output_contains
@@ -218,12 +250,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      An NMEA log showed a physically impossible 29 km jump in one second (detected with awk), revealing
-      GPS spoofing; anti-spoofing cross-checked GPS against inertial navigation (29 km disagreement) and
-      noticed uniform satellite SNR from a single transmitter; on confirmation the system switched to INS
-      with gps_weight 0 and held position. GPS is unauthenticated and weak, so it is easily spoofed, but
-      physics and multi-sensor cross-checks expose it; defense falls back to inertial navigation.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 5 of an autonomous systems course on GPS security. Facts: an NMEA log showed a physically impossible position jump of about 29 km in one second, detected with awk, revealing GPS spoofing (SPOOF_DETECTED); anti-spoofing cross-checked GPS against inertial navigation (a 29 km disagreement) and noticed uniform satellite SNR from a single spoofing transmitter (ANTISPOOF_APPLIED); on confirmation the system switched navigation source to INS with gps_weight 0 and held position (ALT_NAV_ENGAGED). Explain that GPS signals are unauthenticated and weak so they are easily spoofed, but physics and multi-sensor cross-checks expose it, and defense falls back to inertial or alternative navigation. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W05 GPS 종합(Assessment): 불가능한 점프 탐지·IMU/SNR 다중 검증·INS 대체 항법."
     verify:
       type: output_contains

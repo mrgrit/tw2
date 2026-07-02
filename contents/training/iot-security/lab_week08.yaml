@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -63,11 +64,17 @@ steps:
       ✅ 마지막 줄 `MULTISURFACE_ASSESSED` (4대 표면 모두 취약점 발견).
       🔎 펌웨어 비밀·기본자격(device), 평문 RTSP(network), API(cloud), 앱 토큰(app). 넷을 모두 점검.
     answer: |
+      # 스마트 도어벨 카메라를 4대 표면으로 점검한 결과를 파일로 기록한다.
+      cat > /tmp/assess_STU42.txt <<'EOF'
       device  : hardcoded API key in firmware; default admin creds
       network : unencrypted RTSP stream
       cloud   : cloud API missing rate limit
       app     : mobile app stores token in plaintext
-      MULTISURFACE_ASSESSED
+      EOF
+      cat /tmp/assess_STU42.txt
+      # 4대 표면 모두 발견이 기록되면 종합 점검 완료.
+      M=""; for s in device network cloud app; do grep -q "^$s" /tmp/assess_STU42.txt || M=1; done
+      [ -z "$M" ] && echo MULTISURFACE_ASSESSED || echo INCOMPLETE
     answer_detail: "4대 표면(device·network·cloud·app) 종합 점검 → MULTISURFACE_ASSESSED."
     verify:
       type: output_contains
@@ -94,10 +101,16 @@ steps:
       ✅ 마지막 줄 `ATTACK_PATH` (펌웨어 비밀→클라우드 API→전 장치 제어 경로).
       🔎 하드코딩 비밀 하나가 클라우드를 거쳐 전 장치 제어로 이어진다. 연결하면 개별보다 치명적.
     answer: |
+      # 취약점을 잇는 공격 경로를 파일로 작성한다(펌웨어 비밀→클라우드→전 장치).
+      cat > /tmp/path_STU42.txt <<'EOF'
       device  extract hardcoded API key from firmware (W04)
       cloud   use key to access cloud API (no rate limit)
       network enumerate and control all devices of this model
-      ATTACK_PATH
+      EOF
+      cat /tmp/path_STU42.txt
+      # 경로가 3개 이상 표면을 잇고 최종 '전 장치 제어'에 도달하면 완성.
+      S=$(cut -d' ' -f1 /tmp/path_STU42.txt | sort -u | wc -l)
+      { [ "$S" -ge 3 ] && grep -q "control all" /tmp/path_STU42.txt; } && echo ATTACK_PATH || echo INCOMPLETE
     answer_detail: "표면 간 취약점 연결로 공격 경로(펌웨어→클라우드→전 장치) → ATTACK_PATH."
     verify:
       type: output_contains
@@ -125,11 +138,17 @@ steps:
       ✅ 마지막 줄 `DEFENSE_RECS` (하드코딩 비밀 제거가 경로 차단+최고 위험 → 최우선).
       🔎 하드코딩 비밀 제거는 전 경로를 끊는다(개별 패치보다 효과적). 위험+경로 차단으로 우선순위.
     answer: |
-      [break] risk=9  remove hardcoded key + per-device provisioning
-      [break] risk=7  cloud API rate limit + auth
-      [no] risk=5  RTSP over TLS
-      [no] risk=4  encrypt app token storage
-      DEFENSE_RECS
+      # 취약점별 방어 권고를 '경로 차단 여부,위험도'와 함께 CSV 로 기록한다.
+      cat > /tmp/recs_STU42.csv <<'EOF'
+      remove hardcoded key + per-device provisioning,break,9
+      cloud API rate limit + auth,break,7
+      RTSP over TLS,no,5
+      encrypt app token storage,no,4
+      EOF
+      awk -F, '{printf "  [%s] risk=%s  %s\n",$2,$3,$1}' /tmp/recs_STU42.csv | sort -t= -k2 -rn
+      # 최우선 = 경로 차단(break) + 최고 위험(9).
+      TOP=$(awk -F, '$2=="break"{print $3","$1}' /tmp/recs_STU42.csv | sort -rn | head -1)
+      echo "$TOP" | grep -q "^9," && echo DEFENSE_RECS || echo CHECK
     answer_detail: "위험 우선순위+경로 차단으로 방어 권고 → DEFENSE_RECS."
     verify:
       type: output_contains
@@ -148,9 +167,9 @@ steps:
       🔎 정리: IoT 침투 테스트=4대 표면 종합+취약점 연결(경로)+우선순위 방어. 연결된 경로가 실제 위협.
       다음 주(W09)는 **IP Camera 해킹**.
     answer: |
-      Assessment
-      IoT pentesting assesses all four surfaces, chains vulnerabilities into attack paths, and prioritizes defenses.
-      Connected paths reveal real threat better than isolated bugs; break the highest-risk path first.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W08 on IoT device penetration testing. Findings: a device was assessed across all four surfaces device/network/cloud/app (MULTISURFACE_ASSESSED), vulnerabilities were chained into an attack path from a hardcoded firmware key to cloud API to controlling all devices (ATTACK_PATH), and defenses were prioritized by risk and path-breaking with removing the hardcoded key first (DEFENSE_RECS). Explain that connected paths reveal real threat better than isolated bugs, and defense breaks the highest-risk path first. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W08 IoT 침투 종합(Assessment). 4대 표면·공격 경로·방어 권고."
     verify:
       type: output_contains

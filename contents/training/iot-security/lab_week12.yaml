@@ -45,8 +45,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -93,12 +94,25 @@ steps:
     hint: "Modbus 로그 생성 → grep 로 인증 필드 없음 + proto=0000 확인 → OT_PROTOCOL_WEAK."
     category: recon
     answer: |
+      # 1) Modbus/TCP 트랜잭션 로그를 만든다(디코드 형식: MBAP 필드 + PDU). 실제 tshark 요약과 같은 형태.
+      #    MBAP = tid(트랜잭션) proto(0000) unit(슬레이브). PDU = FC(기능코드) + 데이터. 인증/서명 필드는 없다.
+      cat > /tmp/modbus_STU42.log <<'EOF'
       frame=1 tid=1 proto=0000 unit=1 FC=03 name=ReadHolding   addr=0   qty=10
       frame=2 tid=2 proto=0000 unit=1 FC=03 name=ReadHolding   addr=100 qty=2
       frame=3 tid=3 proto=0000 unit=1 FC=05 name=WriteSingleCoil addr=16 value=FF00
-      → 인증/서명 필드 없음
-      proto=0000
-      OT_PROTOCOL_WEAK
+      EOF
+      
+      # 2) 로그를 그대로 본다(각 프레임의 MBAP·FC 확인).
+      cat /tmp/modbus_STU42.log
+      
+      # 3) MBAP 에 인증/서명 필드가 있는지 grep 으로 찾는다(auth/key/sign 같은 필드).
+      grep -iE "auth|key|sign|token|cert" /tmp/modbus_STU42.log || echo "→ 인증/서명 필드 없음"
+      
+      # 4) 모든 프레임의 proto 가 0000(표준 Modbus, 무인증)인지 확인한다.
+      grep -oE "proto=[0-9]+" /tmp/modbus_STU42.log | sort -u
+      
+      # 5) 판정: proto=0000 뿐이고 인증 필드가 없으면 무인증 프로토콜.
+      if ! grep -qiE "auth|key|sign|token|cert" /tmp/modbus_STU42.log && [ "$(grep -oE 'proto=[0-9]+' /tmp/modbus_STU42.log | sort -u)" = "proto=0000" ]; then echo OT_PROTOCOL_WEAK; else echo HAS_AUTH; fi
     answer_detail: "Modbus MBAP 에는 인증 필드가 없음. 502 도달=읽기/쓰기 가능. IT/OT 연결 시 물리 제어 탈취."
     verify:
       type: output_contains
@@ -144,11 +158,18 @@ steps:
     hint: "grep/awk 로 로그의 FC=05/06/10(쓰기)이 있으면 UNSAFE_COMMAND. FC05 WriteSingleCoil 강제 ON 탐지."
     category: exploit
     answer: |
-      frame=3 tid=3 proto=0000 unit=1 FC=05 name=WriteSingleCoil addr=16 value=FF00
-      read   frame=1 tid=1 proto=0000 unit=1 FC=03 name=ReadHolding   addr=0   qty=10
-      read   frame=2 tid=2 proto=0000 unit=1 FC=03 name=ReadHolding   addr=100 qty=2
-      UNSAFE frame=3 tid=3 proto=0000 unit=1 FC=05 name=WriteSingleCoil addr=16 value=FF00  <-- 액추에이터 강제
-      UNSAFE_COMMAND
+      # 1) 로그에서 쓰기 계열 기능코드(FC=05/06/10 = 코일/레지스터 쓰기)를 grep 으로 찾는다.
+      grep -E "FC=(05|06|10)" /tmp/modbus_STU42.log
+      
+      # 2) awk 로 각 프레임을 읽기/쓰기로 분류해 보여준다(쓰기는 액추에이터 직접 제어).
+      awk '{
+        fc=""; for(i=1;i<=NF;i++) if($i ~ /^FC=/){split($i,a,"="); fc=a[2]}
+        if(fc=="05"||fc=="06"||fc=="10") print "  UNSAFE " $0 "  <-- 액추에이터 강제";
+        else print "  read   " $0
+      }' /tmp/modbus_STU42.log
+      
+      # 3) 판정: 쓰기 기능코드(05/06/10)가 있으면 위험 명령 존재.
+      grep -qE "FC=(05|06|10)" /tmp/modbus_STU42.log && echo UNSAFE_COMMAND || echo READ_ONLY
     answer_detail: "Write Single Coil(FC05) addr16 = FF00(강제 ON) 탐지 = 무인증 물리 제어. IDS 최우선 경보 대상."
     verify:
       type: output_contains
@@ -194,11 +215,19 @@ steps:
     hint: "Purdue 방화벽 설정 생성 → grep 로 IT->OT 502 deny + default deny 확인 → OT_ISOLATED."
     category: defense
     answer: |
-      [IT->OT 502 차단]
+      FW=/tmp/purdue_fw_STU42.conf
+      cat > "$FW" <<'EOF'
+      # Purdue 네트워크 분리 정책 (IT=10.20.x, DMZ=10.30.x, OT=10.40.x)
       deny  from 10.20.0.0/16 to 10.40.0.0/16 port 502    # IT -> OT Modbus 직결 차단
-      [기본 정책]
+      allow from 10.20.0.0/16 to 10.30.0.0/16 port 443    # IT -> DMZ(데이터 히스토리안)만
+      allow from 10.30.0.0/16 to 10.40.0.5   port 502     # DMZ conduit -> 지정 PLC 만(단방향)
       default deny
-      OT_ISOLATED
+      EOF
+      
+      # IT 에서 OT Modbus(502) 직결이 차단됐는지 + 기본 deny 인지 확인.
+      echo "[IT->OT 502 차단]"; grep -E "deny .*10.20.*10.40.*502" "$FW"
+      echo "[기본 정책]"; grep -E "default deny" "$FW"
+      grep -Eq "deny .*10.20.*10.40.*502" "$FW" && grep -Eq "default deny" "$FW" && echo OT_ISOLATED || echo FLAT_NETWORK
     answer_detail: "Purdue 분리(IT->OT Modbus 직결 차단·DMZ conduit·default deny). Modbus 인증화 어려우니 분리가 핵심."
     verify:
       type: output_contains
@@ -223,12 +252,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      Parsing a Modbus/TCP capture showed the MBAP header has no authentication (protocol id 0000, unit
-      only), so anyone reaching port 502 can read and write; a Write Single Coil (FC05) forcing a coil
-      to FF00 was an unauthenticated actuator command. A Purdue firewall denied IT-to-OT Modbus with a
-      DMZ conduit and default deny. Legacy OT protocols cannot easily add auth, so defense relies on
-      network segmentation, DMZ conduits, and an OT IDS flagging unexpected writes.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 12 of an IoT security course on OT/SCADA Modbus security. Facts: parsing a Modbus/TCP capture showed the MBAP header has no authentication field (protocol id 0000, unit only), so anyone reaching port 502 can read and write (OT_PROTOCOL_WEAK); among read requests a Write Single Coil (FC05) forcing a coil to FF00 was detected, an unauthenticated actuator command (UNSAFE_COMMAND); a Purdue-model firewall config denied IT-to-OT Modbus and used a DMZ conduit with default deny (OT_ISOLATED). Explain that legacy OT protocols cannot easily add authentication, so defense relies on Purdue network segmentation, DMZ conduits, and an OT IDS that flags unexpected write commands. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W12 OT/SCADA 종합(Assessment): Modbus 무인증·위험 쓰기 탐지·Purdue 분리."
     verify:
       type: output_contains

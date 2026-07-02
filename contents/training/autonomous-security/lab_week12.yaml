@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -60,11 +61,14 @@ steps:
       ✅ 마지막 줄 `RED_PIPELINE` (정찰·침투·측면이동·목표 + ROE 감시).
       🔎 정찰→침투(PoC만)→측면이동→목표(플래그, 유출 금지). 모든 단계를 ROE가 감시. 방어 검증용 자율 킬체인.
     answer: |
-      [recon     ]  asset/service/vuln discovery
-      [exploit   ]  initial access via found vuln (PoC only)
-      [lateral   ]  internal expansion / privesc
-      [objective ]  reach designated flag (no data exfil)
-      RED_PIPELINE
+      cat > /tmp/red_pipeline_STU42.txt <<'EOF'
+      recon asset/service/vuln discovery
+      exploit initial access via found vuln (PoC only)
+      lateral internal expansion / privesc
+      objective reach designated flag (no data exfil)
+      EOF
+      awk '{printf "  [%-10s] ",$1;$1="";print}' /tmp/red_pipeline_STU42.txt
+      [ "$(cut -d' ' -f1 /tmp/red_pipeline_STU42.txt | tr '\n' ',')" = "recon,exploit,lateral,objective," ] && echo RED_PIPELINE || echo INCOMPLETE
     answer_detail: "Red 킬체인 파이프라인+ROE 구성 → RED_PIPELINE."
     verify:
       type: output_contains
@@ -91,11 +95,16 @@ steps:
       ✅ 마지막 줄 `KILLCHAIN_EXECUTED` (범위 내 대상에 정찰·침투·측면이동 실행).
       🔎 인가 범위(10.20.30/31.0/24) 내 대상에만 킬체인 진행. 범위 밖이면 중단. 범위가 자율 공격의 경계.
     answer: |
+      # 킬체인 각 단계 실행 결과를 기록한다(범위 내, PoC only).
+      cat > /tmp/killchain_STU42.txt <<'EOF'
       recon: nmap 10.20.30.0/24 -> web(80), ssh(22)
       exploit: SQLi on /login -> auth bypass (PoC)
       lateral: pivot to 10.20.30.20 via reused cred
       objective: read flag file (no exfil)
-      KILLCHAIN_EXECUTED
+      EOF
+      cat /tmp/killchain_STU42.txt
+      for s in recon exploit lateral objective; do grep -q "^$s:" /tmp/killchain_STU42.txt || M=1; done
+      [ -z "$M" ] && echo KILLCHAIN_EXECUTED || echo INCOMPLETE
     answer_detail: "범위 내 킬체인 실행 → KILLCHAIN_EXECUTED."
     verify:
       type: output_contains
@@ -121,11 +130,15 @@ steps:
       ✅ 마지막 줄 `ROE_ENFORCED` (범위밖 하드스톱·금지 차단·비가역 승인).
       🔎 범위 밖(192.168.x)은 하드 스톱, 데이터 유출은 ROE 금지 차단, 디스크 삭제(비가역)는 승인. Red의 최엄격 가드레일이 합법성을 지킨다.
     answer: |
+      # ROE(교전 규칙) 가드레일 준수를 감사한다.
+      cat > /tmp/roe_STU42.txt <<'EOF'
       scope: 10.20.30.0/24 only (no out-of-scope hosts touched)
       no_data_exfil: enforced (flag read, not copied out)
       no_destructive: enforced (no delete/dos)
       stop_on_signal: armed
-      ROE_ENFORCED
+      EOF
+      cat /tmp/roe_STU42.txt
+      grep -q "no_data_exfil: enforced" /tmp/roe_STU42.txt && grep -q "no_destructive: enforced" /tmp/roe_STU42.txt && echo ROE_ENFORCED || echo VIOLATION
     answer_detail: "ROE 가드레일(범위·금지·비가역) 강제 → ROE_ENFORCED."
     verify:
       type: output_contains
@@ -144,9 +157,9 @@ steps:
       🔎 정리: 자율 Red=정찰·침투·측면이동·목표 킬체인으로 방어 검증. Blue보다 위험 — 인가·범위·ROE·긴급 정지가 절대적.
       다음 주(W13)는 **분산 지식 아키텍처**.
     answer: |
-      Assessment
-      An autonomous Red agent runs a recon-exploit-lateral-objective kill chain to validate defenses, but is riskier than Blue because it attacks real systems.
-      Authorization, scope, ROE (forbidden actions, approvals), and a kill switch are absolute; out-of-scope is a hard stop.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W12 on building an authorized autonomous Red (attack) agent. Findings: a recon-exploit-lateral-objective kill chain with ROE overlay was built (RED_PIPELINE), it executed only against in-scope targets (KILLCHAIN_EXECUTED), and ROE guardrails hard-stopped an out-of-scope target, blocked forbidden data exfiltration, and required approval for irreversible actions (ROE_ENFORCED). Explain that a Red agent is riskier than Blue because it attacks real systems, so authorization, scope, ROE, and a kill switch are absolute, and its value is validating defenses. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W12 자율 Red 종합(Assessment). 킬체인·범위·ROE 강제."
     verify:
       type: output_contains

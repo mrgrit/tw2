@@ -45,8 +45,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -93,13 +94,26 @@ steps:
     hint: "취약 mosquitto.conf 생성 → grep 로 allow_anonymous true·certfile 없음·acl_file 없음 확인 → PROTOCOL_WEAK."
     category: recon
     answer: |
-      [익명 허용]
+      CONF=/tmp/mosquitto_STU42.conf
+      # 1) 흔한 취약 설정 파일을 만든다(익명 허용·평문 1883·ACL 없음).
+      cat > "$CONF" <<'EOF'
+      listener 1883
       allow_anonymous true
-      [TLS 여부]
-      TLS 없음(평문 1883)
-      [ACL 여부]
-      ACL 없음
-      PROTOCOL_WEAK
+      # password_file (설정 안 함 → 인증 없음)
+      # cafile/certfile (설정 안 함 → TLS 없음, 평문)
+      # acl_file (설정 안 함 → 모든 클라이언트가 모든 토픽)
+      EOF
+      
+      # 2) 실제 grep 으로 취약 3종을 점검한다.
+      echo "[익명 허용]"; grep -E "allow_anonymous\s+true" "$CONF"
+      echo "[TLS 여부]";  grep -Eq "certfile|cafile" "$CONF" && echo "TLS 설정됨" || echo "TLS 없음(평문 1883)"
+      echo "[ACL 여부]";  grep -Eq "acl_file" "$CONF" && echo "ACL 있음" || echo "ACL 없음"
+      
+      # 3) 판정: 익명 허용 + TLS 없음 + ACL 없음 3종이면 PROTOCOL_WEAK.
+      A=$(grep -Ec "allow_anonymous\s+true" "$CONF")
+      grep -Eq "certfile|cafile" "$CONF"; T=$?    # 0=있음
+      grep -Eq "acl_file" "$CONF"; L=$?           # 0=있음
+      { [ "$A" -ge 1 ] && [ "$T" -ne 0 ] && [ "$L" -ne 0 ]; } && echo PROTOCOL_WEAK || echo SECURE
     answer_detail: "브로커 설정 파일 grep 으로 익명·평문·ACL 부재 3중 취약 확인."
     verify:
       type: output_contains
@@ -146,13 +160,19 @@ steps:
     hint: "평문 MQTT 캡처 생성 → strings 로 iot_admin/S3nsorP@ss2024/home/door/cmd 노출 확인 → INTERCEPT_POSSIBLE."
     category: exploit
     answer: |
-      캡처 생성: /tmp/mqtt_plain_STU42.bin (75 bytes)
-      MQTT
-      cam-sensor-01
-      iot_admin
-      S3nsorP@ss20240
-      home/door/cmdopen
-      INTERCEPT_POSSIBLE
+      PCAP=/tmp/mqtt_plain_STU42.bin
+      # 1) 평문 MQTT CONNECT(자격 포함)+PUBLISH(문 열기 명령) 패킷의 캡처 바이트를 printf 로 재구성한다.
+      #    실제 MQTT 바이트: 10=CONNECT, 0004 MQTT=프로토콜명, C2=user+pass 플래그, 이어서 길이접두 문자열들.
+      printf '\x10\x2e\x00\x04MQTT\x04\xc2\x00\x3c\x00\x0dcam-sensor-01\x00\x09iot_admin\x00\x0eS3nsorP@ss2024' > "$PCAP"
+      # PUBLISH(30) topic=home/door/cmd payload=open 을 이어붙인다.
+      printf '\x30\x13\x00\x0dhome/door/cmdopen' >> "$PCAP"
+      echo "캡처 생성: $PCAP ($(wc -c < "$PCAP") bytes)"
+      
+      # 2) strings 로 평문 자격·토픽·명령을 그대로 읽는다(감청).
+      strings "$PCAP"
+      
+      # 3) 판정: 캡처에서 username/password/명령이 평문으로 잡히면 감청 성립.
+      strings "$PCAP" | grep -qE "iot_admin|S3nsorP@ss2024" && echo INTERCEPT_POSSIBLE || echo ENCRYPTED
     answer_detail: |
       평문 MQTT 캡처를 strings 로 분석 → 사용자명(iot_admin)·비밀번호(S3nsorP@ss2024)·명령 토픽이 그대로 노출.
       TLS 없으면 캡처만으로 자격 탈취+명령 위조. 실제로는 tcpdump -r pcap 에 동일 적용.
@@ -203,10 +223,22 @@ steps:
     hint: "강화 mosquitto.conf(allow_anonymous false·certfile·acl_file) 생성 → grep 3종 OK → PROTOCOL_SECURED."
     category: defense
     answer: |
-      익명 차단: OK
-      TLS: OK
-      ACL: OK
-      PROTOCOL_SECURED
+      HCONF=/tmp/mosquitto_hardened_STU42.conf
+      cat > "$HCONF" <<'EOF'
+      listener 8883
+      allow_anonymous false
+      password_file /etc/mosquitto/passwd
+      cafile /etc/mosquitto/ca.crt
+      certfile /etc/mosquitto/server.crt
+      keyfile /etc/mosquitto/server.key
+      acl_file /etc/mosquitto/acl
+      EOF
+      
+      # 같은 점검을 강화본에 적용 — 이번엔 3종이 모두 '있음'이어야 한다.
+      echo -n "익명 차단: "; grep -Eq "allow_anonymous\s+false" "$HCONF" && echo OK || echo NO
+      echo -n "TLS: "; grep -Eq "certfile" "$HCONF" && echo OK || echo NO
+      echo -n "ACL: "; grep -Eq "acl_file" "$HCONF" && echo OK || echo NO
+      grep -Eq "allow_anonymous\s+false" "$HCONF" && grep -Eq "certfile" "$HCONF" && grep -Eq "acl_file" "$HCONF" && echo PROTOCOL_SECURED || echo STILL_WEAK
     answer_detail: "강화 설정(익명 차단·TLS·ACL)을 grep 로 확인. 취약본과 대비."
     verify:
       type: output_contains
@@ -231,11 +263,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      A broker config with anonymous access, no TLS, and no ACL was weak; a plaintext MQTT capture
-      revealed username, password, and a door-open command via strings, enabling eavesdropping and
-      command forgery. Enabling TLS, authentication, and per-device ACLs fixed it. Without TLS the
-      credentials travel in cleartext, so lightweight IoT protocols must still enable these three.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 2 of an IoT security course on MQTT protocol security. Facts: a broker config with allow_anonymous true, no TLS, and no ACL was diagnosed as weak by grep (PROTOCOL_WEAK); a plaintext MQTT packet capture revealed the username, password, and a door-open command in cleartext via strings, so eavesdropping and command forgery are possible (INTERCEPT_POSSIBLE); a hardened config with TLS, authentication, and an ACL file fixed it (PROTOCOL_SECURED). Explain that lightweight IoT protocols often ship insecure and that without TLS the credentials travel in cleartext, so defense enables TLS, authentication, and per-device least-privilege ACLs. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W02 MQTT 종합(Assessment): 취약 설정·평문 캡처 감청·TLS/인증/ACL 강화."
     verify:
       type: output_contains

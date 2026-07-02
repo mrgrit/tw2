@@ -45,8 +45,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -98,20 +99,30 @@ steps:
     hint: "python으로 펌웨어 파일 생성 → file/strings/grep 로 password=·api_key=·PRIVATE KEY 추출, 3종이면 SECRETS_FOUND."
     category: exploit
     answer: |
-      admin_password=SuperSecret123
-      api_key=ak_live_9f8e7d6c5b4a3210
-      -----BEGIN RSA PRIVATE KEY-----
-      MIIBOgIBAAJB
-      -----END RSA PRIVATE KEY-----
-      root:x:0:0:root:/root:/bin/sh
-      admin:x:1000:1000::/home/admin:/bin/sh
-      daemon:x:2:2::/:/usr/sbin/nologin
-      factory:x:0:0:factory backdoor:/root:/bin/sh
-      admin_password=SuperSecret123
-      api_key=ak_live_9f8e7d6c5b4a3210
-      -----BEGIN RSA PRIVATE KEY-----
-      -----END RSA PRIVATE KEY-----
-      SECRETS_FOUND
+      # 0) 고유 파일명(학번 등). 여기선 예시.
+      FW=/tmp/iotcam_fw_STU42.bin
+      
+      # 1) 취약 펌웨어 이미지를 생성한다(ELF 헤더 + 박힌 문자열 + 가짜 /etc/passwd). 실제 벤더 펌웨어를 모사.
+      # ELF 매직(파일 타입 위장)으로 시작한다.
+      printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00' > "$FW"
+      # 펌웨어에 박힌 문자열들(하드코딩 비밀번호·API 키·개인키)을 이어붙인다.
+      printf 'httpd v1.2 build 2024\x00admin_password=SuperSecret123\x00api_key=ak_live_9f8e7d6c5b4a3210\x00' >> "$FW"
+      printf -- '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----\x00' >> "$FW"
+      # 펌웨어에서 추출된 /etc/passwd (root 외에 factory 백도어 포함)를 이어붙인다.
+      printf 'root:x:0:0:root:/root:/bin/sh\nadmin:x:1000:1000::/home/admin:/bin/sh\n' >> "$FW"
+      printf 'daemon:x:2:2::/:/usr/sbin/nologin\nfactory:x:0:0:factory backdoor:/root:/bin/sh\n\x00' >> "$FW"
+      echo "생성: $FW ($(wc -c < "$FW") bytes)"
+      
+      # 2) 파일 타입 확인(펌웨어가 어떤 형식인지) + 사람이 읽을 문자열 추출.
+      file "$FW"
+      strings -n 6 "$FW" | head -20
+      
+      # 3) 비밀 패턴만 grep 으로 뽑는다(실제 펌웨어 분석의 핵심 한 줄).
+      strings "$FW" | grep -iE "password=|api_key=|PRIVATE KEY"
+      
+      # 4) 판정: 비밀 3종(비번·키·개인키)이 잡히면 SECRETS_FOUND.
+      N=$(strings "$FW" | grep -icE "password=|api_key=|PRIVATE KEY")
+      test "$N" -ge 3 && echo SECRETS_FOUND || echo CLEAN
     answer_detail: |
       실제 파일을 만들어 file·strings·grep 으로 하드코딩 비밀(비번·API 키·개인키) 추출. 실제 펌웨어는 binwalk -e
       로 파일시스템 추출 후 동일 기법. 하드코딩 비밀은 전 모델 공유라 한 대 덤프=전부 노출.
@@ -161,14 +172,20 @@ steps:
     hint: "strings|awk -F: 로 UID 0(root 아님) 계정을 찾으면 factory 백도어 → BACKDOOR_FOUND."
     category: exploit
     answer: |
-      root:x:0:0:root:/root:/bin/sh
-      admin:x:1000:1000::/home/admin:/bin/sh
-      daemon:x:2:2::/:/usr/sbin/nologin
-      factory:x:0:0:factory backdoor:/root:/bin/sh
-      UID0 계정: root
-      UID0 계정: factory
-      BACKDOOR: factory (factory backdoor)
-      BACKDOOR_FOUND
+      FW=/tmp/iotcam_fw_STU42.bin
+      
+      # 1) passwd 형식 라인(user:x:uid:gid...)을 추출한다.
+      strings "$FW" | grep -E "^[a-z]+:x:[0-9]+:[0-9]+"
+      
+      # 2) UID 0(루트 권한) 계정만 골라낸다 — root 외에 또 있으면 의심.
+      strings "$FW" | awk -F: '$3=="0"{print "UID0 계정:", $1}'
+      
+      # 3) 문서화된 정상 계정(root·admin·daemon)에 없는 UID 0 계정 = 백도어.
+      strings "$FW" | awk -F: '$3=="0" && $1!="root"{print "BACKDOOR:", $1, "("$5")"}'
+      
+      # 4) 판정: 미문서 루트 계정이 있으면 BACKDOOR_FOUND.
+      B=$(strings "$FW" | awk -F: '$3=="0" && $1!="root"{print $1}' | head -1)
+      test -n "$B" && echo "BACKDOOR_FOUND" || echo "NO_BACKDOOR"
     answer_detail: "passwd 에서 미문서 UID 0 계정(factory)을 awk 로 탐지 = 제조사 백도어."
     verify:
       type: output_contains
@@ -218,12 +235,23 @@ steps:
     hint: "강화 펌웨어 생성 후 같은 strings/grep/awk 로 비밀 0·미문서 루트 0 이면 FIRMWARE_HARDENED."
     category: defense
     answer: |
-      생성: /tmp/iotcam_fw_hardened_STU42.bin
-      비밀 검색:
-      0
-      미문서 루트 계정:
-      0
-      FIRMWARE_HARDENED
+      HFW=/tmp/iotcam_fw_hardened_STU42.bin
+      
+      # 1) 강화 펌웨어 생성: 비밀 없음, 백도어 없음, 자격은 부팅 시 보안 저장소에서 로드(참조만).
+      printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00' > "$HFW"
+      # 비밀 대신 '자격 출처'만, 백도어 계정 없음(root nologin + admin).
+      printf 'httpd v1.3 build 2026 (signed)\x00credential_source=secure_element_provisioning\x00' >> "$HFW"
+      printf 'root:x:0:0:root:/root:/sbin/nologin\nadmin:x:1000:1000::/home/admin:/bin/sh\n\x00' >> "$HFW"
+      echo "생성: $HFW"
+      
+      # 2) 같은 분석을 강화 펌웨어에 적용 — 비밀 패턴이 안 나와야 한다.
+      echo "비밀 검색:"; strings "$HFW" | grep -icE "password=|api_key=|PRIVATE KEY"
+      echo "미문서 루트 계정:"; strings "$HFW" | awk -F: '$3=="0" && $1!="root"{print $1}' | wc -l
+      
+      # 3) 판정: 강화본에서 비밀 0 + 미문서 루트 0 이면 강화 성공.
+      S=$(strings "$HFW" | grep -icE "password=|api_key=|PRIVATE KEY")
+      B=$(strings "$HFW" | awk -F: '$3=="0" && $1!="root"{print $1}' | wc -l)
+      test "$S" = "0" -a "$B" = "0" && echo FIRMWARE_HARDENED || echo STILL_VULNERABLE
     answer_detail: "강화본(비밀 미포함·백도어 제거·서명)은 같은 분석에 비밀 0·백도어 0. 애초에 안 넣기가 방어."
     verify:
       type: output_contains
@@ -249,12 +277,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      From a firmware image, strings and grep extracted a hardcoded admin password, API key, and RSA
-      private key, and awk on /etc/passwd found an undocumented UID-0 backdoor account (factory). A
-      hardened firmware with no embedded secrets, per-device provisioning, no backdoor, and signing
-      showed zero secrets. Hardcoded secrets are shared across every unit, so one dump compromises all;
-      keep secrets out of firmware and sign it.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 4 of an IoT security course on firmware static analysis. Facts: from a firmware image file, strings and grep extracted hardcoded secrets (an admin password, an API key, and an RSA private key) (SECRETS_FOUND); awk on the embedded /etc/passwd found an undocumented UID-0 account named factory, a manufacturer backdoor (BACKDOOR_FOUND); a hardened firmware with no embedded secrets, per-device provisioning, no backdoor, and signing showed zero secrets under the same analysis (FIRMWARE_HARDENED). Explain that hardcoded secrets are shared across every unit of a model so one dump compromises them all, and that defense keeps secrets out of firmware via per-device provisioning and signing, removing backdoors. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W04 펌웨어 분석 종합(Assessment): 실제 strings/grep/awk 로 비밀·백도어 추출, 강화 대비."
     verify:
       type: output_contains

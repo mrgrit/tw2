@@ -45,8 +45,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -93,13 +94,26 @@ steps:
     hint: "페어링 캡처 생성 → grep 로 NoInputNoOutput+MITM False+SC False 확인 → PAIRING_WEAK."
     category: recon
     answer: |
-      [IO 능력]
-      IO Capability: NoInputNoOutput (0x03)
-      [MITM 보호]
-      MITM Protection: False
-      [Secure Connections]
-      Secure Connections: False (LE Legacy)
-      PAIRING_WEAK
+      CAP=/tmp/ble_pairing_STU42.txt
+      # 1) SMP Pairing Request 디코드(btmon 형식). 저가 IoT 의 전형.
+      cat > "$CAP" <<'EOF'
+      > SMP: Pairing Request (0x01)
+          IO Capability: NoInputNoOutput (0x03)
+          OOB Data: Not Present (0x00)
+          Authentication Req: 0x00
+            Bonding: Bonding
+            MITM Protection: False
+            Secure Connections: False (LE Legacy)
+          Max Encryption Key Size: 16
+      EOF
+      
+      # 2) 페어링 방식 결정 요소를 뽑는다.
+      echo "[IO 능력]"; grep "IO Capability" "$CAP"
+      echo "[MITM 보호]"; grep "MITM Protection" "$CAP"
+      echo "[Secure Connections]"; grep "Secure Connections" "$CAP"
+      
+      # 3) 판정: NoInputNoOutput + MITM False → Just Works. + SC False(Legacy) 면 약한 페어링.
+      grep -q "NoInputNoOutput" "$CAP" && grep -q "MITM Protection: False" "$CAP" && grep -q "Secure Connections: False" "$CAP" && echo PAIRING_WEAK || echo OK
     answer_detail: "NoInputNoOutput→Just Works(MITM 보호 없음)+LE Legacy(약한 임시 키) = 취약 페어링."
     verify:
       type: output_contains
@@ -147,10 +161,20 @@ steps:
     hint: "Legacy 페어링 + Pairing Random + LL_ENC_REQ 캡처 → 오프라인 키 복원 가능 → BLE_INTERCEPTABLE."
     category: exploit
     answer: |
+      CAP=/tmp/ble_pairing_STU42.txt
+      # 1) 스니핑 캡처에 페어링(Pairing) + 이후 암호화 시작(LL_ENC_REQ)이 함께 잡혔는지 — 있으면 오프라인 크랙 가능.
+      cat >> "$CAP" <<'EOF'
       > SMP: Pairing Confirm (0x03)  [captured]
       > SMP: Pairing Random  (0x04)  [captured]
       > LL_ENC_REQ / LL_ENC_RSP      [captured]
-      BLE_INTERCEPTABLE
+      EOF
+      grep -E "Pairing Confirm|Pairing Random|LL_ENC_REQ" "$CAP"
+      
+      # 2) 판정: Legacy 페어링 + 페어링 교환(Confirm/Random) 캡처가 있으면 세션 키 복원 가능.
+      grep -q "Secure Connections: False" "$CAP" \
+        && grep -q "Pairing Random" "$CAP" \
+        && grep -q "LL_ENC_REQ" "$CAP" \
+        && echo BLE_INTERCEPTABLE || echo PROTECTED
     answer_detail: "Legacy+Just Works 페어링 교환 캡처 → crackle 로 STK/LTK 복원 → 트래픽 해독·MITM."
     verify:
       type: output_contains
@@ -191,9 +215,19 @@ steps:
     hint: "LE SC 캡처 생성 → Secure Connections True + MITM True 확인 → BLE_SECURED."
     category: defense
     answer: |
-      Secure Connections: OK
-      MITM 보호: OK
-      BLE_SECURED
+      SCAP=/tmp/ble_sc_STU42.txt
+      cat > "$SCAP" <<'EOF'
+      > SMP: Pairing Request (0x01)
+          IO Capability: DisplayYesNo (0x01)
+          Authentication Req: 0x0D
+            MITM Protection: True
+            Secure Connections: True (LE SC, ECDH P-256)
+          Pairing Method: Numeric Comparison
+      EOF
+      
+      echo -n "Secure Connections: "; grep -q "Secure Connections: True" "$SCAP" && echo OK || echo NO
+      echo -n "MITM 보호: "; grep -q "MITM Protection: True" "$SCAP" && echo OK || echo NO
+      grep -q "Secure Connections: True" "$SCAP" && grep -q "MITM Protection: True" "$SCAP" && echo BLE_SECURED || echo STILL_WEAK
     answer_detail: "LE Secure Connections(ECDH+MITM 보호, Numeric Comparison)로 스니핑·MITM 차단. SC 강제가 핵심."
     verify:
       type: output_contains
@@ -218,12 +252,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      An SMP pairing capture showed NoInputNoOutput with MITM False and Secure Connections False — Just
-      Works LE Legacy pairing; the captured Pairing Random and LL_ENC_REQ allow offline session-key
-      recovery with crackle, so traffic can be decrypted. An LE Secure Connections capture with ECDH
-      P-256 and Numeric Comparison resisted it. Screenless devices default to Just Works with no MITM
-      protection and weak legacy keys, so defense enforces LE Secure Connections.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 7 of an IoT security course on BLE hacking. Facts: an SMP pairing capture showed IO Capability NoInputNoOutput with MITM protection False and Secure Connections False, i.e., Just Works LE Legacy pairing (PAIRING_WEAK); the captured Pairing Confirm/Random and LL_ENC_REQ allow offline recovery of the session key with crackle, so the encrypted traffic can be decrypted (BLE_INTERCEPTABLE); an LE Secure Connections capture with ECDH P-256 and Numeric Comparison MITM protection resisted it (BLE_SECURED). Explain that screenless IoT devices default to Just Works with no MITM protection and legacy pairing keys are weak, so defense enforces LE Secure Connections with ECDH and a comparison or passkey method. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W07 BLE 종합(Assessment): Just Works/Legacy 약점·스니핑 키 복원·LE SC 강화."
     verify:
       type: output_contains

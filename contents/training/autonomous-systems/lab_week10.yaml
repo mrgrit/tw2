@@ -45,8 +45,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -87,13 +88,20 @@ steps:
     hint: "DDS 캡처 생성 → strings 로 /cmd_vel linear_x·/odom pose_x 평문 확인 → TOPIC_SNIFFED."
     category: exploit
     answer: |
-      캡처 생성: /tmp/dds_capture_STU42.bin (132 bytes)
-      topic=/cmd_vel
-      linear_x=0.80 angular_z=0.00
-      topic=/odom
-      pose_x=12.4 pose_y=3.1 yaw=1.57
-      topic=/battery
-      TOPIC_SNIFFED
+      CAP=/tmp/dds_capture_STU42.bin
+      # 1) RTPS 패킷을 모사한 캡처: RTPS 매직 + 토픽명 + 평문 데이터.
+      # RTPS 매직으로 시작하는 DDS 캡처 바이트를 printf 로 만든다(토픽 데이터가 평문으로 담김).
+      printf 'RTPS\x02\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' > "$CAP"
+      printf 'topic=/cmd_vel\x00linear_x=0.80 angular_z=0.00\x00' >> "$CAP"
+      printf 'topic=/odom\x00pose_x=12.4 pose_y=3.1 yaw=1.57\x00' >> "$CAP"
+      printf 'topic=/battery\x00voltage=11.8\x00' >> "$CAP"
+      echo "캡처 생성: $CAP ($(wc -c < "$CAP") bytes)"
+      
+      # 2) strings 로 토픽명과 데이터를 읽는다(암호화 안 됨 → 그대로 노출).
+      strings "$CAP" | grep -E "topic=|linear_x|pose_x"
+      
+      # 3) 판정: /cmd_vel·/odom 데이터가 평문으로 보이면 스니핑 성립.
+      strings "$CAP" | grep -q "linear_x=" && strings "$CAP" | grep -q "pose_x=" && echo TOPIC_SNIFFED || echo ENCRYPTED
     answer_detail: "기본 DDS 는 무암호 → /cmd_vel 속도·/odom 위치를 strings 로 평문 스니핑. 명령 인젝션의 기반."
     verify:
       type: output_contains
@@ -140,13 +148,20 @@ steps:
     hint: "노드 그래프 로그에서 awk 로 authorized=no 노드의 /cmd_vel·/emergency_stop 발행 탐지 → COMMAND_INJECTED."
     category: exploit
     answer: |
+      LOG=/tmp/ros_graph_STU42.log
+      # 토픽 발행 이벤트 로그: 시각, 노드, 토픽, 데이터. 정상 노드 + 인가 안 된 노드.
+      cat > "$LOG" <<'EOF'
       t=5.0 node=/nav2_controller topic=/cmd_vel linear_x=0.30 authorized=yes
       t=5.1 node=/nav2_controller topic=/cmd_vel linear_x=0.30 authorized=yes
       t=5.2 node=/UNKNOWN_a1b2    topic=/cmd_vel linear_x=1.50 authorized=no
       t=5.3 node=/UNKNOWN_a1b2    topic=/emergency_stop data=false authorized=no
-      INJECTED: t=5.2 node=/UNKNOWN_a1b2    topic=/cmd_vel linear_x=1.50 authorized=no
-      INJECTED: t=5.3 node=/UNKNOWN_a1b2    topic=/emergency_stop data=false authorized=no
-      COMMAND_INJECTED
+      EOF
+      
+      # 1) /cmd_vel·/emergency_stop 을 발행한 노드와 인가 여부를 본다.
+      grep -E "topic=/cmd_vel|/emergency_stop" "$LOG"
+      
+      # 2) 판정: 인가되지 않은(authorized=no) 노드가 명령 토픽을 발행하면 인젝션.
+      awk '/topic=\/cmd_vel|\/emergency_stop/ && /authorized=no/{print "INJECTED:", $0; f=1} END{print (f?"COMMAND_INJECTED":"CLEAN")}' "$LOG"
     answer_detail: "인가 안 된 노드(/UNKNOWN)가 /cmd_vel 과속·/emergency_stop 무력화 발행 = 명령 인젝션."
     verify:
       type: output_contains
@@ -190,13 +205,18 @@ steps:
     hint: "SROS2 로그 생성 → 미인가 노드 action=deny + 페이로드 encrypted 확인 → SROS2_ENFORCED."
     category: defense
     answer: |
-      [인가 노드]
+      SLOG=/tmp/sros2_STU42.log
+      # SROS2: 각 노드는 인증서로 참여, permissions.xml 로 발행 권한 제한, 데이터 암호화.
+      cat > "$SLOG" <<'EOF'
       t=6.0 node=/nav2_controller identity=cert-OK  perm=publish:/cmd_vel  action=allow
-      [미인가 거부]
       t=6.2 node=/UNKNOWN_a1b2    identity=cert-FAIL perm=none             action=deny(인증 실패)
-      [암호화]
       t=6.3 note=DDS payload encrypted (AES-GCM)  sniff=fail
-      SROS2_ENFORCED
+      EOF
+      echo "[인가 노드]"; grep "action=allow" "$SLOG"
+      echo "[미인가 거부]"; grep "action=deny" "$SLOG"
+      echo "[암호화]"; grep "encrypted" "$SLOG"
+      # 판정: 인증 실패 노드 발행이 거부 + 페이로드 암호화면 SROS2 방어 성립.
+      grep -q "action=deny" "$SLOG" && grep -q "encrypted" "$SLOG" && echo SROS2_ENFORCED || echo NO_SROS2
     answer_detail: "SROS2(인증서+permissions+암호화)로 미인가 발행 거부·스니핑 차단. 네트워크 분리 병행."
     verify:
       type: output_contains
@@ -221,13 +241,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      A DDS/RTPS capture exposed cleartext cmd_vel and odom data via strings, since default ROS2 has no
-      encryption; a node-graph log showed an unauthorized node publishing an overspeed cmd_vel and an
-      emergency_stop false. With SROS2 DDS-Security the unauthenticated node was denied and payloads were
-      encrypted. Default DDS has no authentication or encryption, so anyone on the network can sniff and
-      inject robot commands; defense enables SROS2 authentication, access control, encryption, and
-      network segmentation.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 10 of an autonomous systems course on ROS2 security. Facts: a DDS/RTPS capture exposed cleartext topic data — cmd_vel velocity commands and odom pose — via strings, since default ROS2 has no encryption (TOPIC_SNIFFED); a node-graph log showed an unauthorized node publishing an overspeed cmd_vel and an emergency_stop false, injected commands the robot would execute (COMMAND_INJECTED); with SROS2 DDS-Security the unauthenticated node was denied and payloads were encrypted (SROS2_ENFORCED). Explain that default DDS has no authentication or encryption so anyone on the network can sniff and inject robot commands, and defense enables SROS2 with node authentication, permissions-based access control, and encryption, plus network segmentation. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W10 ROS2 종합(Assessment): 평문 DDS 스니핑·명령 인젝션·SROS2 인증/접근제어/암호화."
     verify:
       type: output_contains

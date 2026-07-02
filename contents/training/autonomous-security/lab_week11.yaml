@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -60,11 +61,14 @@ steps:
       ✅ 마지막 줄 `BLUE_PIPELINE` (탐지·분류·조사·대응 4단계).
       🔎 탐지(Watcher)→분류(심각도·보강·일화)→조사(ReAct·플레이북)→대응(자율성 수준·감사). 배운 기술을 방어로 통합.
     answer: |
-      [detect    ]  Watcher (W10)
-      [triage    ]  severity + enrichment + episodic memory (W09)
-      [investigate]  ReAct loop + playbook (W02,W05)
-      [respond   ]  autonomy-level actions + audit log (W01,W06)
-      BLUE_PIPELINE
+      cat > /tmp/blue_pipeline_STU42.txt <<'EOF'
+      detect Watcher (W10)
+      triage severity + enrichment + episodic memory (W09)
+      investigate ReAct loop + playbook (W02,W05)
+      respond autonomy-level actions + audit log (W01,W06)
+      EOF
+      awk '{printf "  [%-10s] ",$1;$1="";print}' /tmp/blue_pipeline_STU42.txt
+      [ "$(cut -d' ' -f1 /tmp/blue_pipeline_STU42.txt | tr '\n' ',')" = "detect,triage,investigate,respond," ] && echo BLUE_PIPELINE || echo INCOMPLETE
     answer_detail: "자율 Blue 파이프라인 구성 → BLUE_PIPELINE."
     verify:
       type: output_contains
@@ -118,12 +122,31 @@ steps:
     hint: "eve.json 생성 → grep/awk 파싱, 내부 스캐너 오탐 종료·외부 고심각도(SQLi/C2) 상향, escalated≥2 면 TRIAGE_DONE."
     category: analysis
     answer: |
-      [192.168.0.202  ] sev3 ET SCAN Nmap                     -> monitor (low severity recon)
-      [10.20.30.50    ] sev3 Internal vuln scanner            -> auto-close (known scanner/false positive)
-      [192.168.0.202  ] sev1 ET WEB_SPECIFIC SQL Injection    -> ESCALATE (high severity)
-      [192.168.0.202  ] sev1 ET MALWARE Cobalt Strike Beacon  -> ESCALATE (high severity)
-      escalated=2
-      TRIAGE_DONE
+      EVE=/tmp/eve_STU42.json
+      # 1) Suricata eve.json(한 줄당 1 JSON) 형식의 경보 샘플을 만든다. 실제 필드: event_type/alert/src_ip.
+      cat > "$EVE" <<'EOF'
+      {"timestamp":"2026-07-02T08:40:01Z","event_type":"alert","src_ip":"192.168.0.202","dest_ip":"10.20.30.10","alert":{"signature":"ET SCAN Nmap","severity":3,"category":"Attempted Recon"}}
+      {"timestamp":"2026-07-02T08:40:05Z","event_type":"alert","src_ip":"10.20.30.50","dest_ip":"10.20.30.10","alert":{"signature":"Internal vuln scanner","severity":3,"category":"Not Suspicious"}}
+      {"timestamp":"2026-07-02T08:40:09Z","event_type":"alert","src_ip":"192.168.0.202","dest_ip":"10.20.30.10","alert":{"signature":"ET WEB_SPECIFIC SQL Injection","severity":1,"category":"Web Application Attack"}}
+      {"timestamp":"2026-07-02T08:40:12Z","event_type":"alert","src_ip":"192.168.0.202","dest_ip":"10.20.30.10","alert":{"signature":"ET MALWARE Cobalt Strike Beacon","severity":1,"category":"Malware Command and Control"}}
+      EOF
+      
+      # 2) grep·awk 로 eve.json 을 파싱해 경보를 자율 분류한다.
+      #    규칙: 알려진 내부 스캐너(내부 IP + Not Suspicious)는 오탐 종료, 그 외 외부 출처는 심각도로 조사 판정.
+      # eve.json 각 경보를 파싱해 자율 분류한다(내부 스캐너/Not Suspicious=오탐 종료, 외부 severity<=1=상향).
+      ESC=0
+      while IFS= read -r line; do
+        sip=$(echo "$line" | grep -oE '"src_ip":"[^"]*"' | cut -d'"' -f4)
+        sev=$(echo "$line" | grep -oE '"severity":[0-9]+' | cut -d: -f2)
+        catg=$(echo "$line" | grep -oE '"category":"[^"]*"' | cut -d'"' -f4)
+        sig=$(echo "$line" | grep -oE '"signature":"[^"]*"' | cut -d'"' -f4)
+        if [ "$sip" = "10.20.30.50" ] || [ "$catg" = "Not Suspicious" ]; then v="auto-close (known scanner/false positive)";
+        elif [ "${sev:-9}" -le 1 ]; then v="ESCALATE (high severity)"; ESC=$((ESC+1));
+        else v="monitor (low severity recon)"; fi
+        printf "  [%-15s] sev%s %-32s -> %s\n" "$sip" "$sev" "$(echo "$sig" | cut -c1-32)" "$v"
+      done < "$EVE"
+      echo "escalated=$ESC"
+      [ "$ESC" -ge 2 ] && echo TRIAGE_DONE || echo CHECK
     answer_detail: "실제 Suricata eve.json 파싱 자율 분류: 내부 스캐너 오탐 종료, 외부 SQLi·C2(sev1) 조사 상향. 잡음 관문."
     verify:
       type: output_contains
@@ -155,10 +178,15 @@ steps:
       ✅ 마지막 줄 `RESPONSE_EXECUTED` (저위험 자율, 중위험 감독, 고위험 승인 대기, 모두 로그).
       🔎 증거 수집(저위험)=자율, IP 차단(중)=감독, 호스트 격리(고)=사람 승인 대기. 위험도별 자율성 수준+감사 로그. 빠르되 안전.
     answer: |
-      collect forensic evidence [low   ] -> AUTO-EXECUTED (logged)
-      block malicious IP       [medium] -> EXECUTED with supervision (logged)
-      isolate production host  [high  ] -> QUEUED for human approval (logged)
-      RESPONSE_EXECUTED
+      # 위험도별 자율성 수준으로 대응하고 모두 로그한다.
+      cat > /tmp/response_STU42.csv <<'EOF'
+      collect forensic evidence,low,AUTO-EXECUTED (logged)
+      block malicious IP,medium,EXECUTED with supervision (logged)
+      isolate production host,high,QUEUED for human approval (logged)
+      EOF
+      awk -F, '{printf "  %-24s [%-6s] -> %s\n",$1,$2,$3}' /tmp/response_STU42.csv
+      # 저위험 자율·고위험 승인·전부 로그면 대응 성립.
+      awk -F, '$2=="low" && $3 !~ /AUTO/{b=1} $2=="high" && $3 !~ /approval/{b=1} $3 !~ /logged/{b=1} END{print (b?"CHECK":"RESPONSE_EXECUTED")}' /tmp/response_STU42.csv
     answer_detail: "위험도별 자율성 수준 대응+감사 로그 → RESPONSE_EXECUTED."
     verify:
       type: output_contains
@@ -177,9 +205,9 @@ steps:
       🔎 정리: 자율 Blue=탐지·분류·조사·대응 파이프라인. 저위험 자율·고위험 승인·감사 로그로 빠르되 안전.
       다음 주(W12)는 **자율 Red Agent**.
     answer: |
-      Assessment
-      An autonomous Blue agent runs detect-triage-investigate-respond at machine speed, 24/7, and consistently.
-      Triage filters false positives, responses use autonomy levels (low auto, high approval), and audit logs plus guardrails keep it safe.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W11 on building an autonomous Blue (defense) agent. Findings: a detect-triage-investigate-respond pipeline was built (BLUE_PIPELINE), autonomous triage escalated real threats and auto-closed a known-scanner false positive (TRIAGE_DONE), and responses executed by autonomy level with low-risk auto, high-risk queued for approval, all logged (RESPONSE_EXECUTED). Explain the value (machine speed, 24/7, consistency) and risk (auto-responding to false positives), and that guardrails, autonomy levels, and audit logs keep it safe. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W11 자율 Blue 종합(Assessment). 파이프라인·분류·자율성 수준 대응."
     verify:
       type: output_contains

@@ -44,8 +44,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -92,11 +93,26 @@ steps:
     hint: "WiFi 캡처 생성 → grep -c Deauth 가 임계 초과면 DEAUTH_DETECTED."
     category: exploit
     answer: |
-      [Deauth 개수]
-      6
-      [발신원]
-      AA:BB(attacker)
-      DEAUTH_DETECTED
+      CAP=/tmp/wifi_frames_STU42.log
+      # 1) 802.11 관리 프레임 캡처 요약(시각 type/subtype src->dst). Deauth 플러드가 섞여 있다.
+      cat > "$CAP" <<'EOF'
+      1.001 Beacon        AP(Drone) -> broadcast
+      1.010 Data          RC -> AP(Drone)
+      1.101 Deauth        AA:BB(attacker) -> RC
+      1.102 Deauth        AA:BB(attacker) -> RC
+      1.103 Deauth        AA:BB(attacker) -> RC
+      1.104 Deauth        AA:BB(attacker) -> RC
+      1.105 Deauth        AA:BB(attacker) -> RC
+      1.106 Deauth        AA:BB(attacker) -> RC
+      EOF
+      
+      # 2) Deauth 프레임 개수와 발신 MAC 을 센다(정상 통신엔 Deauth 가 거의 없다).
+      echo "[Deauth 개수]"; grep -c "Deauth" "$CAP"
+      echo "[발신원]"; grep "Deauth" "$CAP" | awk '{print $3}' | sort -u
+      
+      # 3) 판정: 짧은 시간 Deauth 가 임계(예: 5개) 초과면 플러드 공격.
+      N=$(grep -c "Deauth" "$CAP")
+      test "$N" -ge 5 && echo DEAUTH_DETECTED || echo NORMAL
     answer_detail: "짧은 시간 Deauth 6개 폭주(단일 attacker MAC) = Deauth 플러드. 조종 링크 절단 시도."
     verify:
       type: output_contains
@@ -145,11 +161,21 @@ steps:
     hint: "MAVLink 로그에서 awk 로 sysid≠1 + signed=no + COMMAND_LONG 탐지 → COMMAND_INJECTED."
     category: exploit
     answer: |
+      LOG=/tmp/mavlink_STU42.log
+      # 1) MAVLink 메시지 로그: sysid(발신)·msg·서명 유무. 정상 텔레메트리 + 주입된 명령.
+      cat > "$LOG" <<'EOF'
+      t=2.01 sysid=1 comp=1 msg=HEARTBEAT signed=yes
+      t=2.05 sysid=1 comp=1 msg=GLOBAL_POSITION_INT signed=yes
       t=2.09 sysid=255 comp=0 msg=COMMAND_LONG cmd=MAV_CMD_NAV_LAND signed=no
       t=2.12 sysid=255 comp=0 msg=COMMAND_LONG cmd=MAV_CMD_COMPONENT_ARM_DISARM param1=0 signed=no
-      INJECTED: t=2.09 sysid=255 comp=0 msg=COMMAND_LONG cmd=MAV_CMD_NAV_LAND signed=no
-      INJECTED: t=2.12 sysid=255 comp=0 msg=COMMAND_LONG cmd=MAV_CMD_COMPONENT_ARM_DISARM param1=0 signed=no
-      COMMAND_INJECTED
+      t=2.15 sysid=1 comp=1 msg=ATTITUDE signed=yes
+      EOF
+      
+      # 2) 명령 메시지(COMMAND_LONG)와 그 발신 sysid·서명 여부를 뽑는다.
+      grep "COMMAND_LONG" "$LOG"
+      
+      # 3) 판정: 기존 기체(sysid=1)가 아닌 sysid(255)에서 온 무서명 COMMAND_LONG 이 있으면 인젝션.
+      awk '/COMMAND_LONG/ && /signed=no/ && !/sysid=1 /{print "INJECTED:", $0; f=1} END{print (f?"COMMAND_INJECTED":"CLEAN")}' "$LOG"
     answer_detail: "무서명 MAVLink 에 sysid=255(사칭) COMMAND_LONG(NAV_LAND/ARM_DISARM) 주입 = 하이재킹."
     verify:
       type: output_contains
@@ -192,12 +218,17 @@ steps:
     hint: "서명 로그 생성 → 주입 명령이 sig=FAIL reject 확인 → HIJACK_PREVENTED."
     category: defense
     answer: |
-      [정상 명령]
+      SLOG=/tmp/mavlink_signed_STU42.log
+      # MAVLink2 서명 활성: 각 메시지에 서명 상태(verify). 주입 명령은 키가 없어 verify=FAIL → 거부.
+      cat > "$SLOG" <<'EOF'
       t=3.01 sysid=1   msg=HEARTBEAT      sig=OK   action=accept
       t=3.05 sysid=1   msg=COMMAND_LONG cmd=MAV_CMD_NAV_TAKEOFF sig=OK   action=accept
-      [주입 거부]
       t=3.09 sysid=255 msg=COMMAND_LONG cmd=MAV_CMD_NAV_LAND    sig=FAIL action=reject(무서명/키불일치)
-      HIJACK_PREVENTED
+      EOF
+      echo "[정상 명령]"; grep "action=accept" "$SLOG"
+      echo "[주입 거부]"; grep "action=reject" "$SLOG"
+      # 판정: 서명 검증으로 주입 명령이 거부되면(sig=FAIL reject) 하이재킹 방어.
+      grep -q "sig=FAIL" "$SLOG" && grep -q "action=reject" "$SLOG" && echo HIJACK_PREVENTED || echo NO_SIGNING
     answer_detail: "MAVLink2 서명으로 무서명/키불일치 주입 명령 거부. 802.11w·WPA3·페일세이프 병행."
     verify:
       type: output_contains
@@ -222,12 +253,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      A WiFi capture showed a burst of six deauth frames from one attacker MAC (a deauth flood cutting the
-      controller link); a MAVLink log had unsigned COMMAND_LONG messages from sysid 255 forcing NAV_LAND
-      and ARM_DISARM (motor kill), an injected hijack; with MAVLink2 signing the forged command failed
-      verification and was rejected. Consumer drones use WiFi and unsigned MAVLink, so defense uses
-      MAVLink2 signing, 802.11w, WPA3, link encryption, and a link-loss failsafe.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 3 of an autonomous systems course on drone hacking. Facts: a WiFi capture showed a burst of six deauthentication frames from one attacker MAC, a deauth flood cutting the controller link (DEAUTH_DETECTED); a MAVLink message log had unsigned COMMAND_LONG messages from sysid 255 forcing NAV_LAND and ARM_DISARM (motor kill), an injected hijack (COMMAND_INJECTED); with MAVLink2 message signing the forged command failed verification and was rejected (HIJACK_PREVENTED). Explain that consumer drones use WiFi and unsigned MAVLink so deauth floods and command injection enable hijacking, and defense uses MAVLink2 signing, 802.11w management-frame protection, WPA3, link encryption, and a link-loss failsafe. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W03 드론 종합(Assessment): Deauth 플러드·MAVLink 명령 인젝션·MAVLink2 서명/802.11w 방어."
     verify:
       type: output_contains

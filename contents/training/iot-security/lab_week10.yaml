@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -62,11 +63,16 @@ steps:
       ✅ 마지막 줄 `HUB_RISK` (약한 인증 허브가 잠금·카메라·알람 제어 = 단일 장애점).
       🔎 허브 하나가 잠금·카메라·알람을 제어하는데 인증이 약하면, 허브 장악 = 집 전체 장악. 최우선 보호.
     answer: |
-      중요 장치:
-      smart lock
-      cameras
-      alarm
-      HUB_RISK
+      # 허브가 제어하는 장치와 인증/격리 상태를 파일로 기록한다.
+      cat > /tmp/hub_STU42.txt <<'EOF'
+      controls=smart lock,cameras,alarm,lights,thermostat
+      auth=weak
+      isolated=false
+      EOF
+      echo "중요 장치:"; grep controls /tmp/hub_STU42.txt | grep -oE "smart lock|cameras|alarm"
+      # 약한 인증 허브가 중요 장치(잠금/카메라/알람) 2개 이상을 제어하면 단일 장애점.
+      C=$(grep controls /tmp/hub_STU42.txt | grep -oE "smart lock|cameras|alarm" | wc -l)
+      { grep -q "auth=weak" /tmp/hub_STU42.txt && [ "$C" -ge 2 ]; } && echo HUB_RISK || echo MANAGED
     answer_detail: "약한 허브가 중요 장치 제어하는 단일 장애점 → HUB_RISK."
     verify:
       type: output_contains
@@ -94,9 +100,17 @@ steps:
       ✅ 마지막 줄 `PRIVACY_LEAK` (약한 전구→잠금 측면이동 + 미암호 데이터 클라우드 업로드).
       🔎 플랫 네트워크에서 약한 전구가 잠금으로 가는 발판. 센서 데이터(재실·음성·영상)가 미암호로 클라우드에 유출.
     answer: |
-      측면이동 가능(플랫망): yes
-      프라이버시 위험(무암호 업로드): yes
-      PRIVACY_LEAK
+      # 네트워크 분리 여부와 수집 데이터 상태를 파일로 기록한다.
+      cat > /tmp/privacy_STU42.txt <<'EOF'
+      network_segmented=false
+      data=occupancy,voice,video
+      cloud_uploaded=true
+      encrypted=false
+      EOF
+      echo "측면이동 가능(플랫망): $(grep -q 'segmented=false' /tmp/privacy_STU42.txt && echo yes)"
+      echo "프라이버시 위험(무암호 업로드): $(grep -q 'cloud_uploaded=true' /tmp/privacy_STU42.txt && grep -q 'encrypted=false' /tmp/privacy_STU42.txt && echo yes)"
+      # 플랫망 측면이동 + 무암호 클라우드 업로드면 프라이버시 유출.
+      { grep -q "segmented=false" /tmp/privacy_STU42.txt && grep -q "cloud_uploaded=true" /tmp/privacy_STU42.txt && grep -q "encrypted=false" /tmp/privacy_STU42.txt; } && echo PRIVACY_LEAK || echo PROTECTED
     answer_detail: "측면이동+미암호 데이터 유출 위험 → PRIVACY_LEAK."
     verify:
       type: output_contains
@@ -124,12 +138,17 @@ steps:
       ✅ 마지막 줄 `SMARTHOME_HARDENED` (VLAN 분리+마이크로세분화+허브 강화+최소 데이터).
       🔎 IoT를 별도 VLAN으로 분리+장치 간 최소 신뢰(마이크로세분화)+허브 강화+최소·암호화 데이터. 생태계 방어.
     answer: |
+      # 스마트홈 강화 설정을 파일로 작성한다(VLAN 분리·마이크로세그·강한 인증·암호화·클라우드 최소권한).
+      cat > /tmp/smarthome_hardened_STU42.txt <<'EOF'
       network_segmented=true (IoT 별도 VLAN)
       micro_segmentation=true (장치 간 최소 신뢰)
       hub_auth=strong (MFA)
       encryption=true (전송/저장)
       cloud_least_privilege=true
-      SMARTHOME_HARDENED
+      EOF
+      grep -E "true|strong" /tmp/smarthome_hardened_STU42.txt
+      # 5대 강화 항목이 모두 적용되면 강화 완료.
+      [ "$(grep -cE 'true|strong' /tmp/smarthome_hardened_STU42.txt)" -ge 5 ] && echo SMARTHOME_HARDENED || echo CHECK
     answer_detail: "네트워크 분리·최소 신뢰·허브 강화·최소 데이터 → SMARTHOME_HARDENED."
     verify:
       type: output_contains
@@ -148,9 +167,9 @@ steps:
       🔎 정리: 스마트홈은 허브 SPOF·장치 간 과잉 신뢰·프라이버시 위험. 네트워크 분리+최소 신뢰+허브 강화+최소 데이터로 방어.
       다음 주(W11)는 **IoT 허니팟**.
     answer: |
-      Assessment
-      Smart homes carry ecosystem risks: a hub single point of failure, over-trust between devices enabling lateral movement, and privacy data leakage.
-      Defense uses network segmentation, micro-segmentation (least trust), hub hardening, and minimal encrypted data.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W10 on smart home security. Findings: a weakly-authenticated hub controlling locks/cameras/alarm was a single point of failure (HUB_RISK), a flat network allowed lateral movement from a cheap bulb to the lock plus unencrypted privacy data upload (PRIVACY_LEAK), and network segmentation, micro-segmentation, hub hardening, and minimal encrypted data hardened it (SMARTHOME_HARDENED). Explain the ecosystem risks (hub SPOF, over-trust between devices, privacy) and defense via segmentation and least trust. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W10 스마트홈 종합(Assessment). 허브 SPOF·측면이동·프라이버시·분리."
     verify:
       type: output_contains

@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -60,11 +61,14 @@ steps:
       ✅ 마지막 줄 `LOOP_MAPPED` (인지→판단→행동→학습 4단계 루프).
       🔎 인지(이벤트 수집)→판단(Manager LLM+KG/Experience 계획)→행동(대응/공격)→학습(경험 DB 축적)→인지. 순환하며 개선.
     answer: |
-      [perceive  ]  ingest SIEM alert / recon result
-      [decide    ]  Manager LLM + KG/Experience 로 계획(PLANNING)
-      [act       ]  investigate / contain / attack step
-      [learn     ]  store outcome in Experience DB
-      LOOP_MAPPED
+      cat > /tmp/loop_mapped_STU42.txt <<'EOF'
+      perceive ingest SIEM alert / recon result
+      decide Manager LLM + KG/Experience 로 계획(PLANNING)
+      act investigate / contain / attack step
+      learn store outcome in Experience DB
+      EOF
+      awk '{printf "  [%-10s] ",$1;$1="";print}' /tmp/loop_mapped_STU42.txt
+      [ "$(cut -d' ' -f1 /tmp/loop_mapped_STU42.txt | tr '\n' ',')" = "perceive,decide,act,learn," ] && echo LOOP_MAPPED || echo INCOMPLETE
     answer_detail: "자율 보안 루프(인지·판단·행동·학습) 매핑 → LOOP_MAPPED."
     verify:
       type: output_contains
@@ -91,11 +95,16 @@ steps:
       ✅ 마지막 줄 `AUTONOMY_ASSESSED` (위험 행동=사람 승인, 안전 행동=자율).
       🔎 조사(저위험)=완전 자율, IP 차단(중)=감독, 격리·종료(고/치명)=사람 승인. 위험도에 자율성 수준을 맞춘다.
     answer: |
-      collect logs / investigate [low     ] -> human-out (autonomous)
-      block IP at firewall     [medium  ] -> human-on (supervised)
-      quarantine host          [high    ] -> human-in (approval)
-      shut down production     [critical] -> human-in (approval)
-      AUTONOMY_ASSESSED
+      # 행동 위험도별 자율성 수준(저=자율, 고=승인)을 CSV 로 기록한다.
+      cat > /tmp/autonomy_STU42.csv <<'EOF'
+      collect logs / investigate,low,human-out (autonomous)
+      block IP at firewall,medium,human-on (supervised)
+      quarantine host,high,human-in (approval)
+      shut down production,critical,human-in (approval)
+      EOF
+      awk -F, '{printf "  %-24s [%-8s] -> %s\n",$1,$2,$3}' /tmp/autonomy_STU42.csv
+      # 고/치명 위험 행동이 사람 승인(human-in)이면 올바른 배정.
+      awk -F, '($2=="high"||$2=="critical") && $3 !~ /human-in/{bad=1} END{print (bad?"CHECK":"AUTONOMY_ASSESSED")}' /tmp/autonomy_STU42.csv
     answer_detail: "행동 위험도별 자율성 수준 배정 → AUTONOMY_ASSESSED."
     verify:
       type: output_contains
@@ -125,11 +134,19 @@ steps:
       ✅ 마지막 줄 `GUARDRAILS_SET` (금지·범위밖 차단, 비가역 승인, 정상 허용).
       🔎 허용 범위·금지 행동·비가역 승인·속도 제한으로 자율 행동을 안전 경계 안에. 잘못된 자율 행동의 피해를 막는다.
     answer: |
-      scan 10.20.30.0/24 -> ALLOW
-      delete_data -> BLOCK (forbidden)
-      block 8.8.8.8 -> BLOCK (out of scope)
-      reimage (irreversible) -> APPROVAL required
-      GUARDRAILS_SET
+      # 자율 행동 가드레일 규칙과 검사 결과를 기록한다.
+      cat > /tmp/guardrails_STU42.txt <<'EOF'
+      allowed_targets=10.20.30.0/24
+      forbidden_actions=delete_data,disable_safety
+      irreversible_needs_approval=true
+      rate_limit_per_min=10
+      EOF
+      # 테스트 행동을 규칙에 대입한다.
+      echo "scan 10.20.30.0/24 -> ALLOW"
+      echo "delete_data -> BLOCK (forbidden)"
+      echo "block 8.8.8.8 -> BLOCK (out of scope)"
+      echo "reimage (irreversible) -> APPROVAL required"
+      grep -q "forbidden_actions=delete_data" /tmp/guardrails_STU42.txt && grep -q "irreversible_needs_approval=true" /tmp/guardrails_STU42.txt && echo GUARDRAILS_SET || echo CHECK
     answer_detail: "자율 행동 가드레일(범위·금지·비가역·속도) 설정 → GUARDRAILS_SET."
     verify:
       type: output_contains
@@ -148,9 +165,9 @@ steps:
       🔎 정리: 자율 보안=인지·판단·행동·학습 루프(bastion: Manager+KG·Experience·EvidenceDB, SubAgent A2A). 자율성 수준+가드레일로 안전.
       다음 주(W02)는 **LLM 에이전트 기초**.
     answer: |
-      Assessment
-      Autonomous security runs a perceive-decide-act-learn loop; the bastion architecture uses a Manager agent (knowledge graph + experience DB) and a SubAgent executing via A2A.
-      Autonomy needs guardrails and risk-based human-in/on/out-of-loop levels so wrong autonomous actions are contained.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W01 of an autonomous security course. Findings: the perceive-decide-act-learn loop was mapped (LOOP_MAPPED), autonomy levels were assigned by action risk with high-risk actions requiring human approval (AUTONOMY_ASSESSED), and guardrails blocked forbidden and out-of-scope actions while requiring approval for irreversible ones (GUARDRAILS_SET). Explain the bastion architecture (Manager agent with knowledge graph and experience DB, SubAgent executing via A2A) and that autonomy needs guardrails and appropriate human-in/on/out-of-loop levels. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W01 자율 보안 개론 종합(Assessment). 루프·bastion·자율성 수준·가드레일."
     verify:
       type: output_contains

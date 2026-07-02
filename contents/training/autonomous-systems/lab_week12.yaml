@@ -44,8 +44,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -86,11 +87,20 @@ steps:
     hint: "BSM 로그 생성 → 모든 메시지 sig=absent 확인 → V2X_VULNERABLE."
     category: recon
     answer: |
-      [서명 상태]
-      t=1.0 id=V-A sig=absent
-      t=1.1 id=V-B sig=absent
-      t=1.2 id=V-A sig=absent
-      V2X_VULNERABLE
+      LOG=/tmp/v2x_bsm_STU42.log
+      # 1) BSM 로그: id, 위치(lat/lon), 속도, 이벤트, 서명 유무.
+      cat > "$LOG" <<'EOF'
+      t=1.0 id=V-A lat=37.3010 lon=127.0100 speed=60 event=none  sig=absent
+      t=1.1 id=V-B lat=37.3009 lon=127.0102 speed=58 event=none  sig=absent
+      t=1.2 id=V-A lat=37.3011 lon=127.0101 speed=60 event=none  sig=absent
+      EOF
+      
+      # 2) 각 메시지의 서명 여부를 확인한다(안전 메시지가 서명 없이 방송되는지).
+      echo "[서명 상태]"; awk '{print "  ", $1, $2, $(NF)}' "$LOG"
+      
+      # 3) 판정: 모든 BSM 이 서명 없음(sig=absent)이면 무인증 = 위조 가능.
+      T=$(wc -l < "$LOG"); A=$(grep -c "sig=absent" "$LOG")
+      test "$A" = "$T" && echo V2X_VULNERABLE || echo SIGNED
     answer_detail: "모든 BSM 이 무서명 = 임의 차량 사칭 가능. 무인증 V2X 는 원격 사고 유발 통로."
     verify:
       type: output_contains
@@ -141,9 +151,24 @@ steps:
     hint: "awk 로 같은 id 순간이동(Δlat>0.01) 또는 HARD_BRAKE 유령 차량 탐지 → MESSAGE_SPOOFED."
     category: exploit
     answer: |
-      id=V-A 순간이동 Δlat=0.0490  <-- 위조!
-      가짜 급제동 방송: id=GHOST speed=0 event=HARD_BRAKE
-      MESSAGE_SPOOFED
+      LOG=/tmp/v2x_spoof_STU42.log
+      # 정상 BSM + 위조: 같은 id 가 0.1초 만에 순간이동, 그리고 유령 차량의 급제동(HARD_BRAKE) 방송.
+      cat > "$LOG" <<'EOF'
+      t=2.0 id=V-A lat=37.3010 lon=127.0100 speed=60 event=none       sig=absent
+      t=2.1 id=V-A lat=37.3500 lon=127.0600 speed=60 event=none       sig=absent
+      t=2.2 id=GHOST lat=37.3011 lon=127.0101 speed=0 event=HARD_BRAKE sig=absent
+      EOF
+      
+      # 1) 같은 id 의 0.1초 간 위치 점프(순간이동)를 계산한다.
+      awk '{split($3,a,"="); split($4,b,"="); id=$2; lat=a[2]+0;
+            if(prev[id]!=""){ d=lat-prev[id]; if(d<0)d=-d;
+              if(d>0.01) printf "  %s 순간이동 Δlat=%.4f  <-- 위조!\n", id, d }
+            prev[id]=lat }' "$LOG"
+      # 2) 급제동/정지(speed=0 HARD_BRAKE) 유령 차량 방송을 표시한다.
+      awk '/HARD_BRAKE/{print "  가짜 급제동 방송:", $2, $5, $6}' "$LOG"
+      
+      # 3) 판정: 순간이동 또는 유령 급제동이 있으면 위조 메시지.
+      awk '{split($3,a,"="); id=$2; lat=a[2]+0; if(prev[id]!=""){d=lat-prev[id]; if(d<0)d=-d; if(d>0.01)f=1} prev[id]=lat} /HARD_BRAKE/{f=1} END{print (f?"MESSAGE_SPOOFED":"PLAUSIBLE")}' "$LOG"
     answer_detail: "같은 차량의 물리 불가능 순간이동 + 유령 차량 급제동 방송 = 위조 안전 메시지. 물리 정합성으로 탐지."
     verify:
       type: output_contains
@@ -186,12 +211,17 @@ steps:
     hint: "1609.2 로그 생성 → 위조가 cert=none + action=reject 확인 → V2X_SECURED."
     category: defense
     answer: |
-      [검증 통과]
+      SLOG=/tmp/v2x_pki_STU42.log
+      # 각 BSM 에 1609.2 인증서 검증 결과 + 오작동 탐지(MBD) 판정.
+      cat > "$SLOG" <<'EOF'
       t=3.0 id=V-A  cert=valid(1609.2)  mbd=plausible   action=accept
       t=3.1 id=V-A  cert=valid(1609.2)  mbd=plausible   action=accept
-      [위조 거부]
       t=3.2 id=GHOST cert=none          mbd=implausible action=reject(무인증서+물리모순)
-      V2X_SECURED
+      EOF
+      echo "[검증 통과]"; grep "action=accept" "$SLOG"
+      echo "[위조 거부]"; grep "action=reject" "$SLOG"
+      # 판정: 인증서 검증 + 오작동 탐지로 위조가 거부되면 방어 성립.
+      grep -q "cert=none" "$SLOG" && grep -q "action=reject" "$SLOG" && echo V2X_SECURED || echo NO_PKI
     answer_detail: "1609.2 인증서 서명(사칭 차단)+오작동 탐지(물리 모순 차단)로 위조 거부. 서명+정합성 이중 방어."
     verify:
       type: output_contains
@@ -216,13 +246,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      A BSM log showed safety messages broadcast without signatures; awk detected a spoofed message where
-      one vehicle teleported ~5 km in 0.1 s and a ghost vehicle broadcast a hard-brake event — physically
-      impossible forgeries. With IEEE 1609.2 certificate verification plus misbehavior detection, the
-      forged message with no certificate and implausible physics was rejected. Unauthenticated V2X lets
-      attackers broadcast ghost vehicles and fake braking; defense uses 1609.2 signing plus misbehavior
-      detection for physical plausibility.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 12 of an autonomous systems course on V2X and automotive security. Facts: a BSM log showed safety messages broadcast without signatures (V2X_VULNERABLE); awk detected a spoofed message where one vehicle teleported about 5 km in 0.1 s and a ghost vehicle broadcast a hard-brake event, physically impossible forgeries (MESSAGE_SPOOFED); with IEEE 1609.2 certificate verification plus misbehavior detection, the forged message with no certificate and implausible physics was rejected (V2X_SECURED). Explain that unauthenticated V2X lets attackers broadcast ghost vehicles and fake emergency braking to cause crashes, and defense uses 1609.2 short-lived anonymous certificates for signing plus misbehavior detection for physical plausibility. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W12 V2X 종합(Assessment): 무인증 BSM·위조 안전 메시지·1609.2 PKI/오작동 탐지."
     verify:
       type: output_contains

@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -63,11 +64,17 @@ steps:
       ✅ 마지막 줄 `REWARD_DEFINED` (정탐 +, 오탐·미탐 큰 페널티).
       🔎 정탐(+10)·오탐(-20)·미탐(-50)·정상(+1). 오탐(정상 차단)·미탐에 큰 페널티를 줘 정확·신중하게 학습하도록 정렬.
     answer: |
-      true_positive    +10
-      false_positive   -20
-      false_negative   -50
-      true_negative    +1
-      REWARD_DEFINED
+      # 보상 함수(부작용 페널티 포함)를 CSV 로 정의한다.
+      cat > /tmp/reward_STU42.csv <<'EOF'
+      true_positive,10
+      false_positive,-20
+      false_negative,-50
+      true_negative,1
+      EOF
+      awk -F, '{printf "  %-16s %+d\n",$1,$2}' /tmp/reward_STU42.csv
+      # 미탐(FN)이 가장 큰 페널티이고 오탐(FP)도 음수면 안전 정렬된 보상.
+      FN=$(awk -F, '$1=="false_negative"{print $2}' /tmp/reward_STU42.csv); FP=$(awk -F, '$1=="false_positive"{print $2}' /tmp/reward_STU42.csv)
+      { [ "$FN" -le -50 ] && [ "$FP" -lt 0 ]; } && echo REWARD_DEFINED || echo MISALIGNED
     answer_detail: "목표 정렬 보상 함수 설계 → REWARD_DEFINED."
     verify:
       type: output_contains
@@ -92,9 +99,14 @@ steps:
       ✅ 마지막 줄 `POLICY_UPDATED` (조사 우선이 더 높은 가치로 학습 → 정책 개선).
       🔎 보상 경험으로 Q값 갱신: 오탐 많은 aggressive_block은 낮게, 정탐 investigate_first는 높게 → 정책이 조사 우선으로 개선.
     answer: |
+      # 경험(보상)으로 Q값을 갱신한다.
+      cat > /tmp/qupdate_STU42.txt <<'EOF'
       aggressive_block: experience -20 -> Q lowered
       investigate_first: experience +10 -> Q raised
-      POLICY_UPDATED
+      EOF
+      cat /tmp/qupdate_STU42.txt
+      # 좋은 행동(investigate_first)의 Q가 오르고 나쁜 행동의 Q가 내리면 정책 개선.
+      grep -q "investigate_first.*raised" /tmp/qupdate_STU42.txt && grep -q "aggressive_block.*lowered" /tmp/qupdate_STU42.txt && echo POLICY_UPDATED || echo CHECK
     answer_detail: "보상으로 Q값 갱신·정책 개선 → POLICY_UPDATED."
     verify:
       type: output_contains
@@ -120,10 +132,15 @@ steps:
       ✅ 마지막 줄 `REWARD_HACK_DETECTED` (차단 수 보상 → 정상 495개 차단, 서비스 붕괴).
       🔎 "차단 수"만 보상하면 에이전트가 정상 트래픽까지 마구 차단해 보상을 올린다(보안 아니라 서비스 파괴). 보상≠목표의 간극 = 보상 해킹.
     answer: |
-      aggressive     reward=100 fp_rate=0.40  <-- 보상 해킹 의심
-      balanced       reward=80 fp_rate=0.03
-      conservative   reward=50 fp_rate=0.01
-      REWARD_HACK_DETECTED
+      # 높은 보상이지만 부작용(오탐 폭증)으로 목표를 왜곡한 정책을 찾는다.
+      cat > /tmp/rewardhack_STU42.csv <<'EOF'
+      aggressive,100,0.40
+      balanced,80,0.03
+      conservative,50,0.01
+      EOF
+      awk -F, '{printf "  %-14s reward=%s fp_rate=%s%s\n",$1,$2,$3,($3+0>0.2?"  <-- 보상 해킹 의심":"")}' /tmp/rewardhack_STU42.csv
+      # 보상은 최고인데 오탐율이 임계(0.2) 초과면 보상 해킹.
+      awk -F, 'NR==1{r=$2;f=$3} $2>r{r=$2;f=$3} END{print (f+0>0.2?"REWARD_HACK_DETECTED":"CLEAN")}' /tmp/rewardhack_STU42.csv
     answer_detail: "높은 보상+실제 목표 실패+부작용으로 보상 해킹 탐지 → REWARD_HACK_DETECTED."
     verify:
       type: output_contains
@@ -142,9 +159,9 @@ steps:
       🔎 정리: RL은 보상으로 정책 개선. 보상 해킹(목표 아닌 보상 게임)이 핵심 위험 — 보상 정렬+감시가 안전한 RL.
       다음 주(W08)는 **중간고사 — 자율 보안 점검 CTF**.
     answer: |
-      Assessment
-      RL improves policy via reward, but reward hacking games the signal instead of the goal (rewarding block-count causes mass false positives).
-      Reward design aligned to the true goal plus monitoring for reward hacking is the core alignment challenge.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W07 on reinforcement learning and reward in autonomous security. Findings: a reward function aligned to the goal with penalties for false positives and negatives was designed (REWARD_DEFINED), Q-values updated so the policy preferred investigate-first over aggressive-block (POLICY_UPDATED), and a reward-hacking episode where rewarding block-count led to mass false-positive blocking and service destruction was detected (REWARD_HACK_DETECTED). Explain that RL improves policy via reward, but reward hacking games the signal instead of the goal, so reward design and monitoring are the alignment challenge. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W07 RL/보상 종합(Assessment). 보상 함수·정책 개선·보상 해킹·정렬."
     verify:
       type: output_contains

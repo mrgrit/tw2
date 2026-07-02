@@ -45,8 +45,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -87,11 +88,20 @@ steps:
     hint: "Modbus 로그 생성 → awk 로 무인증 쓰기(FC06 auth=none) 탐지 → ICS_VULNERABLE."
     category: recon
     answer: |
-      [쓰기 트랜잭션]
+      LOG=/tmp/ics_modbus_STU42.log
+      # 1) Modbus 트랜잭션 로그: src, function, register, value. (VFD=주파수 드라이브 = 원심분리기 회전수)
+      cat > "$LOG" <<'EOF'
+      t=01 src=10.40.0.20(HMI)     FC=03 ReadHolding  reg=40001(VFD_Hz) value=50   auth=none
+      t=02 src=10.40.0.20(HMI)     FC=03 ReadHolding  reg=40002(status) value=OK   auth=none
       t=03 src=10.20.30.99(IT-PC)  FC=06 WriteSingle  reg=40001(VFD_Hz) value=1410 auth=none
-      [인증]
-      auth=none
-      ICS_VULNERABLE
+      EOF
+      
+      # 2) 쓰기(FC06/05/10)와 인증 여부를 본다.
+      echo "[쓰기 트랜잭션]"; awk '/FC=0[56]|FC=10/{print "  ", $0}' "$LOG"
+      echo "[인증]"; grep -o "auth=none" "$LOG" | head -1
+      
+      # 3) 판정: 무인증 쓰기(auth=none + FC 쓰기)가 있으면 ICS 취약.
+      awk '(/FC=06/||/FC=05/||/FC=10/) && /auth=none/{f=1} END{print (f?"ICS_VULNERABLE":"OK")}' "$LOG"
     answer_detail: "IT 망에서 무인증 Modbus 쓰기로 VFD 주파수 조작(50→1410Hz). Modbus 무인증 + IT/OT 연결의 위험."
     verify:
       type: output_contains
@@ -139,9 +149,20 @@ steps:
     hint: "실제 공정값 vs HMI 표시값을 awk 로 비교, 불일치(위조 피드백)면 STUXNET_PATTERN."
     category: exploit
     answer: |
-      t=11 실제=1410  HMI표시=50  <-- 위조 피드백!
-      t=12 실제=1410  HMI표시=50  <-- 위조 피드백!
-      STUXNET_PATTERN
+      LOG=/tmp/ics_stuxnet_STU42.log
+      # 실제 센서(현장 계측)와 HMI 표시값을 나란히 기록. 조작 후 이 둘이 어긋난다.
+      cat > "$LOG" <<'EOF'
+      t=10 actual_VFD_Hz=50   hmi_VFD_Hz=50    # 정상
+      t=11 actual_VFD_Hz=1410 hmi_VFD_Hz=50    # 실제는 1410(파괴), HMI엔 50으로 위조 보고!
+      t=12 actual_VFD_Hz=1410 hmi_VFD_Hz=50    # 지속
+      EOF
+      
+      # 실제값과 HMI 표시값을 비교해 불일치(위조 피드백)를 찾는다.
+      awk '{split($2,a,"="); split($3,b,"="); av=a[2]+0; hv=b[2]+0;
+            if(av!=hv) printf "  t=%s 실제=%d  HMI표시=%d  <-- 위조 피드백!\n", substr($1,3), av, hv}' "$LOG"
+      
+      # 판정: 실제 공정값과 HMI 표시값이 어긋나면(운전원 기만) Stuxnet 패턴.
+      awk '{split($2,a,"="); split($3,b,"="); if((a[2]+0)!=(b[2]+0))f=1} END{print (f?"STUXNET_PATTERN":"CONSISTENT")}' "$LOG"
     answer_detail: "실제 VFD 1410Hz(파괴) vs HMI 위조 표시 50Hz = Stuxnet식 은폐. HMI 표시만 믿으면 못 잡는다."
     verify:
       type: output_contains
@@ -184,12 +205,17 @@ steps:
     hint: "SIS 로그 생성 → 독립망(isolated) + 물리 상한 TRIP 확인 → ICS_DEFENDED."
     category: defense
     answer: |
-      [SIS 독립성]
+      SIS=/tmp/ics_sis_STU42.log
+      # SIS 는 PLC 와 분리된 독립 계측·로직. 물리 상한(예: 60Hz) 초과 시 무조건 트립.
+      cat > "$SIS" <<'EOF'
       component=SIS(independent) network=isolated(Purdue L0/L1, no IT path)
-      [안전 트립]
       rule: if measured_VFD_Hz > 60 -> TRIP(shutdown), ignore PLC/HMI
       t=11 sis_measured_Hz=1410 -> TRIP: overspeed, safe shutdown
-      ICS_DEFENDED
+      EOF
+      echo "[SIS 독립성]"; grep -E "isolated|independent" "$SIS"
+      echo "[안전 트립]"; grep "TRIP" "$SIS"
+      # 판정: SIS 가 독립망 + 물리 상한 초과 시 트립하면 방어 성립.
+      grep -Eq "isolated|independent" "$SIS" && grep -q "TRIP" "$SIS" && echo ICS_DEFENDED || echo NO_SIS
     answer_detail: "독립 SIS 가 물리 상한 초과 시 트립(PLC/HMI 무시). 안전은 사이버와 분리. Purdue·OT IDS 병행."
     verify:
       type: output_contains
@@ -214,12 +240,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      A Modbus log showed an unauthenticated write from IT setting a VFD register to 1410 Hz (28x normal);
-      comparing actual process values to HMI values revealed the VFD was actually 1410 Hz while the HMI
-      reported a falsified 50 Hz — the Stuxnet pattern of sabotage plus forged feedback. An independent
-      Safety Instrumented System on an isolated network tripped on overspeed regardless of PLC/HMI.
-      Defense cannot rely on HMI values; it needs an independent SIS, Purdue segmentation, and an OT IDS.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 11 of an autonomous systems course on OT/ICS security. Facts: a Modbus log showed an unauthenticated write from the IT network setting a VFD frequency register to 1410 Hz (28x normal), an unauthenticated actuator write (ICS_VULNERABLE); comparing actual process values to HMI-displayed values revealed the VFD was actually 1410 Hz while the HMI reported a falsified 50 Hz, the Stuxnet pattern of manipulation plus forged feedback (STUXNET_PATTERN); an independent Safety Instrumented System on an isolated network tripped on overspeed regardless of the PLC/HMI (ICS_DEFENDED). Explain that Modbus is unauthenticated and Stuxnet hid its sabotage by faking normal readings, so defense cannot rely on HMI values and needs an independent SIS, Purdue segmentation, and an OT IDS. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W11 ICS 종합(Assessment): 무인증 Modbus 쓰기·Stuxnet 위조 피드백·독립 SIS/Purdue."
     verify:
       type: output_contains

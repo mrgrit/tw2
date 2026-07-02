@@ -44,8 +44,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -92,11 +93,26 @@ steps:
     hint: "candump 로그 생성 → 프레임이 ID#8바이트뿐(발신자/서명 없음) 확인 → CAN_INSECURE."
     category: recon
     answer: |
-      frame: 123#1A2B000000000000
-      frame: 1A0#0032000000000000
-      frame: 0A0#0100000000000000
-      서명/MAC 필드 존재? 8바이트 데이터뿐(인증 필드 없음)
-      CAN_INSECURE
+      DUMP=/tmp/candump_STU42.log
+      # 1) candump 형식 로그를 만든다: (타임스탬프) can0 ID#DATA. 정상 주행 트래픽.
+      cat > "$DUMP" <<'EOF'
+      (1699.001) can0 123#1A2B000000000000
+      (1699.011) can0 1A0#0032000000000000
+      (1699.021) can0 0A0#0100000000000000
+      (1699.031) can0 123#1A2C000000000000
+      (1699.041) can0 1A0#0033000000000000
+      (1699.051) can0 0A0#0100000000000000
+      EOF
+      #  ID 123=엔진RPM, 1A0=차속, 0A0=브레이크상태(01=작동중)
+      
+      # 2) 프레임 구조 확인: ID#DATA 만 있고, 발신 ECU·서명 필드가 없다.
+      awk '{print "frame:", $3}' "$DUMP" | head -3
+      echo -n "서명/MAC 필드 존재? "; grep -Eq "#.{16}$" "$DUMP" && echo "8바이트 데이터뿐(인증 필드 없음)" || echo "확장"
+      
+      # 3) 판정: 프레임에 발신자/서명이 없으면(순수 ID#DATA) CAN_INSECURE.
+      #    (모든 프레임이 8바이트=16 hex 데이터뿐 → 인증 없음)
+      T=$(wc -l < "$DUMP"); A=$(awk -F'#' '{print $2}' "$DUMP" | grep -Ec '^[0-9A-Fa-f]{16}$')
+      test "$A" = "$T" && echo CAN_INSECURE || echo HAS_AUTH
     answer_detail: "CAN 프레임은 ID#데이터뿐 — 발신자 식별·서명 없음. 무인증 브로드캐스트 구조."
     verify:
       type: output_contains
@@ -150,10 +166,26 @@ steps:
     hint: "candump 로그에서 awk 로 0A0#00(브레이크 해제) 위조 프레임 탐지 → CAN_INJECTION."
     category: exploit
     answer: |
+      DUMP=/tmp/candump_inj_STU42.log
+      # 1) 정상 트래픽 + 주입된 브레이크-해제(0A0#00...) 프레임이 섞인 로그.
+      cat > "$DUMP" <<'EOF'
+      (1699.001) can0 123#1A2B000000000000
+      (1699.011) can0 1A0#0050000000000000
       (1699.021) can0 0A0#0100000000000000
       (1699.026) can0 0A0#0000000000000000
-      INJECTED brake-release: (1699.026) can0 0A0#0000000000000000
-      CAN_INJECTION
+      (1699.031) can0 123#1A2C000000000000
+      (1699.041) can0 1A0#0051000000000000
+      EOF
+      #  1A0#0050 = 차속 80(고속). 0A0#00.. = 브레이크 해제 (고속 주행 중 브레이크 풀림 = 위조!)
+      
+      # 2) 브레이크 ID(0A0) 프레임만 뽑아 상태를 본다.
+      grep "can0 0A0#" "$DUMP"
+      
+      # 3) awk 로 '브레이크 해제(0A0 데이터가 00으로 시작)' 위조 프레임을 탐지한다.
+      awk '$3 ~ /^0A0#00/ {print "INJECTED brake-release:", $0}' "$DUMP"
+      
+      # 4) 판정: 브레이크-해제 위조 프레임이 있으면 CAN_INJECTION.
+      awk '$3 ~ /^0A0#00/{f=1} END{print (f?"CAN_INJECTION":"CLEAN")}' "$DUMP"
     answer_detail: "고속 주행 중 브레이크 ID(0A0)에 해제(00) 위조 프레임 주입을 awk 로 탐지. CAN 무인증 악용."
     verify:
       type: output_contains
@@ -199,12 +231,19 @@ steps:
     hint: "SecOC 로그(MAC+verify) 생성 → 위조가 verify=FAIL 로 거부됨 확인 → VEHICLE_HARDENED."
     category: defense
     answer: |
-      인증 통과:
+      SLOG=/tmp/candump_secoc_STU42.log
+      # SecOC: 데이터 뒤에 MAC(예: 8바이트 데이터 + 카운터 + truncated MAC). 위조는 MAC 검증 실패.
+      cat > "$SLOG" <<'EOF'
       (1700.001) can0 0A0#0100  MAC=1F3A CTR=0041 verify=OK
       (1700.011) can0 0A0#0100  MAC=2B7C CTR=0042 verify=OK
-      위조 거부:
       (1700.016) can0 0A0#0000  MAC=0000 CTR=0000 verify=FAIL(rejected)
-      VEHICLE_HARDENED
+      EOF
+      
+      # 정상 프레임(verify=OK)과 위조 프레임(verify=FAIL)을 구분한다.
+      echo "인증 통과:"; grep "verify=OK" "$SLOG"
+      echo "위조 거부:"; grep "verify=FAIL" "$SLOG"
+      # 판정: MAC 검증으로 위조가 거부되면(verify=FAIL 존재) 강화됨.
+      grep -q "MAC=" "$SLOG" && grep -q "verify=FAIL" "$SLOG" && echo VEHICLE_HARDENED || echo NO_AUTH
     answer_detail: "SecOC(MAC+카운터)로 위조 프레임 거부. 도메인 분리·차량 IDS 병행."
     verify:
       type: output_contains
@@ -229,12 +268,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      A candump log showed CAN frames are just ID and data with no authentication; among high-speed
-      traffic an injected brake-release frame (0A0#00) was detected with awk, a spoofed safety-critical
-      message. A SecOC log with counters and MACs rejected the forgery (verify=FAIL). CAN has no message
-      authentication, so a compromised ECU can inject brake/steering frames; defense uses SecOC, gateway
-      domain separation, and a vehicle IDS.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 13 of an IoT security course on automotive CAN bus security. Facts: a candump log showed CAN frames are just ID and data with no sender authentication or signature (CAN_INSECURE); among normal high-speed traffic, an injected brake-release frame on the brake ID 0A0 with data 00 was detected with awk, a spoofed safety-critical message (CAN_INJECTION); a SecOC log with per-frame counters and MACs rejected the forged frame (verify=FAIL), hardening the bus (VEHICLE_HARDENED). Explain that CAN has no message authentication so a compromised ECU can inject brake or steering frames, and defense uses SecOC message authentication, gateway domain separation, and a vehicle IDS. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W13 자동차 종합(Assessment): CAN 무인증·브레이크 위조 주입 탐지·SecOC/도메인 분리."
     verify:
       type: output_contains

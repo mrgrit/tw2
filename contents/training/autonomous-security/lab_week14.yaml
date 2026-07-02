@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -61,10 +62,15 @@ steps:
       ✅ 마지막 줄 `POLICY_STEERED` (인간 선호로 '조사 우선'이 최고 점수).
       🔎 사람이 행동 쌍을 비교(조사 우선 > 즉시 행동)해 선호를 학습. 명세하기 힘든 좋은 행동을 인간 피드백으로 조종. RLHF.
     answer: |
-      선호: investigate_then_act > act_immediately
-      선호: minimal_scope > broad_scope
-      선호: ask_on_irreversible > auto_irreversible
-      POLICY_STEERED
+      # 인간 선호쌍(better,worse)으로 정책을 조종한다.
+      cat > /tmp/prefs_STU42.csv <<'EOF'
+      investigate_then_act,act_immediately
+      minimal_scope,broad_scope
+      ask_on_irreversible,auto_irreversible
+      EOF
+      awk -F, '{print "  선호: "$1" > "$2}' /tmp/prefs_STU42.csv
+      # 조종 후 선호 최상 행동이 investigate_then_act 이면 조종 성공.
+      head -1 /tmp/prefs_STU42.csv | cut -d, -f1 | grep -q "investigate_then_act" && echo POLICY_STEERED || echo CHECK
     answer_detail: "인간 피드백(RLHF)으로 정책 선호 조종 → POLICY_STEERED."
     verify:
       type: output_contains
@@ -91,10 +97,16 @@ steps:
       ✅ 마지막 줄 `CONSTRAINED_OPTIMIZED` (오탐 40% aggressive 배제, 제약 만족 balanced 선택).
       🔎 오탐률 ≤5% 제약을 만족하는 정책 중 보상 최대(balanced). 높은 보상이라도 제약 위반(aggressive, 오탐 40%)은 배제 — 보상 해킹 원천 차단.
     answer: |
-      aggressive     reward=100 fp=0.40 [제약위반]
-      balanced       reward=80 fp=0.03 [OK]
-      conservative   reward=50 fp=0.01 [OK]
-      CONSTRAINED_OPTIMIZED
+      # 제약(오탐율<=0.05) 하에서 정책을 최적화한다.
+      cat > /tmp/policies_STU42.csv <<'EOF'
+      aggressive,100,0.40
+      balanced,80,0.03
+      conservative,50,0.01
+      EOF
+      awk -F, '{ok=($3+0<=0.05)?"OK":"제약위반"; printf "  %-14s reward=%s fp=%s [%s]\n",$1,$2,$3,ok}' /tmp/policies_STU42.csv
+      # 제약(fp<=0.05) 만족 중 보상 최고(balanced)를 선택하면 제약 최적화.
+      BEST=$(awk -F, '$3+0<=0.05{print $2","$1}' /tmp/policies_STU42.csv | sort -rn | head -1 | cut -d, -f2)
+      [ "$BEST" = "balanced" ] && echo CONSTRAINED_OPTIMIZED || echo CHECK
     answer_detail: "안전 제약 하 보상 최적화 → CONSTRAINED_OPTIMIZED."
     verify:
       type: output_contains
@@ -119,10 +131,14 @@ steps:
       ✅ 마지막 줄 `POLICY_IMPROVED` (탐지율 75→85%, 오탐·위반 미악화 → 배포).
       🔎 새 정책을 배포 전 오프라인 평가: 탐지율↑(75→85%) AND 오탐·안전 위반 미악화. 성능 향상+안전 유지 확인 후에만 배포.
     answer: |
+      # 배포 전 평가로 개선을 확인한다.
+      cat > /tmp/improve_STU42.txt <<'EOF'
       before: reward=60 fp_rate=0.15 (제약 위반)
       after:  reward=80 fp_rate=0.03 (제약 만족)
       eval: shadow-run on held-out incidents -> no regression
-      POLICY_IMPROVED
+      EOF
+      cat /tmp/improve_STU42.txt
+      grep -q "after:.*0.03" /tmp/improve_STU42.txt && grep -q "no regression" /tmp/improve_STU42.txt && echo POLICY_IMPROVED || echo CHECK
     answer_detail: "배포 전 평가(성능↑·안전 유지) → POLICY_IMPROVED."
     verify:
       type: output_contains
@@ -141,9 +157,9 @@ steps:
       🔎 정리: RL Steering=인간 피드백·제약·안정성·평가로 정렬된 최적화. 보상만 좇는 위험 없이 능력↑ 안전 유지. W07 보상 해킹 해법.
       다음 주(W15)는 **기말 — 자율 Purple Team**.
     answer: |
-      Assessment
-      Naive RL only maximizes reward and risks reward hacking; steering with human feedback, safety constraints, stability, and offline evaluation gives aligned optimization.
-      Capability improves while safety is preserved, and policies deploy only after passing evaluation.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W14 on RL steering and policy optimization. Findings: human feedback steered the policy toward investigate-first (POLICY_STEERED), constrained optimization selected the best policy under a false-positive limit rejecting an aggressive reward-hacking policy (CONSTRAINED_OPTIMIZED), and offline evaluation approved deployment because detection improved while safety was preserved (POLICY_IMPROVED). Explain that naive RL only maximizes reward and is risky, while steering with human feedback, constraints, stability, and offline evaluation gives aligned optimization. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W14 RL Steering 종합(Assessment). 인간 피드백·제약 최적화·배포 전 평가."
     verify:
       type: output_contains

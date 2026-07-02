@@ -45,8 +45,9 @@ steps:
     hint: "curl /api/generate → response 있으면 GEN_OK."
     category: survey
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -96,10 +97,28 @@ steps:
     hint: "조인 캡처 생성 → grep 로 Transport Key + 기본 링크키(5A69...3039) 확인 → CRYPTO_WEAK."
     category: recon
     answer: |
-      APS Command: Transport Key (0x05)
-      Link Key (used): 5A6967426565416C6C69616E63653039
-      기본 글로벌 링크키(ZigbeeAlliance09) 사용!
-      CRYPTO_WEAK
+      CAP=/tmp/zigbee_join_STU42.txt
+      # 1) 조인 시 캡처된 APS Transport Key 프레임 디코드(tshark zbee 요약 형식).
+      cat > "$CAP" <<'EOF'
+      Frame 12: ZigBee APS Command
+        APS Command: Transport Key (0x05)
+        Key Type: Standard Network Key
+        Sequence: 0
+        Encryption: Trust Center Link Key
+        Link Key (used): 5A6967426565416C6C69616E63653039
+        Transported Network Key (ciphertext): 8a1f...redacted...
+      EOF
+      
+      # 2) Transport Key 프레임과 사용된 링크키를 확인한다.
+      grep -E "Transport Key|Link Key \(used\)" "$CAP"
+      
+      # 3) 사용된 링크키가 공개된 기본 글로벌 키(ZigbeeAlliance09)인지 대조한다.
+      #    ZigbeeAlliance09 의 hex = 5A6967426565416C6C69616E63653039
+      DEFAULT="5A6967426565416C6C69616E63653039"
+      grep -qi "$DEFAULT" "$CAP" && echo "기본 글로벌 링크키(ZigbeeAlliance09) 사용!" || echo "고유 링크키"
+      
+      # 4) 판정: 네트워크 키가 기본 글로벌 링크키로 전송됐으면 암호 구성 취약.
+      grep -q "Transport Key" "$CAP" && grep -qi "$DEFAULT" "$CAP" && echo CRYPTO_WEAK || echo OK
     answer_detail: "네트워크 키를 공개된 기본 글로벌 링크키(ZigbeeAlliance09=5A69...3039)로 전송 = 암호 무력화."
     verify:
       type: output_contains
@@ -148,9 +167,21 @@ steps:
     hint: "캡처의 링크키를 공개 기본키 목록과 grep 대조 → 일치하면 네트워크 키 복호 가능 → KEY_EXTRACTABLE."
     category: exploit
     answer: |
-      캡처의 링크키: 5A6967426565416C6C69616E63653039
-      공개 기본키 목록에 있음? YES → 네트워크 키 복호 가능
-      KEY_EXTRACTABLE
+      CAP=/tmp/zigbee_join_STU42.txt
+      KNOWN=/tmp/known_linkkeys_STU42.txt
+      # 1) 공개적으로 알려진 기본 링크키 목록(도구에 내장된 것과 동일).
+      cat > "$KNOWN" <<'EOF'
+      5A6967426565416C6C69616E63653039  ZigbeeAlliance09 (default global TC link key)
+      D0D1D2D3D4D5D6D7D8D9DADBDCDDDEDF  ZLL default (touchlink)
+      EOF
+      
+      # 2) 캡처에서 쓰인 링크키를 뽑아 공개 목록에 있는지 대조한다.
+      USED=$(grep -oiE "[0-9A-F]{32}" "$CAP" | head -1)
+      echo "캡처의 링크키: $USED"
+      echo -n "공개 기본키 목록에 있음? "; grep -qi "$USED" "$KNOWN" && echo "YES → 네트워크 키 복호 가능" || echo "NO"
+      
+      # 3) 판정: 쓰인 링크키가 공개 목록에 있으면 네트워크 키 추출 가능.
+      grep -qi "$USED" "$KNOWN" && echo KEY_EXTRACTABLE || echo PROTECTED
     answer_detail: "쓰인 링크키가 공개 기본값 → 조인 스니핑으로 네트워크 키 복호. 이후 전 Zigbee 트래픽 해독/위조."
     verify:
       type: output_contains
@@ -193,10 +224,22 @@ steps:
     hint: "안전 조인 캡처 생성 → Install-Code 기반 + 링크키가 공개 목록에 없음 → WIRELESS_SECURED."
     category: defense
     answer: |
-      링크키: 9C4f2ab7de01553388aa77cc21ef4b6d
-      설치 코드 기반 고유 키? OK
-      공개 기본키 아님? 고유키(안전)
-      WIRELESS_SECURED
+      SCAP=/tmp/zigbee_secure_STU42.txt
+      KNOWN=/tmp/known_linkkeys_STU42.txt
+      cat > "$SCAP" <<'EOF'
+      Frame 12: ZigBee APS Command
+        APS Command: Transport Key (0x05)
+        Key Type: Standard Network Key
+        Encryption: Install-Code-Derived Link Key (per-device, Z3.0)
+        Link Key (used): 9C4f2ab7de01553388aa77cc21ef4b6d
+      EOF
+      
+      # 쓰인 링크키가 공개 기본 목록에 없어야(고유해야) 한다.
+      USED=$(grep -oiE "[0-9A-F]{32}" "$SCAP" | head -1)
+      echo "링크키: $USED"
+      echo -n "설치 코드 기반 고유 키? "; grep -qi "Install-Code" "$SCAP" && echo OK || echo NO
+      echo -n "공개 기본키 아님? "; grep -qi "$USED" "$KNOWN" && echo "기본키(취약)" || echo "고유키(안전)"
+      grep -qi "Install-Code" "$SCAP" && ! grep -qi "$USED" "$KNOWN" && echo WIRELESS_SECURED || echo STILL_WEAK
     answer_detail: "설치 코드 기반 장치별 고유 링크키 → 조인 스니핑해도 복호 불가. 키 교체·조인창 제한 병행."
     verify:
       type: output_contains
@@ -221,12 +264,9 @@ steps:
     hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
     category: report
     answer: |
-      Assessment
-      A Zigbee join capture showed the network key transported with the well-known default global link
-      key ZigbeeAlliance09; because it is public, the transported network key can be decrypted from a
-      sniffed join. A Zigbee 3.0 install-code-derived per-device link key resisted it. Zigbee uses strong
-      AES-128, but weak key distribution defeats it, so defense uses per-device install codes, unique
-      link keys, network key rotation, and limited join windows.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 6 of an IoT security course on Zigbee wireless security. Facts: a Zigbee join capture showed the network key transported using the well-known default global Trust Center link key ZigbeeAlliance09 (CRYPTO_WEAK); because that link key is public, matching it against a known-defaults list shows the transported network key can be decrypted from a sniffed join (KEY_EXTRACTABLE); a Zigbee 3.0 capture using an install-code-derived per-device link key that is not in the defaults list resisted it (WIRELESS_SECURED). Explain that Zigbee uses strong AES-128 but weak key distribution defeats it, so defense uses per-device install codes, unique link keys, periodic network key rotation, and limited join windows. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W06 Zigbee 종합(Assessment): 기본 글로벌 링크키·네트워크 키 추출·설치코드/고유키 방어."
     verify:
       type: output_contains

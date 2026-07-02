@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -64,12 +65,18 @@ steps:
       ✅ 마지막 줄 `SURFACE_MAPPED` (device·network·cloud·app 4대 표면에 취약점 매핑).
       🔎 UART/기본자격=device, MQTT=network, cloud API=cloud, 앱 하드코딩=app. 4대 표면 모두 점검.
     answer: |
-      [device ]  UART debug port exposed
-      [device ]  default admin/admin login
-      [network]  unencrypted MQTT telemetry
-      [cloud  ]  cloud API missing auth
-      [app    ]  mobile app hardcoded API key
-      SURFACE_MAPPED
+      # IP 카메라 발견을 4대 공격 표면(device/network/cloud/app)으로 분류해 파일에 기록한다.
+      cat > /tmp/surfaces_STU42.txt <<'EOF'
+      device  UART debug port exposed
+      device  default admin/admin login
+      network unencrypted MQTT telemetry
+      cloud   cloud API missing auth
+      app     mobile app hardcoded API key
+      EOF
+      awk '{printf "  [%-7s] ", $1; $1=""; print}' /tmp/surfaces_STU42.txt
+      # 4대 표면이 모두 나타나면 매핑 완료.
+      M=""; for s in device network cloud app; do grep -q "^$s" /tmp/surfaces_STU42.txt || M=1; done
+      [ -z "$M" ] && echo SURFACE_MAPPED || echo INCOMPLETE
     answer_detail: "취약점을 4대 공격 표면에 매핑 → SURFACE_MAPPED."
     verify:
       type: output_contains
@@ -97,12 +104,17 @@ steps:
       ✅ 마지막 줄 `THREATS_CLASSIFIED` (장치장악·감청·펌웨어·데이터유출·봇넷 5유형).
       🔎 위협 유형화로 각각에 맞는 통제(기본자격 변경·암호화·API 인증) 설계.
     answer: |
-      botnet_ddos
-      cloud_breach
-      device_compromise
-      firmware_re
-      interception
-      THREATS_CLASSIFIED
+      # 관측 위협을 유형별로 분류해 파일에 기록한다.
+      cat > /tmp/threats_STU42.txt <<'EOF'
+      device_compromise  device takeover via default creds (Mirai)
+      interception       traffic interception (unencrypted)
+      firmware_re        firmware extraction and reverse engineering
+      cloud_breach       cloud data breach (weak API)
+      botnet_ddos        botnet recruitment for DDoS
+      EOF
+      cut -d' ' -f1 /tmp/threats_STU42.txt | sort -u
+      # 서로 다른 위협 유형이 5개 이상이면 분류 완료.
+      [ "$(cut -d' ' -f1 /tmp/threats_STU42.txt | sort -u | wc -l)" -ge 5 ] && echo THREATS_CLASSIFIED || echo INCOMPLETE
     answer_detail: "IoT 위협 5유형 분류 → THREATS_CLASSIFIED."
     verify:
       type: output_contains
@@ -129,10 +141,16 @@ steps:
       ✅ 마지막 줄 `RISK_SCORED` (인터넷 노출 카메라 27점 최우선).
       🔎 인터넷 노출+기본 자격+중요 장치(카메라)가 최우선. 내부 센서는 후순위. IoT는 우선순위가 관건.
     answer: |
-      internet-facing camera   risk=27
-      smart lock (cloud)       risk=12
-      internal sensor          risk=2
-      RISK_SCORED
+      # 장치별 노출·악용성·영향(1~3)을 CSV 로 기록하고 위험도=곱으로 계산한다.
+      cat > /tmp/devrisk_STU42.csv <<'EOF'
+      internet-facing camera,3,3,3
+      internal sensor,1,2,1
+      smart lock (cloud),2,2,3
+      EOF
+      awk -F, '{printf "  %-24s risk=%d\n",$1,$2*$3*$4}' /tmp/devrisk_STU42.csv | sort -t= -k2 -rn
+      # 최고 위험 장치가 인터넷 노출 카메라이면 우선순위 확정.
+      TOP=$(awk -F, '{print $2*$3*$4","$1}' /tmp/devrisk_STU42.csv | sort -rn | head -1 | cut -d, -f2)
+      echo "$TOP" | grep -q "internet-facing camera" && echo RISK_SCORED || echo CHECK
     answer_detail: "노출×악용×영향 위험 평가로 우선순위(노출 카메라) → RISK_SCORED."
     verify:
       type: output_contains
@@ -151,9 +169,9 @@ steps:
       🔎 정리: IoT는 제약·기본자격·업데이트 부재·넓은 표면으로 취약. 4대 표면 점검+위험 우선순위로 평가.
       다음 주(W02)는 **IoT 네트워크 프로토콜**.
     answer: |
-      Assessment
-      IoT is uniquely insecure due to constrained devices, default credentials, missing updates, and a wide attack surface.
-      Assessment maps the four surfaces (device/network/cloud/app), classifies threats, and prioritizes by exposure x exploitability x impact.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W01 of an IoT security course. Findings: vulnerabilities mapped to the four attack surfaces device/network/cloud/app (SURFACE_MAPPED), IoT threats were classified into 5 types (THREATS_CLASSIFIED), and risk was scored by exposure x exploitability x impact prioritizing an internet-facing camera (RISK_SCORED). Explain why IoT is uniquely insecure (constrained devices, default credentials, no updates, wide surface) and that assessment checks all four surfaces with prioritization. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W01 IoT 보안 개론 종합(Assessment). 4대 표면·위협 분류·위험 평가."
     verify:
       type: output_contains

@@ -34,8 +34,9 @@ steps:
       ```
       ✅ 마지막 줄 `GEN_OK`.
     answer: |
-      ready
-      GEN_OK
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
     answer_detail: "GPU 응답 확인."
     verify:
       type: output_contains
@@ -62,9 +63,16 @@ steps:
       ✅ 마지막 줄 `ADVERSARIAL_CRAFTED` (작은 섭동으로 stop→speed_limit 오분류).
       🔎 경사 부호 방향으로 작은 섭동(L2<0.5)을 더해 결정 경계를 넘겼다. 사람 눈엔 거의 같지만 모델은 오분류.
     answer: |
-      original: score=0.10 -> class1
-      adversarial(eps=0.1,L2=0.14): score=-0.10 -> class0
-      ADVERSARIAL_CRAFTED
+      # 선형 분류기(가중치 w, 입력 x)에서 FGSM 적대적 예제를 awk 로 만든다.
+      # 원 입력 점수 = w1*x1 + w2*x2, 적대적 x' = x - eps*sign(w).
+      awk 'BEGIN{w1=1.0;w2=-1.0;x1=0.6;x2=0.5;eps=0.1;
+        orig=w1*x1+w2*x2; oc=(orig>=0)?"class1":"class0";
+        ax1=x1-eps*(w1>0?1:-1); ax2=x2-eps*(w2>0?1:-1);
+        adv=w1*ax1+w2*ax2; ac=(adv>=0)?"class1":"class0";
+        pert=sqrt((x1-ax1)^2+(x2-ax2)^2);
+        printf "original: score=%.2f -> %s\n",orig,oc;
+        printf "adversarial(eps=%.1f,L2=%.2f): score=%.2f -> %s\n",eps,pert,adv,ac;
+        print (oc!=ac && pert<0.5)?"ADVERSARIAL_CRAFTED":"NO_FLIP"}' 
     answer_detail: "경사 방향 최소 섭동으로 경계 넘겨 오분류 → ADVERSARIAL_CRAFTED."
     verify:
       type: output_contains
@@ -85,8 +93,10 @@ steps:
       ✅ 마지막 줄 `ROBUSTNESS_MEASURED` (정상 98% vs 강건 12% = 큰 갭, 강건하지 않음).
       🔎 정상 정확도 98%라도 적대적 입력엔 12%로 붕괴. 큰 강건성 갭은 자율 시스템 안전 우려 — 강건 정확도를 봐야.
     answer: |
-      clean acc=0.95, adversarial acc=0.12, gap=0.83
-      ROBUSTNESS_MEASURED
+      # 청정 정확도와 적대적 정확도의 격차를 awk 로 계산한다.
+      awk 'BEGIN{clean=0.95; adv=0.12; gap=clean-adv;
+        printf "clean acc=%.2f, adversarial acc=%.2f, gap=%.2f\n",clean,adv,gap;
+        print (gap>0.5)?"ROBUSTNESS_MEASURED":"ROBUST"}' 
     answer_detail: "강건 정확도 측정(정상 vs 적대적 갭) → ROBUSTNESS_MEASURED."
     verify:
       type: output_contains
@@ -115,10 +125,18 @@ steps:
       ✅ 마지막 줄 `MODEL_HARDENED` (적대적 학습으로 강건 정확도 12%→70% + 다층 방어).
       🔎 적대적 학습(강건 정확도 대폭↑)+입력 정제+적대적 탐지+앙상블 중복. 완벽하진 않아도 심층 방어로 위험을 낮춘다.
     answer: |
+      # 적대적 학습 전/후 방어와 강건 정확도를 파일로 기록한다.
+      cat > /tmp/modelhard_STU42.txt <<'EOF'
       adversarial_training=true
       adv_detection=true
       ensemble_redundancy=true
-      MODEL_HARDENED
+      robust_acc_before=0.12
+      robust_acc_after=0.70
+      EOF
+      grep "true" /tmp/modelhard_STU42.txt
+      # 방어 3개 이상 + 강건 정확도 개선 0.4 이상이면 강화 완료.
+      D=$(grep -c "=true" /tmp/modelhard_STU42.txt)
+      awk 'BEGIN{print (0.70-0.12>=0.4)?"imp_ok":"imp_no"}' | grep -q imp_ok && [ "$D" -ge 3 ] && echo MODEL_HARDENED || echo CHECK
     answer_detail: "적대적 학습·탐지·중복 다층 강화 → MODEL_HARDENED."
     verify:
       type: output_contains
@@ -137,9 +155,9 @@ steps:
       🔎 정리: 적대적 예제는 미세 섭동으로 경계를 넘겨 오분류(자율 시스템 사고). 적대적 학습+탐지+중복+검증 심층 방어. 강건성이 안전 요건.
       다음 주(W14)는 **CPS 인시던트 대응**.
     answer: |
-      Assessment
-      Adversarial examples cross decision boundaries with tiny gradient-based perturbations, and robustness (robust accuracy) differs from clean accuracy.
-      Defense is layered: adversarial training, input preprocessing, detection, ensemble redundancy, and formal verification.
+      curl -s http://211.170.162.139:10934/api/generate \
+        -d '{"model":"gemma3:4b","prompt":"Write a short note for W13 on AI model attacks and defense. Findings: a small gradient perturbation flipped a classifier across the decision boundary (ADVERSARIAL_CRAFTED), robust accuracy under PGD was far below clean accuracy (98 vs 12 percent) showing a robustness gap (ROBUSTNESS_MEASURED), and adversarial training plus preprocessing, detection, and ensemble redundancy raised robust accuracy to 70 percent (MODEL_HARDENED). Explain that adversarial examples cross decision boundaries with tiny perturbations, robustness differs from accuracy, and defense is layered. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
+       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
     answer_detail: "W13 AI 모델 보안 종합(Assessment). 적대적 예제·로버스트니스·심층 방어."
     verify:
       type: output_contains
