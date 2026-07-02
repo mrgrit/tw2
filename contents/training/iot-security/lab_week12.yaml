@@ -1,38 +1,49 @@
 lab_id: iot-security-week12
-title: "W12 — OT/SCADA: Modbus 무인증·위험 명령 탐지·Purdue 네트워크 분리"
+title: "W12 — OT/SCADA: Modbus 캡처 분석·위험 쓰기 명령 탐지·Purdue 분리"
 version: ai
 course: iot-security
 week: 12
 description: |
-  산업 제어(OT) 보안. Modbus 등 레거시 무인증 취약성(OT_PROTOCOL_WEAK), 안전 관련 위험 명령 탐지
-  (UNSAFE_COMMAND), Purdue 분리·읽기 전용 강화(OT_ISOLATED), 종합(Assessment).
-  ⚠️ OT는 실물 장비·안전 최우선 — 프로토콜·명령·분리 로직 결정론 시뮬.
-difficulty: hard
-duration_minutes: 130
+  산업제어(OT) 프로토콜 Modbus/TCP 보안을 **실제 아티팩트(패킷 캡처)로** 분석한다. Modbus/TCP 는 1979년 설계라
+  **인증·암호가 전혀 없다** — MBAP 헤더에 자격 필드가 없고, 502 포트에 닿으면 누구나 레지스터를 읽고 **코일/
+  레지스터를 쓸(제어)** 수 있다. 실습은 (1) Modbus 캡처를 만들어 python 으로 파싱해 무인증 구조를 확인하고,
+  (2) 정상 읽기 사이에 섞인 **위험한 쓰기 명령(Write Single Coil = 액추에이터 강제)**을 탐지하며, (3) Purdue
+  모델 방화벽 설정으로 IT/OT 분리를 확인한다.
+
+  모든 명령은 사람이 한 줄씩 직접 입력한다. el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서 실행하며,
+  분석 아티팩트(캡처·방화벽 설정)는 이 실습이 `/tmp` 에 직접 만든다. ⚠️ 실제로는 `tcpdump -r`·IDS 로그에 동일 적용.
+difficulty: medium
+duration_minutes: 120
 audience: IoT 보안 (12주차)
 prerequisites:
-  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
-  - GPU Ollama 도달 — gemma3:4b
-  - W12 강의안 정독 — §0.5(OT/SCADA·Modbus·Purdue 모델)
+  - "el34 호스트 접속: `ssh ccc@{{TARGET_IP}}` (비밀번호 `1`)"
+  - "GPU Ollama 도달 — http://211.170.162.139:10934 (gemma3:4b), 종합용"
+  - "도구: grep·xxd·python3 (el34 에 존재)"
+  - "W12 강의안 정독 — §0.5(Modbus·무인증·Purdue·세그멘테이션)"
 objectives:
-  - "GPU 헬스체크(GEN_OK)"
-  - "레거시 프로토콜 무인증 취약성(OT_PROTOCOL_WEAK)"
-  - "안전 관련 위험 명령 탐지(UNSAFE_COMMAND)"
-  - "Purdue 분리·읽기 전용 강화(OT_ISOLATED)"
-  - "종합(Assessment)"
+  - "GPU 응답 확인 (GEN_OK)"
+  - "Modbus 캡처를 파싱해 무인증 구조 확인 (OT_PROTOCOL_WEAK)"
+  - "위험한 쓰기(Write Coil/Register) 명령 탐지 (UNSAFE_COMMAND)"
+  - "Purdue 방화벽 설정으로 IT/OT 분리 확인 (OT_ISOLATED)"
+  - "종합 소견 (Assessment)"
 pass_threshold: 0.6
 
 steps:
 
   - order: 1
     instruction: |
-      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ## 🎯 MISSION
+      종합용 GPU(gemma3) 응답 확인.
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
         -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
       ```
-      ✅ 마지막 줄 `GEN_OK`.
+      ## 📋 확인 사항 — 마지막 줄 `GEN_OK`
+      ## 🔍 결과 해석 — 정상 `GEN_OK` / 비정상 `GEN_EMPTY`·연결오류
+    hint: "curl /api/generate → response 있으면 GEN_OK."
+    category: survey
     answer: |
       ready
       GEN_OK
@@ -44,100 +55,160 @@ steps:
 
   - order: 2
     instruction: |
-      ## STEP 2 — 레거시 프로토콜 취약성 → OT_PROTOCOL_WEAK
-      > **🎯 목표:** Modbus 등 OT 프로토콜의 무인증·무암호를 평가.
-      > **개념:** 네트워크에 붙으면 누구나 명령.
+      ## 🎯 MISSION
+      **Modbus/TCP 캡처**를 만들고, python 으로 MBAP 헤더를 파싱해 **자격 필드가 없음(무인증)**을 확인한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      protocols=[{"name":"Modbus TCP","auth":False,"encryption":False},
-                 {"name":"DNP3 (legacy)","auth":False,"encryption":False},
-                 {"name":"OPC UA (modern)","auth":True,"encryption":True}]
-      weak=[]
-      for p in protocols:
-          issues=[]
-          if not p["auth"]: issues.append("no authentication")
-          if not p["encryption"]: issues.append("no encryption")
-          if issues: weak.append(p["name"]); print(f"  {p['name']:18}: WEAK - {issues}")
-          else: print(f"  {p['name']:18}: secure (auth+encryption)")
-      print("OT_PROTOCOL_WEAK" if len(weak)>=2 else "SECURE")
+      CAP=/tmp/modbus_STU42.bin
+      # 1) Modbus/TCP 캡처를 만든다. 각 프레임 = MBAP(트랜잭션·프로토콜0000·길이·유닛) + PDU(FC+데이터).
+      python3 - "$CAP" <<'PY'
+      import sys,struct
+      def frame(tid, unit, pdu):
+          # MBAP: transaction(2) protocol(2=0) length(2) unit(1) + PDU
+          return struct.pack("!HHHB", tid, 0, len(pdu)+1, unit) + pdu
+      caps  = frame(1, 1, bytes([0x03,0x00,0x00,0x00,0x0A]))   # FC03 Read Holding Regs addr0 qty10
+      caps += frame(2, 1, bytes([0x03,0x00,0x64,0x00,0x02]))   # FC03 Read Regs addr100 qty2
+      caps += frame(3, 1, bytes([0x05,0x00,0x10,0xFF,0x00]))   # FC05 Write Single Coil addr16 = FF00(ON)!
+      open(sys.argv[1],"wb").write(caps); print("캡처 생성:", sys.argv[1], len(caps),"bytes")
       PY
+
+      # 2) python 으로 프레임을 파싱해 프로토콜ID·유닛·자격 유무를 본다.
+      python3 - "$CAP" <<'PY'
+      import sys,struct
+      d=open(sys.argv[1],"rb").read(); i=0
+      while i < len(d):
+          tid,proto,length,unit = struct.unpack("!HHHB", d[i:i+7])
+          fc = d[i+7]
+          print(f"  tid={tid} protocol_id={proto:04x} unit={unit} FC={fc:02X} (자격/서명 필드 없음)")
+          i += 6 + length
+      PY
+
+      # 3) 판정: protocol_id 가 0000 이고 어떤 인증 필드도 없으면 무인증 프로토콜.
+      echo OT_PROTOCOL_WEAK
       ```
-      ✅ 마지막 줄 `OT_PROTOCOL_WEAK` (Modbus·DNP3 무인증·무암호, OPC UA만 안전).
-      🔎 Modbus·DNP3는 수십 년 전 설계라 인증·암호가 없다. 네트워크에 붙으면 누구나 밸브·모터 명령.
+      ## 📋 확인 사항
+      - 파싱 결과 각 프레임 `protocol_id=0000`, `unit=1`, 자격/서명 필드 없음
+      - 마지막 줄 `OT_PROTOCOL_WEAK`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — Modbus/TCP 는 MBAP 헤더에 **누가·권한 있는지 확인할 필드가 없다**. 502 포트에 닿기만
+      > 하면 PLC 의 레지스터를 읽고 **쓸** 수 있다. IT 망과 OT 망이 붙어 있으면 IT 침해가 곧 물리 제어 탈취다.
+
+      ## 🔍 결과 해석 — 정상 `OT_PROTOCOL_WEAK`
+    hint: "Modbus 캡처 생성 → python 으로 MBAP 파싱, protocol_id=0000·자격 필드 없음 확인 → OT_PROTOCOL_WEAK."
+    category: recon
     answer: |
-      Modbus TCP        : WEAK - ['no authentication', 'no encryption']
-      DNP3 (legacy)     : WEAK - ['no authentication', 'no encryption']
-      OPC UA (modern)   : secure (auth+encryption)
+      tid=1 protocol_id=0000 unit=1 FC=03 (자격/서명 필드 없음)
+      tid=2 protocol_id=0000 unit=1 FC=03 (자격/서명 필드 없음)
+      tid=3 protocol_id=0000 unit=1 FC=05 (자격/서명 필드 없음)
       OT_PROTOCOL_WEAK
-    answer_detail: "Modbus·DNP3 무인증·무암호 취약성 → OT_PROTOCOL_WEAK."
+    answer_detail: "Modbus MBAP 에는 인증 필드가 없음. 502 도달=읽기/쓰기 가능. IT/OT 연결 시 물리 제어 탈취."
     verify:
       type: output_contains
       expect: OT_PROTOCOL_WEAK
       field: stdout
+      semantic:
+        intent: "Modbus 캡처 파싱으로 무인증 구조 확인."
+        success_criteria:
+          - "MBAP 에 자격/서명 필드 없음 확인"
+          - "OT_PROTOCOL_WEAK 출력"
 
   - order: 3
     instruction: |
-      ## STEP 3 — 위험 명령 탐지 → UNSAFE_COMMAND
-      > **🎯 목표:** 안전 관련 레지스터에 대한 위험 쓰기 명령을 탐지.
-      > **개념:** OT는 안전 우선 — 위험 명령은 물리 재앙.
+      ## 🎯 MISSION
+      캡처에서 **위험한 쓰기 명령**(Write Single Coil FC05 / Write Register FC06 / Write Multiple FC10)을 python 으로
+      탐지한다. 읽기(FC03)는 관측이지만, 쓰기는 액추에이터를 직접 제어한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # Modbus 명령들 (function code, register, value)
-      commands=[{"fc":"read","register":"40001(sensor)","value":None},          # 정상 읽기
-                {"fc":"write","register":"40100(pump_speed)","value":9999},       # 과속!
-                {"fc":"write","register":"40200(safety_interlock)","value":0}]    # 안전장치 해제!
-      SAFETY_REGISTERS={"40200(safety_interlock)","40201(emergency_stop)"}
-      def unsafe(cmd):
-          if cmd["fc"]=="write" and cmd["register"] in SAFETY_REGISTERS: return "SAFETY OVERRIDE (critical!)"
-          if cmd["fc"]=="write" and "speed" in cmd["register"] and cmd["value"] and cmd["value"]>5000: return "out-of-range value"
-          return None
-      alerts=[]
-      for c in commands:
-          u=unsafe(c)
-          if u: alerts.append((c["register"],u)); print(f"  UNSAFE: write {c['register']} = {c['value']} -> {u}")
-      print("UNSAFE_COMMAND" if alerts else "NORMAL")
+      CAP=/tmp/modbus_STU42.bin
+      # 1) 프레임별 FC 를 뽑아 쓰기 계열(05/06/0F/10)을 표시한다.
+      python3 - "$CAP" <<'PY'
+      import sys,struct
+      d=open(sys.argv[1],"rb").read(); i=0
+      WRITE={0x05:"WriteSingleCoil",0x06:"WriteSingleRegister",0x0F:"WriteMultipleCoils",0x10:"WriteMultipleRegisters"}
+      unsafe=0
+      while i < len(d):
+          tid,proto,length,unit = struct.unpack("!HHHB", d[i:i+7]); fc=d[i+7]
+          if fc in WRITE:
+              addr=struct.unpack("!H", d[i+8:i+10])[0]; val=struct.unpack("!H", d[i+10:i+12])[0]
+              print(f"  UNSAFE FC={fc:02X} {WRITE[fc]} addr={addr} value={val:04X}  <-- 액추에이터 강제")
+              unsafe+=1
+          else:
+              print(f"  read  FC={fc:02X}")
+          i += 6 + length
+      print("UNSAFE_COMMAND" if unsafe else "READ_ONLY")
       PY
       ```
-      ✅ 마지막 줄 `UNSAFE_COMMAND` (안전장치 해제·펌프 과속 명령 탐지).
-      🔎 안전 인터록 해제(40200=0)·펌프 과속(9999)은 물리 재앙 명령. OT는 위험 명령을 반드시 탐지·차단.
+      ## 📋 확인 사항
+      - FC03 은 `read`, FC05 는 `UNSAFE ... WriteSingleCoil addr=16 value=FF00 <-- 액추에이터 강제`
+      - 마지막 줄 `UNSAFE_COMMAND`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — `Write Single Coil addr=16 value=FF00` 은 코일(디지털 출력)을 **강제로 ON** 한다 —
+      > 펌프·차단기·밸브를 임의로 조작하는 것이다. 인증이 없으니 캡처의 이 한 프레임이 곧 물리 사보타주(Stuxnet
+      > 계열)다. IDS 는 OT 망의 예기치 않은 **쓰기 명령**을 최우선 경보로 삼아야 한다.
+
+      ## 🔍 결과 해석 — 정상 `UNSAFE_COMMAND` + 쓰기 명령 식별
+    hint: "python 으로 FC 파싱해 05/06/0F/10(쓰기)이 있으면 UNSAFE_COMMAND. FC05 WriteSingleCoil 강제 ON 탐지."
+    category: exploit
     answer: |
-      UNSAFE: write 40100(pump_speed) = 9999 -> out-of-range value
-      UNSAFE: write 40200(safety_interlock) = 0 -> SAFETY OVERRIDE (critical!)
+      read  FC=03
+      read  FC=03
+      UNSAFE FC=05 WriteSingleCoil addr=16 value=FF00  <-- 액추에이터 강제
       UNSAFE_COMMAND
-    answer_detail: "안전 레지스터 쓰기·범위 초과 명령 탐지 → UNSAFE_COMMAND."
+    answer_detail: "Write Single Coil(FC05) addr16 = FF00(강제 ON) 탐지 = 무인증 물리 제어. IDS 최우선 경보 대상."
     verify:
       type: output_contains
       expect: UNSAFE_COMMAND
       field: stdout
+      semantic:
+        intent: "Modbus 캡처에서 위험한 쓰기 명령 탐지."
+        success_criteria:
+          - "쓰기 계열 FC(05/06/0F/10) 식별"
+          - "UNSAFE_COMMAND 출력"
 
   - order: 4
     instruction: |
-      ## STEP 4 — OT 분리 강화 → OT_ISOLATED
-      > **🎯 목표:** Purdue 분리·읽기 전용·명령 화이트리스트·독립 안전 시스템.
-      > **개념:** IT 침해가 OT로 못 가게, 안전은 독립.
+      ## 🎯 MISSION
+      **Purdue 모델 방화벽 설정**을 만들어, IT(레벨4/5)와 OT(레벨0~3)가 분리되고 Modbus 가 IT 에서 직접 닿지 못함을
+      확인한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      def harden(arch):
-          return {"purdue_segmented":True,        # IT/OT 계층 분리
-                  "ot_writable_from_it":False,     # IT에서 OT 쓰기 불가(읽기 전용/데이터 다이오드)
-                  "command_allowlist":True,        # 허용 명령만
-                  "independent_sis":True}          # 독립 안전 시스템
-      before={"purdue_segmented":False,"ot_writable_from_it":True,"command_allowlist":False,"independent_sis":False}
-      after=harden(before)
-      def exposed(a):
-          return not a["purdue_segmented"] or a.get("ot_writable_from_it") or not a.get("independent_sis")
-      print("before exposed:", exposed(before))
-      print("after exposed:", exposed(after), "(Purdue segmented + read-only from IT + allowlist + independent SIS)")
-      print("OT_ISOLATED" if exposed(before) and not exposed(after) else "CHECK")
-      PY
+      FW=/tmp/purdue_fw_STU42.conf
+      cat > "$FW" <<'EOF'
+      # Purdue 네트워크 분리 정책 (IT=10.20.x, DMZ=10.30.x, OT=10.40.x)
+      deny  from 10.20.0.0/16 to 10.40.0.0/16 port 502    # IT -> OT Modbus 직결 차단
+      allow from 10.20.0.0/16 to 10.30.0.0/16 port 443    # IT -> DMZ(데이터 히스토리안)만
+      allow from 10.30.0.0/16 to 10.40.0.5   port 502     # DMZ conduit -> 지정 PLC 만(단방향)
+      default deny
+      EOF
+
+      # IT 에서 OT Modbus(502) 직결이 차단됐는지 + 기본 deny 인지 확인.
+      echo "[IT->OT 502 차단]"; grep -E "deny .*10.20.*10.40.*502" "$FW"
+      echo "[기본 정책]"; grep -E "default deny" "$FW"
+      grep -Eq "deny .*10.20.*10.40.*502" "$FW" && grep -Eq "default deny" "$FW" && echo OT_ISOLATED || echo FLAT_NETWORK
       ```
-      ✅ 마지막 줄 `OT_ISOLATED` (Purdue 분리+읽기 전용+명령 화이트리스트+독립 안전 시스템).
-      🔎 IT/OT 계층 분리(Purdue)+IT에서 OT 쓰기 차단(데이터 다이오드)+명령 화이트리스트+독립 SIS. 보안 뚫려도 물리 안전 유지.
+      ## 📋 확인 사항
+      - `deny from 10.20.0.0/16 to 10.40.0.0/16 port 502`, `default deny`
+      - 마지막 줄 `OT_ISOLATED`
+
+      ## 💡 왜 이걸 하는가?
+      Modbus 자체를 인증화하기 어려우므로(레거시 PLC), 방어의 핵심은 **네트워크 분리**다. Purdue 모델로 IT↔OT 를
+      DMZ conduit 로만 잇고, OT 쓰기는 지정 호스트·단방향으로 제한하고, OT IDS 로 이상 쓰기를 탐지한다.
+
+      ## 🔍 결과 해석 — 정상 `OT_ISOLATED`
+    hint: "Purdue 방화벽 설정 생성 → grep 로 IT->OT 502 deny + default deny 확인 → OT_ISOLATED."
+    category: defense
     answer: |
-      before exposed: True
-      after exposed: False (Purdue segmented + read-only from IT + allowlist + independent SIS)
+      [IT->OT 502 차단]
+      deny  from 10.20.0.0/16 to 10.40.0.0/16 port 502
+      [기본 정책]
+      default deny
       OT_ISOLATED
-    answer_detail: "Purdue 분리·읽기 전용·화이트리스트·독립 SIS → OT_ISOLATED."
+    answer_detail: "Purdue 분리(IT->OT Modbus 직결 차단·DMZ conduit·default deny). Modbus 인증화 어려우니 분리가 핵심."
     verify:
       type: output_contains
       expect: OT_ISOLATED
@@ -145,20 +216,29 @@ steps:
 
   - order: 5
     instruction: |
-      ## STEP 5 — 종합 → Assessment
+      ## 🎯 MISSION
+      W12 발견(Modbus 무인증·위험 쓰기 명령·Purdue 분리)을 소견으로 정리한다. (정리: `rm -f /tmp/modbus_STU42.bin /tmp/purdue_fw_STU42.conf`)
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"gemma3:4b","prompt":"Write a short note for W12 on OT/SCADA security. Findings: legacy Modbus and DNP3 were assessed as unauthenticated and unencrypted (OT_PROTOCOL_WEAK), unsafe write commands to a safety interlock and out-of-range pump speed were detected (UNSAFE_COMMAND), and Purdue segmentation, read-only-from-IT, command allowlist, and an independent safety system isolated it (OT_ISOLATED). Explain that OT prioritizes safety and availability, legacy protocols lack auth, and defense uses network segmentation and independent safety systems, referencing Stuxnet. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 12 of an IoT security course on OT/SCADA Modbus security. Facts: parsing a Modbus/TCP capture showed the MBAP header has no authentication field (protocol id 0000, unit only), so anyone reaching port 502 can read and write (OT_PROTOCOL_WEAK); among read requests a Write Single Coil (FC05) forcing a coil to FF00 was detected, an unauthenticated actuator command (UNSAFE_COMMAND); a Purdue-model firewall config denied IT-to-OT Modbus and used a DMZ conduit with default deny (OT_ISOLATED). Explain that legacy OT protocols cannot easily add authentication, so defense relies on Purdue network segmentation, DMZ conduits, and an OT IDS that flags unexpected write commands. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
       ```
-      ✅ 출력에 `Assessment`.
-      🔎 정리: OT는 안전·가용성 우선, 레거시 무인증. Purdue 분리+읽기 전용+화이트리스트+독립 SIS로 물리 안전을 지킨다.
-      다음 주(W13)는 **자동차 보안**.
+      ## 📋 확인 사항 — 첫머리에 `Assessment`
+      ## 🔍 결과 해석 — 정상 첫 줄 `Assessment` / 비정상 `[형식 미준수 — 재실행]`
+
+      ---
+      **다음 주(W13) 예고** — 자동차 CAN 버스 보안(무인증·메시지 주입·SecOC).
+    hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
+    category: report
     answer: |
       Assessment
-      OT/SCADA prioritizes safety and availability; legacy protocols like Modbus lack authentication, risking physical disaster (Stuxnet).
-      Defense uses Purdue segmentation, read-only from IT, command allowlists, and an independent safety system.
-    answer_detail: "W12 OT/SCADA 종합(Assessment). 무인증 프로토콜·위험 명령·분리·독립 SIS."
+      Parsing a Modbus/TCP capture showed the MBAP header has no authentication (protocol id 0000, unit
+      only), so anyone reaching port 502 can read and write; a Write Single Coil (FC05) forcing a coil
+      to FF00 was an unauthenticated actuator command. A Purdue firewall denied IT-to-OT Modbus with a
+      DMZ conduit and default deny. Legacy OT protocols cannot easily add auth, so defense relies on
+      network segmentation, DMZ conduits, and an OT IDS flagging unexpected writes.
+    answer_detail: "W12 OT/SCADA 종합(Assessment): Modbus 무인증·위험 쓰기 탐지·Purdue 분리."
     verify:
       type: output_contains
       expect: Assessment
