@@ -64,19 +64,15 @@ steps:
       FW=/tmp/iotcam_fw_STU42.bin
 
       # 1) 취약 펌웨어 이미지를 생성한다(ELF 헤더 + 박힌 문자열 + 가짜 /etc/passwd). 실제 벤더 펌웨어를 모사.
-      python3 - "$FW" <<'PY'
-      import sys
-      blob = b"\x7fELF\x02\x01\x01\x00" + b"\x00"*16          # ELF 매직(파일 타입 위장)
-      blob += b"httpd v1.2 build 2024\x00"
-      blob += b"admin_password=SuperSecret123\x00"            # 하드코딩 비밀번호
-      blob += b"api_key=ak_live_9f8e7d6c5b4a3210\x00"         # API 키
-      blob += b"-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----\x00"  # 개인키
-      blob += b"# /etc/passwd\nroot:x:0:0:root:/root:/bin/sh\nadmin:x:1000:1000::/home/admin:/bin/sh\n"
-      blob += b"daemon:x:2:2::/:/usr/sbin/nologin\nfactory:x:0:0:factory backdoor:/root:/bin/sh\n\x00"
-      blob += b"\xde\xad\xbe\xef"*32                          # 바이너리 패딩
-      open(sys.argv[1],"wb").write(blob)
-      print("생성:", sys.argv[1], len(blob),"bytes")
-      PY
+      # ELF 매직(파일 타입 위장)으로 시작한다.
+      printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00' > "$FW"
+      # 펌웨어에 박힌 문자열들(하드코딩 비밀번호·API 키·개인키)을 이어붙인다.
+      printf 'httpd v1.2 build 2024\x00admin_password=SuperSecret123\x00api_key=ak_live_9f8e7d6c5b4a3210\x00' >> "$FW"
+      printf -- '-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----\x00' >> "$FW"
+      # 펌웨어에서 추출된 /etc/passwd (root 외에 factory 백도어 포함)를 이어붙인다.
+      printf 'root:x:0:0:root:/root:/bin/sh\nadmin:x:1000:1000::/home/admin:/bin/sh\n' >> "$FW"
+      printf 'daemon:x:2:2::/:/usr/sbin/nologin\nfactory:x:0:0:factory backdoor:/root:/bin/sh\n\x00' >> "$FW"
+      echo "생성: $FW ($(wc -c < "$FW") bytes)"
 
       # 2) 파일 타입 확인(펌웨어가 어떤 형식인지) + 사람이 읽을 문자열 추출.
       file "$FW"
@@ -186,15 +182,11 @@ steps:
       HFW=/tmp/iotcam_fw_hardened_STU42.bin
 
       # 1) 강화 펌웨어 생성: 비밀 없음, 백도어 없음, 자격은 부팅 시 보안 저장소에서 로드(참조만).
-      python3 - "$HFW" <<'PY'
-      import sys
-      blob = b"\x7fELF\x02\x01\x01\x00" + b"\x00"*16
-      blob += b"httpd v1.3 build 2026 (signed)\x00"
-      blob += b"credential_source=secure_element_provisioning\x00"   # 비밀 대신 '출처'만
-      blob += b"# /etc/passwd\nroot:x:0:0:root:/root:/sbin/nologin\nadmin:x:1000:1000::/home/admin:/bin/sh\n\x00"
-      blob += b"\xde\xad\xbe\xef"*32
-      open(sys.argv[1],"wb").write(blob); print("생성:", sys.argv[1])
-      PY
+      printf '\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00' > "$HFW"
+      # 비밀 대신 '자격 출처'만, 백도어 계정 없음(root nologin + admin).
+      printf 'httpd v1.3 build 2026 (signed)\x00credential_source=secure_element_provisioning\x00' >> "$HFW"
+      printf 'root:x:0:0:root:/root:/sbin/nologin\nadmin:x:1000:1000::/home/admin:/bin/sh\n\x00' >> "$HFW"
+      echo "생성: $HFW"
 
       # 2) 같은 분석을 강화 펌웨어에 적용 — 비밀 패턴이 안 나와야 한다.
       echo "비밀 검색:"; strings "$HFW" | grep -icE "password=|api_key=|PRIVATE KEY"

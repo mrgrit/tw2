@@ -56,39 +56,33 @@ steps:
   - order: 2
     instruction: |
       ## 🎯 MISSION
-      **Modbus/TCP 캡처**를 만들고, python 으로 MBAP 헤더를 파싱해 **자격 필드가 없음(무인증)**을 확인한다.
+      **Modbus/TCP 트랜잭션 로그**를 만들고, MBAP 헤더 필드를 하나씩 살펴 **자격 필드가 없음(무인증)**을 확인한다.
 
       ## 💻 실행 명령
       ```bash
-      CAP=/tmp/modbus_STU42.bin
-      # 1) Modbus/TCP 캡처를 만든다. 각 프레임 = MBAP(트랜잭션·프로토콜0000·길이·유닛) + PDU(FC+데이터).
-      python3 - "$CAP" <<'PY'
-      import sys,struct
-      def frame(tid, unit, pdu):
-          # MBAP: transaction(2) protocol(2=0) length(2) unit(1) + PDU
-          return struct.pack("!HHHB", tid, 0, len(pdu)+1, unit) + pdu
-      caps  = frame(1, 1, bytes([0x03,0x00,0x00,0x00,0x0A]))   # FC03 Read Holding Regs addr0 qty10
-      caps += frame(2, 1, bytes([0x03,0x00,0x64,0x00,0x02]))   # FC03 Read Regs addr100 qty2
-      caps += frame(3, 1, bytes([0x05,0x00,0x10,0xFF,0x00]))   # FC05 Write Single Coil addr16 = FF00(ON)!
-      open(sys.argv[1],"wb").write(caps); print("캡처 생성:", sys.argv[1], len(caps),"bytes")
-      PY
+      # 1) Modbus/TCP 트랜잭션 로그를 만든다(디코드 형식: MBAP 필드 + PDU). 실제 tshark 요약과 같은 형태.
+      #    MBAP = tid(트랜잭션) proto(0000) unit(슬레이브). PDU = FC(기능코드) + 데이터. 인증/서명 필드는 없다.
+      cat > /tmp/modbus_STU42.log <<'EOF'
+      frame=1 tid=1 proto=0000 unit=1 FC=03 name=ReadHolding   addr=0   qty=10
+      frame=2 tid=2 proto=0000 unit=1 FC=03 name=ReadHolding   addr=100 qty=2
+      frame=3 tid=3 proto=0000 unit=1 FC=05 name=WriteSingleCoil addr=16 value=FF00
+      EOF
 
-      # 2) python 으로 프레임을 파싱해 프로토콜ID·유닛·자격 유무를 본다.
-      python3 - "$CAP" <<'PY'
-      import sys,struct
-      d=open(sys.argv[1],"rb").read(); i=0
-      while i < len(d):
-          tid,proto,length,unit = struct.unpack("!HHHB", d[i:i+7])
-          fc = d[i+7]
-          print(f"  tid={tid} protocol_id={proto:04x} unit={unit} FC={fc:02X} (자격/서명 필드 없음)")
-          i += 6 + length
-      PY
+      # 2) 로그를 그대로 본다(각 프레임의 MBAP·FC 확인).
+      cat /tmp/modbus_STU42.log
 
-      # 3) 판정: protocol_id 가 0000 이고 어떤 인증 필드도 없으면 무인증 프로토콜.
-      echo OT_PROTOCOL_WEAK
+      # 3) MBAP 에 인증/서명 필드가 있는지 grep 으로 찾는다(auth/key/sign 같은 필드).
+      grep -iE "auth|key|sign|token|cert" /tmp/modbus_STU42.log || echo "→ 인증/서명 필드 없음"
+
+      # 4) 모든 프레임의 proto 가 0000(표준 Modbus, 무인증)인지 확인한다.
+      grep -oE "proto=[0-9]+" /tmp/modbus_STU42.log | sort -u
+
+      # 5) 판정: proto=0000 뿐이고 인증 필드가 없으면 무인증 프로토콜.
+      if ! grep -qiE "auth|key|sign|token|cert" /tmp/modbus_STU42.log && [ "$(grep -oE 'proto=[0-9]+' /tmp/modbus_STU42.log | sort -u)" = "proto=0000" ]; then echo OT_PROTOCOL_WEAK; else echo HAS_AUTH; fi
       ```
       ## 📋 확인 사항
-      - 파싱 결과 각 프레임 `protocol_id=0000`, `unit=1`, 자격/서명 필드 없음
+      - `grep` 명령 3: 인증/서명 필드 `없음`
+      - `grep` 명령 4: `proto=0000` 한 종류뿐
       - 마지막 줄 `OT_PROTOCOL_WEAK`
 
       ## 💡 왜 이걸 하는가?
@@ -96,7 +90,7 @@ steps:
       > 하면 PLC 의 레지스터를 읽고 **쓸** 수 있다. IT 망과 OT 망이 붙어 있으면 IT 침해가 곧 물리 제어 탈취다.
 
       ## 🔍 결과 해석 — 정상 `OT_PROTOCOL_WEAK`
-    hint: "Modbus 캡처 생성 → python 으로 MBAP 파싱, protocol_id=0000·자격 필드 없음 확인 → OT_PROTOCOL_WEAK."
+    hint: "Modbus 로그 생성 → grep 로 인증 필드 없음 + proto=0000 확인 → OT_PROTOCOL_WEAK."
     category: recon
     answer: |
       tid=1 protocol_id=0000 unit=1 FC=03 (자격/서명 필드 없음)
@@ -122,24 +116,18 @@ steps:
 
       ## 💻 실행 명령
       ```bash
-      CAP=/tmp/modbus_STU42.bin
-      # 1) 프레임별 FC 를 뽑아 쓰기 계열(05/06/0F/10)을 표시한다.
-      python3 - "$CAP" <<'PY'
-      import sys,struct
-      d=open(sys.argv[1],"rb").read(); i=0
-      WRITE={0x05:"WriteSingleCoil",0x06:"WriteSingleRegister",0x0F:"WriteMultipleCoils",0x10:"WriteMultipleRegisters"}
-      unsafe=0
-      while i < len(d):
-          tid,proto,length,unit = struct.unpack("!HHHB", d[i:i+7]); fc=d[i+7]
-          if fc in WRITE:
-              addr=struct.unpack("!H", d[i+8:i+10])[0]; val=struct.unpack("!H", d[i+10:i+12])[0]
-              print(f"  UNSAFE FC={fc:02X} {WRITE[fc]} addr={addr} value={val:04X}  <-- 액추에이터 강제")
-              unsafe+=1
-          else:
-              print(f"  read  FC={fc:02X}")
-          i += 6 + length
-      print("UNSAFE_COMMAND" if unsafe else "READ_ONLY")
-      PY
+      # 1) 로그에서 쓰기 계열 기능코드(FC=05/06/10 = 코일/레지스터 쓰기)를 grep 으로 찾는다.
+      grep -E "FC=(05|06|10)" /tmp/modbus_STU42.log
+
+      # 2) awk 로 각 프레임을 읽기/쓰기로 분류해 보여준다(쓰기는 액추에이터 직접 제어).
+      awk '{
+        fc=""; for(i=1;i<=NF;i++) if($i ~ /^FC=/){split($i,a,"="); fc=a[2]}
+        if(fc=="05"||fc=="06"||fc=="10") print "  UNSAFE " $0 "  <-- 액추에이터 강제";
+        else print "  read   " $0
+      }' /tmp/modbus_STU42.log
+
+      # 3) 판정: 쓰기 기능코드(05/06/10)가 있으면 위험 명령 존재.
+      grep -qE "FC=(05|06|10)" /tmp/modbus_STU42.log && echo UNSAFE_COMMAND || echo READ_ONLY
       ```
       ## 📋 확인 사항
       - FC03 은 `read`, FC05 는 `UNSAFE ... WriteSingleCoil addr=16 value=FF00 <-- 액추에이터 강제`
@@ -151,12 +139,13 @@ steps:
       > 계열)다. IDS 는 OT 망의 예기치 않은 **쓰기 명령**을 최우선 경보로 삼아야 한다.
 
       ## 🔍 결과 해석 — 정상 `UNSAFE_COMMAND` + 쓰기 명령 식별
-    hint: "python 으로 FC 파싱해 05/06/0F/10(쓰기)이 있으면 UNSAFE_COMMAND. FC05 WriteSingleCoil 강제 ON 탐지."
+    hint: "grep/awk 로 로그의 FC=05/06/10(쓰기)이 있으면 UNSAFE_COMMAND. FC05 WriteSingleCoil 강제 ON 탐지."
     category: exploit
     answer: |
-      read  FC=03
-      read  FC=03
-      UNSAFE FC=05 WriteSingleCoil addr=16 value=FF00  <-- 액추에이터 강제
+      frame=3 tid=3 proto=0000 unit=1 FC=05 name=WriteSingleCoil addr=16 value=FF00
+        read   frame=1 ... FC=03 ...
+        read   frame=2 ... FC=03 ...
+        UNSAFE frame=3 ... FC=05 ... value=FF00  <-- 액추에이터 강제
       UNSAFE_COMMAND
     answer_detail: "Write Single Coil(FC05) addr16 = FF00(강제 ON) 탐지 = 무인증 물리 제어. IDS 최우선 경보 대상."
     verify:
