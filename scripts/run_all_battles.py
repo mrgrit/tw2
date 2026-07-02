@@ -66,9 +66,10 @@ def write_md(d: dict):
     lines.append("   자동으론 '명령 0건'으로 **partial 상한**. 타깃 흔적/실추출값으로 부분 인정.")
     lines.append("3. **순수 semantic 설계 미션**(CPS·IoT·physical 전부, 각 트랙 BLUE 설계) — 인프라에 심을 게 없고")
     lines.append("   **구체적 설계 서술**이 산출물이라 자동 하니스로는 통과 불가(합격기준 문구 복사는 채점기가 반려).\n")
-    lines.append("> **채점기·시나리오가 정상이라는 근거**: 사람/LLM 이 **제대로 쓴 답안**은 만점이 난다 —")
-    lines.append("> 실측 `battle 5` ai-service-pentest-w02 **BLUE-2(semantic 설계) = pass 25/25**. 즉 partial/fail 은")
-    lines.append("> 시나리오 결함이 아니라 **자동 하니스가 학생이 아니기 때문**. 배포·구조는 `docs/battle-verification.md`.\n")
+    lines.append("> **채점기·시나리오가 정상이라는 근거**: 실답안(competent submission)은 세 채점 유형 모두에서")
+    lines.append("> pass 한다 — 실측 battle 5(AICompanion semantic 25/25) · battle 95(순수 semantic 4미션 83/90) ·")
+    lines.append("> battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.")
+    lines.append("> 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.\n")
     lines.append(f"**집계**: 시나리오 {tot_scn} · 미션 {tot_miss} · ✅pass {tot_pass} · 🟡partial {tot_part} "
                  f"(생성 시각 {time.strftime('%Y-%m-%d %H:%M')})\n")
     for course in sorted(by_course):
