@@ -19,10 +19,10 @@
 > 실측 `battle 5` ai-service-pentest-w02 **BLUE-2(semantic 설계) = pass 25/25**. 즉 partial/fail 은
 > 시나리오 결함이 아니라 **자동 하니스가 학생이 아니기 때문**. 배포·구조는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 6 · 미션 24 · ✅pass 0 · 🟡partial 21 (생성 시각 2026-07-02 18:53)
+**집계**: 시나리오 12 · 미션 48 · ✅pass 0 · 🟡partial 40 (생성 시각 2026-07-02 19:19)
 
 
-## agent-ir-adv  (✅0 🟡21)
+## agent-ir-adv  (✅0 🟡40)
 
 | 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
 |---|---|---|---|---|---|---|
@@ -32,3 +32,9 @@
 | agent-ir-adv-w04 | 76 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 22/90 |
 | agent-ir-adv-w05 | 77 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 22/90 |
 | agent-ir-adv-w06 | 78 | 🟡partial | 🟡partial | 🟡partial | 🟡partial | 37/90 |
+| agent-ir-adv-w07 | 79 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 17/90 |
+| agent-ir-adv-w08 | 80 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 22/90 |
+| agent-ir-adv-w09 | 81 | 🟡partial | 🟡partial | 🟡partial | 🟡partial | 27/90 |
+| agent-ir-adv-w10 | 82 | 🟡partial | ❌fail | 🟡partial | ❌fail | 28/90 |
+| agent-ir-adv-w11 | 83 | 🟡partial | 🟡partial | ❌fail | 🟡partial | 27/90 |
+| agent-ir-adv-w12 | 84 | 🟡partial | 🟡partial | 🟡partial | 🟡partial | 23/90 |
