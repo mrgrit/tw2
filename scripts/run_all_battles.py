@@ -55,9 +55,20 @@ def write_md(d: dict):
     tot_part = sum(1 for r in d.values() if isinstance(r, dict) for x in (r.get("results") or []) if x[2] == "partial")
     lines = []
     lines.append("# 공방전 배틀 실행 결과표\n")
-    lines.append("> `scripts/run_all_battles.py` 가 각 시나리오를 solo 배틀로 실제 실행하고 라이브 채점한 결과.")
-    lines.append("> 채점 = el34 실 Assessor(:9201, 결정론 체크) + AICompanion 실공격 + claude semantic 채점.")
-    lines.append("> 자동 하니스의 보고서는 최소본이라 semantic 만점이 어려움 → partial 다수는 하니스 보고 품질 한계이지 시나리오 결함 아님.\n")
+    lines.append("> `scripts/run_all_battles.py` 가 각 시나리오를 solo 배틀로 **실제 실행**하고 라이브 채점한 결과.")
+    lines.append("> 채점 = el34 실 Assessor(:9201, docker exec 결정론 체크) + 실공격(공격자 VM→el34) + claude semantic 채점.\n")
+    lines.append("## 결과 해석 (중요 — 판정을 오독하지 말 것)\n")
+    lines.append("이 표는 **자동 하니스**가 낸 결과다. 채점기·시나리오는 정상이나(아래 근거), 자동 하니스는")
+    lines.append("**사람/LLM 수준의 서술 답안을 못 쓴다**. 미션은 채점 성격에 따라 3분류:\n")
+    lines.append("1. **결정론 채점 미션**(log_contains·wazuh_alert·file·port·process) — Assessor 가 el34 로그/포트를")
+    lines.append("   실검사 → 공격 흔적이 실제로 남으면 **자동으로도 통과**. (여기가 진짜 인프라 검증의 핵심.)")
+    lines.append("2. **command_ran 미션**(주로 AICompanion 트랙 RED) — 6v6 원칙상 **외부 공격자 명령은 미수집** →")
+    lines.append("   자동으론 '명령 0건'으로 **partial 상한**. 타깃 흔적/실추출값으로 부분 인정.")
+    lines.append("3. **순수 semantic 설계 미션**(CPS·IoT·physical 전부, 각 트랙 BLUE 설계) — 인프라에 심을 게 없고")
+    lines.append("   **구체적 설계 서술**이 산출물이라 자동 하니스로는 통과 불가(합격기준 문구 복사는 채점기가 반려).\n")
+    lines.append("> **채점기·시나리오가 정상이라는 근거**: 사람/LLM 이 **제대로 쓴 답안**은 만점이 난다 —")
+    lines.append("> 실측 `battle 5` ai-service-pentest-w02 **BLUE-2(semantic 설계) = pass 25/25**. 즉 partial/fail 은")
+    lines.append("> 시나리오 결함이 아니라 **자동 하니스가 학생이 아니기 때문**. 배포·구조는 `docs/battle-verification.md`.\n")
     lines.append(f"**집계**: 시나리오 {tot_scn} · 미션 {tot_miss} · ✅pass {tot_pass} · 🟡partial {tot_part} "
                  f"(생성 시각 {time.strftime('%Y-%m-%d %H:%M')})\n")
     for course in sorted(by_course):
