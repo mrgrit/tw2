@@ -4,7 +4,7 @@
 > 채점 = el34 실 Assessor(:9201, 결정론 체크) + AICompanion 실공격 + claude semantic 채점.
 > 자동 하니스의 보고서는 최소본이라 semantic 만점이 어려움 → partial 다수는 하니스 보고 품질 한계이지 시나리오 결함 아님.
 
-**집계**: 시나리오 30 · 미션 120 · ✅pass 0 · 🟡partial 66 (생성 시각 2026-07-02 17:07)
+**집계**: 시나리오 36 · 미션 144 · ✅pass 0 · 🟡partial 67 (생성 시각 2026-07-02 17:22)
 
 
 ## agent-ir  (✅0 🟡29)
@@ -46,3 +46,14 @@
 | agent-ir-adv-w13 | 19 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 27/90 |
 | agent-ir-adv-w14 | 20 | 🟡partial | ❌fail | 🟡partial | ❌fail | 20/90 |
 | agent-ir-adv-w15 | 21 | ❌fail | 🟡partial | ❌fail | ❌fail | 8/95 |
+
+## ai-agent  (✅0 🟡1)
+
+| 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
+|---|---|---|---|---|---|---|
+| ai-agent-w01 | 37 | ❌fail | ❌fail | ❌fail | ❌fail | 5/90 |
+| ai-agent-w02 | 38 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| ai-agent-w03 | 39 | 🟡partial | ❌fail | ❌fail | ❌fail | 5/90 |
+| ai-agent-w04 | 40 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| ai-agent-w05 | 41 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| ai-agent-w06 | 42 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
