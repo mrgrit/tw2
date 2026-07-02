@@ -19,7 +19,7 @@
 > 실측 `battle 5` ai-service-pentest-w02 **BLUE-2(semantic 설계) = pass 25/25**. 즉 partial/fail 은
 > 시나리오 결함이 아니라 **자동 하니스가 학생이 아니기 때문**. 배포·구조는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 114 · 미션 456 · ✅pass 0 · 🟡partial 88 (생성 시각 2026-07-02 22:41)
+**집계**: 시나리오 120 · 미션 480 · ✅pass 0 · 🟡partial 89 (생성 시각 2026-07-02 22:55)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -162,7 +162,7 @@
 | ai-service-pentest-w14 | 178 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | ai-service-pentest-w15 | 179 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
 
-## aisec  (✅0 🟡2)
+## aisec  (✅0 🟡3)
 
 | 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
 |---|---|---|---|---|---|---|
@@ -175,3 +175,9 @@
 | aisec-w07 | 186 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
 | aisec-w08 | 187 | ❌fail | ❌fail | ❌fail | ❌fail | 0/95 |
 | aisec-w09 | 188 | 🟡partial | 🟡partial | ❌fail | ❌fail | 31/90 |
+| aisec-w10 | 189 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| aisec-w11 | 190 | 🟡partial | ❌fail | ❌fail | ❌fail | 15/90 |
+| aisec-w12 | 191 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| aisec-w13 | 192 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| aisec-w14 | 193 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| aisec-w15 | 194 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
