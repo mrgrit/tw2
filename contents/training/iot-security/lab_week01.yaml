@@ -48,26 +48,18 @@ steps:
       > **🎯 목표:** IoT 장치의 취약점을 4대 공격 표면에 매핑.
       > **개념:** device·network·cloud·app — 넷을 모두 점검.
       ```bash
-      python3 - <<'PY'
-      # IP 카메라의 관측된 취약점 → 공격 표면 분류
-      findings=[{"issue":"UART debug port exposed","surface":None},
-                {"issue":"default admin/admin login","surface":None},
-                {"issue":"unencrypted MQTT telemetry","surface":None},
-                {"issue":"cloud API missing auth","surface":None},
-                {"issue":"mobile app hardcoded API key","surface":None}]
-      def classify(issue):
-          il=issue.lower()
-          if "uart" in il or "jtag" in il or "firmware" in il or "default" in il or "login" in il: return "device"
-          if "mqtt" in il or "wifi" in il or "ble" in il or "unencrypted" in il or "traffic" in il: return "network"
-          if "cloud" in il or "api" in il and "app" not in il: return "cloud"
-          if "app" in il or "mobile" in il or "hardcoded" in il: return "app"
-          return "other"
-      surfaces=set()
-      for f in findings:
-          s=classify(f["issue"]); surfaces.add(s); print(f"  [{s:8}] {f['issue']}")
-      # 4대 표면이 모두 나타나면 매핑 완료
-      print("SURFACE_MAPPED" if {"device","network","cloud","app"}.issubset(surfaces) else "INCOMPLETE")
-      PY
+      # IP 카메라 발견을 4대 공격 표면(device/network/cloud/app)으로 분류해 파일에 기록한다.
+      cat > /tmp/surfaces_STU42.txt <<'EOF'
+      device  UART debug port exposed
+      device  default admin/admin login
+      network unencrypted MQTT telemetry
+      cloud   cloud API missing auth
+      app     mobile app hardcoded API key
+      EOF
+      awk '{printf "  [%-7s] ", $1; $1=""; print}' /tmp/surfaces_STU42.txt
+      # 4대 표면이 모두 나타나면 매핑 완료.
+      M=""; for s in device network cloud app; do grep -q "^$s" /tmp/surfaces_STU42.txt || M=1; done
+      [ -z "$M" ] && echo SURFACE_MAPPED || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `SURFACE_MAPPED` (device·network·cloud·app 4대 표면에 취약점 매핑).
       🔎 UART/기본자격=device, MQTT=network, cloud API=cloud, 앱 하드코딩=app. 4대 표면 모두 점검.
@@ -90,24 +82,17 @@ steps:
       > **🎯 목표:** IoT 위협을 유형별로 분류.
       > **개념:** 유형화로 대응 우선순위·통제 설계.
       ```bash
-      python3 - <<'PY'
-      threats=["device takeover via default creds (Mirai-style)",
-               "traffic interception (unencrypted protocol)",
-               "firmware extraction and reverse engineering",
-               "cloud data breach (weak API)",
-               "botnet recruitment for DDoS"]
-      def classify(t):
-          tl=t.lower()
-          if "takeover" in tl or "default" in tl: return "device_compromise"
-          if "interception" in tl or "unencrypted" in tl: return "eavesdropping"
-          if "firmware" in tl or "reverse" in tl: return "firmware_analysis"
-          if "cloud" in tl or "breach" in tl: return "data_breach"
-          if "botnet" in tl or "ddos" in tl: return "abuse_botnet"
-          return "other"
-      cls={t:classify(t) for t in threats}
-      for t,c in cls.items(): print(f"  [{c:18}] {t[:38]}")
-      print("THREATS_CLASSIFIED" if len(set(cls.values()))>=5 else "INCOMPLETE")
-      PY
+      # 관측 위협을 유형별로 분류해 파일에 기록한다.
+      cat > /tmp/threats_STU42.txt <<'EOF'
+      device_compromise  device takeover via default creds (Mirai)
+      interception       traffic interception (unencrypted)
+      firmware_re        firmware extraction and reverse engineering
+      cloud_breach       cloud data breach (weak API)
+      botnet_ddos        botnet recruitment for DDoS
+      EOF
+      cut -d' ' -f1 /tmp/threats_STU42.txt | sort -u
+      # 서로 다른 위협 유형이 5개 이상이면 분류 완료.
+      [ "$(cut -d' ' -f1 /tmp/threats_STU42.txt | sort -u | wc -l)" -ge 5 ] && echo THREATS_CLASSIFIED || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `THREATS_CLASSIFIED` (장치장악·감청·펌웨어·데이터유출·봇넷 5유형).
       🔎 위협 유형화로 각각에 맞는 통제(기본자격 변경·암호화·API 인증) 설계.
@@ -130,18 +115,16 @@ steps:
       > **🎯 목표:** 노출×악용×영향으로 IoT 장치 위험 우선순위.
       > **개념:** IoT는 수가 많아 우선순위가 특히 중요.
       ```bash
-      python3 - <<'PY'
-      # 장치별 노출(인터넷)·악용성(기본자격/취약점)·영향
-      devices=[{"name":"internet-facing camera","exposed":3,"exploitability":3,"impact":3},  # default cred + 노출
-               {"name":"internal sensor","exposed":1,"exploitability":2,"impact":1},
-               {"name":"smart lock (cloud)","exposed":2,"exploitability":2,"impact":3}]
-      for d in devices: d["risk"]=d["exposed"]*d["exploitability"]*d["impact"]
-      ranked=sorted(devices, key=lambda x:x["risk"], reverse=True)
-      for d in ranked: print(f"  {d['name']:26} E{d['exposed']}x{d['exploitability']}x{d['impact']} = risk {d['risk']}")
-      top=ranked[0]
-      print(f"top priority: {top['name']} (risk {top['risk']})")
-      print("RISK_SCORED" if top["name"]=="internet-facing camera" else "CHECK")
-      PY
+      # 장치별 노출·악용성·영향(1~3)을 CSV 로 기록하고 위험도=곱으로 계산한다.
+      cat > /tmp/devrisk_STU42.csv <<'EOF'
+      internet-facing camera,3,3,3
+      internal sensor,1,2,1
+      smart lock (cloud),2,2,3
+      EOF
+      awk -F, '{printf "  %-24s risk=%d\n",$1,$2*$3*$4}' /tmp/devrisk_STU42.csv | sort -t= -k2 -rn
+      # 최고 위험 장치가 인터넷 노출 카메라이면 우선순위 확정.
+      TOP=$(awk -F, '{print $2*$3*$4","$1}' /tmp/devrisk_STU42.csv | sort -rn | head -1 | cut -d, -f2)
+      echo "$TOP" | grep -q "internet-facing camera" && echo RISK_SCORED || echo CHECK
       ```
       ✅ 마지막 줄 `RISK_SCORED` (인터넷 노출 카메라 27점 최우선).
       🔎 인터넷 노출+기본 자격+중요 장치(카메라)가 최우선. 내부 센서는 후순위. IoT는 우선순위가 관건.

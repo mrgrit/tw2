@@ -48,17 +48,17 @@ steps:
       > **🎯 목표:** 한 장치를 device·network·cloud·app 4대 표면에서 점검.
       > **개념:** 넷을 모두 봐야 전체 위험이 보인다.
       ```bash
-      python3 - <<'PY'
-      # 스마트 도어벨 카메라 4대 표면 점검
-      assessment={"device":["hardcoded API key in firmware","default admin creds"],
-                  "network":["unencrypted RTSP stream"],
-                  "cloud":["cloud API missing rate limit"],
-                  "app":["mobile app stores token in plaintext"]}
-      for surface in ["device","network","cloud","app"]:
-          print(f"  {surface:8}: {assessment[surface]}")
-      # 4대 표면 모두 점검(각 표면에 발견) 되면 종합 평가
-      print("MULTISURFACE_ASSESSED" if all(assessment[s] for s in ["device","network","cloud","app"]) else "INCOMPLETE")
-      PY
+      # 스마트 도어벨 카메라를 4대 표면으로 점검한 결과를 파일로 기록한다.
+      cat > /tmp/assess_STU42.txt <<'EOF'
+      device  : hardcoded API key in firmware; default admin creds
+      network : unencrypted RTSP stream
+      cloud   : cloud API missing rate limit
+      app     : mobile app stores token in plaintext
+      EOF
+      cat /tmp/assess_STU42.txt
+      # 4대 표면 모두 발견이 기록되면 종합 점검 완료.
+      M=""; for s in device network cloud app; do grep -q "^$s" /tmp/assess_STU42.txt || M=1; done
+      [ -z "$M" ] && echo MULTISURFACE_ASSESSED || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `MULTISURFACE_ASSESSED` (4대 표면 모두 취약점 발견).
       🔎 펌웨어 비밀·기본자격(device), 평문 RTSP(network), API(cloud), 앱 토큰(app). 넷을 모두 점검.
@@ -80,17 +80,16 @@ steps:
       > **🎯 목표:** 표면 간 취약점을 연결해 공격 경로 구성.
       > **개념:** 연결된 경로가 실제 위협.
       ```bash
-      python3 - <<'PY'
-      # 취약점 연결: 펌웨어 비밀 → 클라우드 → 전 장치
-      path=[("device","extract hardcoded API key from firmware (W04)"),
-            ("cloud","use key to access cloud API (no rate limit)"),
-            ("network","enumerate + control all devices of this model")]
-      for surface,step in path: print(f"  [{surface:8}] {step}")
-      # 경로가 여러 표면을 잇고 최종 영향(전 장치 제어)에 도달하면 완성
-      surfaces=[s for s,_ in path]
-      complete = len(set(surfaces))>=3 and "control all" in path[-1][1]
-      print("ATTACK_PATH" if complete else "INCOMPLETE")
-      PY
+      # 취약점을 잇는 공격 경로를 파일로 작성한다(펌웨어 비밀→클라우드→전 장치).
+      cat > /tmp/path_STU42.txt <<'EOF'
+      device  extract hardcoded API key from firmware (W04)
+      cloud   use key to access cloud API (no rate limit)
+      network enumerate and control all devices of this model
+      EOF
+      cat /tmp/path_STU42.txt
+      # 경로가 3개 이상 표면을 잇고 최종 '전 장치 제어'에 도달하면 완성.
+      S=$(cut -d' ' -f1 /tmp/path_STU42.txt | sort -u | wc -l)
+      { [ "$S" -ge 3 ] && grep -q "control all" /tmp/path_STU42.txt; } && echo ATTACK_PATH || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `ATTACK_PATH` (펌웨어 비밀→클라우드 API→전 장치 제어 경로).
       🔎 하드코딩 비밀 하나가 클라우드를 거쳐 전 장치 제어로 이어진다. 연결하면 개별보다 치명적.
@@ -111,18 +110,17 @@ steps:
       > **🎯 목표:** 위험 우선순위로 방어를 권고(경로 차단 우선).
       > **개념:** 경로를 끊는 방어가 개별 패치보다 효과적.
       ```bash
-      python3 - <<'PY'
-      # 취약점별 방어 + 위험 점수
-      recs=[{"fix":"remove hardcoded key, per-device provisioning","breaks_path":True,"risk":9},
-            {"fix":"cloud API rate limit + auth","breaks_path":True,"risk":7},
-            {"fix":"RTSP over TLS","breaks_path":False,"risk":5},
-            {"fix":"encrypt app token storage","breaks_path":False,"risk":4}]
-      ranked=sorted(recs, key=lambda r:(r["breaks_path"], r["risk"]), reverse=True)
-      for r in ranked: print(f"  [risk {r['risk']}{' PATH-BREAK' if r['breaks_path'] else ''}] {r['fix']}")
-      top=ranked[0]
-      # 경로 차단 + 최고 위험이 최우선
-      print("DEFENSE_RECS" if top["breaks_path"] and top["risk"]==9 else "CHECK")
-      PY
+      # 취약점별 방어 권고를 '경로 차단 여부,위험도'와 함께 CSV 로 기록한다.
+      cat > /tmp/recs_STU42.csv <<'EOF'
+      remove hardcoded key + per-device provisioning,break,9
+      cloud API rate limit + auth,break,7
+      RTSP over TLS,no,5
+      encrypt app token storage,no,4
+      EOF
+      awk -F, '{printf "  [%s] risk=%s  %s\n",$2,$3,$1}' /tmp/recs_STU42.csv | sort -t= -k2 -rn
+      # 최우선 = 경로 차단(break) + 최고 위험(9).
+      TOP=$(awk -F, '$2=="break"{print $3","$1}' /tmp/recs_STU42.csv | sort -rn | head -1)
+      echo "$TOP" | grep -q "^9," && echo DEFENSE_RECS || echo CHECK
       ```
       ✅ 마지막 줄 `DEFENSE_RECS` (하드코딩 비밀 제거가 경로 차단+최고 위험 → 최우선).
       🔎 하드코딩 비밀 제거는 전 경로를 끊는다(개별 패치보다 효과적). 위험+경로 차단으로 우선순위.

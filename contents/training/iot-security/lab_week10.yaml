@@ -48,17 +48,16 @@ steps:
       > **🎯 목표:** 허브 장악 시 제어되는 장치 범위를 평가.
       > **개념:** 허브 하나 뚫리면 집 전체.
       ```bash
-      python3 - <<'PY'
-      # 허브가 제어하는 장치
-      hub={"controls":["smart lock","cameras","alarm","lights","thermostat"],"auth":"weak","isolated":False}
-      # 허브 장악 시 영향
-      critical=[d for d in hub["controls"] if d in ("smart lock","cameras","alarm")]
-      print(f"hub controls {len(hub['controls'])} devices including critical: {critical}")
-      print(f"hub auth: {hub['auth']}, isolated: {hub['isolated']}")
-      # 약한 인증 허브가 잠금·카메라 등 중요 장치를 제어 = 단일 장애점 위험
-      spof = hub["auth"]=="weak" and len(critical)>=2
-      print("HUB_RISK" if spof else "MANAGED")
-      PY
+      # 허브가 제어하는 장치와 인증/격리 상태를 파일로 기록한다.
+      cat > /tmp/hub_STU42.txt <<'EOF'
+      controls=smart lock,cameras,alarm,lights,thermostat
+      auth=weak
+      isolated=false
+      EOF
+      echo "중요 장치:"; grep controls /tmp/hub_STU42.txt | grep -oE "smart lock|cameras|alarm"
+      # 약한 인증 허브가 중요 장치(잠금/카메라/알람) 2개 이상을 제어하면 단일 장애점.
+      C=$(grep controls /tmp/hub_STU42.txt | grep -oE "smart lock|cameras|alarm" | wc -l)
+      { grep -q "auth=weak" /tmp/hub_STU42.txt && [ "$C" -ge 2 ]; } && echo HUB_RISK || echo MANAGED
       ```
       ✅ 마지막 줄 `HUB_RISK` (약한 인증 허브가 잠금·카메라·알람 제어 = 단일 장애점).
       🔎 허브 하나가 잠금·카메라·알람을 제어하는데 인증이 약하면, 허브 장악 = 집 전체 장악. 최우선 보호.
@@ -78,19 +77,17 @@ steps:
       > **🎯 목표:** 약한 장치 발판 측면이동 + 프라이버시 데이터 유출 위험.
       > **개념:** 약한 전구가 잠금으로 가는 발판, 센서가 생활을 노출.
       ```bash
-      python3 - <<'PY'
-      # 같은 네트워크(플랫), 장치 간 신뢰 무제한
-      network={"segmented":False}
-      devices=[{"name":"cheap smart bulb","security":"weak"},{"name":"smart lock","security":"strong"}]
-      # 약한 전구 → 강한 잠금 측면이동(같은 망, 신뢰 무제한)
-      lateral = not network["segmented"]
-      # 프라이버시: 수집 데이터
-      data_collected={"occupancy":True,"voice":True,"video":True,"cloud_uploaded":True,"encrypted":False}
-      privacy_risk = data_collected["cloud_uploaded"] and not data_collected["encrypted"]
-      print(f"lateral movement (bulb -> lock): {lateral} (flat network, unlimited trust)")
-      print(f"privacy: occupancy/voice/video uploaded unencrypted = {privacy_risk}")
-      print("PRIVACY_LEAK" if lateral and privacy_risk else "PROTECTED")
-      PY
+      # 네트워크 분리 여부와 수집 데이터 상태를 파일로 기록한다.
+      cat > /tmp/privacy_STU42.txt <<'EOF'
+      network_segmented=false
+      data=occupancy,voice,video
+      cloud_uploaded=true
+      encrypted=false
+      EOF
+      echo "측면이동 가능(플랫망): $(grep -q 'segmented=false' /tmp/privacy_STU42.txt && echo yes)"
+      echo "프라이버시 위험(무암호 업로드): $(grep -q 'cloud_uploaded=true' /tmp/privacy_STU42.txt && grep -q 'encrypted=false' /tmp/privacy_STU42.txt && echo yes)"
+      # 플랫망 측면이동 + 무암호 클라우드 업로드면 프라이버시 유출.
+      { grep -q "segmented=false" /tmp/privacy_STU42.txt && grep -q "cloud_uploaded=true" /tmp/privacy_STU42.txt && grep -q "encrypted=false" /tmp/privacy_STU42.txt; } && echo PRIVACY_LEAK || echo PROTECTED
       ```
       ✅ 마지막 줄 `PRIVACY_LEAK` (약한 전구→잠금 측면이동 + 미암호 데이터 클라우드 업로드).
       🔎 플랫 네트워크에서 약한 전구가 잠금으로 가는 발판. 센서 데이터(재실·음성·영상)가 미암호로 클라우드에 유출.
@@ -110,21 +107,17 @@ steps:
       > **🎯 목표:** 네트워크 분리·허브 강화·최소 신뢰·최소 데이터로 강화.
       > **개념:** 생태계 차원의 방어.
       ```bash
-      python3 - <<'PY'
-      def harden(home):
-          return {"network_segmented":True,       # IoT 별도 VLAN
-                  "micro_segmentation":True,       # 장치 간 최소 신뢰
-                  "hub_auth":"strong+updated",
-                  "data":"minimal, local-first, encrypted"}
-          # (강화 후)
-      before={"network_segmented":False,"micro_segmentation":False,"hub_auth":"weak"}
-      after=harden(before)
-      def vulnerable(h):
-          return not h.get("network_segmented") or not h.get("micro_segmentation") or "weak" in str(h.get("hub_auth"))
-      print("before vulnerable:", vulnerable(before))
-      print("after vulnerable:", vulnerable(after), "(VLAN + micro-seg + strong hub + minimal encrypted data)")
-      print("SMARTHOME_HARDENED" if vulnerable(before) and not vulnerable(after) else "CHECK")
-      PY
+      # 스마트홈 강화 설정을 파일로 작성한다(VLAN 분리·마이크로세그·강한 인증·암호화·클라우드 최소권한).
+      cat > /tmp/smarthome_hardened_STU42.txt <<'EOF'
+      network_segmented=true (IoT 별도 VLAN)
+      micro_segmentation=true (장치 간 최소 신뢰)
+      hub_auth=strong (MFA)
+      encryption=true (전송/저장)
+      cloud_least_privilege=true
+      EOF
+      grep -E "true|strong" /tmp/smarthome_hardened_STU42.txt
+      # 5대 강화 항목이 모두 적용되면 강화 완료.
+      [ "$(grep -cE 'true|strong' /tmp/smarthome_hardened_STU42.txt)" -ge 5 ] && echo SMARTHOME_HARDENED || echo CHECK
       ```
       ✅ 마지막 줄 `SMARTHOME_HARDENED` (VLAN 분리+마이크로세분화+허브 강화+최소 데이터).
       🔎 IoT를 별도 VLAN으로 분리+장치 간 최소 신뢰(마이크로세분화)+허브 강화+최소·암호화 데이터. 생태계 방어.
