@@ -1,0 +1,158 @@
+id: "ai-agent-w02"
+category: "ai-agent"
+title: "[AI에이전트 W2] Tool Calling 오남용 실증 vs 안전한 도구 인터페이스 설계"
+difficulty: "medium"
+time_limit: 2400
+battle_type: "1v1"
+description: |
+  AI 에이전트 도구 호출 공방전 — 대상은 el34의 훈련용 취약 AI 어시스턴트 **AICompanion**
+  (`http://192.168.0.161:8007`). 에이전트에게 "손(도구)"을 달아주는 **Tool Calling**을 이해하고, 도구가
+  안전하지 않을 때의 오남용과 안전한 도구 인터페이스를 다룬다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(도구 오남용 실증)와 Blue(안전한 도구 인터페이스 설계)를 모두 수행.
+    • duel : Red 학생이 도구를 오남용하고, Blue 학생이 안전한 인터페이스로 대응.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 본인 인프라(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서 AICompanion으로 수행. 채점은 **명령
+    흔적(command_ran)** + **보고서 증거**(도구 호출·결과 캡처)로 판정.
+
+  ▸ 관찰 — AICompanion은 무인증 도구(`/api/tool/exec_python`·`update_user`)를 노출한다. 도구가 넓고
+    무인증이면 에이전트가 곧 시스템 조작 도구가 됨을 실증한다.
+
+  ▸ 윤리 — 인가된 훈련 대상(AICompanion)에서만. PoC 수준.
+
+red_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 무인증 도구 호출로 능력 초과 실증
+
+      에이전트 도구가 **무인증·과도한 능력**일 때의 오남용을 실증한다.
+
+      ### 권장 명령 (참고)
+      ```bash
+      curl -s http://192.168.0.161:8007/api/tool/exec_python -H 'content-type: application/json' \
+        -d '{"code":"print(6*7)"}'
+      curl -s -o /dev/null -w '%{http_code}\n' http://192.168.0.161:8007/api/tool/update_user \
+        -H 'content-type: application/json' -d '{"id":1,"role":"admin"}'
+      ```
+
+      ### ✅ 합격 기준
+      무인증 도구 최소 2개를 호출해 능력 초과(코드 실행·사용자 변경)를 증명하고 실제 요청/응답을 인용한다.
+    hint: "exec_python(실행)+update_user(무인증 200) 등 2+ 도구 호출·결과 캡처 인용. 넓은 도구=위험 실증."
+    verify:
+      type: "command_ran"
+      expect: "api/tool"
+      checks:
+        - { id: "ag-2-1", type: "command_ran", target: "attacker",
+            params: { pattern: "tool" } }
+      semantic:
+        intent: |
+          도구 오남용 — 무인증·과도한 도구가 에이전트를 시스템 조작 도구로 만듦을 실증.
+        success_criteria:
+          - "본인 인프라 명령 로그에 /api/tool/* 호출 흔적이 남음"
+          - "무인증 도구 최소 2개 호출·결과를 캡처로 제시"
+          - "(설명) 넓은 도구·무인증이 근본 문제임을 설명"
+        acceptable_methods:
+          - "exec_python·update_user 등 도구 호출"
+        negative_signs:
+          - "명령 흔적 없이 서술만"
+          - "도구 하나·결과 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 도구 인터페이스 위험 분석
+
+      각 도구의 **인터페이스 위험**을 분석한다: 입력 범위(임의 코드·URL·ID), 부작용(비가역), 인증 여부.
+
+      ### ✅ 합격 기준
+      최소 3개 도구의 인터페이스를 입력 범위·부작용·인증 관점으로 위험 등급화한다.
+    hint: "exec_python(임의 코드)·http_get(SSRF)·chain(원격 코드)·update_user(변경) 인터페이스를 입력 범위·부작용·인증으로 등급화."
+    verify:
+      type: "command_ran"
+      expect: "api/tool"
+      checks:
+        - { id: "ag-2-2", type: "command_ran", target: "attacker",
+            params: { pattern: "tool" } }
+      semantic:
+        intent: |
+          도구 인터페이스 위험 — 넓은 입력·부작용·무인증 도구의 위험을 등급화.
+        success_criteria:
+          - "본인 인프라 명령 로그에 도구 호출 흔적이 남음"
+          - "최소 3개 도구를 입력 범위·부작용·인증으로 등급화"
+          - "(설명) 좁은 인터페이스의 필요를 언급"
+        acceptable_methods:
+          - "도구 인터페이스 위험 등급화"
+        negative_signs:
+          - "등급화 없이 나열만"
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-1 — 도구 표면 진단
+
+      우리 에이전트의 **도구 표면**을 진단한다: 노출 도구·인증·능력 범위.
+
+      ### ✅ 합격 기준
+      노출 도구·인증 여부·최악 행동을 증거로 목록화한다.
+    hint: "도구 열거·인증·상태코드 확인 + 최악 행동 목록화. 증거 기반."
+    verify:
+      type: "command_ran"
+      expect: "api/tool"
+      checks:
+        - { id: "ag-2-3", type: "command_ran", target: "attacker",
+            params: { pattern: "tool" } }
+      semantic:
+        intent: |
+          도구 표면 진단 — 노출 도구·인증·능력을 증거로 목록화.
+        success_criteria:
+          - "본인 인프라 명령 로그에 도구 점검 흔적이 남음"
+          - "노출 도구·인증·최악 행동을 목록화"
+          - "(설명) 위험 등급을 부여"
+        acceptable_methods:
+          - "도구 열거 + 위험 목록"
+        negative_signs:
+          - "증거 없이 서술만"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-2 — 안전한 도구 인터페이스 설계
+
+      오남용을 막는 **안전한 도구 인터페이스**를 설계한다.
+
+      ### 무엇을
+      - **좁은 인터페이스**: 범용 실행(exec_python) 제거·목적별 좁은 도구, 입력 스키마·허용목록.
+      - **인증·인가**: 도구별 인증·권한, 고위험 도구는 사람 승인(HITL).
+      - **부작용 통제**: 비가역 도구는 확인·감사·레이트리밋, SSRF 목적지 허용목록.
+      - **격리·최소 권한**: 도구 실행 샌드박스·최소 권한.
+
+      ### ✅ 합격 기준
+      좁은 인터페이스·인증/인가·부작용 통제·격리를 제시하고 "도구는 좁고 인증되고 격리되게" 원칙을 설명한다.
+    hint: "범용 실행 제거·목적별 좁은 도구·입력 스키마+도구별 인증·HITL+부작용 통제·SSRF 허용목록+샌드박스·최소 권한. '좁고 인증·격리' 원칙."
+    verify:
+      type: "semantic"
+      expect: "safe_tool_interface"
+      semantic:
+        intent: |
+          안전한 도구 인터페이스 — 좁은 인터페이스·인증·부작용 통제·격리로 도구 오남용을 막는다.
+        success_criteria:
+          - "좁은 인터페이스(범용 실행 제거·입력 스키마)를 제시"
+          - "도구별 인증/인가·HITL을 제시"
+          - "부작용 통제·격리·최소 권한을 제시하고 원칙 설명"
+        acceptable_methods:
+          - "좁은 인터페이스 + 인증 + 부작용 통제 + 격리"
+        negative_signs:
+          - "범용 도구 유지"
+          - "인증·격리 없음"
