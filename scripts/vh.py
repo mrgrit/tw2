@@ -193,6 +193,21 @@ def _uid(email):
     c.close()
     return r[0] if r else None
 
+def own_infra(email, kind="target"):
+    """해당 사용자가 소유한 인프라 id(기본: target). 시드 상태 가변 대응."""
+    import sqlite3, re
+    path = re.sub(r"^sqlite\+aiosqlite:/+", "/", os.environ["DATABASE_URL"])
+    c = sqlite3.connect(path)
+    uid = c.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+    if not uid:
+        c.close(); raise SystemExit(f"no user {email}")
+    rows = c.execute("SELECT id,kind FROM infras WHERE owner_id=?", (uid[0],)).fetchall()
+    c.close()
+    for iid, k in rows:
+        if k == kind:
+            return iid
+    return rows[0][0] if rows else (_ for _ in ()).throw(SystemExit(f"{email} owns no infra"))
+
 def _admin_email():
     import sqlite3, re
     path = re.sub(r"^sqlite\+aiosqlite:/+", "/", os.environ["DATABASE_URL"])

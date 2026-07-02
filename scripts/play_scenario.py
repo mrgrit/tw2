@@ -466,7 +466,7 @@ def run_one(sid, mode, target=EL34_HOST):
 
     # el34 = 단일 공유 인스턴스(.151). 외부 공격은 .202 VM→.161(출처 IP 보존), 점검/심기는 .151 docker exec.
     if a.mode=="solo":
-        EMAIL="mrgrit@ync.ac.kr"; INFRA=1; HOST=a.target; suf="mrgrit"
+        EMAIL="mrgrit@ync.ac.kr"; INFRA=vh.own_infra(EMAIL); HOST=a.target; suf="mrgrit"
         st,b=vh.create_solo(scn_int,EMAIL,INFRA,monitor="bastion"); bid=b["battle"]["id"]; vh.start(bid,EMAIL)
         RED_EMAIL=BLUE_EMAIL=EMAIL; RHOST=BHOST=HOST
     else:
@@ -511,18 +511,26 @@ def run_one(sid, mode, target=EL34_HOST):
         try: cleanup(RHOST, P, blue_host=BHOST)
         except Exception as e: print(f"  (cleanup err: {e})", flush=True)
     # ledger
-    c=sqlite3.connect(LEDGER)
-    for side,order,r,mx in results:
-        ver=r.get("verdict") if r else None
-        led="pass" if ver=="pass" else "partial" if ver=="partial" else "fail" if ver=="fail" else "error"
-        c.execute("""UPDATE missions SET status=?,awarded=?,verdict=?,battle_id=?,
-            submission_id=?,attempts=attempts+1,notes=?,updated_at=datetime('now')
-            WHERE scenario_id=? AND mode=? AND side=? AND mission_order=?""",
-            (led, (r.get("awarded_points") if r else None), ver, bid,
-             (r.get("id") if r else None), ((r.get("feedback") or "")[:150] if r else "no-grade"),
-             a.sid, a.mode, side, order))
-    c.execute("UPDATE scenario_state SET status='done',battle_id=?,updated_at=datetime('now') WHERE scenario_id=? AND mode=?",(bid,a.sid,a.mode))
-    c.commit()
+    # ledger 는 선택적(검수용 진행판). 테이블 없으면 조용히 스킵 — 채점 결과 반환을 막지 않는다.
+    try:
+        if osp.exists(LEDGER):
+            c=sqlite3.connect(LEDGER)
+            has=lambda t: c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?",(t,)).fetchone()
+            if has("missions"):
+                for side,order,r,mx in results:
+                    ver=r.get("verdict") if r else None
+                    led="pass" if ver=="pass" else "partial" if ver=="partial" else "fail" if ver=="fail" else "error"
+                    c.execute("""UPDATE missions SET status=?,awarded=?,verdict=?,battle_id=?,
+                        submission_id=?,attempts=attempts+1,notes=?,updated_at=datetime('now')
+                        WHERE scenario_id=? AND mode=? AND side=? AND mission_order=?""",
+                        (led, (r.get("awarded_points") if r else None), ver, bid,
+                         (r.get("id") if r else None), ((r.get("feedback") or "")[:150] if r else "no-grade"),
+                         a.sid, a.mode, side, order))
+            if has("scenario_state"):
+                c.execute("UPDATE scenario_state SET status='done',battle_id=?,updated_at=datetime('now') WHERE scenario_id=? AND mode=?",(bid,a.sid,a.mode))
+            c.commit(); c.close()
+    except Exception as e:
+        print(f"  (ledger skip: {e})", flush=True)
     npass=sum(1 for _,_,r,_ in results if r and r.get("verdict")=="pass")
     npart=sum(1 for _,_,r,_ in results if r and r.get("verdict")=="partial")
     nbad=sum(1 for _,_,r,_ in results if not r or r.get("verdict") in ("fail",None,"review"))
