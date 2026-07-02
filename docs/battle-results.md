@@ -19,7 +19,7 @@
 > 실측 `battle 5` ai-service-pentest-w02 **BLUE-2(semantic 설계) = pass 25/25**. 즉 partial/fail 은
 > 시나리오 결함이 아니라 **자동 하니스가 학생이 아니기 때문**. 배포·구조는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 84 · 미션 336 · ✅pass 0 · 🟡partial 86 (생성 시각 2026-07-02 21:54)
+**집계**: 시나리오 90 · 미션 360 · ✅pass 0 · 🟡partial 86 (생성 시각 2026-07-02 22:02)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -135,3 +135,9 @@
 | ai-security-w07 | 156 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | ai-security-w08 | 157 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
 | ai-security-w09 | 158 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| ai-security-w10 | 159 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| ai-security-w11 | 160 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| ai-security-w12 | 161 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| ai-security-w13 | 162 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| ai-security-w14 | 163 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| ai-security-w15 | 164 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
