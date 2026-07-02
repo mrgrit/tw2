@@ -19,7 +19,7 @@
 > 실측 `battle 5` ai-service-pentest-w02 **BLUE-2(semantic 설계) = pass 25/25**. 즉 partial/fail 은
 > 시나리오 결함이 아니라 **자동 하니스가 학생이 아니기 때문**. 배포·구조는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 102 · 미션 408 · ✅pass 0 · 🟡partial 86 (생성 시각 2026-07-02 22:19)
+**집계**: 시나리오 108 · 미션 432 · ✅pass 0 · 🟡partial 86 (생성 시각 2026-07-02 22:27)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -158,3 +158,14 @@
 | ai-service-pentest-w10 | 174 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | ai-service-pentest-w11 | 175 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | ai-service-pentest-w12 | 176 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| ai-service-pentest-w13 | 177 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| ai-service-pentest-w14 | 178 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| ai-service-pentest-w15 | 179 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
+
+## aisec  (✅0 🟡0)
+
+| 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
+|---|---|---|---|---|---|---|
+| aisec-w01 | 180 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| aisec-w02 | 181 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| aisec-w03 | 182 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
