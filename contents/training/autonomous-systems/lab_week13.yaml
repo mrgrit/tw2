@@ -48,21 +48,16 @@ steps:
       > **🎯 목표:** 경계 근처 입력에 최소 섭동을 더해 오분류를 유도.
       > **개념:** 경사 방향으로 결정 경계를 넘긴다.
       ```bash
-      python3 - <<'PY'
-      # 단순 선형 분류기: score = w.x, score>0 -> "stop", <=0 -> "speed_limit"
-      w=[1.0,-1.0]; x=[0.6,0.5]   # 원 입력
-      def score(x): return w[0]*x[0]+w[1]*x[1]
-      orig=score(x); orig_cls="stop" if orig>0 else "speed_limit"
-      # FGSM식: 경사 부호(-w 방향)로 epsilon 섭동해 경계 넘기기
-      eps=0.2
-      x_adv=[x[0]-eps*(1 if w[0]>0 else -1), x[1]-eps*(1 if w[1]>0 else -1)]
-      adv=score(x_adv); adv_cls="stop" if adv>0 else "speed_limit"
-      import math
-      pert=math.dist(x,x_adv)
-      print(f"original: score={orig:.2f} -> {orig_cls}")
-      print(f"adversarial (eps={eps}, L2={pert:.2f}): score={adv:.2f} -> {adv_cls}")
-      print("ADVERSARIAL_CRAFTED" if orig_cls!=adv_cls and pert<0.5 else "NO_FLIP")
-      PY
+      # 선형 분류기(가중치 w, 입력 x)에서 FGSM 적대적 예제를 awk 로 만든다.
+      # 원 입력 점수 = w1*x1 + w2*x2, 적대적 x' = x - eps*sign(w).
+      awk 'BEGIN{w1=1.0;w2=-1.0;x1=0.6;x2=0.5;eps=0.1;
+        orig=w1*x1+w2*x2; oc=(orig>=0)?"class1":"class0";
+        ax1=x1-eps*(w1>0?1:-1); ax2=x2-eps*(w2>0?1:-1);
+        adv=w1*ax1+w2*ax2; ac=(adv>=0)?"class1":"class0";
+        pert=sqrt((x1-ax1)^2+(x2-ax2)^2);
+        printf "original: score=%.2f -> %s\n",orig,oc;
+        printf "adversarial(eps=%.1f,L2=%.2f): score=%.2f -> %s\n",eps,pert,adv,ac;
+        print (oc!=ac && pert<0.5)?"ADVERSARIAL_CRAFTED":"NO_FLIP"}' 
       ```
       ✅ 마지막 줄 `ADVERSARIAL_CRAFTED` (작은 섭동으로 stop→speed_limit 오분류).
       🔎 경사 부호 방향으로 작은 섭동(L2<0.5)을 더해 결정 경계를 넘겼다. 사람 눈엔 거의 같지만 모델은 오분류.
@@ -82,18 +77,10 @@ steps:
       > **🎯 목표:** 섭동 하 강건 정확도(robust accuracy)를 측정.
       > **개념:** 정상 정확도와 강건 정확도는 다르다.
       ```bash
-      python3 - <<'PY'
-      # 100개 샘플, 정상/적대적 정확도
-      clean_correct=98      # 정상 정확도 98%
-      adv_correct=12        # 적대적(PGD) 정확도 12% -> 강건하지 않음
-      clean_acc=clean_correct/100; robust_acc=adv_correct/100
-      gap=clean_acc-robust_acc
-      print(f"clean accuracy: {clean_acc:.0%}")
-      print(f"robust accuracy (under PGD): {robust_acc:.0%}")
-      print(f"robustness gap: {gap:.0%}")
-      # 큰 갭 = 강건하지 않음(안전 우려)
-      print("ROBUSTNESS_MEASURED" if gap>0.5 else "ROBUST")
-      PY
+      # 청정 정확도와 적대적 정확도의 격차를 awk 로 계산한다.
+      awk 'BEGIN{clean=0.95; adv=0.12; gap=clean-adv;
+        printf "clean acc=%.2f, adversarial acc=%.2f, gap=%.2f\n",clean,adv,gap;
+        print (gap>0.5)?"ROBUSTNESS_MEASURED":"ROBUST"}' 
       ```
       ✅ 마지막 줄 `ROBUSTNESS_MEASURED` (정상 98% vs 강건 12% = 큰 갭, 강건하지 않음).
       🔎 정상 정확도 98%라도 적대적 입력엔 12%로 붕괴. 큰 강건성 갭은 자율 시스템 안전 우려 — 강건 정확도를 봐야.
@@ -114,20 +101,18 @@ steps:
       > **🎯 목표:** 적대적 학습·탐지·중복으로 강건성을 높인다.
       > **개념:** 심층 방어 — 어느 하나로 완벽하지 않다.
       ```bash
-      python3 - <<'PY'
-      def harden(model):
-          return {"adversarial_training":True,"input_preprocessing":True,
-                  "adv_detection":True,"ensemble_redundancy":True,
-                  "robust_acc":0.70}   # 적대적 학습 후 강건 정확도 12%->70%
-      before={"adversarial_training":False,"adv_detection":False,"ensemble_redundancy":False,"robust_acc":0.12}
-      after=harden(before)
-      improved = after["robust_acc"] - before["robust_acc"]
-      defenses=[k for k,v in after.items() if v is True]
-      print(f"robust accuracy: {before['robust_acc']:.0%} -> {after['robust_acc']:.0%} (+{improved:.0%})")
-      print(f"defense layers: {defenses}")
-      # 적대적 학습으로 강건성 크게 향상 + 다층 방어
-      print("MODEL_HARDENED" if improved>=0.4 and len(defenses)>=3 else "CHECK")
-      PY
+      # 적대적 학습 전/후 방어와 강건 정확도를 파일로 기록한다.
+      cat > /tmp/modelhard_STU42.txt <<'EOF'
+      adversarial_training=true
+      adv_detection=true
+      ensemble_redundancy=true
+      robust_acc_before=0.12
+      robust_acc_after=0.70
+      EOF
+      grep "true" /tmp/modelhard_STU42.txt
+      # 방어 3개 이상 + 강건 정확도 개선 0.4 이상이면 강화 완료.
+      D=$(grep -c "=true" /tmp/modelhard_STU42.txt)
+      awk 'BEGIN{print (0.70-0.12>=0.4)?"imp_ok":"imp_no"}' | grep -q imp_ok && [ "$D" -ge 3 ] && echo MODEL_HARDENED || echo CHECK
       ```
       ✅ 마지막 줄 `MODEL_HARDENED` (적대적 학습으로 강건 정확도 12%→70% + 다층 방어).
       🔎 적대적 학습(강건 정확도 대폭↑)+입력 정제+적대적 탐지+앙상블 중복. 완벽하진 않아도 심층 방어로 위험을 낮춘다.

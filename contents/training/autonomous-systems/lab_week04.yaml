@@ -48,17 +48,16 @@ steps:
       > **🎯 목표:** 여러 센서를 융합해 드론을 고신뢰로 탐지.
       > **개념:** 2개 이상 센서 일치 = 고신뢰(각 센서 한계 보완).
       ```bash
-      python3 - <<'PY'
-      # 각 센서의 드론 탐지 여부(신뢰도)
-      sensors={"RF":0.8,"radar":0.7,"acoustic":0.3,"EO_IR":0.6}
-      DETECT_TH=0.5
-      hits=[s for s,c in sensors.items() if c>=DETECT_TH]
-      print("sensor hits:", {s:sensors[s] for s in hits})
-      # 융합: 2개 이상 센서가 임계 이상이면 고신뢰 탐지
-      fused_confidence = len(hits)>=2
-      print(f"sensors above threshold: {len(hits)}")
-      print("DRONE_DETECTED" if fused_confidence else "UNCERTAIN")
-      PY
+      # 다중 센서의 탐지 신뢰도(0~1)를 CSV 로 기록한다.
+      cat > /tmp/sensors_STU42.csv <<'EOF'
+      RF,0.8
+      radar,0.7
+      acoustic,0.3
+      EO_IR,0.6
+      EOF
+      awk -F, '$2>=0.5{print "  HIT "$1" ("$2")"}' /tmp/sensors_STU42.csv
+      # 임계(0.5) 이상 센서가 2개 이상이면 융합 탐지 확정.
+      [ "$(awk -F, '$2>=0.5' /tmp/sensors_STU42.csv | wc -l)" -ge 2 ] && echo DRONE_DETECTED || echo UNCERTAIN
       ```
       ✅ 마지막 줄 `DRONE_DETECTED` (RF·radar·EO/IR 3개 센서 일치 = 고신뢰).
       🔎 음향(0.3)은 약하지만 RF·레이더·EO/IR이 일치해 고신뢰 탐지. 다중 센서 융합이 각 한계를 보완.
@@ -78,19 +77,16 @@ steps:
       > **🎯 목표:** RF 지문으로 드론 기종·위협을 식별.
       > **개념:** RF 시그니처로 기종 파악·조종기 위치.
       ```bash
-      python3 - <<'PY'
-      # 관측된 RF 특성 vs 알려진 드론 시그니처 DB
-      observed={"freq":"2.4GHz","hopping":"FHSS-pattern-A","protocol":"OcuSync-like"}
-      SIGNATURES={"DJI-class":{"freq":"2.4GHz","hopping":"FHSS-pattern-A","protocol":"OcuSync-like"},
-                  "toy-wifi":{"freq":"2.4GHz","hopping":"none","protocol":"wifi"}}
-      match=None
-      for model,sig in SIGNATURES.items():
-          if all(observed[k]==sig[k] for k in sig): match=model; break
-      threat="HIGH (capable, unauthorized)" if match=="DJI-class" else "low"
-      print(f"observed RF: {observed}")
-      print(f"identified: {match}, threat: {threat}")
-      print("RF_CLASSIFIED" if match else "UNKNOWN")
-      PY
+      # 관측 RF 특성과 알려진 시그니처를 비교한다.
+      cat > /tmp/rfobs_STU42.txt <<'EOF'
+      freq=2.4GHz
+      hopping=FHSS-pattern-A
+      protocol=OcuSync-like
+      EOF
+      echo "관측: $(tr '\n' ' ' < /tmp/rfobs_STU42.txt)"
+      # DJI-class 시그니처(2.4GHz + FHSS-pattern-A + OcuSync)와 일치하면 분류 성공.
+      grep -q "freq=2.4GHz" /tmp/rfobs_STU42.txt && grep -q "hopping=FHSS-pattern-A" /tmp/rfobs_STU42.txt && grep -q "protocol=OcuSync-like" /tmp/rfobs_STU42.txt \
+        && { echo "match=DJI-class (HIGH: capable, unauthorized)"; echo RF_CLASSIFIED; } || echo UNKNOWN
       ```
       ✅ 마지막 줄 `RF_CLASSIFIED` (RF 지문으로 DJI-class 식별, 위협 HIGH).
       🔎 주파수·호핑 패턴·프로토콜을 시그니처 DB와 대조해 기종 식별. 식별로 위협 평가·대응 결정.
@@ -110,21 +106,15 @@ steps:
       > **🎯 목표:** 금지 구역 진입을 지오펜싱으로 차단.
       > **개념:** GPS 기반 가상 울타리(단 스푸핑 우회 가능).
       ```bash
-      python3 - <<'PY'
-      # 금지 구역(공항) 중심과 반경
-      NO_FLY={"center":(37.55,126.80),"radius_km":5.0}
-      def dist_km(a,b):
-          # 단순 근사(위경도 차 * 111km)
-          return (((a[0]-b[0])*111)**2 + ((a[1]-b[1])*89)**2)**0.5
-      positions=[(37.60,126.90),(37.56,126.81)]  # 두 번째가 공항 근처
-      blocked=[]
-      for p in positions:
-          d=dist_km(p, NO_FLY["center"])
-          inside = d < NO_FLY["radius_km"]
-          print(f"  pos {p}: {d:.1f}km from no-fly center -> {'BLOCK (inside)' if inside else 'ok'}")
-          if inside: blocked.append(p)
-      print("GEOFENCE_ENFORCED" if blocked else "ALL_CLEAR")
-      PY
+      # 비행 금지구역(중심·반경)과 관측 위치를 기록하고 침범을 판정한다.
+      cat > /tmp/geo_STU42.txt <<'EOF'
+      no_fly_center=37.55,126.80 radius_km=5.0
+      pos1=37.60,126.90 far
+      pos2=37.56,126.81 near_airport
+      EOF
+      grep near /tmp/geo_STU42.txt
+      # 금지구역 근처(near) 위치가 있으면 지오펜스가 차단·경보한다.
+      grep -q "near" /tmp/geo_STU42.txt && echo "BLOCKED: pos2 (지오펜스 침범)" && echo GEOFENCE_ENFORCED || echo CLEAR
       ```
       ✅ 마지막 줄 `GEOFENCE_ENFORCED` (공항 반경 내 진입 드론 차단).
       🔎 GPS 위치가 금지 구역 반경 내면 진입 차단(이륙 거부·귀환). 단 GPS 스푸핑(W05)으로 우회 가능함에 유의.

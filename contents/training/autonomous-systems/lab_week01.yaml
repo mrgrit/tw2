@@ -48,24 +48,17 @@ steps:
       > **🎯 목표:** 드론 구성요소를 사이버·물리·브리지 계층으로 매핑.
       > **개념:** 3계층 모두 공격 표면.
       ```bash
-      python3 - <<'PY'
-      components=[{"name":"flight control SW","layer":None},
-                  {"name":"WiFi command link","layer":None},
-                  {"name":"GPS receiver","layer":None},
-                  {"name":"motor ESC (actuator)","layer":None},
-                  {"name":"autopilot decision (cmd->motor)","layer":None}]
-      def classify(name):
-          n=name.lower()
-          if "decision" in n or "cmd->" in n or "autopilot" in n: return "bridge"   # 브리지 먼저(명령→구동)
-          if "control sw" in n or "wifi" in n or "link" in n or "ai model" in n: return "cyber"
-          if "gps" in n or "sensor" in n or "motor" in n or "actuator" in n or "receiver" in n: return "physical"
-          return "other"
-      layers=set()
-      for c in components:
-          c["layer"]=classify(c["name"]); layers.add(c["layer"])
-          print(f"  [{c['layer']:8}] {c['name']}")
-      print("CPS_MAPPED" if {"cyber","physical","bridge"}.issubset(layers) else "INCOMPLETE")
-      PY
+      # CPS 구성요소를 cyber/physical/bridge 3계층으로 분류해 파일에 기록한다.
+      cat > /tmp/cps_STU42.txt <<'EOF'
+      cyber    flight control SW
+      cyber    WiFi command link
+      physical GPS receiver
+      physical motor ESC (actuator)
+      bridge   autopilot decision (cmd->motor)
+      EOF
+      awk '{printf "  [%-8s] ",$1;$1="";print}' /tmp/cps_STU42.txt
+      M=""; for l in cyber physical bridge; do grep -q "^$l" /tmp/cps_STU42.txt || M=1; done
+      [ -z "$M" ] && echo CPS_MAPPED || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `CPS_MAPPED` (사이버·물리·브리지 3계층 모두 매핑).
       🔎 제어 SW·WiFi=사이버, GPS·모터=물리, autopilot 판단(명령→모터)=브리지. 3계층 모두 공격 표면.
@@ -88,16 +81,16 @@ steps:
       > **🎯 목표:** 사이버 진입이 물리 결과로 이어지는 경로 구성.
       > **개념:** CPS는 사이버 공격이 물리 재앙.
       ```bash
-      python3 - <<'PY'
-      # 사이버 진입 → 물리 결과
-      path=[("cyber","deauth WiFi command link (W03)"),
-            ("bridge","inject hijack command to autopilot"),
-            ("physical","motors follow attacker -> drone crash/hijack")]
-      for layer,step in path: print(f"  [{layer:8}] {step}")
-      # 경로가 사이버에서 시작해 물리 결과(crash/hijack)에 도달
-      ends_physical = path[-1][0]=="physical" and ("crash" in path[-1][1] or "hijack" in path[-1][1])
-      print("PHYSICAL_IMPACT" if ends_physical and len(path)>=3 else "NO_IMPACT")
-      PY
+      # 사이버→물리로 이어지는 공격 경로를 파일로 작성한다.
+      cat > /tmp/cpspath_STU42.txt <<'EOF'
+      cyber    deauth WiFi command link (W03)
+      bridge   autopilot loses link -> failsafe misfires
+      physical drone crash over populated area
+      EOF
+      cat /tmp/cpspath_STU42.txt
+      # 경로가 3단계 이상이고 마지막이 물리(crash/hijack)이면 사이버→물리 영향 성립.
+      L=$(wc -l < /tmp/cpspath_STU42.txt)
+      { [ "$L" -ge 3 ] && tail -1 /tmp/cpspath_STU42.txt | grep -qE "physical.*(crash|hijack)"; } && echo PHYSICAL_IMPACT || echo NO_IMPACT
       ```
       ✅ 마지막 줄 `PHYSICAL_IMPACT` (WiFi 사이버 진입→브리지→드론 추락/하이재킹).
       🔎 사이버(WiFi deauth)→브리지(명령 주입)→물리(모터가 공격자 명령 따름=추락). 사이버 공격이 물리 재앙.
@@ -118,19 +111,16 @@ steps:
       > **🎯 목표:** 물리 결과의 안전 영향으로 위험 우선순위.
       > **개념:** 인명·물리 피해가 걸린 것이 최우선.
       ```bash
-      python3 - <<'PY'
-      # CPS 위협의 안전 영향(인명·물리)
-      threats=[{"name":"drone hijack over populated area","safety_impact":"life-threatening","likelihood":2},
-               {"name":"telemetry eavesdrop","safety_impact":"none (data only)","likelihood":3},
-               {"name":"GPS spoof -> wrong navigation","safety_impact":"physical damage","likelihood":2}]
-      SAFETY_WEIGHT={"life-threatening":10,"physical damage":6,"none (data only)":1}
-      for t in threats: t["risk"]=SAFETY_WEIGHT[t["safety_impact"]]*t["likelihood"]
-      ranked=sorted(threats, key=lambda t:t["risk"], reverse=True)
-      for t in ranked: print(f"  {t['name'][:34]:34} [{t['safety_impact']}] risk {t['risk']}")
-      top=ranked[0]
-      # 인명 위협이 데이터 위협보다 우선(안전 최우선)
-      print("SAFETY_RISK" if "life-threatening" in top["safety_impact"] else "CHECK")
-      PY
+      # 위협을 안전 영향(가중치)·발생가능성으로 표(CSV)로 기록하고 위험을 계산한다.
+      cat > /tmp/safety_STU42.csv <<'EOF'
+      drone hijack over populated area,life-threatening,10,2
+      telemetry eavesdrop,none,1,3
+      GPS spoof -> wrong navigation,physical damage,6,2
+      EOF
+      awk -F, '{printf "  %-34s risk=%d (%s)\n",$1,$3*$4,$2}' /tmp/safety_STU42.csv | sort -t= -k2 -rn
+      # 최고 위험 위협의 안전 영향이 생명 위협이면 SAFETY_RISK.
+      TOP=$(awk -F, '{print $3*$4","$2}' /tmp/safety_STU42.csv | sort -rn | head -1)
+      echo "$TOP" | grep -q "life-threatening" && echo SAFETY_RISK || echo CHECK
       ```
       ✅ 마지막 줄 `SAFETY_RISK` (인명 위협 드론 하이재킹이 최우선, 데이터 감청은 후순위).
       🔎 CPS는 안전(인명·물리)을 최우선 가중. 데이터 감청보다 물리 사고·인명 위협을 우선 방어. IT와 다른 우선순위.

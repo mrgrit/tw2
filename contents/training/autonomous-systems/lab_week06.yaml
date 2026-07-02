@@ -48,18 +48,15 @@ steps:
       > **🎯 목표:** 각 센서의 역할·강약점을 매핑해 퓨전 필요성을 이해.
       > **개념:** 센서가 서로의 약점을 보완.
       ```bash
-      python3 - <<'PY'
-      sensors={"camera":{"strong":"classification","weak":"distance/weather/adversarial-patch"},
-               "lidar":{"strong":"3D distance/shape","weak":"weather/spoofing"},
-               "radar":{"strong":"velocity/weather","weak":"low-resolution"}}
-      for s,r in sensors.items(): print(f"  {s:7}: strong={r['strong']}, weak={r['weak']}")
-      # 각 센서의 약점을 다른 센서가 보완하는지(퓨전 가치)
-      # 카메라 약점(거리)을 라이다가, 라이다 약점(악천후)을 레이더가 보완
-      complementary = ("distance" in sensors["camera"]["weak"] and "distance" in sensors["lidar"]["strong"] and
-                       "weather" in sensors["lidar"]["weak"] and "weather" in sensors["radar"]["strong"])
-      print("complementary coverage:", complementary)
-      print("FUSION_MAPPED" if complementary and len(sensors)==3 else "INCOMPLETE")
-      PY
+      # 센서별 강점/약점(상호보완)을 파일로 기록한다.
+      cat > /tmp/fusion_STU42.txt <<'EOF'
+      camera strong=classification weak=distance/weather/adversarial-patch
+      lidar  strong=3D-distance/shape weak=weather/spoofing
+      radar  strong=velocity/weather weak=low-resolution
+      EOF
+      cat /tmp/fusion_STU42.txt
+      # 3개 센서가 서로 다른 약점을 보완하면 융합 매핑 완료.
+      [ "$(wc -l < /tmp/fusion_STU42.txt)" -ge 3 ] && grep -q "weak=weather" /tmp/fusion_STU42.txt && grep -q "weak=low-resolution" /tmp/fusion_STU42.txt && echo FUSION_MAPPED || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `FUSION_MAPPED` (카메라·라이다·레이더 상호 보완 매핑).
       🔎 카메라 약점(거리)=라이다 강점, 라이다 약점(악천후)=레이더 강점. 서로 보완하므로 퓨전이 필요.
@@ -81,18 +78,16 @@ steps:
       > **🎯 목표:** 자율주행 인식·업데이트의 공격 표면을 식별.
       > **개념:** AI·센서·OTA가 최대 표면.
       ```bash
-      python3 - <<'PY'
-      surfaces=[{"target":"camera AI model","attack":"adversarial patch (misclassify sign, W07/W13)"},
-                {"target":"lidar","attack":"spoofed reflections (phantom/removed objects)"},
-                {"target":"GPS","attack":"spoofing (W05)"},
-                {"target":"OTA update","attack":"tampered firmware -> fleet-wide"}]
-      kinds=set()
-      for s in surfaces:
-          t=s["target"].lower()
-          kind = "ai_model" if "model" in t else ("sensor" if ("lidar" in t or "gps" in t or "camera" in t) else "ota")
-          kinds.add(kind); print(f"  [{kind:8}] {s['target']}: {s['attack']}")
-      print("SURFACE_IDENTIFIED" if {"ai_model","sensor","ota"}.issubset(kinds) else "INCOMPLETE")
-      PY
+      # 인식 공격 표면(대상→공격)을 유형과 함께 기록한다.
+      cat > /tmp/percept_STU42.txt <<'EOF'
+      ai_model camera AI model: adversarial patch (misclassify sign)
+      sensor   lidar: spoofed reflections (phantom/removed)
+      sensor   GPS: spoofing (W05)
+      ota      OTA update: tampered firmware -> fleet-wide
+      EOF
+      cat /tmp/percept_STU42.txt
+      M=""; for k in ai_model sensor ota; do grep -q "^$k" /tmp/percept_STU42.txt || M=1; done
+      [ -z "$M" ] && echo SURFACE_IDENTIFIED || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `SURFACE_IDENTIFIED` (AI 모델·센서·OTA 공격 표면).
       🔎 AI 인식 모델(적대적 패치)·센서(라이다/GPS 스푸핑)·OTA(변조) — 판단을 의존하는 지점이 최대 표면.
@@ -114,18 +109,16 @@ steps:
       > **🎯 목표:** 한 센서가 속아도 중복성으로 안전한지 평가.
       > **개념:** 정합성 검사로 불일치 센서를 배제.
       ```bash
-      python3 - <<'PY'
-      # 시나리오: 카메라가 적대적 패치에 속아 "정지 표지 없음"으로 오인
-      readings={"camera":"no stop sign (fooled by patch)","lidar":"large object ahead","radar":"stationary object ahead"}
-      # 정합성 검사: 다수 센서가 물체 존재를 보고 → 카메라를 이상치로 배제
-      object_present_votes=sum(1 for k,v in readings.items() if "object" in v)
-      camera_outlier = "no" in readings["camera"] and object_present_votes>=2
-      # 중복성 덕에 카메라가 속아도 라이다·레이더가 물체를 봐서 안전(정지)
-      safe_decision = "STOP (object confirmed by lidar+radar despite camera)" if camera_outlier else "proceed"
-      print(f"readings: {readings}")
-      print(f"camera outlier: {camera_outlier}, decision: {safe_decision}")
-      print("REDUNDANCY_ASSESSED" if camera_outlier and "STOP" in safe_decision else "UNSAFE")
-      PY
+      # 센서별 판독을 기록한다(카메라만 정지 표지를 놓침).
+      cat > /tmp/readings_STU42.txt <<'EOF'
+      camera no stop sign (fooled by patch)
+      lidar  large object ahead
+      radar  stationary object ahead
+      EOF
+      cat /tmp/readings_STU42.txt
+      # 다른 센서 2개 이상이 물체를 보는데 카메라만 못 보면(이상치) 안전측 STOP 결정.
+      V=$(grep -cE "object ahead" /tmp/readings_STU42.txt)
+      { grep -q "camera no" /tmp/readings_STU42.txt && [ "$V" -ge 2 ]; } && { echo "안전 결정: STOP (카메라 이상치 무시)"; echo REDUNDANCY_ASSESSED; } || echo UNSAFE
       ```
       ✅ 마지막 줄 `REDUNDANCY_ASSESSED` (카메라 속아도 라이다·레이더로 물체 확인 → 안전 정지).
       🔎 카메라가 적대적 패치에 속아도, 라이다·레이더가 물체를 보고 정합성 검사로 카메라를 배제해 안전하게 정지. 중복성이 안전.
