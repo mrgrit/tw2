@@ -1,0 +1,199 @@
+id: "autonomous-security-w02"
+category: "autonomous-security"
+title: "[자율보안 W2] ReAct 자율 공격 에이전트 vs ReAct 자율 트리아지 에이전트"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  자율 에이전트 기초 공방전 — bastion 자율 에이전트의 **ReAct 루프(생각→행동→관찰)·도구 선택·컨텍스트
+  관리**를 Red/Blue로 실습한다. Red는 정찰 목표를 ReAct 도구 선택으로 자율 수행하고, Blue는 SIEM
+  경보를 ReAct로 트리아지한다. el34 GPU(Ollama)가 실제 에이전트 추론을 보조한다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(ReAct 정찰 에이전트)와 Blue(ReAct 트리아지 에이전트)를 모두 수행. 공격이
+             남긴 흔적을 이어서 방어자로 트리아지한다.
+    • duel : Red 학생이 ReAct로 상대 인프라를 정찰·침투하고, Blue 학생은 ReAct로 자기 인프라를 트리아지.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 웹 진입 192.168.0.161)을 공격한다. 외부
+    명령 로그는 불완전하므로 Red 채점은 **대상 탐지 흔적(Suricata/ModSec/Wazuh)** + 본인 명령 흔적 +
+    **보고서의 ReAct 설계**(생각·도구 선택·관찰 루프)로 한다. 반드시 **고유 태그**(`auto-red-<학번>`)를
+    UA·주석에 붙여 귀속한다.
+
+  ▸ 자율 보안 관점(bastion) — Red = red-team-operator 페르소나(ReAct로 도구 선택, ROE 강제).
+    Blue = triage 페르소나(ReAct로 경보 분류). 모든 행동은 append-only 감사에 남는다는 전제로 설명.
+
+  ▸ 윤리 — 모든 공격은 인가된 훈련 인프라(el34)에서만.
+
+# ───────────────────────── RED (ReAct 자율 정찰·침투 에이전트) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — ReAct 정찰: 생각→도구 선택→관찰 루프 (killchain: recon)
+
+      당신은 bastion **red-team-operator** 에이전트다. 외부 공격자 VM({{ATTACKER_IP}})에서 대상 el34를
+      **ReAct 루프**로 자율 정찰한다: 각 단계에서 (생각) 무엇을 알아야 하나 → (행동) 어떤 도구를 쓸까 →
+      (관찰) 결과 → 다음 생각.
+
+      ### 어디서 / 무엇을
+      - 접속: 외부 공격자 VM({{ATTACKER_IP}}).
+      - 동작: 포트/서비스 스캔·표면 확인을 **ReAct 단계로 명시**하며 수행. 고유 태그(`auto-red-<학번>`)를
+        UA·스캔 주석에 붙인다.
+
+      ### 권장 명령 (참고 — ReAct 각 단계를 기록)
+      ```bash
+      nmap -sS -T3 -Pn 192.168.0.161 -p1-1000 --reason   # 행동: 포트 발견
+      curl -A 'auto-red-<학번>-recon' http://192.168.0.161/   # 행동: 서비스 확인
+      ```
+
+      ### 📌 채점 방식
+      대상 Suricata/Wazuh에 스캔 탐지 흔적 + 본인 명령 흔적 + **보고서에 ReAct 루프**(생각·도구 선택·
+      관찰이 왜 그 순서였는지).
+
+      ### ✅ 합격 기준
+      대상 IPS/SIEM에 정찰 탐지 흔적이 남고, 보고서가 ReAct 루프(생각→도구→관찰)로 정찰을 설명한다.
+    hint: "외부 공격자 VM에서 nmap/curl 정찰(태그 auto-red-<학번>). 각 단계를 ReAct(생각·도구선택·관찰)로 기록. 채점=대상 Suricata/Wazuh 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-2-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: |
+          ReAct 자율 정찰 — 생각→도구 선택→관찰 루프로 정찰을 구조화. 외부 공격자 모델이므로 대상
+          Suricata/Wazuh 탐지 흔적 + 출처·태그 상관으로 판정.
+        success_criteria:
+          - "대상 IPS(Suricata)/SIEM(Wazuh)에 정찰 스캔 탐지 흔적이 남음"
+          - "흔적의 source가 외부 공격자({{ATTACKER_IP}})이고 고유 태그로 귀속됨"
+          - "(설명) ReAct 루프(생각·도구 선택·관찰)로 정찰 단계를 설명"
+        acceptable_methods:
+          - "외부 공격자 VM에서 nmap/curl 정찰(태그)"
+          - "각 단계를 ReAct로 기록"
+        negative_signs:
+          - "대상 미도달로 탐지 흔적 없음"
+          - "ReAct 설명 없이 명령만 나열"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 도구 선택·컨텍스트 관리로 웹 침투 (killchain: exploit)
+
+      정찰 관찰을 **컨텍스트로 관리**해 다음 행동(웹 침투)을 선택한다. ReAct의 핵심은 이전 관찰을
+      컨텍스트에 유지해 더 나은 도구를 고르는 것이다.
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM에서 대상 웹(192.168.0.161)에 SQLi/XSS PoC(고유 태그). ROE(PoC·파괴/유출 금지) 준수.
+      - 정찰에서 얻은 컨텍스트(발견 서비스·경로)를 근거로 도구를 선택했음을 서술.
+
+      ### 권장 명령 (참고)
+      ```bash
+      curl -A 'auto-red-<학번>-exploit' "http://192.168.0.161/vulnerabilities/sqli/?id=1' OR '1'='1"
+      ```
+
+      ### 📌 채점 방식
+      대상 WAF(ModSec)/Suricata 탐지 흔적 + 보고서의 **컨텍스트→도구 선택** 논리와 ROE 준수.
+
+      ### ✅ 합격 기준
+      대상 WAF/IPS에 웹 공격 탐지 흔적이 남고, 컨텍스트 기반 도구 선택과 ROE 준수를 설명한다.
+    hint: "정찰 컨텍스트를 근거로 대상 웹에 SQLi/XSS PoC(auto-red-<학번>). ROE 준수. 채점=대상 ModSec/Suricata 흔적."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "red-2-2", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          ReAct 도구 선택·컨텍스트 관리 — 이전 관찰을 컨텍스트로 유지해 웹 침투 도구를 선택. ROE 강제.
+          대상 WAF/IPS 탐지 흔적 + 태그 상관으로 판정.
+        success_criteria:
+          - "대상 WAF(ModSec) 또는 IPS에 웹 공격 탐지 흔적이 남고 고유 태그로 귀속됨"
+          - "(설명) 정찰 컨텍스트를 근거로 도구를 선택한 논리를 서술"
+          - "(설명) ROE 준수(PoC·파괴/유출 금지)를 명시"
+        acceptable_methods:
+          - "컨텍스트 기반 SQLi/XSS PoC(고유 태그)"
+        negative_signs:
+          - "탐지 흔적 없음(대상 미도달)"
+          - "컨텍스트→도구 선택 논리 없음 또는 ROE 위반"
+
+# ───────────────────────── BLUE (ReAct 자율 트리아지 에이전트) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — ReAct 트리아지: 경보→생각→도구→판정
+
+      당신은 bastion **triage** 에이전트다. SIEM(Wazuh)/IPS(Suricata)의 경보를 **ReAct 루프**로
+      트리아지한다: (생각) 이 경보가 뭘 의미하나 → (행동) 어떤 쿼리·도구로 확인 → (관찰) 결과 →
+      (판정) 오탐/위협.
+
+      ### 어떻게
+      - Wazuh/Suricata에서 방금 정찰·웹 공격 경보를 찾아 출처 IP·시각·심각도 확인.
+      - 각 확인을 ReAct 단계로 기록하고, 최종 트리아지(오탐 vs 진짜 위협)를 판정.
+
+      ### ✅ 합격 기준
+      SIEM/IPS에서 공격 경보를 찾아 출처·심각도를 제시하고, ReAct 루프로 트리아지 판정을 설명한다.
+    hint: "Wazuh/Suricata 경보를 ReAct(생각·도구·관찰·판정)로 트리아지. 출처 IP·시각·심각도 + 오탐/위협 판정."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-2-1", type: "wazuh_alert", target: "siem",
+            params: { pattern: "scan", since_sec: 1800 } }
+      semantic:
+        intent: |
+          ReAct 자율 트리아지 — 경보를 생각→도구→관찰→판정 루프로 분류. bastion triage 페르소나.
+        success_criteria:
+          - "Wazuh/Suricata에서 정찰·웹 공격 경보를 찾아 출처 IP·시각을 제시"
+          - "(설명) ReAct 루프로 트리아지(오탐/위협) 판정을 설명"
+          - "(설명) 각 단계의 생각·도구·관찰을 명시"
+        acceptable_methods:
+          - "Wazuh/Suricata 경보 조회 + ReAct 트리아지"
+        negative_signs:
+          - "경보 근거 없이 '탐지됨'만"
+          - "ReAct 단계 설명 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 컨텍스트 관리·에이전트 루프 종료 조건 설계
+
+      자율 트리아지 에이전트의 **컨텍스트 관리와 루프 제어**를 설계한다. 무한 루프·컨텍스트 폭발을
+      막고, 언제 사람에게 에스컬레이션할지 정한다.
+
+      ### 무엇을
+      - **컨텍스트 관리**: 관련 경보만 유지·요약, 오래된/무관 정보 제거(컨텍스트 창 관리).
+      - **루프 종료 조건**: 충분한 증거 확보·최대 단계·확신도 임계 → 판정 종료.
+      - **에스컬레이션**: 고위험·불확실·비가역 조치는 사람 승인(자율성 수준).
+      - **감사**: ReAct 각 단계를 append-only 감사에 기록.
+
+      ### ✅ 합격 기준
+      컨텍스트 관리·루프 종료 조건·에스컬레이션·감사를 구체적으로 설계하고, "자율 에이전트는 종료
+      조건과 에스컬레이션이 있어야 안전"함을 설명한다.
+    hint: "컨텍스트 관리(요약·정리)+루프 종료 조건(증거·최대단계·확신도)+에스컬레이션(고위험→승인)+감사. '종료 조건·에스컬레이션' 원칙."
+    verify:
+      type: "semantic"
+      expect: "agent_loop_control"
+      semantic:
+        intent: |
+          자율 에이전트 루프 제어 — 컨텍스트 관리·종료 조건·에스컬레이션·감사로 자율 트리아지를 안전하게.
+        success_criteria:
+          - "컨텍스트 관리(유지·요약·정리)를 제시"
+          - "루프 종료 조건(증거·최대 단계·확신도)을 제시"
+          - "에스컬레이션(고위험→사람 승인)과 감사를 제시"
+          - "(설명) '종료 조건·에스컬레이션이 있어야 안전' 원칙 설명"
+        acceptable_methods:
+          - "컨텍스트 관리 + 종료 조건 + 에스컬레이션 + 감사 설계"
+        negative_signs:
+          - "루프 종료·에스컬레이션 언급 없음"
+          - "구체적 설계 없이 '관리하겠다'만"

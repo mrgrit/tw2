@@ -1,0 +1,173 @@
+id: "agent-ir-w04"
+category: "agent-ir"
+title: "[에이전트IR W4] 자동 익스플로잇 개발·시도 vs 시도 흔적·실패 신호 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  에이전트 IR 공방전 — 공격 에이전트의 **세션 내 자동 익스플로잇 개발·다수 시도**와, 그 **시도·실패
+  흔적**을 탐지하는 방어를 다룬다. AI는 실패를 빠르게 반복·수정하므로 다수의 시도 흔적을 남긴다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(다수 익스플로잇 시도)와 Blue(시도·실패 신호 탐지)를 모두 수행.
+    • duel : Red 학생이 다수 페이로드를 빠르게 시도하고, Blue 학생이 시도 패턴을 탐지한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)에 다수 페이로드를 시도한다.
+    Red 채점은 **대상 탐지 흔적(ModSec/Suricata/Wazuh)** + 본인 명령 흔적 + 보고서. 고유
+    태그(`auto-red-<학번>`)로 귀속.
+
+  ▸ 에이전트 IR 관점 — AI는 한 번에 성공하기보다 **빠른 시행착오**로 페이로드를 진화시킨다. 방어자는
+    성공뿐 아니라 **실패한 시도의 급증**을 강한 신호로 삼는다.
+
+  ▸ 윤리 — 인가된 훈련 인프라(el34)에서만. PoC 수준, 파괴/유출 금지.
+
+# ───────────────────────── RED (자동 익스플로잇 다수 시도) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 페이로드 진화: 다수 변형 빠른 시도
+
+      단일 페이로드가 아니라 **다수 변형을 빠르게 시도**해 방어를 탐색한다(SQLi/XSS 변형·인코딩 변형).
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM({{ATTACKER_IP}})에서 대상 웹(192.168.0.161)에 여러 SQLi/XSS 변형을 연속 시도(고유 태그).
+      - WAF 차단(403)/통과를 기록하며 페이로드를 진화.
+
+      ### 권장 명령 (참고)
+      ```bash
+      for p in "1' OR '1'='1" "1' UNION SELECT 1--" "1%27%20OR%201=1"; do
+        curl -s -o /dev/null -w "%{http_code}\n" -A 'auto-red-<학번>-exploit' "http://192.168.0.161/vulnerabilities/sqli/?id=$p"; done
+      ```
+
+      ### 📌 채점 방식
+      대상 탐지 흔적 + 본인 명령 흔적 + **보고서의 페이로드 진화**(변형·차단/통과·다음 시도).
+
+      ### ✅ 합격 기준
+      다수 페이로드 변형을 빠르게 시도해 대상에 흔적을 남기고, 진화 과정(차단→변형→재시도)을 기록한다.
+    hint: "여러 SQLi/XSS 변형을 연속 시도(태그 auto-red-<학번>) + 403/통과 기록하며 진화. 채점=대상 ModSec 흔적."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "ai-4-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          페이로드 진화 — 빠른 시행착오로 다수 변형을 시도. 실패 시도가 방어자에게 남기는 신호.
+        success_criteria:
+          - "대상 WAF(ModSec)에 다수 시도 흔적이 남고 고유 태그로 귀속됨"
+          - "다수 페이로드 변형을 빠르게 시도"
+          - "(설명) 진화 과정(차단→변형→재시도)을 기록"
+        acceptable_methods:
+          - "다수 변형 연속 시도 + 진화 기록"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "단일 페이로드만"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: ips
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 실패 흔적의 규모 실증
+
+      AI의 빠른 시도는 **대량의 실패 흔적**(403·4xx·차단 로그)을 남긴다. 이 규모가 방어자에게 어떻게
+      보이는지 실증한다.
+
+      ### ✅ 합격 기준
+      다수 시도로 대량의 실패/차단 흔적을 남기고, 그 규모·속도가 사람 대비 이상 신호임을 분석한다.
+    hint: "다수 시도로 대량 403/차단 흔적 생성 + 규모·속도가 사람 대비 이상 신호임을 분석. 채점=대상 Suricata 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "ai-4-2", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          실패 흔적 규모 — 빠른 시도가 남기는 대량 실패/차단이 탐지의 강한 신호임을 실증.
+        success_criteria:
+          - "대상 IPS/WAF에 대량 시도 흔적이 남고 고유 태그로 귀속됨"
+          - "대량의 실패/차단 흔적을 생성"
+          - "(설명) 규모·속도가 사람 대비 이상 신호임을 분석"
+        acceptable_methods:
+          - "대량 시도 + 규모 분석"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "규모 분석 없음"
+
+# ───────────────────────── BLUE (시도·실패 신호 탐지) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — 시도 급증·실패 신호 탐지
+
+      Red의 **다수 시도·실패 급증**을 SIEM/IPS에서 탐지한다.
+
+      ### 어떻게
+      - Wazuh/Suricata에서 짧은 창의 다수 공격 시도(403·차단 급증)를 출처별로 집계.
+      - 성공 여부와 무관하게 "시도 급증" 자체를 강한 신호로 상관.
+
+      ### ✅ 합격 기준
+      짧은 창의 다수 시도·실패 급증을 출처별로 집계·상관해 자동 익스플로잇 시도로 식별한다.
+    hint: "Wazuh/Suricata에서 짧은 창 다수 시도·403 급증을 출처별 집계·상관 → 자동 익스플로잇 식별."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "ai-4-3", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          시도 급증 탐지 — 실패/차단 급증을 출처별로 상관해 자동 익스플로잇 시도를 식별.
+        success_criteria:
+          - "Wazuh/Suricata에서 다수 시도·403 급증을 탐지"
+          - "출처별 집계·상관"
+          - "(설명) 시도 급증 자체를 강한 신호로 식별"
+        acceptable_methods:
+          - "시도 급증 집계 + 상관"
+        negative_signs:
+          - "경보 근거 없음"
+          - "집계·상관 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 시도 기반 탐지·차단·마찰 설계
+
+      자동 익스플로잇 시도를 잡는 **시도 기반 탐지·차단·마찰**을 설계한다.
+
+      ### 무엇을
+      - **시도율 지표**: 출처별 시도·실패율 임계, 짧은 창 급증 탐지.
+      - **진화 탐지**: 유사 변형 페이로드의 연속(같은 출처·유사 패턴)을 하나로 상관.
+      - **마찰 부과**: 실패 누적 시 레이트리밋·챌린지·차단으로 진화 비용↑.
+      - **오탐 관리**: 정상 취약점 스캐너·부하 테스트와 구분.
+
+      ### ✅ 합격 기준
+      시도율 지표·진화 탐지·마찰 부과·오탐 관리를 제시하고 "실패 급증이 강한 신호"임을 설명한다.
+    hint: "시도율 지표(출처별 임계)+진화 탐지(유사 변형 상관)+마찰(레이트리밋·챌린지·차단)+오탐 관리. '실패 급증=강한 신호' 원칙."
+    verify:
+      type: "semantic"
+      expect: "attempt_based_defense"
+      semantic:
+        intent: |
+          시도 기반 방어 — 시도율·진화 탐지와 마찰로 자동 익스플로잇을 잡고 비용을 부과.
+        success_criteria:
+          - "시도율 지표(출처별 임계·급증)를 제시"
+          - "진화 탐지(유사 변형 상관)를 제시"
+          - "마찰 부과·오탐 관리를 제시"
+          - "(설명) '실패 급증이 강한 신호' 원칙 설명"
+        acceptable_methods:
+          - "시도율 + 진화 탐지 + 마찰 + 오탐 관리"
+        negative_signs:
+          - "성공만 보고 실패 무시"
+          - "마찰·진화 탐지 없음"

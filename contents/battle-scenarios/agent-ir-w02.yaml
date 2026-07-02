@@ -1,0 +1,180 @@
+id: "agent-ir-w02"
+category: "agent-ir"
+title: "[에이전트IR W2] 공격자 Tool-use 루프 실증 vs 능력 경계·관찰 지점 탐지"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  에이전트 IR 공방전 — 공격 에이전트의 **Tool-use 루프(생각→도구→관찰→반복)** 를 해부하고, 그 루프가
+  방어자에게 남기는 **관찰 지점**을 탐지한다. Red는 도구 호출 루프로 대상을 공격하고, Blue는 루프의
+  능력 경계·관찰 지점을 탐지 설계한다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(도구 루프 공격)와 Blue(관찰 지점 탐지)를 모두 수행.
+    • duel : Red 학생이 도구 루프로 공격하고, Blue 학생이 대상에서 관찰 지점을 탐지한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)을 공격한다. Red 채점은
+    **대상 탐지 흔적(Suricata/ModSec/Wazuh)** + 본인 명령 흔적 + 보고서. 고유 태그(`auto-red-<학번>`)로 귀속.
+
+  ▸ 에이전트 IR 관점 — 공격 에이전트는 도구를 호출할 때마다 대상에 관찰 가능한 흔적(요청·프로브)을
+    남긴다. 방어자는 "능력 경계"(에이전트가 할 수 있는 것)와 "관찰 지점"(그것이 남기는 신호)을 안다.
+
+  ▸ 윤리 — 인가된 훈련 인프라(el34)에서만.
+
+# ───────────────────────── RED (Tool-use 루프 공격) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 도구 루프로 정찰·프로빙 (관찰→다음 도구)
+
+      Tool-use 루프로 대상을 탐색한다: 각 도구 호출(스캔·프로브)의 관찰 결과가 다음 도구 선택을 유도.
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM({{ATTACKER_IP}})에서 대상(192.168.0.161)을 스캔→서비스 프로브→경로 탐색으로
+        루프 수행(고유 태그).
+      - 각 루프 반복(도구·관찰·다음 결정)을 기록.
+
+      ### 권장 명령 (참고)
+      ```bash
+      nmap -sV -Pn 192.168.0.161 -p80,443,8007 --reason        # 관찰1
+      curl -A 'auto-red-<학번>-loop' http://192.168.0.161/robots.txt  # 관찰2 → 다음 도구
+      ```
+
+      ### 📌 채점 방식
+      대상 탐지 흔적 + 본인 명령 흔적 + **보고서의 Tool-use 루프**(도구·관찰·다음 결정 반복).
+
+      ### ✅ 합격 기준
+      도구 루프로 정찰·프로빙을 수행해 대상에 흔적을 남기고, 루프 반복(관찰→다음 도구)을 기록한다.
+    hint: "스캔→프로브→경로 탐색 도구 루프(태그 auto-red-<학번>). 각 반복(도구·관찰·다음 결정) 기록. 채점=대상 Suricata 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "ai-2-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          Tool-use 루프 — 관찰이 다음 도구를 유도하는 반복 구조를 실증. 각 호출이 대상에 흔적을 남김.
+        success_criteria:
+          - "대상 IPS(Suricata)에 정찰·프로빙 흔적이 남고 고유 태그로 귀속됨"
+          - "도구 루프(스캔→프로브→탐색)를 수행"
+          - "(설명) 각 반복(도구·관찰·다음 결정)을 기록"
+        acceptable_methods:
+          - "도구 루프 정찰 + 반복 기록"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "루프 반복 기록 없음"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 능력 경계 실증: 도구가 하는 것 vs 못 하는 것
+
+      공격 에이전트의 **능력 경계**를 실증한다: 어떤 도구 호출이 대상에서 성공/차단되는지 매핑해,
+      에이전트가 "할 수 있는 것과 못 하는 것"의 경계를 드러낸다.
+
+      ### 어떻게
+      - 대상 웹(192.168.0.161)에 다양한 도구 호출(공격 페이로드)을 보내 성공/WAF 차단(403)을 매핑.
+      - 능력 경계(WAF가 막는 지점)를 보고서에 정리.
+
+      ### ✅ 합격 기준
+      다양한 도구 호출로 능력 경계(성공/차단)를 매핑하고, 에이전트가 대상에서 할 수 있는 것의 경계를
+      실증한다.
+    hint: "다양한 페이로드 도구 호출(태그)로 성공/WAF 403 경계 매핑. 능력 경계 정리. 채점=대상 ModSec 흔적."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "ai-2-2", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          능력 경계 — 도구 호출의 성공/차단을 매핑해 에이전트의 능력 경계를 드러냄.
+        success_criteria:
+          - "대상 WAF(ModSec)에 도구 호출 흔적이 남고 고유 태그로 귀속됨"
+          - "성공/차단 경계를 매핑"
+          - "(설명) 에이전트 능력 경계를 정리"
+        acceptable_methods:
+          - "다양한 도구 호출 + 경계 매핑"
+        negative_signs:
+          - "탐지 흔적 없음"
+          - "경계 매핑 없음"
+
+# ───────────────────────── BLUE (관찰 지점 탐지) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — Tool-use 루프 관찰 지점 탐지
+
+      Red의 도구 루프가 남긴 **관찰 지점**을 SIEM/IPS에서 탐지한다.
+
+      ### 어떻게
+      - Wazuh/Suricata에서 루프의 각 도구 호출(스캔·프로브·공격)을 찾아 순서·출처·간격으로 루프를 재구성.
+      - "관찰→다음 도구" 패턴이 로그에 어떻게 보이는지 분석.
+
+      ### ✅ 합격 기준
+      도구 루프의 각 호출을 탐지해 순서·출처로 루프를 재구성하고, 관찰 지점을 식별한다.
+    hint: "Wazuh/Suricata에서 루프 각 호출(스캔·프로브·공격)을 순서·출처·간격으로 재구성. 관찰 지점 식별."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "ai-2-3", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          루프 관찰 지점 탐지 — 도구 루프의 각 호출을 재구성해 방어 관찰 지점을 식별.
+        success_criteria:
+          - "Wazuh/Suricata에서 루프 각 호출을 탐지"
+          - "순서·출처·간격으로 루프를 재구성"
+          - "(설명) 관찰 지점을 식별"
+        acceptable_methods:
+          - "루프 재구성 + 관찰 지점 식별"
+        negative_signs:
+          - "경보 근거 없음"
+          - "루프 재구성 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 능력 경계 기반 탐지·차단 설계
+
+      공격 에이전트의 **능력 경계**를 활용한 탐지·차단을 설계한다.
+
+      ### 무엇을
+      - **관찰 지점 계측**: 각 도구 유형(스캔·프로브·익스플로잇)이 남기는 신호를 계측점으로 매핑.
+      - **경계 강화**: WAF/IPS가 막는 능력 경계를 넓혀 에이전트가 할 수 있는 것을 줄임.
+      - **루프 조기 차단**: 루프 초기(정찰) 단계에서 상관·차단해 후속 단계 진행 방지.
+      - **비용 부과**: 각 도구 호출에 마찰(레이트리밋·챌린지)로 루프 비용↑.
+
+      ### ✅ 합격 기준
+      관찰 지점 계측·능력 경계 강화·루프 조기 차단·비용 부과를 제시하고 "에이전트 능력 경계를 알고
+      좁혀라" 원칙을 설명한다.
+    hint: "도구별 관찰 지점 계측+능력 경계 강화(WAF/IPS)+루프 조기 차단(정찰 단계 상관)+비용 부과(레이트리밋·챌린지). '능력 경계를 알고 좁혀라' 원칙."
+    verify:
+      type: "semantic"
+      expect: "capability_boundary_defense"
+      semantic:
+        intent: |
+          능력 경계 기반 방어 — 관찰 지점 계측과 경계 강화·루프 조기 차단으로 에이전트 능력을 좁힌다.
+        success_criteria:
+          - "도구별 관찰 지점 계측을 제시"
+          - "능력 경계 강화·루프 조기 차단을 제시"
+          - "비용 부과(레이트리밋·챌린지)를 제시"
+          - "(설명) '능력 경계를 알고 좁혀라' 원칙 설명"
+        acceptable_methods:
+          - "관찰 지점 + 경계 강화 + 조기 차단 + 비용 부과"
+        negative_signs:
+          - "관찰 지점·경계 개념 없음"
+          - "조기 차단 언급 없음"

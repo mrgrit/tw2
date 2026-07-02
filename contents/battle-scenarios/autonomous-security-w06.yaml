@@ -1,0 +1,183 @@
+id: "autonomous-security-w06"
+category: "autonomous-security"
+title: "[자율보안 W6] 감사 로그 변조 시도 vs PoW·해시체인 변조 불가 감사"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  변조 불가 감사 공방전 — bastion의 **작업증명(PoW)·해시체인 기반 append-only 감사**를 Red/Blue로
+  실습한다. 자율 에이전트의 모든 행동은 감사에 남아야 하고, 그 감사는 변조 불가여야 한다. Red는 공격
+  흔적/감사 변조를 시도하고, Blue는 변조 불가 감사를 설계·검증한다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(흔적·감사 변조 시도)와 Blue(해시체인 감사 무결성 검증)를 모두 수행.
+    • duel : Red 학생이 공격 후 흔적을 지우려 하고, Blue 학생은 변조 불가 감사로 이를 무력화한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)을 공격한다. Red 채점은
+    **대상 탐지 흔적(Suricata/ModSec/Wazuh)** + 본인 명령 흔적 + **보고서의 감사 변조 분석**으로 한다.
+    고유 태그(`auto-red-<학번>`)로 귀속.
+
+  ▸ 자율 보안 관점(bastion) — 감사는 (행동 레코드)→(해시)→(이전 해시 링크)로 체인을 이뤄, 한 레코드
+    변조 시 이후 전체 해시가 깨진다. PoW는 레코드 생성 비용을 높여 대량 위조를 어렵게 한다.
+
+  ▸ 윤리 — 인가된 훈련 인프라(el34)에서만. 실제 로그 파괴·시스템 훼손 금지(분석·시뮬 수준).
+
+# ───────────────────────── RED (흔적·감사 변조 시도 분석) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 공격 실행 후 흔적 분석 (killchain: action)
+
+      대상을 공격해 흔적을 남기고, 그 흔적이 **어디에(WAF/IPS/SIEM) 어떤 형태로** 기록되는지 분석한다
+      (감사 변조의 대상 표면을 파악).
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM({{ATTACKER_IP}})에서 대상 웹(192.168.0.161)에 PoC 공격(고유 태그).
+      - 남은 흔적(ModSec 로그·Suricata 경보·Wazuh alert)의 위치·내용을 정리.
+
+      ### 권장 명령 (참고)
+      ```bash
+      curl -A 'auto-red-<학번>-action' "http://192.168.0.161/vulnerabilities/sqli/?id=1' OR '1'='1"
+      ```
+
+      ### 📌 채점 방식
+      대상 탐지 흔적 + 본인 명령 흔적 + **보고서에 흔적이 남는 표면·내용 분석**.
+
+      ### ✅ 합격 기준
+      대상에 공격 흔적을 남기고, 그 흔적이 어디에 어떤 형태로 기록되는지 분석한다.
+    hint: "대상 웹에 PoC 공격(태그 auto-red-<학번>) 후 흔적이 남는 표면(ModSec/Suricata/Wazuh)·내용 분석. 채점=대상 흔적."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "red-6-1", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          공격 흔적 표면 분석 — 흔적이 남는 위치·형태를 파악. 감사 변조가 왜 어려운지의 전제.
+        success_criteria:
+          - "대상 WAF(ModSec)/IPS에 공격 흔적이 남고 고유 태그로 귀속됨"
+          - "흔적이 남는 표면(ModSec/Suricata/Wazuh)과 내용을 분석"
+          - "(설명) 다중 표면 기록이 단일 로그 변조를 무력화함을 언급"
+        acceptable_methods:
+          - "PoC 공격 + 흔적 표면 분석"
+        negative_signs:
+          - "흔적 없음"
+          - "표면 분석 없이 공격만"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: siem
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 감사 변조·회피의 한계 분석 (해시체인 vs 공격자)
+
+      공격자가 흔적을 **지우거나 위조**하려 할 때, 해시체인·다중 표면·중앙 수집이 이를 어떻게 막는지
+      분석한다(실제 파괴는 금지, 분석·논증).
+
+      ### 어떻게
+      - 로컬 로그 삭제/위조를 가정했을 때, 해시체인이 끊기고 중앙(Wazuh) 수집본과 불일치가 드러나는
+        메커니즘을 분석.
+      - PoW가 대량 위조 레코드 생성을 어떻게 비싸게 만드는지 설명.
+      - 공격자가 감사를 무력화하려면 무엇이 필요한지(체인 전체 재계산·중앙 침해) 논증.
+
+      ### ✅ 합격 기준
+      감사 변조/회피 시도가 해시체인·다중 표면·PoW에 의해 왜 실패하는지 구체적으로 분석한다.
+    hint: "로그 삭제/위조 가정 → 해시체인 단절·중앙 수집본 불일치·PoW 비용으로 실패하는 메커니즘 분석. 실제 파괴 금지."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "red-6-2", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          감사 변조 한계 분석 — 해시체인·다중 표면·PoW가 흔적 삭제/위조를 무력화하는 원리를 이해.
+        success_criteria:
+          - "대상 SIEM(Wazuh)에 공격 흔적이 남아 중앙 수집됨을 확인"
+          - "해시체인 단절·중앙 수집본 불일치로 변조가 드러나는 메커니즘 분석"
+          - "(설명) PoW가 대량 위조를 비싸게 만듦을 설명"
+        acceptable_methods:
+          - "변조 실패 메커니즘 분석 + PoW 원리"
+        negative_signs:
+          - "실제 로그 파괴(윤리 위반)"
+          - "변조 한계 분석 없음"
+
+# ───────────────────────── BLUE (변조 불가 감사 설계·검증) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — 해시체인 감사 무결성 검증
+
+      우리 감사 로그의 **무결성**을 검증한다. 공격 흔적이 다중 표면에 중앙 수집되고, 변조 시 탐지되는지
+      확인한다.
+
+      ### 어떻게
+      - Wazuh에 공격 경보가 중앙 수집됐는지 확인(단일 로컬 로그가 아닌 중앙 사본).
+      - 감사 레코드의 해시체인 개념(각 레코드가 이전 해시를 포함)으로 무결성 검증 절차를 설명.
+      - 변조 탐지(체인 불일치) 시나리오를 제시.
+
+      ### ✅ 합격 기준
+      공격 경보의 중앙 수집을 확인하고, 해시체인 기반 무결성 검증·변조 탐지 절차를 설명한다.
+    hint: "Wazuh 중앙 수집 확인 + 해시체인(이전 해시 포함) 무결성 검증 절차·변조 탐지 시나리오 설명."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-6-1", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 1800 } }
+      semantic:
+        intent: |
+          감사 무결성 검증 — 중앙 수집·해시체인으로 변조를 탐지. append-only 감사의 실효성.
+        success_criteria:
+          - "공격 경보가 Wazuh에 중앙 수집됨을 확인"
+          - "해시체인 기반 무결성 검증 절차를 설명"
+          - "(설명) 변조 탐지(체인 불일치) 시나리오 제시"
+        acceptable_methods:
+          - "중앙 수집 확인 + 해시체인 검증 절차"
+        negative_signs:
+          - "중앙 수집 근거 없음"
+          - "무결성 검증 절차 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 변조 불가 감사 아키텍처 설계
+
+      자율 에이전트 행동을 위한 **변조 불가 감사 아키텍처**를 설계한다.
+
+      ### 무엇을
+      - **해시체인**: 각 레코드에 이전 해시 포함(append-only), 한 레코드 변조 시 이후 전체 무효화.
+      - **PoW/서명**: 레코드 생성에 작업증명/서명으로 위조 비용↑·부인방지.
+      - **다중 표면·중앙 수집**: 로컬+중앙(WAF/IPS/SIEM) 다중 기록으로 단일 지점 변조 무력화.
+      - **주기적 앵커링**: 체인 헤드를 외부(불변 저장)에 앵커링해 전체 재계산 위조 차단.
+
+      ### ✅ 합격 기준
+      해시체인·PoW/서명·다중 수집·앵커링을 구체적으로 설계하고, "자율 행동은 변조 불가 감사로 책임성
+      확보" 원칙을 설명한다.
+    hint: "해시체인(append-only)+PoW/서명(위조 비용·부인방지)+다중 표면 중앙 수집+주기적 앵커링. '변조 불가 감사=책임성' 원칙."
+    verify:
+      type: "semantic"
+      expect: "tamperproof_audit"
+      semantic:
+        intent: |
+          변조 불가 감사 아키텍처 — 해시체인·PoW·다중 수집·앵커링으로 자율 행동의 책임성·무결성을 보장.
+        success_criteria:
+          - "해시체인(append-only, 이전 해시 포함)을 제시"
+          - "PoW/서명(위조 비용·부인방지)을 제시"
+          - "다중 표면 중앙 수집·주기적 앵커링을 제시"
+          - "(설명) '변조 불가 감사=자율 책임성' 원칙 설명"
+        acceptable_methods:
+          - "해시체인 + PoW/서명 + 다중 수집 + 앵커링"
+        negative_signs:
+          - "단일 로그 의존"
+          - "해시체인/앵커링 언급 없음"

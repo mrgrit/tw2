@@ -1,0 +1,126 @@
+id: "ai-safety-w10"
+category: "ai-safety"
+title: "[AI안전 W10] 에이전트 보안 위협: 도구를 쥔 LLM vs 승인 게이트·최소 권한"
+difficulty: "hard"
+time_limit: 2700
+battle_type: "1v1"
+description: |
+  에이전트 보안 공방전 — 대상 **AICompanion**(`http://192.168.0.161:8007`). 도구를 쥔 LLM의 위험
+  (과도한 에이전시)과 승인 게이트·최소 권한 방어를 다룬다.
+  ▸ 실측 — `/api/tool/exec_python`(RCE)·`/api/tool/update_user`(무인증 200)·`http_get`/`chain`(WAF 민감)
+    도구가 인증 없이 노출. Red 위치: 본인 인프라(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`). 채점
+    command_ran+semantic. 윤리: 인가 대상만, PoC 수준.
+
+red_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 무인증 도구 남용 (과도한 에이전시)
+
+      인증 없는 도구를 직접 호출해 권한 초과 행동을 실증한다(최소 2개).
+
+      ### 권장 명령
+      ```bash
+      curl -s http://192.168.0.161:8007/api/tool/exec_python -H 'content-type: application/json' -d '{"code":"print(6*7)"}'
+      curl -s -o /dev/null -w '%{http_code}\n' http://192.168.0.161:8007/api/tool/update_user -H 'content-type: application/json' -d '{"id":1,"role":"admin"}'
+      ```
+
+      ### ✅ 합격 기준
+      무인증 도구 2개를 호출해 권한 초과 행동(코드 실행·사용자 변경 200)을 실제 응답으로 증명한다.
+    hint: "exec_python(실행)·update_user(무인증 200) 2+ 호출. 요청/응답 캡처. 과도한 에이전시(LLM08)."
+    verify:
+      type: "command_ran"
+      expect: "api/tool"
+      checks:
+        - { id: "red-10-1", type: "command_ran", target: "attacker", params: { pattern: "tool" } }
+      semantic:
+        intent: "과도한 에이전시 — 무인증 도구가 권한 초과 행동을 허용(LLM08)."
+        success_criteria:
+          - "본인 인프라 명령 로그에 /api/tool/* 호출 흔적이 남음"
+          - "무인증 도구 2개 호출과 결과를 실제 캡처로 제시"
+          - "(설명) 과도한 기능/권한이 근본 문제임을 설명"
+        acceptable_methods: ["exec_python + update_user 실증"]
+        negative_signs: ["도구 하나 또는 캡처 없음"]
+
+  - order: 2
+    assess_target: self
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 인젝션→도구 연쇄 위험 분석
+
+      프롬프트 인젝션이 도구 실행으로 연결되는 킬체인을 분석하고, `http_get`(SSRF)·`chain`(원격 코드)
+      도구의 위험을 실증/논증한다(WAF 반응 기록).
+
+      ### ✅ 합격 기준
+      http_get/chain 도구 반응을 기록하고 인젝션→도구 연쇄가 왜 치명적인지 논증한다.
+    hint: "http_get(SSRF)·chain(원격 코드) 반응(수용/403) 기록 + 인젝션→도구 연쇄 논증."
+    verify:
+      type: "command_ran"
+      expect: "api/tool"
+      checks:
+        - { id: "red-10-2", type: "command_ran", target: "attacker", params: { pattern: "tool" } }
+      semantic:
+        intent: "인젝션→도구 연쇄 — 신뢰되지 않은 입력이 도구 실행으로 이어지는 위험."
+        success_criteria:
+          - "본인 인프라 명령 로그에 http_get/chain 호출 흔적이 남음"
+          - "도구 반응(수용/403)을 기록"
+          - "(설명) 인젝션→도구 연쇄 위험을 논증"
+        acceptable_methods: ["도구 반응 + 연쇄 논증"]
+        negative_signs: ["반응 기록 없이 주장만"]
+
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: web
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — 에이전시 표면 진단
+
+      도구 표면을 목록화·진단한다: 노출 도구·인증 여부·최악 행동.
+
+      ### ✅ 합격 기준
+      도구별 인증·최악 행동을 증거로 목록화해 위험 등급을 매긴다.
+    hint: "도구 4종(exec/http_get/chain/update_user) 인증·상태코드·최악 행동 위험 등급. LLM08 매핑."
+    verify:
+      type: "command_ran"
+      expect: "api/tool"
+      checks:
+        - { id: "blue-10-1", type: "command_ran", target: "attacker", params: { pattern: "tool" } }
+      semantic:
+        intent: "에이전시 표면 진단 — 도구·권한·최악 행동을 목록화(LLM08)."
+        success_criteria:
+          - "본인 인프라 명령 로그에 도구 열거 흔적이 남음"
+          - "도구별 인증·최악 행동을 위험 등급으로 정리"
+          - "(설명) LLM08로 매핑"
+        acceptable_methods: ["도구 열거 + 등급화"]
+        negative_signs: ["증거 없이 주장만"]
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — 승인 게이트·최소 권한 설계
+
+      **승인 게이트·최소 에이전시**를 설계한다: 불필요 도구 제거, 도구별 인증·인가, 고위험 행동
+      HITL 승인, SSRF 허용목록, 샌드박스·레이트리밋·감사.
+
+      ### ✅ 합격 기준
+      기능·권한 최소화·HITL 승인 게이트·샌드박스·감사를 제시하고 "인젝션이 통해도 할 게 없게" 원칙을
+      설명한다.
+    hint: "불필요 도구 제거+도구 인증·인가+고위험 HITL 승인+SSRF 허용목록+샌드박스·감사. '할 수 있는 걸 줄여라' 원칙."
+    verify:
+      type: "semantic"
+      expect: "approval_gate"
+      semantic:
+        intent: "최소 에이전시·승인 게이트 — 기능·권한 축소와 HITL로 피해를 제한."
+        success_criteria:
+          - "기능·권한 최소화(도구 제거·인증·인가)를 제시"
+          - "고위험 행동 HITL 승인·SSRF 허용목록을 제시"
+          - "샌드박스·레이트리밋·감사를 제시"
+          - "(설명) '인젝션이 통해도 할 게 없게' 원칙 설명"
+        acceptable_methods: ["최소화 + 승인 게이트 + 샌드박스 + 감사"]
+        negative_signs: ["인증만 추가", "승인 게이트 없음"]

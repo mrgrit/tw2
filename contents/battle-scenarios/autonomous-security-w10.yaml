@@ -1,0 +1,185 @@
+id: "autonomous-security-w10"
+category: "autonomous-security"
+title: "[자율보안 W10] Watcher 회피 저속 공격 vs 능동적 Watcher·Schedule 감시"
+difficulty: "hard"
+time_limit: 3000
+battle_type: "1v1"
+description: |
+  능동 감시 공방전 — bastion의 **Schedule(주기 실행)·Watcher(조건 트리거·스마트 감시)** 를 Red/Blue로
+  실습한다. 수동 대응(사람이 볼 때만)의 한계를 넘어, 능동적 트리거로 상시 감시한다. Red는 Watcher를
+  회피하는 저속·분산 공격을, Blue는 능동적 Watcher·Schedule을 설계한다.
+
+  ▸ 두 가지 모드
+    • solo : 한 학생이 Red(Watcher 회피 공격)와 Blue(능동 Watcher 설계)를 모두 수행.
+    • duel : Red 학생이 임계·타이밍을 회피해 공격하고, Blue 학생은 능동 트리거로 이를 포착한다.
+
+  ▸ 공격 위치·채점(중요)
+    Red는 **외부 공격자 VM({{ATTACKER_IP}})** 에서 대상(el34, 192.168.0.161)을 공격한다. Red 채점은
+    **대상 탐지 흔적(Suricata/ModSec/Wazuh)** + 본인 명령 흔적 + **보고서의 회피 전략 분석**으로 한다.
+    고유 태그(`auto-red-<학번>`)로 귀속.
+
+  ▸ 자율 보안 관점(bastion) — Schedule은 주기 점검(예: 5분마다 무결성 검사), Watcher는 조건 만족 시
+    트리거(예: 특정 경보 급증 시 조사 에이전트 기동). 스마트 트리거는 salience(중요도)로 노이즈를 거른다.
+
+  ▸ 윤리 — 인가된 훈련 인프라(el34)에서만.
+
+# ───────────────────────── RED (Watcher 회피 공격) ─────────────────────────
+red_missions:
+  - order: 1
+    assess_target: opponent
+    target_vm: ips
+    points: 25
+    instruction: |
+      ## 🎯 RED-1 — 저속·분산 정찰로 임계 회피
+
+      임계 기반 Watcher(예: "1분에 N회 이상 스캔이면 경보")를 **저속·분산**으로 회피하려 시도한다.
+      요청 간격을 늘리거나 분산해 임계를 넘지 않게 하며 정찰한다(고유 태그).
+
+      ### 어디서 / 무엇을
+      - 외부 공격자 VM({{ATTACKER_IP}})에서 대상(192.168.0.161)을 **느린 간격**으로 정찰(고유 태그).
+      - 임계 회피 전략(간격·분산·정상 트래픽 위장)을 명시. 단, 서명 기반 탐지(Suricata 룰)는 여전히
+        걸릴 수 있음을 관찰.
+
+      ### 권장 명령 (참고 — 느린 간격)
+      ```bash
+      for p in 22 80 443 8007; do curl -A 'auto-red-<학번>-slow' "http://192.168.0.161:$p/" ; sleep 15; done
+      ```
+
+      ### 📌 채점 방식
+      대상 탐지 흔적 + 본인 명령 흔적 + **보고서의 임계 회피 전략과 관찰**(무엇이 회피됐고 무엇이
+      여전히 탐지됐나).
+
+      ### ✅ 합격 기준
+      저속·분산으로 임계 기반 Watcher를 회피 시도하고, 서명/능동 탐지에는 여전히 걸릴 수 있음을 관찰·분석한다.
+    hint: "느린 간격·분산 정찰로 빈도 임계 회피 시도(태그 auto-red-<학번>). 서명 탐지는 여전히 걸림을 관찰. 채점=대상 Suricata 흔적."
+    verify:
+      type: "log_contains"
+      expect: "scan"
+      checks:
+        - { id: "red-10-1", type: "log_contains", target: "ips",
+            params: { log: "suricata", pattern: "auto-red", since_sec: 3000 } }
+      semantic:
+        intent: |
+          임계 회피(저속·분산) — 빈도 기반 Watcher의 한계를 악용. 단 서명·능동 탐지는 별도임을 이해.
+        success_criteria:
+          - "대상 IPS(Suricata)에 정찰 흔적이 남고 고유 태그로 귀속됨"
+          - "저속·분산 임계 회피 전략을 명시"
+          - "(설명) 서명/능동 탐지에는 여전히 걸릴 수 있음을 관찰·분석"
+        acceptable_methods:
+          - "느린 간격·분산 정찰 + 회피 전략 분석"
+        negative_signs:
+          - "흔적 없음"
+          - "회피 전략 분석 없음"
+
+  - order: 2
+    assess_target: opponent
+    target_vm: web
+    points: 20
+    instruction: |
+      ## 🎯 RED-2 — 능동 감시의 사각지대 분석
+
+      능동적 Watcher/Schedule이 **무엇을 놓칠 수 있는지** 분석한다: 임계·시그니처 사각지대, 스케줄 사이
+      간격, salience 필터로 걸러지는 저중요도 신호 악용.
+
+      ### 어떻게
+      - 대상에 저중요도로 보이는 활동(고유 태그)을 섞어, salience 필터·임계·스케줄 간격의 사각지대를
+        분석(실제 반응 기록).
+      - 능동 감시를 이기려면 공격자가 무엇을 해야 하는지(신호 최소화·정상 위장) 논증.
+
+      ### ✅ 합격 기준
+      능동 감시(Watcher/Schedule/salience)의 사각지대를 실제 반응과 함께 분석하고 회피 요건을 논증한다.
+    hint: "저중요도 위장 활동(태그)으로 salience·임계·스케줄 간격 사각지대 분석 + 회피 요건 논증. 실제 반응 기록."
+    verify:
+      type: "log_contains"
+      expect: "attack"
+      checks:
+        - { id: "red-10-2", type: "log_contains", target: "web",
+            params: { log: "modsec", pattern: "auto-red", since_sec: 3000 } }
+      semantic:
+        intent: |
+          능동 감시 사각지대 — Watcher/Schedule/salience의 한계를 분석해 회피 요건을 이해.
+        success_criteria:
+          - "대상 WAF/IPS에 관련 흔적이 남음(고유 태그)"
+          - "salience·임계·스케줄 간격 사각지대를 실제 반응과 함께 분석"
+          - "(설명) 능동 감시 회피 요건(신호 최소화·정상 위장)을 논증"
+        acceptable_methods:
+          - "사각지대 분석 + 회피 요건 논증"
+        negative_signs:
+          - "사각지대 분석 없이 '회피 가능'만"
+
+# ───────────────────────── BLUE (능동 Watcher·Schedule 설계) ─────────────────────────
+blue_missions:
+  - order: 1
+    assess_target: self
+    target_vm: siem
+    points: 25
+    instruction: |
+      ## 🛡️ BLUE-1 — 능동 Watcher 트리거: 조건→조사 기동
+
+      수동 대응을 넘어 **능동 Watcher**를 설계·적용한다: 특정 조건(경보 급증·특정 서명·저속 패턴 누적)
+      만족 시 조사 에이전트를 자동 기동.
+
+      ### 어떻게
+      - Wazuh/Suricata에서 RED의 (저속 포함) 공격 신호를 포착.
+      - Watcher 트리거 조건(무엇을 보면 기동)과 salience(중요도)로 노이즈 필터링을 설계.
+      - 저속·분산 공격도 누적·상관으로 잡는 조건을 제시.
+
+      ### ✅ 합격 기준
+      RED 공격 신호를 포착하고, 저속·분산도 누적·상관으로 잡는 능동 Watcher 트리거 조건을 설계한다.
+    hint: "Wazuh/Suricata에서 RED 신호 포착 + Watcher 트리거 조건(급증·서명·저속 누적)·salience 필터. 저속도 누적·상관으로 포착."
+    verify:
+      type: "wazuh_alert"
+      expect: "alert"
+      checks:
+        - { id: "blue-10-1", type: "wazuh_alert", target: "siem",
+            params: { pattern: "auto-red", since_sec: 3000 } }
+      semantic:
+        intent: |
+          능동 Watcher — 조건 트리거·salience로 상시 감시하고 저속·분산도 누적·상관으로 포착.
+        success_criteria:
+          - "Wazuh/Suricata에서 RED 공격 신호(저속 포함)를 포착"
+          - "Watcher 트리거 조건과 salience 필터를 설계"
+          - "(설명) 저속·분산을 누적·상관으로 잡는 조건 제시"
+        acceptable_methods:
+          - "신호 포착 + 트리거 조건 설계"
+        negative_signs:
+          - "신호 근거 없음"
+          - "저속 대응(누적·상관) 없음"
+
+  - order: 2
+    assess_target: self
+    target_vm: secu
+    points: 20
+    instruction: |
+      ## 🛡️ BLUE-2 — Schedule·스마트 감시 아키텍처 설계
+
+      상시·능동 감시를 위한 **Schedule·Watcher 아키텍처**를 설계한다.
+
+      ### 무엇을
+      - **Schedule**: 주기 점검(무결성·설정 드리프트·자산 재정찰)으로 스케줄 간격 사각지대 축소.
+      - **스마트 트리거**: salience(중요도) 기반 보고 — 노이즈는 억제, 중요·이상 징후만 즉시(cron 남용
+        방지).
+      - **누적·상관 Watcher**: 저속·분산 공격을 시간 창 누적·엔티티 상관으로 포착.
+      - **자율성·감사**: 능동 조치(조사 자율·차단 승인)와 트리거·조치의 감사.
+
+      ### ✅ 합격 기준
+      Schedule·스마트 트리거·누적 Watcher·자율성/감사를 구체적으로 설계하고, "능동 감시는 salience로
+      노이즈를 거르되 저속도 놓치지 않게" 원칙을 설명한다.
+    hint: "Schedule(주기 점검)+스마트 트리거(salience·cron 남용 방지)+누적·상관 Watcher(저속 포착)+자율성/감사. 'salience 필터+저속 미탐 방지' 원칙."
+    verify:
+      type: "semantic"
+      expect: "watcher_architecture"
+      semantic:
+        intent: |
+          Schedule·Watcher 아키텍처 — 주기 점검·스마트 트리거·누적 상관으로 상시 능동 감시. salience로
+          노이즈 억제, 저속 미탐 방지.
+        success_criteria:
+          - "Schedule(주기 점검으로 간격 사각지대 축소)을 제시"
+          - "스마트 트리거(salience 기반, cron 남용 방지)를 제시"
+          - "누적·상관 Watcher(저속·분산 포착)와 자율성/감사를 제시"
+          - "(설명) 'salience 필터 + 저속 미탐 방지' 원칙 설명"
+        acceptable_methods:
+          - "Schedule + 스마트 트리거 + 누적 Watcher + 감사"
+        negative_signs:
+          - "수동 대응·단순 임계만"
+          - "salience 또는 저속 대응 언급 없음"
