@@ -75,39 +75,72 @@ steps:
 
   - order: 3
     instruction: |
-      ## STEP 3 — 자율 분류 → TRIAGE_DONE
-      > **🎯 목표:** 심각도·보강으로 진짜 위협만 조사로, 오탐은 자동 종료.
-      > **개념:** 분류가 잡음의 관문.
+      ## 🎯 MISSION
+      자율 Blue 에이전트가 받는 **실제 Suricata `eve.json` 형식**의 경보를 만들어, python 으로 파싱하고 IP 평판·
+      자산 중요도로 **자율 분류**한다(진짜 위협은 조사로, 알려진 스캐너 오탐은 자동 종료).
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      alerts=[{"id":"A","rule":"bruteforce","ip_reputation":"malicious","asset":"critical"},
-              {"id":"B","rule":"port scan","ip_reputation":"internal-scanner(known)","asset":"low"},
-              {"id":"C","rule":"malware c2","ip_reputation":"malicious","asset":"critical"}]
-      def triage(a):
-          # 보강: 알려진 내부 스캐너 + 저가치 자산이면 오탐 종료
-          if "known" in a["ip_reputation"] and a["asset"]=="low": return "auto-close (false positive)"
-          if a["ip_reputation"]=="malicious": return "escalate to investigation"
-          return "monitor"
-      escalated=[]
-      for a in alerts:
-          v=triage(a); print(f"  {a['id']} ({a['rule']}): {v}")
-          if "escalate" in v: escalated.append(a["id"])
-      # 진짜 위협(A,C)만 조사, 오탐(B) 자동 종료
-      print("TRIAGE_DONE" if escalated==["A","C"] else "CHECK")
+      EVE=/tmp/eve_STU42.json
+      # 1) Suricata eve.json(한 줄당 1 JSON) 형식의 경보 샘플을 만든다. 실제 필드: event_type/alert/src_ip.
+      cat > "$EVE" <<'EOF'
+      {"timestamp":"2026-07-02T08:40:01Z","event_type":"alert","src_ip":"192.168.0.202","dest_ip":"10.20.30.10","alert":{"signature":"ET SCAN Nmap","severity":3,"category":"Attempted Recon"}}
+      {"timestamp":"2026-07-02T08:40:05Z","event_type":"alert","src_ip":"10.20.30.50","dest_ip":"10.20.30.10","alert":{"signature":"Internal vuln scanner","severity":3,"category":"Not Suspicious"}}
+      {"timestamp":"2026-07-02T08:40:09Z","event_type":"alert","src_ip":"192.168.0.202","dest_ip":"10.20.30.10","alert":{"signature":"ET WEB_SPECIFIC SQL Injection","severity":1,"category":"Web Application Attack"}}
+      {"timestamp":"2026-07-02T08:40:12Z","event_type":"alert","src_ip":"192.168.0.202","dest_ip":"10.20.30.10","alert":{"signature":"ET MALWARE Cobalt Strike Beacon","severity":1,"category":"Malware Command and Control"}}
+      EOF
+
+      # 2) python 으로 eve.json 을 파싱해 경보를 자율 분류한다.
+      #    규칙: 알려진 내부 스캐너(내부 IP + Not Suspicious)는 오탐 종료, 그 외 외부 출처는 심각도로 조사 판정.
+      python3 - "$EVE" <<'PY'
+      import sys, json
+      KNOWN_SCANNERS={"10.20.30.50"}   # 자산 인벤토리에 등록된 승인 스캐너
+      esc=[]
+      for line in open(sys.argv[1]):
+          e=json.loads(line);
+          if e.get("event_type")!="alert": continue
+          a=e["alert"]; sip=e["src_ip"]
+          if sip in KNOWN_SCANNERS or a["category"]=="Not Suspicious":
+              verdict="auto-close (known scanner/false positive)"
+          elif a["severity"]<=1:
+              verdict="ESCALATE (high severity)"; esc.append(a["signature"])
+          else:
+              verdict="monitor (low severity recon)"
+          print(f"  [{sip:15}] sev{a['severity']} {a['signature'][:32]:32} -> {verdict}")
+      print(f"escalated={len(esc)}")
+      print("TRIAGE_DONE" if len(esc)>=2 else "CHECK")
       PY
       ```
-      ✅ 마지막 줄 `TRIAGE_DONE` (악성 A·C는 조사로, 알려진 스캐너 B는 자동 종료).
-      🔎 IP 평판·자산 중요도로 보강 분류: 악성+중요 자산(A·C)은 조사, 알려진 내부 스캐너+저가치(B)는 오탐 자동 종료. 잡음 제거.
+      ## 📋 확인 사항
+      - 내부 스캐너(10.20.30.50)는 `auto-close`, SQLi·Cobalt Strike(외부·sev1)는 `ESCALATE`, Nmap(sev3)은 `monitor`
+      - `escalated=2`, 마지막 줄 `TRIAGE_DONE`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — 자율 Blue 의 관문은 **분류**다. 실제 Suricata `eve.json` 을 파싱해 IP 평판(승인 스캐너 vs
+      > 외부 공격자)·심각도로 진짜 위협(SQLi·C2)만 조사로 올리고 알려진 스캐너 잡음은 자동 종료한다. 이 필터가
+      > 없으면 사람이든 에이전트든 경보 홍수에 마비된다.
+
+      ## 🔍 결과 해석 — 정상 `TRIAGE_DONE`(진짜 위협 2건 상향, 오탐 종료)
+    hint: "eve.json 생성 → python 파싱, 내부 스캐너 오탐 종료·외부 고심각도(SQLi/C2) 상향, escalated≥2 면 TRIAGE_DONE."
+    category: analysis
     answer: |
-      A (bruteforce): escalate to investigation
-      B (port scan): auto-close (false positive)
-      C (malware c2): escalate to investigation
+      [192.168.0.202  ] sev3 ET SCAN Nmap                     -> monitor (low severity recon)
+      [10.20.30.50    ] sev3 Internal vuln scanner            -> auto-close (known scanner/false positive)
+      [192.168.0.202  ] sev1 ET WEB_SPECIFIC SQL Injection    -> ESCALATE (high severity)
+      [192.168.0.202  ] sev1 ET MALWARE Cobalt Strike Beacon  -> ESCALATE (high severity)
+      escalated=2
       TRIAGE_DONE
-    answer_detail: "심각도·보강 자율 분류(오탐 종료) → TRIAGE_DONE."
+    answer_detail: "실제 Suricata eve.json 파싱 자율 분류: 내부 스캐너 오탐 종료, 외부 SQLi·C2(sev1) 조사 상향. 잡음 관문."
     verify:
       type: output_contains
       expect: TRIAGE_DONE
       field: stdout
+      semantic:
+        intent: "실제 Suricata eve.json 형식 경보를 파싱해 자율 분류(오탐 종료·위협 상향)."
+        success_criteria:
+          - "eve.json 파싱해 IP 평판·심각도로 분류"
+          - "알려진 스캐너 오탐 종료 + 고심각도 위협 상향"
+          - "TRIAGE_DONE 출력"
 
   - order: 4
     instruction: |
