@@ -88,10 +88,13 @@ graph TD
 IP를 처리한다. 파라미터화가 재사용성을 높인다. bastion은 플레이북 라이브러리를 두고, Manager가 임무에 맞는
 플레이북을 선택·파라미터를 채워 실행한다.
 
-### 0.5.5 el34 맥락
+### 0.5.5 bastion의 Playbook — 정적·동적, "Playbook이 법"
 
-el34에서 플레이북으로 자율 대응(웹 공격·의심 IP)을 구조화할 수 있다. 이번 실습은 **플레이북 정의·실행·재사용
-로직**을 결정론 시뮬로 익힌다.
+bastion은 실제 YAML Playbook 라이브러리를 갖는다(`contents/playbooks/`): `incident_response`·`hardening`·
+`vuln_scan`·`security_audit`·`log_investigation`·`wazuh_health`·`attack_simulation`·`probe_all`. PLANNING 단계
+(W03)에서 **정적 Playbook 매칭이 최우선**이고(재현성), 맞는 것이 없으면 Skill 선택 → **동적 Playbook 생성**(LLM이
+즉석 스텝)으로 내려간다. KG 원칙 "**동일 작업=동일 방법: Playbook이 법, Experience는 보조 노트**"가 여기 적용된다.
+이번 실습은 **플레이북 정의·실행·재사용 로직**을 결정론 시뮬로 익힌다.
 
 ---
 

@@ -87,10 +87,13 @@ PoW를 다시 풀어야 해 사실상 불가능하다 — 노력이 무결성을
 
 자율 시스템은 강력한 만큼 행동의 투명성·무결성이 신뢰의 기반이다.
 
-### 0.5.5 el34 맥락
+### 0.5.5 bastion의 감사 — audit.py (append-only 해시체인)
 
-해시 체인·PoW는 표준 라이브러리로 el34에서 실제 계산할 수 있다. 이번 실습은 **해시 체인 구축·PoW 계산·변조 탐지**를
-실제 python 해시(SHA-256 등)로 수행한다(결정론).
+bastion은 이 원리를 **실제로** 쓴다 — `audit.py`는 **append-only + 해시체인** 감사 로그다(별도 파일 `bastion_audit.db`).
+UPDATE/DELETE 금지, 각 row가 직전 row의 해시를 포함해 한 줄만 변조돼도 이후가 전부 깨진다. 기록 단위는 **1 chat =
+1 row**: request_id·사용자 지시 전문·최종 답변·approval_mode·lookup 결정·turns(ReAct 전체 trace). 외부 SIEM 포워딩도
+가능하다. (PoW는 변조 비용을 높이는 일반 원리로 이번 실습에서 개념·시뮬로 익히되, bastion 감사의 핵심은 **해시체인
+tamper-evident**다.) 이번 실습은 **해시 체인 구축·PoW 계산·변조 탐지**를 실제 python 해시(SHA-256 등)로 수행한다.
 
 ---
 
