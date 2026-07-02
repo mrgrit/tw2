@@ -1,38 +1,49 @@
 lab_id: iot-security-week06
-title: "W06 — 무선 프로토콜: Zigbee 암호화·키 취약성·안전한 조인 강화"
+title: "W06 — 무선 프로토콜: Zigbee 조인 캡처 분석·기본 링크키·네트워크키 추출·안전한 조인"
 version: ai
 course: iot-security
 week: 6
 description: |
-  스마트홈 무선(Zigbee/Z-Wave) 방어. 암호화·기본 키 취약성 평가(CRYPTO_WEAK), 키 추출/재전송 가능성
-  (KEY_EXTRACTABLE), 강한 암호화·안전한 조인 강화(WIRELESS_SECURED), 종합(Assessment).
-  ⚠️ 무선은 라디오 하드웨어 필요 — 암호화·키·방어 로직 결정론 시뮬.
+  Zigbee 는 AES-128 을 쓰지만, 문제는 **키 배포**다. 장치가 네트워크에 조인할 때 코디네이터(Trust Center)가
+  네트워크 키를 **Trust Center Link Key 로 암호화해 전송**하는데, 많은 제품이 **공개된 기본 글로벌 링크키
+  (ZigbeeAlliance09)**를 그대로 쓴다. 이러면 조인 순간을 스니핑한 공격자가 네트워크 키를 복호해 전체 트래픽을
+  해독한다. 이번 주는 **실제 아티팩트(Zigbee 조인 캡처)로** (1) 암호 구성의 약점을 확인하고, (2) 기본 링크키로
+  네트워크 키 추출이 가능한지 판정하며, (3) 안전한 조인(설치 코드·고유 링크키)과 대비한다.
+
+  모든 명령은 사람이 한 줄씩 직접 입력한다. el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서 실행하며,
+  분석 아티팩트(조인 캡처 디코드)는 이 실습이 `/tmp` 에 직접 만든다. ⚠️ 실제로는 KillerBee/`zbdump` 캡처를 분석.
 difficulty: medium
 duration_minutes: 120
-audience: IoT 보안 입문 (6주차)
+audience: IoT 보안 (6주차)
 prerequisites:
-  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
-  - GPU Ollama 도달 — gemma3:4b
-  - W06 강의안 정독 — §0.5(무선 메시·링크 키·안전한 조인)
+  - "el34 호스트 접속: `ssh ccc@{{TARGET_IP}}` (비밀번호 `1`)"
+  - "GPU Ollama 도달 — http://211.170.162.139:10934 (gemma3:4b), 종합용"
+  - "도구: grep·awk·python3 (el34 에 존재)"
+  - "W06 강의안 정독 — §0.5(Zigbee·Trust Center·링크키·네트워크키)"
 objectives:
-  - "GPU 헬스체크(GEN_OK)"
-  - "암호화·기본 키 취약성 평가(CRYPTO_WEAK)"
-  - "키 추출/재전송 가능성(KEY_EXTRACTABLE)"
-  - "강한 암호화·안전한 조인 강화(WIRELESS_SECURED)"
-  - "종합(Assessment)"
+  - "GPU 응답 확인 (GEN_OK)"
+  - "조인 캡처에서 기본 글로벌 링크키 사용 등 암호 약점 확인 (CRYPTO_WEAK)"
+  - "기본 링크키로 네트워크 키 추출 가능성 판정 (KEY_EXTRACTABLE)"
+  - "안전한 조인(설치 코드·고유 키)과 대비 (WIRELESS_SECURED)"
+  - "종합 소견 (Assessment)"
 pass_threshold: 0.6
 
 steps:
 
   - order: 1
     instruction: |
-      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ## 🎯 MISSION
+      종합용 GPU(gemma3) 응답 확인.
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
         -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
       ```
-      ✅ 마지막 줄 `GEN_OK`.
+      ## 📋 확인 사항 — 마지막 줄 `GEN_OK`
+      ## 🔍 결과 해석 — 정상 `GEN_OK` / 비정상 `GEN_EMPTY`·연결오류
+    hint: "curl /api/generate → response 있으면 GEN_OK."
+    category: survey
     answer: |
       ready
       GEN_OK
@@ -44,67 +55,104 @@ steps:
 
   - order: 2
     instruction: |
-      ## STEP 2 — 암호화·키 취약성 → CRYPTO_WEAK
-      > **🎯 목표:** 무선 프로토콜의 암호화·키 설정 취약성을 평가.
-      > **개념:** 기본 키·암호화 부재는 스니핑에 뚫린다.
+      ## 🎯 MISSION
+      **Zigbee 조인 캡처(디코드)**를 만들고, 네트워크 키가 **기본 글로벌 링크키**로 전송됐는지 확인한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      networks=[{"proto":"Zigbee","encryption":"AES-128","key":"well-known default TC link key"},  # 기본 키!
-                {"proto":"proprietary RF","encryption":"none","key":None},                          # 무암호!
-                {"proto":"Z-Wave S2","encryption":"AES-128","key":"unique install code"}]
-      weak=[]
-      for n in networks:
-          risk=None
-          if n["encryption"]=="none": risk="no encryption"
-          elif n["key"] and "default" in str(n["key"]): risk="well-known default key"
-          if risk: weak.append((n["proto"],risk)); print(f"  {n['proto']:16}: WEAK - {risk}")
-          else: print(f"  {n['proto']:16}: strong (unique key)")
-      print("CRYPTO_WEAK" if len(weak)>=2 else "SECURE")
-      PY
+      CAP=/tmp/zigbee_join_STU42.txt
+      # 1) 조인 시 캡처된 APS Transport Key 프레임 디코드(tshark zbee 요약 형식).
+      cat > "$CAP" <<'EOF'
+      Frame 12: ZigBee APS Command
+        APS Command: Transport Key (0x05)
+        Key Type: Standard Network Key
+        Sequence: 0
+        Encryption: Trust Center Link Key
+        Link Key (used): 5A6967426565416C6C69616E63653039
+        Transported Network Key (ciphertext): 8a1f...redacted...
+      EOF
+
+      # 2) Transport Key 프레임과 사용된 링크키를 확인한다.
+      grep -E "Transport Key|Link Key \(used\)" "$CAP"
+
+      # 3) 사용된 링크키가 공개된 기본 글로벌 키(ZigbeeAlliance09)인지 대조한다.
+      #    ZigbeeAlliance09 의 hex = 5A6967426565416C6C69616E63653039
+      DEFAULT="5A6967426565416C6C69616E63653039"
+      grep -qi "$DEFAULT" "$CAP" && echo "기본 글로벌 링크키(ZigbeeAlliance09) 사용!" || echo "고유 링크키"
+
+      # 4) 판정: 네트워크 키가 기본 글로벌 링크키로 전송됐으면 암호 구성 취약.
+      grep -q "Transport Key" "$CAP" && grep -qi "$DEFAULT" "$CAP" && echo CRYPTO_WEAK || echo OK
       ```
-      ✅ 마지막 줄 `CRYPTO_WEAK` (Zigbee 기본 키 + 독점 RF 무암호).
-      🔎 Zigbee가 알려진 기본 링크 키를 쓰거나 독점 RF가 무암호면 스니핑으로 뚫린다. Z-Wave S2 고유 키만 안전.
+      ## 📋 확인 사항
+      - `APS Command: Transport Key`, `Link Key (used): 5A69...3039`
+      - `기본 글로벌 링크키(ZigbeeAlliance09) 사용!`
+      - 마지막 줄 `CRYPTO_WEAK`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — Zigbee 자체 암호(AES-128)는 튼튼하지만, 네트워크 키를 **누구나 아는 기본 링크키**로 감싸
+      > 보내면 암호가 무의미해진다. `5A69...3039` 는 Zigbee 표준 문서에 적힌 공개 기본값 "ZigbeeAlliance09"다.
+
+      ## 🔍 결과 해석 — 정상 `CRYPTO_WEAK`
+    hint: "조인 캡처 생성 → grep 로 Transport Key + 기본 링크키(5A69...3039) 확인 → CRYPTO_WEAK."
+    category: recon
     answer: |
-      Zigbee          : WEAK - well-known default key
-      proprietary RF  : WEAK - no encryption
-      Z-Wave S2       : strong (unique key)
+      APS Command: Transport Key (0x05)
+        Encryption: Trust Center Link Key
+        Link Key (used): 5A6967426565416C6C69616E63653039
+      기본 글로벌 링크키(ZigbeeAlliance09) 사용!
       CRYPTO_WEAK
-    answer_detail: "무선 프로토콜 암호화·기본 키 취약성 평가 → CRYPTO_WEAK."
+    answer_detail: "네트워크 키를 공개된 기본 글로벌 링크키(ZigbeeAlliance09=5A69...3039)로 전송 = 암호 무력화."
     verify:
       type: output_contains
       expect: CRYPTO_WEAK
       field: stdout
+      semantic:
+        intent: "조인 캡처에서 기본 글로벌 링크키 사용 확인."
+        success_criteria:
+          - "Transport Key 프레임 + 기본 링크키 확인"
+          - "CRYPTO_WEAK 출력"
 
   - order: 3
     instruction: |
-      ## STEP 3 — 키 추출/재전송 → KEY_EXTRACTABLE
-      > **🎯 목표:** 취약 무선에서 키 추출·재전송 가능성 판정.
-      > **개념:** 기본 키로 조인 트래픽 복호, 무암호는 재전송.
+      ## 🎯 MISSION
+      기본 링크키가 **공개값**이므로, 조인 캡처만 있으면 전송된 네트워크 키를 복호할 수 있음을 확인한다(공개 기본
+      키 목록과 대조).
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # 취약 무선 공격 시뮬
-      def key_extractable(net):
-          if net["encryption"]=="none": return "REPLAY (capture-and-replay commands)"
-          if net.get("default_key"): return "KEY EXTRACT (decrypt join traffic with known default key)"
-          return "SAFE (unique key, secure join)"
-      nets=[{"proto":"Zigbee","encryption":"AES-128","default_key":True},
-            {"proto":"proprietary RF","encryption":"none"},
-            {"proto":"Z-Wave S2","encryption":"AES-128","default_key":False}]
-      compromised=0
-      for n in nets:
-          r=key_extractable(n); print(f"  {n['proto']:16}: {r}")
-          if "SAFE" not in r: compromised+=1
-      print("KEY_EXTRACTABLE" if compromised==2 else "PROTECTED")
-      PY
+      CAP=/tmp/zigbee_join_STU42.txt
+      KNOWN=/tmp/known_linkkeys_STU42.txt
+      # 1) 공개적으로 알려진 기본 링크키 목록(도구에 내장된 것과 동일).
+      cat > "$KNOWN" <<'EOF'
+      5A6967426565416C6C69616E63653039  ZigbeeAlliance09 (default global TC link key)
+      D0D1D2D3D4D5D6D7D8D9DADBDCDDDEDF  ZLL default (touchlink)
+      EOF
+
+      # 2) 캡처에서 쓰인 링크키를 뽑아 공개 목록에 있는지 대조한다.
+      USED=$(grep -oiE "[0-9A-F]{32}" "$CAP" | head -1)
+      echo "캡처의 링크키: $USED"
+      echo -n "공개 기본키 목록에 있음? "; grep -qi "$USED" "$KNOWN" && echo "YES → 네트워크 키 복호 가능" || echo "NO"
+
+      # 3) 판정: 쓰인 링크키가 공개 목록에 있으면 네트워크 키 추출 가능.
+      grep -qi "$USED" "$KNOWN" && echo KEY_EXTRACTABLE || echo PROTECTED
       ```
-      ✅ 마지막 줄 `KEY_EXTRACTABLE` (Zigbee 기본 키로 키 추출 + 무암호 RF 재전송).
-      🔎 알려진 기본 키로 조인 트래픽을 복호해 네트워크 키 추출, 무암호 RF는 명령 재전송. 둘 다 스마트홈 제어.
+      ## 📋 확인 사항
+      - `캡처의 링크키: 5A69...3039`, `공개 기본키 목록에 있음? YES → 네트워크 키 복호 가능`
+      - 마지막 줄 `KEY_EXTRACTABLE`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — 링크키가 공개 기본값이면, 공격자는 조인 순간의 Transport Key 프레임을 스니핑(KillerBee)해
+      > 그 공개 키로 **네트워크 키를 복호**한다. 네트워크 키를 얻으면 이후 모든 Zigbee 트래픽(잠금·센서·조명)을
+      > 해독·위조한다. "강한 암호 + 약한 키 관리 = 무보안"의 전형이다.
+
+      ## 🔍 결과 해석 — 정상 `KEY_EXTRACTABLE`
+    hint: "캡처의 링크키를 공개 기본키 목록과 grep 대조 → 일치하면 네트워크 키 복호 가능 → KEY_EXTRACTABLE."
+    category: exploit
     answer: |
-      Zigbee          : KEY EXTRACT (decrypt join traffic with known default key)
-      proprietary RF  : REPLAY (capture-and-replay commands)
-      Z-Wave S2       : SAFE (unique key, secure join)
+      캡처의 링크키: 5A6967426565416C6C69616E63653039
+      공개 기본키 목록에 있음? YES → 네트워크 키 복호 가능
       KEY_EXTRACTABLE
-    answer_detail: "기본 키 키 추출·무암호 재전송 가능 → KEY_EXTRACTABLE."
+    answer_detail: "쓰인 링크키가 공개 기본값 → 조인 스니핑으로 네트워크 키 복호. 이후 전 Zigbee 트래픽 해독/위조."
     verify:
       type: output_contains
       expect: KEY_EXTRACTABLE
@@ -112,30 +160,45 @@ steps:
 
   - order: 4
     instruction: |
-      ## STEP 4 — 무선 강화 → WIRELESS_SECURED
-      > **🎯 목표:** 강한 암호화·고유 키·안전한 조인·키 순환으로 강화.
-      > **개념:** 키가 새면 전부 샌다 — 키 관리가 핵심.
+      ## 🎯 MISSION
+      **안전한 조인**(Zigbee 3.0 설치 코드·장치별 고유 링크키)을 쓴 캡처와 대비한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      def harden(net):
-          return {"encryption":"AES-128","key":"unique per-install (install code, OOB)",
-                  "secure_join":True,"key_rotation":True,"frame_counter":True}
-      before={"encryption":"AES-128","default_key":True,"secure_join":False}
-      after=harden(before)
-      def compromisable(net):
-          return net["encryption"]=="none" or net.get("default_key") or not net.get("secure_join")
-      print("before compromisable:", compromisable(before))
-      print("after compromisable:", compromisable(after), "(unique key + secure join + rotation + frame counter)")
-      print("WIRELESS_SECURED" if compromisable(before) and not compromisable(after) else "CHECK")
-      PY
+      SCAP=/tmp/zigbee_secure_STU42.txt
+      KNOWN=/tmp/known_linkkeys_STU42.txt
+      cat > "$SCAP" <<'EOF'
+      Frame 12: ZigBee APS Command
+        APS Command: Transport Key (0x05)
+        Key Type: Standard Network Key
+        Encryption: Install-Code-Derived Link Key (per-device, Z3.0)
+        Link Key (used): 9C4f2ab7de01553388aa77cc21ef4b6d
+      EOF
+
+      # 쓰인 링크키가 공개 기본 목록에 없어야(고유해야) 한다.
+      USED=$(grep -oiE "[0-9A-F]{32}" "$SCAP" | head -1)
+      echo "링크키: $USED"
+      echo -n "설치 코드 기반 고유 키? "; grep -qi "Install-Code" "$SCAP" && echo OK || echo NO
+      echo -n "공개 기본키 아님? "; grep -qi "$USED" "$KNOWN" && echo "기본키(취약)" || echo "고유키(안전)"
+      grep -qi "Install-Code" "$SCAP" && ! grep -qi "$USED" "$KNOWN" && echo WIRELESS_SECURED || echo STILL_WEAK
       ```
-      ✅ 마지막 줄 `WIRELESS_SECURED` (고유 키+안전한 조인+키 순환+프레임 카운터).
-      🔎 설치별 고유 키(install code·OOB)+안전한 조인(물리 근접)+키 순환+재전송 방지. 키가 안 새면 안전.
+      ## 📋 확인 사항
+      - `설치 코드 기반 고유 키? OK`, `공개 기본키 아님? 고유키(안전)`
+      - 마지막 줄 `WIRELESS_SECURED`
+
+      ## 💡 왜 이걸 하는가?
+      Zigbee 3.0 의 **설치 코드**는 장치마다 고유한 링크키를 파생해, 조인을 스니핑해도 네트워크 키를 복호하지 못한다.
+      여기에 주기적 네트워크 키 교체·조인 창 제한을 더하면 W06 공격이 막힌다.
+
+      ## 🔍 결과 해석 — 정상 `WIRELESS_SECURED`
+    hint: "안전 조인 캡처 생성 → Install-Code 기반 + 링크키가 공개 목록에 없음 → WIRELESS_SECURED."
+    category: defense
     answer: |
-      before compromisable: True
-      after compromisable: False (unique key + secure join + rotation + frame counter)
+      링크키: 9C4f2ab7de01553388aa77cc21ef4b6d
+      설치 코드 기반 고유 키? OK
+      공개 기본키 아님? 고유키(안전)
       WIRELESS_SECURED
-    answer_detail: "고유 키·안전한 조인·키 순환 강화 → WIRELESS_SECURED."
+    answer_detail: "설치 코드 기반 장치별 고유 링크키 → 조인 스니핑해도 복호 불가. 키 교체·조인창 제한 병행."
     verify:
       type: output_contains
       expect: WIRELESS_SECURED
@@ -143,20 +206,29 @@ steps:
 
   - order: 5
     instruction: |
-      ## STEP 5 — 종합 → Assessment
+      ## 🎯 MISSION
+      W06 발견(기본 링크키·네트워크 키 추출·안전한 조인)을 소견으로 정리한다. (정리: `rm -f /tmp/zigbee_*STU42.txt /tmp/known_linkkeys_STU42.txt`)
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"gemma3:4b","prompt":"Write a short note for W06 on smart-home wireless protocols (Zigbee, Z-Wave). Findings: a well-known default key and an unencrypted proprietary RF were assessed as weak (CRYPTO_WEAK), enabling key extraction from join traffic and command replay (KEY_EXTRACTABLE), and unique per-install keys with secure join, rotation, and frame counters hardened it (WIRELESS_SECURED). Explain that weak or default keys let sniffers decrypt and control the whole mesh, so defense uses strong encryption, unique keys, secure join, and key rotation. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 6 of an IoT security course on Zigbee wireless security. Facts: a Zigbee join capture showed the network key transported using the well-known default global Trust Center link key ZigbeeAlliance09 (CRYPTO_WEAK); because that link key is public, matching it against a known-defaults list shows the transported network key can be decrypted from a sniffed join (KEY_EXTRACTABLE); a Zigbee 3.0 capture using an install-code-derived per-device link key that is not in the defaults list resisted it (WIRELESS_SECURED). Explain that Zigbee uses strong AES-128 but weak key distribution defeats it, so defense uses per-device install codes, unique link keys, periodic network key rotation, and limited join windows. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
       ```
-      ✅ 출력에 `Assessment`.
-      🔎 정리: 스마트홈 무선은 약한/기본 키로 스니핑·키 추출에 취약. 강한 암호+고유 키+안전한 조인+키 순환으로 방어.
-      다음 주(W07)는 **BLE 해킹**.
+      ## 📋 확인 사항 — 첫머리에 `Assessment`
+      ## 🔍 결과 해석 — 정상 첫 줄 `Assessment` / 비정상 `[형식 미준수 — 재실행]`
+
+      ---
+      **다음 주(W07) 예고** — BLE 해킹(페어링 취약성·스니핑/MITM·LE Secure Connections).
+    hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
+    category: report
     answer: |
       Assessment
-      Weak or default keys let sniffers decrypt join traffic and control the whole mesh, and unencrypted RF allows replay.
-      Defense uses strong encryption, unique per-install keys, secure join, and key rotation.
-    answer_detail: "W06 무선 프로토콜 종합(Assessment). 암호화·키 취약성·안전한 조인."
+      A Zigbee join capture showed the network key transported with the well-known default global link
+      key ZigbeeAlliance09; because it is public, the transported network key can be decrypted from a
+      sniffed join. A Zigbee 3.0 install-code-derived per-device link key resisted it. Zigbee uses strong
+      AES-128, but weak key distribution defeats it, so defense uses per-device install codes, unique
+      link keys, network key rotation, and limited join windows.
+    answer_detail: "W06 Zigbee 종합(Assessment): 기본 글로벌 링크키·네트워크 키 추출·설치코드/고유키 방어."
     verify:
       type: output_contains
       expect: Assessment
