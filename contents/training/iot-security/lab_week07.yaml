@@ -1,38 +1,49 @@
 lab_id: iot-security-week07
-title: "W07 — BLE 해킹: 페어링 취약성·스니핑/MITM·LE Secure Connections 강화"
+title: "W07 — BLE 해킹: 페어링 캡처 분석·Just Works 취약·스니핑·LE Secure Connections 강화"
 version: ai
 course: iot-security
 week: 7
 description: |
-  BLE 보안. 약한 페어링(Just Works/Legacy) 평가(PAIRING_WEAK), 스니핑/MITM 가능성(BLE_INTERCEPTABLE),
-  LE Secure Connections·앱 암호화 강화(BLE_SECURED), 종합(Assessment).
-  ⚠️ BLE는 라디오 하드웨어 필요 — 페어링·스니핑·방어 로직 결정론 시뮬.
+  BLE(저전력 블루투스) 보안의 핵심은 **페어링 방식**이다. 페어링 시 IO 능력(화면·버튼 유무)에 따라 방식이 정해지는데,
+  대부분의 저가 IoT 는 화면·입력이 없어 **Just Works**(MITM 보호 없음) 로 페어링한다. 게다가 **LE Legacy 페어링**은
+  임시 키(TK)가 약해, 페어링을 스니핑하면 세션 키를 복원(crackle)해 트래픽을 해독한다. 이번 주는 **실제 아티팩트
+  (SMP 페어링 캡처)로** (1) 페어링 방식의 약점을 확인하고, (2) 스니핑으로 트래픽 해독이 가능한지 판정하며,
+  (3) LE Secure Connections(ECDH+MITM 보호)와 대비한다.
+
+  모든 명령은 사람이 한 줄씩 직접 입력한다. el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서 실행하며,
+  분석 아티팩트(SMP 페어링 캡처 디코드)는 이 실습이 `/tmp` 에 직접 만든다. ⚠️ 실제로는 `btmon`/Ubertooth 캡처 분석.
 difficulty: medium
 duration_minutes: 120
-audience: IoT 보안 입문 (7주차)
+audience: IoT 보안 (7주차)
 prerequisites:
-  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
-  - GPU Ollama 도달 — gemma3:4b
-  - W07 강의안 정독 — §0.5(페어링·Just Works·LE Secure Connections)
+  - "el34 호스트 접속: `ssh ccc@{{TARGET_IP}}` (비밀번호 `1`)"
+  - "GPU Ollama 도달 — http://211.170.162.139:10934 (gemma3:4b), 종합용"
+  - "도구: grep·awk·python3 (el34 에 존재)"
+  - "W07 강의안 정독 — §0.5(BLE·페어링 방식·Just Works·LE SC)"
 objectives:
-  - "GPU 헬스체크(GEN_OK)"
-  - "약한 페어링 평가(PAIRING_WEAK)"
-  - "스니핑/MITM 가능성(BLE_INTERCEPTABLE)"
-  - "LE Secure Connections 강화(BLE_SECURED)"
-  - "종합(Assessment)"
+  - "GPU 응답 확인 (GEN_OK)"
+  - "페어링 캡처에서 Just Works·Legacy 등 약점 확인 (PAIRING_WEAK)"
+  - "스니핑으로 트래픽 해독 가능성 판정 (BLE_INTERCEPTABLE)"
+  - "LE Secure Connections(ECDH+MITM 보호)와 대비 (BLE_SECURED)"
+  - "종합 소견 (Assessment)"
 pass_threshold: 0.6
 
 steps:
 
   - order: 1
     instruction: |
-      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ## 🎯 MISSION
+      종합용 GPU(gemma3) 응답 확인.
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
         -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
       ```
-      ✅ 마지막 줄 `GEN_OK`.
+      ## 📋 확인 사항 — 마지막 줄 `GEN_OK`
+      ## 🔍 결과 해석 — 정상 `GEN_OK` / 비정상 `GEN_EMPTY`·연결오류
+    hint: "curl /api/generate → response 있으면 GEN_OK."
+    category: survey
     answer: |
       ready
       GEN_OK
@@ -44,64 +55,103 @@ steps:
 
   - order: 2
     instruction: |
-      ## STEP 2 — 페어링 취약성 → PAIRING_WEAK
-      > **🎯 목표:** BLE 페어링 방식의 MITM 방어를 평가.
-      > **개념:** Just Works·Legacy는 MITM/스니핑에 취약.
+      ## 🎯 MISSION
+      **BLE SMP 페어링 캡처**를 만들고, IO 능력·MITM 플래그·SC 플래그를 분석해 **Just Works(보호 없음)** 인지 확인한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      devices=[{"name":"smart lock","ble":"4.0","pairing":"Just Works"},   # MITM 무방비
-               {"name":"fitness band","ble":"4.1","pairing":"Legacy"},      # 스니핑 취약
-               {"name":"medical device","ble":"5.0","pairing":"LE Secure (Numeric Comparison)"}]
-      weak=[]
-      for d in devices:
-          risk=None
-          if d["pairing"]=="Just Works": risk="no MITM protection"
-          elif "Legacy" in d["pairing"]: risk="sniffable key exchange (crackle)"
-          if risk: weak.append((d["name"],risk)); print(f"  {d['name']:16} ({d['ble']}): WEAK - {risk}")
-          else: print(f"  {d['name']:16} ({d['ble']}): strong (LE Secure)")
-      print("PAIRING_WEAK" if len(weak)>=2 else "SECURE")
-      PY
+      CAP=/tmp/ble_pairing_STU42.txt
+      # 1) SMP Pairing Request 디코드(btmon 형식). 저가 IoT 의 전형.
+      cat > "$CAP" <<'EOF'
+      > SMP: Pairing Request (0x01)
+          IO Capability: NoInputNoOutput (0x03)
+          OOB Data: Not Present (0x00)
+          Authentication Req: 0x00
+            Bonding: Bonding
+            MITM Protection: False
+            Secure Connections: False (LE Legacy)
+          Max Encryption Key Size: 16
+      EOF
+
+      # 2) 페어링 방식 결정 요소를 뽑는다.
+      echo "[IO 능력]"; grep "IO Capability" "$CAP"
+      echo "[MITM 보호]"; grep "MITM Protection" "$CAP"
+      echo "[Secure Connections]"; grep "Secure Connections" "$CAP"
+
+      # 3) 판정: NoInputNoOutput + MITM False → Just Works. + SC False(Legacy) 면 약한 페어링.
+      grep -q "NoInputNoOutput" "$CAP" && grep -q "MITM Protection: False" "$CAP" && grep -q "Secure Connections: False" "$CAP" && echo PAIRING_WEAK || echo OK
       ```
-      ✅ 마지막 줄 `PAIRING_WEAK` (스마트 잠금 Just Works + 밴드 Legacy).
-      🔎 Just Works(MITM 무방비)·Legacy(스니핑 취약)는 약함. LE Secure Connections(Numeric Comparison)만 안전.
+      ## 📋 확인 사항
+      - `IO Capability: NoInputNoOutput`, `MITM Protection: False`, `Secure Connections: False (LE Legacy)`
+      - 마지막 줄 `PAIRING_WEAK`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — 화면·입력이 없는 장치(NoInputNoOutput)는 **Just Works** 로 페어링해 사용자 확인 단계가
+      > 없다 → 중간자(MITM)를 막지 못한다. 게다가 **LE Legacy** 페어링은 임시 키가 약해 스니핑 시 키 복원이 쉽다.
+
+      ## 🔍 결과 해석 — 정상 `PAIRING_WEAK`
+    hint: "페어링 캡처 생성 → grep 로 NoInputNoOutput+MITM False+SC False 확인 → PAIRING_WEAK."
+    category: recon
     answer: |
-      smart lock       (4.0): WEAK - no MITM protection
-      fitness band     (4.1): WEAK - sniffable key exchange (crackle)
-      medical device   (5.0): strong (LE Secure)
+      [IO 능력]
+          IO Capability: NoInputNoOutput (0x03)
+      [MITM 보호]
+            MITM Protection: False
+      [Secure Connections]
+            Secure Connections: False (LE Legacy)
       PAIRING_WEAK
-    answer_detail: "약한 BLE 페어링(Just Works·Legacy) 평가 → PAIRING_WEAK."
+    answer_detail: "NoInputNoOutput→Just Works(MITM 보호 없음)+LE Legacy(약한 임시 키) = 취약 페어링."
     verify:
       type: output_contains
       expect: PAIRING_WEAK
       field: stdout
+      semantic:
+        intent: "SMP 페어링 캡처에서 Just Works·Legacy 약점 확인."
+        success_criteria:
+          - "NoInputNoOutput + MITM False + SC False 확인"
+          - "PAIRING_WEAK 출력"
 
   - order: 3
     instruction: |
-      ## STEP 3 — 스니핑/MITM → BLE_INTERCEPTABLE
-      > **🎯 목표:** 약한 페어링에서 스니핑·MITM 가능성 판정.
-      > **개념:** Just Works=MITM, Legacy=키 크래킹.
+      ## 🎯 MISSION
+      **LE Legacy + Just Works** 페어링이면, 페어링 캡처를 스니핑해 세션 키를 복원(crackle)하고 이후 트래픽을 해독할
+      수 있음을 판정한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      def attack(pairing):
-          if pairing=="Just Works": return "MITM (intercept + relay, unlock smart lock)"
-          if "Legacy" in pairing: return "SNIFF+CRACK (extract key with crackle)"
-          return "SAFE (ECDH prevents sniffing, MITM protection)"
-      pairings=["Just Works","Legacy","LE Secure (Numeric Comparison)"]
-      compromised=0
-      for p in pairings:
-          r=attack(p); print(f"  {p:32}: {r}")
-          if "SAFE" not in r: compromised+=1
-      print("BLE_INTERCEPTABLE" if compromised==2 else "PROTECTED")
-      PY
+      CAP=/tmp/ble_pairing_STU42.txt
+      # 1) 스니핑 캡처에 페어링(Pairing) + 이후 암호화 시작(LL_ENC_REQ)이 함께 잡혔는지 — 있으면 오프라인 크랙 가능.
+      cat >> "$CAP" <<'EOF'
+      > SMP: Pairing Confirm (0x03)  [captured]
+      > SMP: Pairing Random  (0x04)  [captured]
+      > LL_ENC_REQ / LL_ENC_RSP      [captured]
+      EOF
+      grep -E "Pairing Confirm|Pairing Random|LL_ENC_REQ" "$CAP"
+
+      # 2) 판정: Legacy 페어링 + 페어링 교환(Confirm/Random) 캡처가 있으면 세션 키 복원 가능.
+      grep -q "Secure Connections: False" "$CAP" \
+        && grep -q "Pairing Random" "$CAP" \
+        && grep -q "LL_ENC_REQ" "$CAP" \
+        && echo BLE_INTERCEPTABLE || echo PROTECTED
       ```
-      ✅ 마지막 줄 `BLE_INTERCEPTABLE` (Just Works MITM + Legacy 키 크래킹).
-      🔎 Just Works는 MITM으로 스마트 잠금 열기, Legacy는 crackle로 키 추출. LE Secure만 스니핑·MITM 방어.
+      ## 📋 확인 사항
+      - `Pairing Confirm`, `Pairing Random`, `LL_ENC_REQ` 캡처됨
+      - 마지막 줄 `BLE_INTERCEPTABLE`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — LE Legacy 페어링의 임시 키(TK)는 Just Works 에서 사실상 0 이라, 페어링의 Confirm/Random
+      > 교환만 스니핑하면 `crackle` 로 STK/LTK 를 복원한다. 그 뒤 캡처된 암호화 트래픽(잠금 해제·건강 데이터)을 전부
+      > 해독하고, MITM 으로 명령을 위조한다.
+
+      ## 🔍 결과 해석 — 정상 `BLE_INTERCEPTABLE`
+    hint: "Legacy 페어링 + Pairing Random + LL_ENC_REQ 캡처 → 오프라인 키 복원 가능 → BLE_INTERCEPTABLE."
+    category: exploit
     answer: |
-      Just Works                      : MITM (intercept + relay, unlock smart lock)
-      Legacy                          : SNIFF+CRACK (extract key with crackle)
-      LE Secure (Numeric Comparison)  : SAFE (ECDH prevents sniffing, MITM protection)
+      > SMP: Pairing Confirm (0x03)  [captured]
+      > SMP: Pairing Random  (0x04)  [captured]
+      > LL_ENC_REQ / LL_ENC_RSP      [captured]
       BLE_INTERCEPTABLE
-    answer_detail: "Just Works MITM·Legacy 키 크래킹 가능 → BLE_INTERCEPTABLE."
+    answer_detail: "Legacy+Just Works 페어링 교환 캡처 → crackle 로 STK/LTK 복원 → 트래픽 해독·MITM."
     verify:
       type: output_contains
       expect: BLE_INTERCEPTABLE
@@ -109,30 +159,42 @@ steps:
 
   - order: 4
     instruction: |
-      ## STEP 4 — BLE 강화 → BLE_SECURED
-      > **🎯 목표:** LE Secure Connections·MITM 보호·앱 암호화로 강화.
-      > **개념:** 중요 장치는 강한 페어링 필수.
+      ## 🎯 MISSION
+      **LE Secure Connections** 페어링 캡처와 대비한다 — ECDH 키 교환 + MITM 보호(Numeric Comparison)면 스니핑해도
+      키를 못 얻는다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      def harden(device):
-          return {"ble":"5.0","pairing":"LE Secure (Numeric Comparison)",
-                  "app_layer_encryption":True,"minimal_advertising":True,"bonding_managed":True}
-      before={"ble":"4.0","pairing":"Just Works","app_layer_encryption":False}
-      after=harden(before)
-      def compromisable(d):
-          return d["pairing"]=="Just Works" or "Legacy" in d["pairing"] or not d.get("app_layer_encryption")
-      print("before compromisable:", compromisable(before))
-      print("after compromisable:", compromisable(after), "(LE Secure + MITM protection + app-layer crypto)")
-      print("BLE_SECURED" if compromisable(before) and not compromisable(after) else "CHECK")
-      PY
+      SCAP=/tmp/ble_sc_STU42.txt
+      cat > "$SCAP" <<'EOF'
+      > SMP: Pairing Request (0x01)
+          IO Capability: DisplayYesNo (0x01)
+          Authentication Req: 0x0D
+            MITM Protection: True
+            Secure Connections: True (LE SC, ECDH P-256)
+          Pairing Method: Numeric Comparison
+      EOF
+
+      echo -n "Secure Connections: "; grep -q "Secure Connections: True" "$SCAP" && echo OK || echo NO
+      echo -n "MITM 보호: "; grep -q "MITM Protection: True" "$SCAP" && echo OK || echo NO
+      grep -q "Secure Connections: True" "$SCAP" && grep -q "MITM Protection: True" "$SCAP" && echo BLE_SECURED || echo STILL_WEAK
       ```
-      ✅ 마지막 줄 `BLE_SECURED` (LE Secure Connections+MITM 보호+앱 암호화).
-      🔎 LE Secure Connections(ECDH)+Numeric Comparison(MITM 보호)+앱 계층 암호화. BLE가 뚫려도 앱 암호가 방어.
+      ## 📋 확인 사항
+      - `Secure Connections: True (LE SC, ECDH P-256)`, `MITM Protection: True`, `Numeric Comparison`
+      - 마지막 줄 `BLE_SECURED`
+
+      ## 💡 왜 이걸 하는가?
+      LE Secure Connections 는 **ECDH**(P-256) 로 키를 교환해 스니퍼가 세션 키를 계산할 수 없고, Numeric Comparison/
+      Passkey 로 **MITM 을 막는다**. IO 능력이 있는 장치(화면·버튼)를 쓰고 SC 를 강제하는 것이 BLE 방어의 핵심이다.
+
+      ## 🔍 결과 해석 — 정상 `BLE_SECURED`
+    hint: "LE SC 캡처 생성 → Secure Connections True + MITM True 확인 → BLE_SECURED."
+    category: defense
     answer: |
-      before compromisable: True
-      after compromisable: False (LE Secure + MITM protection + app-layer crypto)
+      Secure Connections: OK
+      MITM 보호: OK
       BLE_SECURED
-    answer_detail: "LE Secure Connections·MITM 보호·앱 암호화 강화 → BLE_SECURED."
+    answer_detail: "LE Secure Connections(ECDH+MITM 보호, Numeric Comparison)로 스니핑·MITM 차단. SC 강제가 핵심."
     verify:
       type: output_contains
       expect: BLE_SECURED
@@ -140,20 +202,29 @@ steps:
 
   - order: 5
     instruction: |
-      ## STEP 5 — 종합 → Assessment
+      ## 🎯 MISSION
+      W07 발견(Just Works/Legacy 약점·스니핑 해독·LE SC)을 소견으로 정리한다. (정리: `rm -f /tmp/ble_*STU42.txt`)
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"gemma3:4b","prompt":"Write a short note for W07 on BLE hacking. Findings: Just Works and Legacy pairing were assessed as weak (PAIRING_WEAK), enabling MITM and key cracking respectively (BLE_INTERCEPTABLE), and LE Secure Connections with numeric comparison plus app-layer encryption hardened it (BLE_SECURED). Explain that pairing is the core of BLE security, Just Works has no MITM protection, and defense uses LE Secure Connections, MITM-protected pairing, and app-layer encryption for critical devices. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 7 of an IoT security course on BLE hacking. Facts: an SMP pairing capture showed IO Capability NoInputNoOutput with MITM protection False and Secure Connections False, i.e., Just Works LE Legacy pairing (PAIRING_WEAK); the captured Pairing Confirm/Random and LL_ENC_REQ allow offline recovery of the session key with crackle, so the encrypted traffic can be decrypted (BLE_INTERCEPTABLE); an LE Secure Connections capture with ECDH P-256 and Numeric Comparison MITM protection resisted it (BLE_SECURED). Explain that screenless IoT devices default to Just Works with no MITM protection and legacy pairing keys are weak, so defense enforces LE Secure Connections with ECDH and a comparison or passkey method. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
       ```
-      ✅ 출력에 `Assessment`.
-      🔎 정리: BLE 보안은 페어링이 핵심. Just Works는 MITM 무방비. LE Secure Connections+MITM 보호+앱 암호화로 방어.
-      다음 주(W08)는 **중간 평가 — IoT 디바이스 침투 테스트**.
+      ## 📋 확인 사항 — 첫머리에 `Assessment`
+      ## 🔍 결과 해석 — 정상 첫 줄 `Assessment` / 비정상 `[형식 미준수 — 재실행]`
+
+      ---
+      **다음 주(W08) 예고** — 무선 재전송·리플레이 공격(RF 캡처·rolling code).
+    hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
+    category: report
     answer: |
       Assessment
-      Pairing is the core of BLE security; Just Works has no MITM protection and Legacy is sniffable.
-      Defense uses LE Secure Connections with MITM-protected pairing and app-layer encryption for critical devices.
-    answer_detail: "W07 BLE 종합(Assessment). 페어링·스니핑/MITM·LE Secure Connections."
+      An SMP pairing capture showed NoInputNoOutput with MITM False and Secure Connections False — Just
+      Works LE Legacy pairing; the captured Pairing Random and LL_ENC_REQ allow offline session-key
+      recovery with crackle, so traffic can be decrypted. An LE Secure Connections capture with ECDH
+      P-256 and Numeric Comparison resisted it. Screenless devices default to Just Works with no MITM
+      protection and weak legacy keys, so defense enforces LE Secure Connections.
+    answer_detail: "W07 BLE 종합(Assessment): Just Works/Legacy 약점·스니핑 키 복원·LE SC 강화."
     verify:
       type: output_contains
       expect: Assessment
