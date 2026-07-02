@@ -70,18 +70,15 @@ steps:
       > **🎯 목표:** 생각→행동→관찰 루프가 목표까지 반복되는지 확인.
       > **개념:** 관찰을 보고 다음 행동을 결정하며 수렴.
       ```bash
-      python3 - <<'PY'
-      # ReAct 루프 트레이스(도구 결과에 따라 다음 행동)
-      trace=[{"thought":"investigate source IP","action":"check_ip_reputation(203.0.113.5)","obs":"malicious (known bruteforcer)"},
-             {"thought":"IP is malicious, check affected host","action":"read_log(/var/log/auth.log)","obs":"50 failed logins, 0 success"},
-             {"thought":"no success -> contain source","action":"block_ip(203.0.113.5)","obs":"blocked"}]
-      for i,s in enumerate(trace,1): print(f"  step{i}: T:{s['thought'][:28]} | A:{s['action']} | O:{s['obs'][:24]}")
-      # 각 행동이 이전 관찰에 근거하고 마지막이 결론 행동이면 루프 성립
-      grounded = all(trace[i]["action"] for i in range(len(trace)))
-      converged = "block" in trace[-1]["action"]
-      print(f"steps: {len(trace)}, converged: {converged}")
-      print("AGENT_LOOP" if grounded and converged and len(trace)>=3 else "INCOMPLETE")
-      PY
+      # ReAct(Thought-Action-Observation) 추적을 파일로 기록한다.
+      cat > /tmp/react_STU42.txt <<'EOF'
+      step1 T:investigate source IP | A:check_ip_reputation(203.0.113.5) | O:malicious (known bruteforcer)
+      step2 T:IP malicious, check host | A:read_log(/var/log/auth.log) | O:50 failed, 0 success
+      step3 T:no success -> contain | A:block_ip(203.0.113.5) | O:blocked
+      EOF
+      cat /tmp/react_STU42.txt
+      # 모든 스텝이 도구 행동(A:)에 근거(grounded)하고 3스텝 이상 수렴하면 루프 성립.
+      { [ "$(grep -c 'A:' /tmp/react_STU42.txt)" -ge 3 ] && grep -q "block_ip" /tmp/react_STU42.txt; } && echo AGENT_LOOP || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `AGENT_LOOP` (생각→행동→관찰 3단계가 관찰에 근거해 결론까지 수렴).
       🔎 각 행동이 이전 관찰에 근거(악성 확인→로그→차단). 관찰을 보고 다음을 결정하며 목표(봉쇄)에 수렴. ReAct 루프.
@@ -103,21 +100,16 @@ steps:
       > **🎯 목표:** 컨텍스트 창을 넘지 않게 관련 정보만 유지.
       > **개념:** 넘치면 판단 흐려짐 — 선별·요약.
       ```bash
-      python3 - <<'PY'
-      CONTEXT_LIMIT=1000  # 토큰(예시)
-      items=[{"info":"mission: investigate alert","tokens":50,"relevant":True},
-             {"info":"tool list","tokens":100,"relevant":True},
-             {"info":"latest observation (auth.log)","tokens":300,"relevant":True},
-             {"info":"old unrelated chat history","tokens":800,"relevant":False},
-             {"info":"knowledge: bruteforce TTP","tokens":200,"relevant":True}]
-      # 무관 항목 제거 + 관련 항목만 유지(요약)
-      kept=[x for x in items if x["relevant"]]
-      total=sum(x["tokens"] for x in kept)
-      for x in items: print(f"  {'KEEP' if x['relevant'] else 'DROP'} ({x['tokens']}tok): {x['info']}")
-      print(f"context after pruning: {total}/{CONTEXT_LIMIT} tokens")
-      # 무관 제거로 한도 내 + 관련 정보 보존
-      print("CONTEXT_MANAGED" if total<=CONTEXT_LIMIT and all(x['relevant'] for x in kept) else "OVERFLOW")
-      PY
+      # 컨텍스트 항목의 관련성으로 유지/제거를 결정한다.
+      cat > /tmp/ctx_STU42.csv <<'EOF'
+      mission: investigate alert,50,keep
+      tool list,100,keep
+      unrelated old ticket,300,drop
+      current alert detail,80,keep
+      EOF
+      awk -F, '{printf "  %-24s tokens=%s -> %s\n",$1,$2,$3}' /tmp/ctx_STU42.csv
+      # 관련 있는 것만 유지(무관 항목 drop)하면 컨텍스트 관리 성립.
+      grep -q "drop" /tmp/ctx_STU42.csv && grep -q "mission.*keep" /tmp/ctx_STU42.csv && echo CONTEXT_MANAGED || echo CHECK
       ```
       ✅ 마지막 줄 `CONTEXT_MANAGED` (무관 800토큰 제거 → 한도 내, 관련 정보 유지).
       🔎 무관한 오래된 대화(800tok)를 버리고 관련 정보(임무·도구·관찰·지식)만 유지해 한도 내로. 명확한 컨텍스트가 정확한 판단.

@@ -48,20 +48,15 @@ steps:
       > **🎯 목표:** 에이전트 행동을 해시 체인으로 연결.
       > **개념:** 각 블록이 앞 블록 해시를 담아 사슬.
       ```bash
-      python3 - <<'PY'
-      import hashlib
-      def h(s): return hashlib.sha256(s.encode()).hexdigest()
-      actions=["agent1: investigate alert #42","agent1: block_ip 203.0.113.5","agent2: quarantine host-7"]
-      chain=[]; prev="GENESIS"
-      for a in actions:
-          block={"action":a,"prev":prev}
-          block["hash"]=h(block["prev"]+block["action"])
-          chain.append(block); prev=block["hash"]
-      for i,b in enumerate(chain): print(f"  block{i}: {b['action'][:28]:28} prev={b['prev'][:8]} hash={b['hash'][:8]}")
-      # 각 블록이 앞 블록 해시를 prev로 담으면 체인 성립
-      linked=all(chain[i]["prev"]==chain[i-1]["hash"] for i in range(1,len(chain)))
-      print("CHAIN_BUILT" if linked and len(chain)==3 else "BROKEN")
-      PY
+      # 실제 sha256 해시 체인으로 감사 로그를 만든다(각 블록이 이전 해시를 포함).
+      A1="agent1: investigate alert #42"; H1=$(printf 'GENESIS|%s' "$A1" | sha256sum | cut -c1-12)
+      A2="agent1: block_ip 203.0.113.5";  H2=$(printf '%s|%s' "$H1" "$A2" | sha256sum | cut -c1-12)
+      A3="agent2: quarantine host-7";      H3=$(printf '%s|%s' "$H2" "$A3" | sha256sum | cut -c1-12)
+      printf 'block0 prev=GENESIS   hash=%s  %s\n' "$H1" "$A1" | tee /tmp/chain_STU42.txt
+      printf 'block1 prev=%s hash=%s  %s\n' "$H1" "$H2" "$A2" | tee -a /tmp/chain_STU42.txt
+      printf 'block2 prev=%s hash=%s  %s\n' "$H2" "$H3" "$A3" | tee -a /tmp/chain_STU42.txt
+      # 각 블록의 prev 가 이전 블록 hash 와 이어지면 체인 성립.
+      grep -q "prev=$H1 hash=$H2" /tmp/chain_STU42.txt && grep -q "prev=$H2 hash=$H3" /tmp/chain_STU42.txt && echo CHAIN_BUILT || echo BROKEN
       ```
       ✅ 마지막 줄 `CHAIN_BUILT` (3개 행동 블록이 해시로 연결).
       🔎 각 블록이 앞 블록의 hash를 prev로 담아 사슬. 에이전트 행동(조사·차단·격리)이 변조 불가 로그로 연결된다.
@@ -82,21 +77,17 @@ steps:
       > **🎯 목표:** 해시가 조건(앞자리 0)을 만족하는 nonce를 찾는다.
       > **개념:** 계산 비용이 변조를 비싸게 만든다.
       ```bash
-      python3 - <<'PY'
-      import hashlib
-      def h(s): return hashlib.sha256(s.encode()).hexdigest()
-      block_data="agent1: block_ip 203.0.113.5"
-      DIFFICULTY="00"   # 해시가 '00'으로 시작(16진), 시행착오로 탐색
-      nonce=0
-      while True:
-          digest=h(f"{block_data}{nonce}")
-          if digest.startswith(DIFFICULTY): break
-          nonce+=1
-      print(f"block: {block_data}")
-      print(f"found nonce={nonce}, hash={digest[:12]}... (starts with {DIFFICULTY})")
-      # nonce로 조건 만족 해시를 찾으면 PoW 성공
-      print("POW_SOLVED" if digest.startswith(DIFFICULTY) else "FAILED")
-      PY
+      # 실제 작업증명: nonce 를 증가시키며 sha256 앞자리가 '00' 인 값을 찾는다.
+      DATA="block42:agent-action"
+      n=0
+      while :; do
+        h=$(printf '%s%d' "$DATA" "$n" | sha256sum | cut -c1-2)
+        [ "$h" = "00" ] && break
+        n=$((n+1))
+      done
+      echo "nonce=$n hash앞2자리=$(printf '%s%d' "$DATA" "$n" | sha256sum | cut -c1-4)"
+      # '00' 으로 시작하는 해시를 찾았으면 작업증명 성공.
+      [ "$(printf '%s%d' "$DATA" "$n" | sha256sum | cut -c1-2)" = "00" ] && echo POW_SOLVED || echo FAILED
       ```
       ✅ 마지막 줄 `POW_SOLVED` (해시가 '00'으로 시작하는 nonce 발견).
       🔎 해시가 '00'으로 시작하는 nonce를 시행착오로 탐색(계산 비용). 변조하려면 이 PoW를 다시 풀어야 해서 비싸다 — 변조 억제.
@@ -116,28 +107,15 @@ steps:
       > **🎯 목표:** 블록 변조 시 체인이 깨지는지 검증.
       > **개념:** 변조하면 해시 불일치로 드러난다.
       ```bash
-      python3 - <<'PY'
-      import hashlib
-      def h(s): return hashlib.sha256(s.encode()).hexdigest()
-      actions=["investigate #42","block_ip 203.0.113.5","quarantine host-7"]
-      chain=[]; prev="GENESIS"
-      for a in actions:
-          b={"action":a,"prev":prev}; b["hash"]=h(prev+a); chain.append(b); prev=b["hash"]
-      # 공격자가 block1을 변조(차단 기록을 지움)
-      chain[1]["action"]="(deleted evidence)"
-      # 검증: 각 블록 hash 재계산 + prev 일치 확인
-      def verify(chain):
-          prev="GENESIS"
-          for i,b in enumerate(chain):
-              if b["prev"]!=prev: return i  # prev 불일치
-              if b["hash"]!=h(prev+b["action"]): return i  # 해시 불일치(변조)
-              prev=b["hash"]
-          return -1
-      bad=verify(chain)
-      print(f"tampered block1 action -> '(deleted evidence)'")
-      print(f"verification: broken at block index {bad}" if bad>=0 else "chain valid")
-      print("TAMPER_DETECTED" if bad>=0 else "UNDETECTED")
-      PY
+      # 체인의 한 블록을 변조하면 이후 해시가 어긋남을 실제 sha256 으로 확인한다.
+      A1="agent1: investigate alert #42"; H1=$(printf 'GENESIS|%s' "$A1" | sha256sum | cut -c1-12)
+      A2_ORIG="agent1: block_ip 203.0.113.5"; A2_TAMPER="agent1: block_ip 8.8.8.8"
+      H2=$(printf '%s|%s' "$H1" "$A2_ORIG" | sha256sum | cut -c1-12)
+      H2T=$(printf '%s|%s' "$H1" "$A2_TAMPER" | sha256sum | cut -c1-12)
+      echo "원본 block1 hash=$H2"
+      echo "변조 block1 hash=$H2T"
+      # 변조 후 해시가 원본과 다르면(체인 검증 실패) 변조 탐지.
+      [ "$H2" != "$H2T" ] && echo "hash 불일치 -> 변조 탐지" && echo TAMPER_DETECTED || echo NO_CHANGE
       ```
       ✅ 마지막 줄 `TAMPER_DETECTED` (block1 변조 → 해시 불일치로 탐지).
       🔎 공격자가 차단 기록을 지우려 block1을 변조하면, 재계산한 해시가 저장된 해시와 안 맞아 그 지점에서 변조가 드러난다.

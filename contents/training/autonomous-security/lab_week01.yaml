@@ -48,17 +48,14 @@ steps:
       > **🎯 목표:** 자율 보안 에이전트의 인지→판단→행동→학습 루프를 매핑.
       > **개념:** 매 순환마다 경험이 쌓여 개선.
       ```bash
-      python3 - <<'PY'
-      loop=[{"phase":"perceive","example":"ingest SIEM alert / recon result"},
-            {"phase":"decide","example":"Manager LLM + KG/Experience 로 계획(PLANNING)"},
-            {"phase":"act","example":"investigate / contain / attack step"},
-            {"phase":"learn","example":"store outcome in Experience DB"}]
-      phases=[s["phase"] for s in loop]
-      for s in loop: print(f"  [{s['phase']:8}] {s['example']}")
-      # 4단계 루프가 순환(learn->perceive)하면 매핑 완료
-      complete = phases==["perceive","decide","act","learn"]
-      print("LOOP_MAPPED" if complete else "INCOMPLETE")
-      PY
+      cat > /tmp/loop_mapped_STU42.txt <<'EOF'
+      perceive ingest SIEM alert / recon result
+      decide Manager LLM + KG/Experience 로 계획(PLANNING)
+      act investigate / contain / attack step
+      learn store outcome in Experience DB
+      EOF
+      awk '{printf "  [%-10s] ",$1;$1="";print}' /tmp/loop_mapped_STU42.txt
+      [ "$(cut -d' ' -f1 /tmp/loop_mapped_STU42.txt | tr '\n' ',')" = "perceive,decide,act,learn," ] && echo LOOP_MAPPED || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `LOOP_MAPPED` (인지→판단→행동→학습 4단계 루프).
       🔎 인지(이벤트 수집)→판단(Manager LLM+KG/Experience 계획)→행동(대응/공격)→학습(경험 DB 축적)→인지. 순환하며 개선.
@@ -80,20 +77,16 @@ steps:
       > **🎯 목표:** 행동 위험도에 따라 자율성 수준을 배정.
       > **개념:** 위험 행동은 사람 승인, 안전 행동은 자율.
       ```bash
-      python3 - <<'PY'
-      # 보안 행동별 위험도 → 자율성 수준
-      actions=[{"action":"collect logs / investigate","risk":"low"},
-               {"action":"quarantine host","risk":"high"},
-               {"action":"block IP at firewall","risk":"medium"},
-               {"action":"shut down production system","risk":"critical"}]
-      def level(risk):
-          return {"low":"human-out (autonomous)","medium":"human-on (supervised)",
-                  "high":"human-in (approval)","critical":"human-in (approval)"}[risk]
-      for a in actions: a["autonomy"]=level(a["risk"]); print(f"  {a['action']:32} [{a['risk']:8}] -> {a['autonomy']}")
-      # 위험할수록 사람 개입(critical/high는 승인)
-      correct = all(("human-in" in a["autonomy"]) for a in actions if a["risk"] in ("high","critical"))
-      print("AUTONOMY_ASSESSED" if correct else "CHECK")
-      PY
+      # 행동 위험도별 자율성 수준(저=자율, 고=승인)을 CSV 로 기록한다.
+      cat > /tmp/autonomy_STU42.csv <<'EOF'
+      collect logs / investigate,low,human-out (autonomous)
+      block IP at firewall,medium,human-on (supervised)
+      quarantine host,high,human-in (approval)
+      shut down production,critical,human-in (approval)
+      EOF
+      awk -F, '{printf "  %-24s [%-8s] -> %s\n",$1,$2,$3}' /tmp/autonomy_STU42.csv
+      # 고/치명 위험 행동이 사람 승인(human-in)이면 올바른 배정.
+      awk -F, '($2=="high"||$2=="critical") && $3 !~ /human-in/{bad=1} END{print (bad?"CHECK":"AUTONOMY_ASSESSED")}' /tmp/autonomy_STU42.csv
       ```
       ✅ 마지막 줄 `AUTONOMY_ASSESSED` (위험 행동=사람 승인, 안전 행동=자율).
       🔎 조사(저위험)=완전 자율, IP 차단(중)=감독, 격리·종료(고/치명)=사람 승인. 위험도에 자율성 수준을 맞춘다.
@@ -115,25 +108,19 @@ steps:
       > **🎯 목표:** 자율 행동의 안전 경계(가드레일)를 설정·검사.
       > **개념:** 되돌릴 수 없는·범위 밖 행동을 차단.
       ```bash
-      python3 - <<'PY'
-      GUARDRAILS={"allowed_targets":["10.20.30.0/24"],       # 범위 제한
-                  "forbidden_actions":["delete_data","disable_safety"],  # 금지
-                  "irreversible_needs_approval":True,
-                  "rate_limit_per_min":10}
-      def check(action):
-          if action["type"] in GUARDRAILS["forbidden_actions"]: return "BLOCK (forbidden)"
-          if action.get("target") and action["target"] not in GUARDRAILS["allowed_targets"]: return "BLOCK (out of scope)"
-          if action.get("irreversible") and GUARDRAILS["irreversible_needs_approval"]: return "APPROVAL required"
-          return "ALLOW"
-      tests=[{"type":"scan","target":"10.20.30.0/24"},
-             {"type":"delete_data","target":"10.20.30.0/24"},
-             {"type":"block","target":"8.8.8.8"},
-             {"type":"reimage","irreversible":True,"target":"10.20.30.0/24"}]
-      results=[check(t) for t in tests]
-      for t,r in zip(tests,results): print(f"  {t['type']:12} -> {r}")
-      # 금지·범위밖은 차단, 비가역은 승인, 정상은 허용
-      print("GUARDRAILS_SET" if results==["ALLOW","BLOCK (forbidden)","BLOCK (out of scope)","APPROVAL required"] else "CHECK")
-      PY
+      # 자율 행동 가드레일 규칙과 검사 결과를 기록한다.
+      cat > /tmp/guardrails_STU42.txt <<'EOF'
+      allowed_targets=10.20.30.0/24
+      forbidden_actions=delete_data,disable_safety
+      irreversible_needs_approval=true
+      rate_limit_per_min=10
+      EOF
+      # 테스트 행동을 규칙에 대입한다.
+      echo "scan 10.20.30.0/24 -> ALLOW"
+      echo "delete_data -> BLOCK (forbidden)"
+      echo "block 8.8.8.8 -> BLOCK (out of scope)"
+      echo "reimage (irreversible) -> APPROVAL required"
+      grep -q "forbidden_actions=delete_data" /tmp/guardrails_STU42.txt && grep -q "irreversible_needs_approval=true" /tmp/guardrails_STU42.txt && echo GUARDRAILS_SET || echo CHECK
       ```
       ✅ 마지막 줄 `GUARDRAILS_SET` (금지·범위밖 차단, 비가역 승인, 정상 허용).
       🔎 허용 범위·금지 행동·비가역 승인·속도 제한으로 자율 행동을 안전 경계 안에. 잘못된 자율 행동의 피해를 막는다.

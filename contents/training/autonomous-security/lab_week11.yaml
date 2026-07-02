@@ -48,16 +48,14 @@ steps:
       > **🎯 목표:** 탐지→분류→조사→대응 파이프라인을 구성.
       > **개념:** 각 단계에 W02~W10 기술.
       ```bash
-      python3 - <<'PY'
-      pipeline=[{"stage":"detect","tech":"Watcher (W10)"},
-                {"stage":"triage","tech":"severity + enrichment + episodic memory (W09)"},
-                {"stage":"investigate","tech":"ReAct loop + playbook (W02,W05)"},
-                {"stage":"respond","tech":"autonomy-level actions + audit log (W01,W06)"}]
-      stages=[s["stage"] for s in pipeline]
-      for s in pipeline: print(f"  [{s['stage']:11}] {s['tech']}")
-      complete = stages==["detect","triage","investigate","respond"]
-      print("BLUE_PIPELINE" if complete else "INCOMPLETE")
-      PY
+      cat > /tmp/blue_pipeline_STU42.txt <<'EOF'
+      detect Watcher (W10)
+      triage severity + enrichment + episodic memory (W09)
+      investigate ReAct loop + playbook (W02,W05)
+      respond autonomy-level actions + audit log (W01,W06)
+      EOF
+      awk '{printf "  [%-10s] ",$1;$1="";print}' /tmp/blue_pipeline_STU42.txt
+      [ "$(cut -d' ' -f1 /tmp/blue_pipeline_STU42.txt | tr '\n' ',')" = "detect,triage,investigate,respond," ] && echo BLUE_PIPELINE || echo INCOMPLETE
       ```
       ✅ 마지막 줄 `BLUE_PIPELINE` (탐지·분류·조사·대응 4단계).
       🔎 탐지(Watcher)→분류(심각도·보강·일화)→조사(ReAct·플레이북)→대응(자율성 수준·감사). 배운 기술을 방어로 통합.
@@ -76,7 +74,7 @@ steps:
   - order: 3
     instruction: |
       ## 🎯 MISSION
-      자율 Blue 에이전트가 받는 **실제 Suricata `eve.json` 형식**의 경보를 만들어, python 으로 파싱하고 IP 평판·
+      자율 Blue 에이전트가 받는 **실제 Suricata `eve.json` 형식**의 경보를 만들어, grep·awk 로 파싱하고 IP 평판·
       자산 중요도로 **자율 분류**한다(진짜 위협은 조사로, 알려진 스캐너 오탐은 자동 종료).
 
       ## 💻 실행 명령
@@ -90,26 +88,22 @@ steps:
       {"timestamp":"2026-07-02T08:40:12Z","event_type":"alert","src_ip":"192.168.0.202","dest_ip":"10.20.30.10","alert":{"signature":"ET MALWARE Cobalt Strike Beacon","severity":1,"category":"Malware Command and Control"}}
       EOF
 
-      # 2) python 으로 eve.json 을 파싱해 경보를 자율 분류한다.
+      # 2) grep·awk 로 eve.json 을 파싱해 경보를 자율 분류한다.
       #    규칙: 알려진 내부 스캐너(내부 IP + Not Suspicious)는 오탐 종료, 그 외 외부 출처는 심각도로 조사 판정.
-      python3 - "$EVE" <<'PY'
-      import sys, json
-      KNOWN_SCANNERS={"10.20.30.50"}   # 자산 인벤토리에 등록된 승인 스캐너
-      esc=[]
-      for line in open(sys.argv[1]):
-          e=json.loads(line);
-          if e.get("event_type")!="alert": continue
-          a=e["alert"]; sip=e["src_ip"]
-          if sip in KNOWN_SCANNERS or a["category"]=="Not Suspicious":
-              verdict="auto-close (known scanner/false positive)"
-          elif a["severity"]<=1:
-              verdict="ESCALATE (high severity)"; esc.append(a["signature"])
-          else:
-              verdict="monitor (low severity recon)"
-          print(f"  [{sip:15}] sev{a['severity']} {a['signature'][:32]:32} -> {verdict}")
-      print(f"escalated={len(esc)}")
-      print("TRIAGE_DONE" if len(esc)>=2 else "CHECK")
-      PY
+      # eve.json 각 경보를 파싱해 자율 분류한다(내부 스캐너/Not Suspicious=오탐 종료, 외부 severity<=1=상향).
+      ESC=0
+      while IFS= read -r line; do
+        sip=$(echo "$line" | grep -oE '"src_ip":"[^"]*"' | cut -d'"' -f4)
+        sev=$(echo "$line" | grep -oE '"severity":[0-9]+' | cut -d: -f2)
+        catg=$(echo "$line" | grep -oE '"category":"[^"]*"' | cut -d'"' -f4)
+        sig=$(echo "$line" | grep -oE '"signature":"[^"]*"' | cut -d'"' -f4)
+        if [ "$sip" = "10.20.30.50" ] || [ "$catg" = "Not Suspicious" ]; then v="auto-close (known scanner/false positive)";
+        elif [ "${sev:-9}" -le 1 ]; then v="ESCALATE (high severity)"; ESC=$((ESC+1));
+        else v="monitor (low severity recon)"; fi
+        printf "  [%-15s] sev%s %-32s -> %s\n" "$sip" "$sev" "$(echo "$sig" | cut -c1-32)" "$v"
+      done < "$EVE"
+      echo "escalated=$ESC"
+      [ "$ESC" -ge 2 ] && echo TRIAGE_DONE || echo CHECK
       ```
       ## 📋 확인 사항
       - 내부 스캐너(10.20.30.50)는 `auto-close`, SQLi·Cobalt Strike(외부·sev1)는 `ESCALATE`, Nmap(sev3)은 `monitor`
@@ -121,7 +115,7 @@ steps:
       > 없으면 사람이든 에이전트든 경보 홍수에 마비된다.
 
       ## 🔍 결과 해석 — 정상 `TRIAGE_DONE`(진짜 위협 2건 상향, 오탐 종료)
-    hint: "eve.json 생성 → python 파싱, 내부 스캐너 오탐 종료·외부 고심각도(SQLi/C2) 상향, escalated≥2 면 TRIAGE_DONE."
+    hint: "eve.json 생성 → grep/awk 파싱, 내부 스캐너 오탐 종료·외부 고심각도(SQLi/C2) 상향, escalated≥2 면 TRIAGE_DONE."
     category: analysis
     answer: |
       [192.168.0.202  ] sev3 ET SCAN Nmap                     -> monitor (low severity recon)
@@ -148,19 +142,15 @@ steps:
       > **🎯 목표:** 위험도별 자율성 수준으로 대응(저위험 자율, 고위험 승인).
       > **개념:** 속도와 안전의 균형.
       ```bash
-      python3 - <<'PY'
-      responses=[{"action":"collect forensic evidence","risk":"low"},
-                 {"action":"block malicious IP","risk":"medium"},
-                 {"action":"isolate production host","risk":"high"}]
-      def execute(r):
-          if r["risk"]=="low": return "AUTO-EXECUTED (logged)"
-          if r["risk"]=="medium": return "EXECUTED with supervision (logged)"
-          return "QUEUED for human approval (logged)"
-      for r in responses: r["outcome"]=execute(r); print(f"  {r['action']:28} [{r['risk']:6}] -> {r['outcome']}")
-      # 저위험 자율, 고위험은 승인 대기 + 모두 로그
-      correct = "AUTO" in responses[0]["outcome"] and "approval" in responses[2]["outcome"] and all("logged" in r["outcome"] for r in responses)
-      print("RESPONSE_EXECUTED" if correct else "CHECK")
-      PY
+      # 위험도별 자율성 수준으로 대응하고 모두 로그한다.
+      cat > /tmp/response_STU42.csv <<'EOF'
+      collect forensic evidence,low,AUTO-EXECUTED (logged)
+      block malicious IP,medium,EXECUTED with supervision (logged)
+      isolate production host,high,QUEUED for human approval (logged)
+      EOF
+      awk -F, '{printf "  %-24s [%-6s] -> %s\n",$1,$2,$3}' /tmp/response_STU42.csv
+      # 저위험 자율·고위험 승인·전부 로그면 대응 성립.
+      awk -F, '$2=="low" && $3 !~ /AUTO/{b=1} $2=="high" && $3 !~ /approval/{b=1} $3 !~ /logged/{b=1} END{print (b?"CHECK":"RESPONSE_EXECUTED")}' /tmp/response_STU42.csv
       ```
       ✅ 마지막 줄 `RESPONSE_EXECUTED` (저위험 자율, 중위험 감독, 고위험 승인 대기, 모두 로그).
       🔎 증거 수집(저위험)=자율, IP 차단(중)=감독, 호스트 격리(고)=사람 승인 대기. 위험도별 자율성 수준+감사 로그. 빠르되 안전.

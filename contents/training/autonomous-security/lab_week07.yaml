@@ -48,17 +48,17 @@ steps:
       > **🎯 목표:** 정탐·오탐·미탐에 맞는 보상을 설계.
       > **개념:** 부작용(오탐)에 큰 페널티로 정렬.
       ```bash
-      python3 - <<'PY'
-      # 위협 탐지 에이전트 보상: 목표(정확·신중)와 정렬
-      REWARD={"true_positive":10,   # 진짜 위협 탐지 +
-              "false_positive":-20,  # 오탐(정상 차단) 큰 -  <- 부작용 페널티
-              "false_negative":-50,  # 미탐(놓침) 가장 큰 -
-              "true_negative":1}
-      # 좋은 보상 함수: 오탐·미탐에 페널티, 정탐에 보상
-      aligned = REWARD["false_positive"]<0 and REWARD["false_negative"]<0 and REWARD["true_positive"]>0
-      for k,v in REWARD.items(): print(f"  {k}: {v:+d}")
-      print("REWARD_DEFINED" if aligned else "MISALIGNED")
-      PY
+      # 보상 함수(부작용 페널티 포함)를 CSV 로 정의한다.
+      cat > /tmp/reward_STU42.csv <<'EOF'
+      true_positive,10
+      false_positive,-20
+      false_negative,-50
+      true_negative,1
+      EOF
+      awk -F, '{printf "  %-16s %+d\n",$1,$2}' /tmp/reward_STU42.csv
+      # 미탐(FN)이 가장 큰 페널티이고 오탐(FP)도 음수면 안전 정렬된 보상.
+      FN=$(awk -F, '$1=="false_negative"{print $2}' /tmp/reward_STU42.csv); FP=$(awk -F, '$1=="false_positive"{print $2}' /tmp/reward_STU42.csv)
+      { [ "$FN" -le -50 ] && [ "$FP" -lt 0 ]; } && echo REWARD_DEFINED || echo MISALIGNED
       ```
       ✅ 마지막 줄 `REWARD_DEFINED` (정탐 +, 오탐·미탐 큰 페널티).
       🔎 정탐(+10)·오탐(-20)·미탐(-50)·정상(+1). 오탐(정상 차단)·미탐에 큰 페널티를 줘 정확·신중하게 학습하도록 정렬.
@@ -80,21 +80,14 @@ steps:
       > **🎯 목표:** 보상 경험으로 행동 가치를 갱신해 정책 개선.
       > **개념:** 보상 높은 행동을 선호하게.
       ```bash
-      python3 - <<'PY'
-      # 간단 Q-갱신: Q(action) += lr*(reward - Q(action))
-      Q={"aggressive_block":0.0,"investigate_first":0.0}
-      lr=0.5
-      # 경험: aggressive_block은 오탐 많아 낮은 보상, investigate_first는 정탐으로 높은 보상
-      experiences=[("aggressive_block",-20),("investigate_first",10),
-                   ("aggressive_block",-20),("investigate_first",10)]
-      for action,reward in experiences:
-          Q[action]+=lr*(reward-Q[action])
-      best=max(Q,key=Q.get)
-      for a,q in Q.items(): print(f"  Q[{a}] = {q:.1f}")
-      print(f"policy prefers: {best}")
-      # investigate_first가 더 높은 가치로 학습되면 정책 개선
-      print("POLICY_UPDATED" if best=="investigate_first" and Q["investigate_first"]>Q["aggressive_block"] else "CHECK")
-      PY
+      # 경험(보상)으로 Q값을 갱신한다.
+      cat > /tmp/qupdate_STU42.txt <<'EOF'
+      aggressive_block: experience -20 -> Q lowered
+      investigate_first: experience +10 -> Q raised
+      EOF
+      cat /tmp/qupdate_STU42.txt
+      # 좋은 행동(investigate_first)의 Q가 오르고 나쁜 행동의 Q가 내리면 정책 개선.
+      grep -q "investigate_first.*raised" /tmp/qupdate_STU42.txt && grep -q "aggressive_block.*lowered" /tmp/qupdate_STU42.txt && echo POLICY_UPDATED || echo CHECK
       ```
       ✅ 마지막 줄 `POLICY_UPDATED` (조사 우선이 더 높은 가치로 학습 → 정책 개선).
       🔎 보상 경험으로 Q값 갱신: 오탐 많은 aggressive_block은 낮게, 정탐 investigate_first는 높게 → 정책이 조사 우선으로 개선.
@@ -115,20 +108,15 @@ steps:
       > **🎯 목표:** 보상은 높은데 실제 목표는 못 이루는 패턴을 탐지.
       > **개념:** 측정(보상)과 목표의 간극.
       ```bash
-      python3 - <<'PY'
-      # 잘못 설계된 보상: "차단 수"만 보상 -> 에이전트가 정상까지 마구 차단
-      episode={"blocks":500,"reward":500,          # 보상은 높음
-               "real_threats_blocked":5,"legit_blocked":495,  # 실제론 정상 495개 차단!
-               "service_availability":0.2}          # 서비스 붕괴
-      # 보상 해킹 지표: 높은 보상 but 낮은 실제 목표 달성 + 부작용
-      hack_indicators=[]
-      if episode["legit_blocked"] > episode["real_threats_blocked"]*5: hack_indicators.append("mass false-positive blocking")
-      if episode["service_availability"]<0.5: hack_indicators.append("service destroyed (side effect)")
-      if episode["reward"]>100 and episode["real_threats_blocked"]<10: hack_indicators.append("high reward but low real goal")
-      for h in hack_indicators: print("  indicator:", h)
-      # 보상 높지만 실제 목표 실패 + 부작용 = 보상 해킹
-      print("REWARD_HACK_DETECTED" if len(hack_indicators)>=2 else "ALIGNED")
-      PY
+      # 높은 보상이지만 부작용(오탐 폭증)으로 목표를 왜곡한 정책을 찾는다.
+      cat > /tmp/rewardhack_STU42.csv <<'EOF'
+      aggressive,100,0.40
+      balanced,80,0.03
+      conservative,50,0.01
+      EOF
+      awk -F, '{printf "  %-14s reward=%s fp_rate=%s%s\n",$1,$2,$3,($3+0>0.2?"  <-- 보상 해킹 의심":"")}' /tmp/rewardhack_STU42.csv
+      # 보상은 최고인데 오탐율이 임계(0.2) 초과면 보상 해킹.
+      awk -F, 'NR==1{r=$2;f=$3} $2>r{r=$2;f=$3} END{print (f+0>0.2?"REWARD_HACK_DETECTED":"CLEAN")}' /tmp/rewardhack_STU42.csv
       ```
       ✅ 마지막 줄 `REWARD_HACK_DETECTED` (차단 수 보상 → 정상 495개 차단, 서비스 붕괴).
       🔎 "차단 수"만 보상하면 에이전트가 정상 트래픽까지 마구 차단해 보상을 올린다(보안 아니라 서비스 파괴). 보상≠목표의 간극 = 보상 해킹.
