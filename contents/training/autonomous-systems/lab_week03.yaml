@@ -1,38 +1,48 @@
 lab_id: autonomous-systems-week03
-title: "W03 — 드론 해킹: Deauth 탐지·MAVLink 명령 인젝션 탐지·하이재킹 방어"
+title: "W03 — 드론 해킹: 캡처 분석·Deauth 플러드 탐지·MAVLink 명령 인젝션·서명 방어"
 version: ai
 course: autonomous-systems
 week: 3
 description: |
-  드론 통신 공격. Deauth flood 탐지(DEAUTH_DETECTED), 무서명 MAVLink 명령 인젝션 탐지(COMMAND_INJECTED),
-  서명·페일세이프 하이재킹 방어(HIJACK_PREVENTED), 종합(Assessment).
-  ⚠️ 드론 공격은 실물·RF·법적 인가 필요 — 탐지·방어 로직 결정론 시뮬.
+  많은 소비자·상용 드론은 조종기와 WiFi 로 통신하고, 텔레메트리·명령에 **MAVLink**(기본 무서명) 프로토콜을 쓴다.
+  이 둘의 약점이 하이재킹의 통로다: (1) WiFi **Deauth 플러드**로 조종기 연결을 끊고, (2) 무서명 MAVLink 링크에
+  **가짜 명령(착륙·시동해제)**을 주입한다. 이번 주는 **실제 아티팩트(WiFi 캡처 요약·MAVLink 메시지 로그)로**
+  이를 탐지하고, MAVLink2 메시지 서명으로 인젝션이 거부됨을 확인한다.
+
+  모든 명령은 사람이 한 줄씩 직접 입력한다. el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서 실행하며,
+  분석 아티팩트(캡처·로그)는 이 실습이 `/tmp` 에 직접 만든다. ⚠️ 실제로는 airodump/`mavlink-router` 로그 분석.
 difficulty: medium
 duration_minutes: 120
-audience: 자율 시스템 보안 (3주차)
+audience: 자율 시스템 (3주차)
 prerequisites:
-  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
-  - GPU Ollama 도달 — gemma3:4b
-  - W03 강의안 정독 — §0.5(deauth·MAVLink 인젝션·하이재킹 탐지)
+  - "el34 호스트 접속: `ssh ccc@{{TARGET_IP}}` (비밀번호 `1`)"
+  - "GPU Ollama 도달 — http://211.170.162.139:10934 (gemma3:4b), 종합용"
+  - "도구: grep·awk·python3 (el34 에 존재)"
+  - "W03 강의안 정독 — §0.5(WiFi Deauth·MAVLink·메시지 서명)"
 objectives:
-  - "GPU 헬스체크(GEN_OK)"
-  - "Deauth flood 탐지(DEAUTH_DETECTED)"
-  - "무서명 MAVLink 명령 인젝션 탐지(COMMAND_INJECTED)"
-  - "서명·페일세이프 하이재킹 방어(HIJACK_PREVENTED)"
-  - "종합(Assessment)"
+  - "GPU 응답 확인 (GEN_OK)"
+  - "WiFi 캡처에서 Deauth 플러드 탐지 (DEAUTH_DETECTED)"
+  - "MAVLink 로그에서 주입된 명령 탐지 (COMMAND_INJECTED)"
+  - "MAVLink2 서명으로 인젝션 거부 확인 (HIJACK_PREVENTED)"
+  - "종합 소견 (Assessment)"
 pass_threshold: 0.6
 
 steps:
 
   - order: 1
     instruction: |
-      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ## 🎯 MISSION
+      종합용 GPU(gemma3) 응답 확인.
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
         -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
       ```
-      ✅ 마지막 줄 `GEN_OK`.
+      ## 📋 확인 사항 — 마지막 줄 `GEN_OK`
+      ## 🔍 결과 해석 — 정상 `GEN_OK` / 비정상 `GEN_EMPTY`·연결오류
+    hint: "curl /api/generate → response 있으면 GEN_OK."
+    category: survey
     answer: |
       ready
       GEN_OK
@@ -44,99 +54,149 @@ steps:
 
   - order: 2
     instruction: |
-      ## STEP 2 — Deauth 공격 탐지 → DEAUTH_DETECTED
-      > **🎯 목표:** 조종 WiFi에 대한 deauth flood를 탐지.
-      > **개념:** 관리 프레임은 무인증 — 위조 flood.
+      ## 🎯 MISSION
+      **WiFi 프레임 캡처 요약**을 만들고, `awk` 로 짧은 시간의 **Deauth 프레임 폭주**를 탐지한다(조종기 연결 끊기 시도).
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # 1초 단위 deauth 프레임 카운트(정상 vs 공격)
-      window=[{"t":0,"deauth":0},{"t":1,"deauth":1},{"t":2,"deauth":85},{"t":3,"deauth":120},{"t":4,"deauth":95}]
-      THRESHOLD=30  # 초당 deauth 임계
-      spikes=[w for w in window if w["deauth"]>THRESHOLD]
-      for w in window: print(f"  t={w['t']}s: {w['deauth']} deauth {'<-- FLOOD' if w['deauth']>THRESHOLD else ''}")
-      print(f"deauth flood windows: {len(spikes)}")
-      print("DEAUTH_DETECTED" if len(spikes)>=2 else "NORMAL")
-      PY
+      CAP=/tmp/wifi_frames_STU42.log
+      # 1) 802.11 관리 프레임 캡처 요약(시각 type/subtype src->dst). Deauth 플러드가 섞여 있다.
+      cat > "$CAP" <<'EOF'
+      1.001 Beacon        AP(Drone) -> broadcast
+      1.010 Data          RC -> AP(Drone)
+      1.101 Deauth        AA:BB(attacker) -> RC
+      1.102 Deauth        AA:BB(attacker) -> RC
+      1.103 Deauth        AA:BB(attacker) -> RC
+      1.104 Deauth        AA:BB(attacker) -> RC
+      1.105 Deauth        AA:BB(attacker) -> RC
+      1.106 Deauth        AA:BB(attacker) -> RC
+      EOF
+
+      # 2) Deauth 프레임 개수와 발신 MAC 을 센다(정상 통신엔 Deauth 가 거의 없다).
+      echo "[Deauth 개수]"; grep -c "Deauth" "$CAP"
+      echo "[발신원]"; grep "Deauth" "$CAP" | awk '{print $3}' | sort -u
+
+      # 3) 판정: 짧은 시간 Deauth 가 임계(예: 5개) 초과면 플러드 공격.
+      N=$(grep -c "Deauth" "$CAP")
+      test "$N" -ge 5 && echo DEAUTH_DETECTED || echo NORMAL
       ```
-      ✅ 마지막 줄 `DEAUTH_DETECTED` (초당 85·120·95 deauth = flood).
-      🔎 정상은 초당 deauth가 거의 0. 초당 수십~수백은 위조 deauth flood(조종 끊기 시도). 급증이 탐지 신호.
+      ## 📋 확인 사항
+      - Deauth 개수 `6`, 발신원 `AA:BB(attacker)`
+      - 마지막 줄 `DEAUTH_DETECTED`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — 802.11 관리 프레임(Deauth)은 (구형/무보호 관리프레임에서) 인증이 없어 위조된다. 공격자가
+      > Deauth 를 퍼부으면 조종기-드론 링크가 끊겨 드론이 실속·페일세이프에 빠지거나, 공격자 AP 로 재연결된다.
+
+      ## 🔍 결과 해석 — 정상 `DEAUTH_DETECTED`
+    hint: "WiFi 캡처 생성 → grep -c Deauth 가 임계 초과면 DEAUTH_DETECTED."
+    category: exploit
     answer: |
-      t=0s: 0 deauth
-      t=1s: 1 deauth
-      t=2s: 85 deauth <-- FLOOD
-      t=3s: 120 deauth <-- FLOOD
-      t=4s: 95 deauth <-- FLOOD
-      deauth flood windows: 3
+      [Deauth 개수]
+      6
+      [발신원]
+      AA:BB(attacker)
       DEAUTH_DETECTED
-    answer_detail: "deauth 프레임 급증 flood 탐지 → DEAUTH_DETECTED."
+    answer_detail: "짧은 시간 Deauth 6개 폭주(단일 attacker MAC) = Deauth 플러드. 조종 링크 절단 시도."
     verify:
       type: output_contains
       expect: DEAUTH_DETECTED
       field: stdout
+      semantic:
+        intent: "WiFi 캡처에서 Deauth 플러드 탐지."
+        success_criteria:
+          - "Deauth 프레임 급증 확인"
+          - "DEAUTH_DETECTED 출력"
 
   - order: 3
     instruction: |
-      ## STEP 3 — MAVLink 명령 인젝션 탐지 → COMMAND_INJECTED
-      > **🎯 목표:** 무서명/위조 MAVLink 명령을 탐지.
-      > **개념:** 무서명이면 발신자 확인 불가 — 위조 수용 위험.
+      ## 🎯 MISSION
+      **MAVLink 메시지 로그**를 분석해, 정상 텔레메트리 사이에 주입된 **가짜 명령(COMMAND_LONG)**을 탐지한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # MAVLink 명령들 (system id, command, signed)
-      LEGIT_GCS=255
-      commands=[{"sysid":255,"cmd":"HEARTBEAT","signed":True},
-                {"sysid":42,"cmd":"MAV_CMD_NAV_LAND","signed":False},     # 위조! 다른 sysid, 무서명
-                {"sysid":42,"cmd":"SET_MODE (GUIDED)","signed":False}]    # 위조!
-      injected=[]
-      for c in commands:
-          if c["sysid"]!=LEGIT_GCS or not c["signed"]:
-              injected.append(c); print(f"  INJECTION: sysid={c['sysid']} cmd={c['cmd']} signed={c['signed']}")
-          else: print(f"  legit: sysid={c['sysid']} cmd={c['cmd']}")
-      print("COMMAND_INJECTED" if injected else "CLEAN")
-      PY
+      LOG=/tmp/mavlink_STU42.log
+      # 1) MAVLink 메시지 로그: sysid(발신)·msg·서명 유무. 정상 텔레메트리 + 주입된 명령.
+      cat > "$LOG" <<'EOF'
+      t=2.01 sysid=1 comp=1 msg=HEARTBEAT signed=yes
+      t=2.05 sysid=1 comp=1 msg=GLOBAL_POSITION_INT signed=yes
+      t=2.09 sysid=255 comp=0 msg=COMMAND_LONG cmd=MAV_CMD_NAV_LAND signed=no
+      t=2.12 sysid=255 comp=0 msg=COMMAND_LONG cmd=MAV_CMD_COMPONENT_ARM_DISARM param1=0 signed=no
+      t=2.15 sysid=1 comp=1 msg=ATTITUDE signed=yes
+      EOF
+
+      # 2) 명령 메시지(COMMAND_LONG)와 그 발신 sysid·서명 여부를 뽑는다.
+      grep "COMMAND_LONG" "$LOG"
+
+      # 3) 판정: 기존 기체(sysid=1)가 아닌 sysid(255)에서 온 무서명 COMMAND_LONG 이 있으면 인젝션.
+      awk '/COMMAND_LONG/ && /signed=no/ && !/sysid=1 /{print "INJECTED:", $0; f=1} END{print (f?"COMMAND_INJECTED":"CLEAN")}' "$LOG"
       ```
-      ✅ 마지막 줄 `COMMAND_INJECTED` (다른 sysid·무서명 강제 착륙·모드 변경 명령).
-      🔎 정당한 GCS(sysid 255) 외 발신, 무서명 명령은 인젝션. 강제 착륙·모드 변경은 하이재킹의 시작.
+      ## 📋 확인 사항
+      - `sysid=255 ... COMMAND_LONG cmd=MAV_CMD_NAV_LAND signed=no` (착륙 강제)
+      - `MAV_CMD_COMPONENT_ARM_DISARM param1=0` (시동 해제=추락)
+      - 마지막 줄 `COMMAND_INJECTED`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — MAVLink(기본 무서명)는 발신자를 검증하지 않아, 링크에 끼어든 공격자가 `COMMAND_LONG` 으로
+      > **강제 착륙(NAV_LAND)**·**시동 해제(ARM_DISARM param1=0 = 추락)**·모드 변경을 주입한다. sysid=255(지상국 사칭)
+      > 무서명 명령이 결정적 흔적이다.
+
+      ## 🔍 결과 해석 — 정상 `COMMAND_INJECTED` + 주입 명령 식별
+    hint: "MAVLink 로그에서 awk 로 sysid≠1 + signed=no + COMMAND_LONG 탐지 → COMMAND_INJECTED."
+    category: exploit
     answer: |
-      legit: sysid=255 cmd=HEARTBEAT
-      INJECTION: sysid=42 cmd=MAV_CMD_NAV_LAND signed=False
-      INJECTION: sysid=42 cmd=SET_MODE (GUIDED) signed=False
+      t=2.09 sysid=255 comp=0 msg=COMMAND_LONG cmd=MAV_CMD_NAV_LAND signed=no
+      t=2.12 sysid=255 comp=0 msg=COMMAND_LONG cmd=MAV_CMD_COMPONENT_ARM_DISARM param1=0 signed=no
+      INJECTED: t=2.09 sysid=255 comp=0 msg=COMMAND_LONG cmd=MAV_CMD_NAV_LAND signed=no
       COMMAND_INJECTED
-    answer_detail: "무서명·위조 sysid MAVLink 명령 탐지 → COMMAND_INJECTED."
+    answer_detail: "무서명 MAVLink 에 sysid=255(사칭) COMMAND_LONG(NAV_LAND/ARM_DISARM) 주입 = 하이재킹."
     verify:
       type: output_contains
       expect: COMMAND_INJECTED
       field: stdout
+      semantic:
+        intent: "MAVLink 로그에서 주입된 무서명 명령 탐지."
+        success_criteria:
+          - "비정상 sysid + 무서명 COMMAND_LONG 식별"
+          - "COMMAND_INJECTED 출력"
 
   - order: 4
     instruction: |
-      ## STEP 4 — 하이재킹 방어 → HIJACK_PREVENTED
-      > **🎯 목표:** MAVLink 서명·페일세이프로 하이재킹을 막는다.
-      > **개념:** 서명이 위조 명령을 거부, 페일세이프가 조종 끊김에 안전.
+      ## 🎯 MISSION
+      **MAVLink2 메시지 서명**이 적용된 로그와 대비한다 — 무서명/잘못된 서명 명령이 거부됨을 확인한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      def defended_drone():
-          return {"mavlink_signing":True,"wifi":"WPA2","failsafe":"RTL","gcs_binding":"authenticated"}
-      drone=defended_drone()
-      # 위조 명령(무서명) 처리
-      def accept_command(drone, cmd):
-          if drone["mavlink_signing"] and not cmd.get("signed"): return False  # 무서명 거부
-          return True
-      forged={"cmd":"NAV_LAND","signed":False}
-      accepted=accept_command(drone, forged)
-      # deauth 발생 시 페일세이프
-      failsafe_ok = drone["failsafe"]=="RTL"
-      print(f"forged unsigned command accepted: {accepted} (rejected by signing)")
-      print(f"deauth -> failsafe: {drone['failsafe']} (safe return, not hijacked)")
-      print("HIJACK_PREVENTED" if not accepted and failsafe_ok else "VULNERABLE")
-      PY
+      SLOG=/tmp/mavlink_signed_STU42.log
+      # MAVLink2 서명 활성: 각 메시지에 서명 상태(verify). 주입 명령은 키가 없어 verify=FAIL → 거부.
+      cat > "$SLOG" <<'EOF'
+      t=3.01 sysid=1   msg=HEARTBEAT      sig=OK   action=accept
+      t=3.05 sysid=1   msg=COMMAND_LONG cmd=MAV_CMD_NAV_TAKEOFF sig=OK   action=accept
+      t=3.09 sysid=255 msg=COMMAND_LONG cmd=MAV_CMD_NAV_LAND    sig=FAIL action=reject(무서명/키불일치)
+      EOF
+      echo "[정상 명령]"; grep "action=accept" "$SLOG"
+      echo "[주입 거부]"; grep "action=reject" "$SLOG"
+      # 판정: 서명 검증으로 주입 명령이 거부되면(sig=FAIL reject) 하이재킹 방어.
+      grep -q "sig=FAIL" "$SLOG" && grep -q "action=reject" "$SLOG" && echo HIJACK_PREVENTED || echo NO_SIGNING
       ```
-      ✅ 마지막 줄 `HIJACK_PREVENTED` (서명이 위조 명령 거부 + RTL 페일세이프).
-      🔎 MAVLink2 서명이 무서명 위조 명령을 거부하고, deauth로 끊겨도 RTL(자동 귀환)로 안전. 하이재킹 차단.
+      ## 📋 확인 사항
+      - 정상(`sysid=1`)은 `sig=OK accept`, 주입(`sysid=255`)은 `sig=FAIL reject`
+      - 마지막 줄 `HIJACK_PREVENTED`
+
+      ## 💡 왜 이걸 하는가?
+      MAVLink2 메시지 서명(공유 비밀 키 + 타임스탬프)은 키 없는 명령을 거부해 인젝션을 막는다. 여기에 WiFi 관리
+      프레임 보호(802.11w)·WPA3·링크 암호화·페일세이프(링크 상실 시 자동 귀환)를 더하면 W03 하이재킹이 막힌다.
+
+      ## 🔍 결과 해석 — 정상 `HIJACK_PREVENTED`
+    hint: "서명 로그 생성 → 주입 명령이 sig=FAIL reject 확인 → HIJACK_PREVENTED."
+    category: defense
     answer: |
-      forged unsigned command accepted: False (rejected by signing)
-      deauth -> failsafe: RTL (safe return, not hijacked)
+      [정상 명령]
+      t=3.01 sysid=1   msg=HEARTBEAT      sig=OK   action=accept
+      [주입 거부]
+      t=3.09 sysid=255 msg=COMMAND_LONG cmd=MAV_CMD_NAV_LAND    sig=FAIL action=reject(무서명/키불일치)
       HIJACK_PREVENTED
-    answer_detail: "서명 거부+RTL 페일세이프로 하이재킹 방어 → HIJACK_PREVENTED."
+    answer_detail: "MAVLink2 서명으로 무서명/키불일치 주입 명령 거부. 802.11w·WPA3·페일세이프 병행."
     verify:
       type: output_contains
       expect: HIJACK_PREVENTED
@@ -144,20 +204,29 @@ steps:
 
   - order: 5
     instruction: |
-      ## STEP 5 — 종합 → Assessment
+      ## 🎯 MISSION
+      W03 발견(Deauth 플러드·MAVLink 인젝션·서명 방어)을 소견으로 정리한다. (정리: `rm -f /tmp/wifi_frames_STU42.log /tmp/mavlink*STU42.log`)
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"gemma3:4b","prompt":"Write a short note for W03 on drone hacking. Findings: a deauth flood on the control WiFi was detected by a frame-rate spike (DEAUTH_DETECTED), unsigned MAVLink commands from a foreign system id (forced land, mode change) were detected as injection (COMMAND_INJECTED), and MAVLink signing plus an RTL failsafe prevented hijacking (HIJACK_PREVENTED). Explain that unauthenticated links let attackers deauth, inject commands, and hijack drones with physical consequences, and defense uses signing and failsafes. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 3 of an autonomous systems course on drone hacking. Facts: a WiFi capture showed a burst of six deauthentication frames from one attacker MAC, a deauth flood cutting the controller link (DEAUTH_DETECTED); a MAVLink message log had unsigned COMMAND_LONG messages from sysid 255 forcing NAV_LAND and ARM_DISARM (motor kill), an injected hijack (COMMAND_INJECTED); with MAVLink2 message signing the forged command failed verification and was rejected (HIJACK_PREVENTED). Explain that consumer drones use WiFi and unsigned MAVLink so deauth floods and command injection enable hijacking, and defense uses MAVLink2 signing, 802.11w management-frame protection, WPA3, link encryption, and a link-loss failsafe. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
       ```
-      ✅ 출력에 `Assessment`.
-      🔎 정리: 드론 해킹=deauth·MAVLink 인젝션·하이재킹(무방비 링크 악용, 물리 결과). MAVLink 서명+페일세이프로 방어.
-      다음 주(W04)는 **드론 방어(탐지·지오펜싱)**.
+      ## 📋 확인 사항 — 첫머리에 `Assessment`
+      ## 🔍 결과 해석 — 정상 첫 줄 `Assessment` / 비정상 `[형식 미준수 — 재실행]`
+
+      ---
+      **다음 주(W04) 예고** — 드론 방어(다중 센서 융합 탐지·RF 분석·지오펜싱).
+    hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
+    category: report
     answer: |
       Assessment
-      Unauthenticated links let attackers deauth the control channel, inject unsigned MAVLink commands, and hijack drones with physical consequences.
-      Defense uses MAVLink signing (rejects forged commands) and failsafes like RTL.
-    answer_detail: "W03 드론 해킹 종합(Assessment). deauth·명령 인젝션·하이재킹·서명/페일세이프."
+      A WiFi capture showed a burst of six deauth frames from one attacker MAC (a deauth flood cutting the
+      controller link); a MAVLink log had unsigned COMMAND_LONG messages from sysid 255 forcing NAV_LAND
+      and ARM_DISARM (motor kill), an injected hijack; with MAVLink2 signing the forged command failed
+      verification and was rejected. Consumer drones use WiFi and unsigned MAVLink, so defense uses
+      MAVLink2 signing, 802.11w, WPA3, link encryption, and a link-loss failsafe.
+    answer_detail: "W03 드론 종합(Assessment): Deauth 플러드·MAVLink 명령 인젝션·MAVLink2 서명/802.11w 방어."
     verify:
       type: output_contains
       expect: Assessment
