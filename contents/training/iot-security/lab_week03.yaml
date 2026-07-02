@@ -1,38 +1,49 @@
 lab_id: iot-security-week03
-title: "W03 — 하드웨어 인터페이스: 노출 디버그 포트·펌웨어 추출·보안 부팅/암호화 강화"
+title: "W03 — 하드웨어 인터페이스: UART 부트로그 분석·펌웨어 추출·보안부팅 강화"
 version: ai
 course: iot-security
 week: 3
 description: |
-  물리 하드웨어 인터페이스 방어. 노출 디버그 인터페이스 평가(DEBUG_EXPOSED), 펌웨어 추출 가능성
-  (FIRMWARE_EXTRACTABLE), 디버그 비활성·보안 부팅·암호화 강화(HW_HARDENED), 종합(Assessment).
-  ⚠️ UART/JTAG/SPI는 실물 장치·하드웨어 도구 필요 — 평가·방어 로직 결정론 시뮬.
+  하드웨어 디버그 인터페이스를 **실제 아티팩트(UART 부트 로그)로** 분석한다. UART 시리얼 콘솔에 연결하면 부팅
+  로그가 그대로 흐르는데, 여기에 (1) 로그인 없이 뜨는 **루트 셸**(인증 없는 콘솔), (2) **U-Boot** 부트로더 접근,
+  (3) **flash/MTD 파티션** 정보, (4) 보안 부팅 미검증 등 결정적 단서가 담긴다. 실습은 취약 장치의 UART 부트 로그를
+  만들어 `grep` 으로 이 단서를 찾고, 강화된 로그와 대비한다. (JTAG/SPI 물리 추출은 실물 도구가 필요하지만, UART
+  로그 분석은 로그 파일만 있으면 동일하게 수행된다.)
+
+  모든 명령은 사람이 한 줄씩 직접 입력한다. el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서 실행하며,
+  분석 아티팩트(부트 로그)는 이 실습이 `/tmp` 에 직접 만든다.
 difficulty: medium
 duration_minutes: 120
 audience: IoT 보안 입문 (3주차)
 prerequisites:
-  - el34 호스트 접속 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)
-  - GPU Ollama 도달 — gemma3:4b
-  - W03 강의안 정독 — §0.5(UART/JTAG/SPI·보안 부팅·플래시 암호화)
+  - "el34 호스트 접속: `ssh ccc@{{TARGET_IP}}` (비밀번호 `1`)"
+  - "GPU Ollama 도달 — http://211.170.162.139:10934 (gemma3:4b), 종합용"
+  - "도구: grep·awk·python3 (el34 에 존재)"
+  - "W03 강의안 정독 — §0.5(UART/JTAG/SPI·보안 부팅·플래시 암호화)"
 objectives:
-  - "GPU 헬스체크(GEN_OK)"
-  - "노출 디버그 인터페이스 평가(DEBUG_EXPOSED)"
-  - "펌웨어 추출 가능성 판정(FIRMWARE_EXTRACTABLE)"
-  - "디버그 비활성·보안 부팅·암호화 강화(HW_HARDENED)"
-  - "종합(Assessment)"
+  - "GPU 응답 확인 (GEN_OK)"
+  - "UART 부트 로그에서 인증 없는 루트 셸 등 노출 확인 (DEBUG_EXPOSED)"
+  - "부트 로그의 flash 파티션·보안부팅 미검증으로 추출 가능성 판정 (FIRMWARE_EXTRACTABLE)"
+  - "강화 부트 로그와 대비 (HW_HARDENED)"
+  - "종합 소견 (Assessment)"
 pass_threshold: 0.6
 
 steps:
 
   - order: 1
     instruction: |
-      ## STEP 1 — GPU 헬스체크 → GEN_OK
+      ## 🎯 MISSION
+      종합용 GPU(gemma3) 응답 확인.
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
         -d '{"model":"gemma3:4b","prompt":"Reply with the word ready.","stream":false,"options":{"num_predict":10}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('GEN_OK' if r.strip() else 'GEN_EMPTY')"
       ```
-      ✅ 마지막 줄 `GEN_OK`.
+      ## 📋 확인 사항 — 마지막 줄 `GEN_OK`
+      ## 🔍 결과 해석 — 정상 `GEN_OK` / 비정상 `GEN_EMPTY`·연결오류
+    hint: "curl /api/generate → response 있으면 GEN_OK."
+    category: survey
     answer: |
       ready
       GEN_OK
@@ -44,63 +55,105 @@ steps:
 
   - order: 2
     instruction: |
-      ## STEP 2 — 노출 디버그 인터페이스 → DEBUG_EXPOSED
-      > **🎯 목표:** 양산 장치의 활성 디버그 인터페이스를 평가.
-      > **개념:** 양산에 남은 디버그 포트는 공격 통로.
+      ## 🎯 MISSION
+      취약 IoT 장치의 **UART 부트 로그**를 만들고, `grep` 으로 **로그인 없이 뜨는 루트 셸**과 U-Boot 접근을 찾는다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      # 장치 기판 인터페이스 상태
-      interfaces=[{"iface":"UART","active":True,"auth":False},    # 인증 없는 루트 셸!
-                  {"iface":"JTAG","active":True,"locked":False},   # 잠기지 않음
-                  {"iface":"SPI flash","active":True,"encrypted":False}]  # 평문 플래시
-      exposed=[]
-      for i in interfaces:
-          risk=None
-          if i["iface"]=="UART" and i["active"] and not i.get("auth"): risk="root shell without auth"
-          if i["iface"]=="JTAG" and i["active"] and not i.get("locked"): risk="memory dump possible"
-          if "SPI" in i["iface"] and not i.get("encrypted"): risk="plaintext flash readable"
-          if risk: exposed.append((i["iface"],risk)); print(f"  {i['iface']:12}: EXPOSED - {risk}")
-      print("DEBUG_EXPOSED" if len(exposed)>=2 else "SECURE")
-      PY
+      LOG=/tmp/uart_boot_STU42.log
+      # 1) 취약 장치의 UART 부트 로그를 만든다(실제 시리얼 콘솔 캡처를 모사).
+      cat > "$LOG" <<'EOF'
+      U-Boot 2018.03 (IoTCam)
+      Hit any key to stop autoboot:  0
+      Booting Linux...
+      [    1.234] Kernel command line: console=ttyS0,115200 root=/dev/mtdblock3
+      [    2.101] mtd: partitions: boot(0x00000-0x40000) kernel(0x40000-0x300000) rootfs(0x300000-0xF00000)
+      [    3.400] VFS: Mounted root (squashfs) readonly
+      Starting network...
+      BusyBox v1.28 built-in shell (ash)
+      / #
+      / # id
+      uid=0(root) gid=0(root)
+      EOF
+
+      # 2) 로그인 프롬프트 없이 루트 셸(/ # , uid=0)이 떴는지 grep.
+      echo "[로그인 프롬프트?]"; grep -Eq "login:" "$LOG" && echo "login 요구" || echo "login 없음(무인증 콘솔)"
+      echo "[루트 셸?]"; grep -E "uid=0\(root\)|^/ #" "$LOG"
+      echo "[U-Boot 접근?]"; grep -E "U-Boot|Hit any key to stop autoboot" "$LOG"
+
+      # 3) 판정: 로그인 없이 루트 셸 + U-Boot 접근이면 디버그 인터페이스 노출.
+      grep -Eq "login:" "$LOG" && LOGIN=1 || LOGIN=0
+      grep -Eq "uid=0\(root\)" "$LOG" && ROOT=1 || ROOT=0
+      { [ "$LOGIN" = "0" ] && [ "$ROOT" = "1" ]; } && echo DEBUG_EXPOSED || echo SECURE
       ```
-      ✅ 마지막 줄 `DEBUG_EXPOSED` (UART 인증없는 셸+JTAG 미잠금+평문 플래시).
-      🔎 양산에 활성 UART(인증없는 셸)·미잠금 JTAG·평문 SPI 플래시가 남으면 물리 접근으로 열린다.
+      ## 📋 확인 사항
+      - `login 없음(무인증 콘솔)`, `uid=0(root)` / `/ #`, `U-Boot ... Hit any key`
+      - 마지막 줄 `DEBUG_EXPOSED`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — UART 콘솔에 로그인 없이 **루트 셸**이 뜨면, 기판에 프로브만 대면 장치가 통째로 열린다.
+      > U-Boot 를 멈추면 부팅 인자를 바꿔(`init=/bin/sh`) 인증을 우회한다. 양산 장치에 디버그 콘솔이 남은 결과다.
+
+      ## 🔍 결과 해석 — 정상 `DEBUG_EXPOSED`
+    hint: "UART 부트 로그 생성 → grep 로 login 없음 + uid=0(root) 확인 → DEBUG_EXPOSED."
+    category: exploit
     answer: |
-      UART        : EXPOSED - root shell without auth
-      JTAG        : EXPOSED - memory dump possible
-      SPI flash   : EXPOSED - plaintext flash readable
+      [로그인 프롬프트?]
+      login 없음(무인증 콘솔)
+      [루트 셸?]
+      / #
+      uid=0(root) gid=0(root)
+      [U-Boot 접근?]
+      U-Boot 2018.03 (IoTCam)
+      Hit any key to stop autoboot:  0
       DEBUG_EXPOSED
-    answer_detail: "양산 장치 활성 디버그 인터페이스 평가 → DEBUG_EXPOSED."
+    answer_detail: "UART 부트 로그에 login 없이 루트 셸(uid=0)+U-Boot 접근 = 무인증 디버그 콘솔 노출."
     verify:
       type: output_contains
       expect: DEBUG_EXPOSED
       field: stdout
+      semantic:
+        intent: "UART 부트 로그에서 무인증 루트 셸·U-Boot 접근 확인."
+        success_criteria:
+          - "login 프롬프트 없음 + uid=0(root) 확인"
+          - "DEBUG_EXPOSED 출력"
 
   - order: 3
     instruction: |
-      ## STEP 3 — 펌웨어 추출 가능성 → FIRMWARE_EXTRACTABLE
-      > **🎯 목표:** 인터페이스로 펌웨어를 추출할 수 있는지 판정.
-      > **개념:** 미잠금 JTAG·평문 SPI면 펌웨어 통째 덤프.
+      ## 🎯 MISSION
+      부트 로그의 **flash/MTD 파티션 정보**와 **보안 부팅 미검증**을 근거로 펌웨어 추출 가능성을 판정한다.
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      device={"jtag_locked":False,"spi_encrypted":False,"secure_boot":False}
-      methods=[]
-      if not device["jtag_locked"]: methods.append("JTAG memory dump")
-      if not device["spi_encrypted"]: methods.append("SPI flash read (chip-off)")
-      print("extraction methods available:", methods)
-      # 추출된 펌웨어에서 얻을 것
-      if methods:
-          print("  -> extract firmware -> find hardcoded secrets (shared across all units)")
-      print("FIRMWARE_EXTRACTABLE" if len(methods)>=2 else "PROTECTED")
-      PY
+      LOG=/tmp/uart_boot_STU42.log
+      # 1) MTD 파티션(펌웨어가 어디 있는지) 확인 — rootfs 위치를 알면 덤프 대상이 된다.
+      grep -E "mtd: partitions|mtdblock" "$LOG"
+
+      # 2) 보안 부팅(서명 검증) 흔적이 있는지 — 없으면 변조/추출 방어 없음.
+      echo -n "보안 부팅: "; grep -Eiq "Verifying Hash|secure boot|signature.*(ok|verified)" "$LOG" && echo "검증함" || echo "미검증(서명 확인 없음)"
+
+      # 3) 판정: MTD 파티션 노출 + 보안부팅 미검증이면 펌웨어 추출 가능.
+      grep -Eq "mtd: partitions|rootfs" "$LOG" && MTD=1 || MTD=0
+      grep -Eiq "Verifying Hash|secure boot" "$LOG" && SB=1 || SB=0
+      { [ "$MTD" = "1" ] && [ "$SB" = "0" ]; } && echo FIRMWARE_EXTRACTABLE || echo PROTECTED
       ```
-      ✅ 마지막 줄 `FIRMWARE_EXTRACTABLE` (미잠금 JTAG + 평문 SPI로 펌웨어 추출 가능).
-      🔎 JTAG 덤프·SPI 칩오프로 펌웨어를 통째 추출. 한 대 뜯으면 같은 모델 전체의 하드코딩 비밀 노출.
+      ## 📋 확인 사항
+      - MTD 파티션(`rootfs(0x300000-0xF00000)`) 노출, 보안 부팅 `미검증`
+      - 마지막 줄 `FIRMWARE_EXTRACTABLE`
+
+      ## 💡 왜 이걸 하는가?
+      > ⚠️ **보안 함의** — 부트 로그가 rootfs 파티션 위치를 알려주고 보안 부팅(서명 검증)이 없으면, JTAG 덤프·SPI
+      > 칩오프로 펌웨어를 통째로 추출해 W04 처럼 하드코딩 비밀을 캔다. 한 대 추출 = 같은 모델 전체 비밀 노출.
+
+      ## 🔍 결과 해석 — 정상 `FIRMWARE_EXTRACTABLE`
+    hint: "부트 로그에서 mtd rootfs 파티션 확인 + 보안부팅(Verifying Hash) 없음 → FIRMWARE_EXTRACTABLE."
+    category: exploit
     answer: |
-      extraction methods available: ['JTAG memory dump', 'SPI flash read (chip-off)']
-        -> extract firmware -> find hardcoded secrets (shared across all units)
+      [    2.101] mtd: partitions: boot(0x00000-0x40000) kernel(0x40000-0x300000) rootfs(0x300000-0xF00000)
+      root=/dev/mtdblock3
+      보안 부팅: 미검증(서명 확인 없음)
       FIRMWARE_EXTRACTABLE
-    answer_detail: "미잠금 JTAG+평문 SPI로 펌웨어 추출 가능 → FIRMWARE_EXTRACTABLE."
+    answer_detail: "MTD rootfs 파티션 노출+보안부팅 미검증 → JTAG/SPI 로 펌웨어 추출 가능."
     verify:
       type: output_contains
       expect: FIRMWARE_EXTRACTABLE
@@ -108,30 +161,42 @@ steps:
 
   - order: 4
     instruction: |
-      ## STEP 4 — 하드웨어 강화 → HW_HARDENED
-      > **🎯 목표:** 디버그 비활성·보안 부팅·플래시 암호화로 강화.
-      > **개념:** 접근해도 못 얻게.
+      ## 🎯 MISSION
+      **강화된 장치의 부트 로그**를 만들어, 같은 grep 으로 로그인 요구·보안 부팅 검증이 있음을 확인한다(대비).
+
+      ## 💻 실행 명령
       ```bash
-      python3 - <<'PY'
-      def harden(device):
-          return {"uart_shell":"disabled/auth-required","jtag_locked":True,
-                  "spi_encrypted":True,"secure_boot":True,"tamper_detection":True}
-      before={"uart_shell":"root-no-auth","jtag_locked":False,"spi_encrypted":False,"secure_boot":False}
-      after=harden(before)
-      def extractable(d):
-          return (not d.get("jtag_locked")) or (not d.get("spi_encrypted"))
-      print("before: firmware extractable =", extractable(before))
-      print("after : firmware extractable =", extractable(after), "(JTAG locked + flash encrypted + secure boot)")
-      print("HW_HARDENED" if extractable(before) and not extractable(after) else "CHECK")
-      PY
+      HLOG=/tmp/uart_boot_hardened_STU42.log
+      cat > "$HLOG" <<'EOF'
+      U-Boot 2023.01 (secure)
+      Verifying Hash Integrity ... sha256+ OK
+      Secure boot: signature verified
+      Booting Linux...
+      [    3.400] VFS: Mounted root (squashfs, dm-verity) readonly
+      IoTCam login:
+      EOF
+
+      echo -n "로그인 요구: "; grep -Eq "login:" "$HLOG" && echo OK || echo NO
+      echo -n "보안 부팅 검증: "; grep -Eiq "Verifying Hash|Secure boot: signature verified" "$HLOG" && echo OK || echo NO
+      # 판정: 로그인 요구 + 보안 부팅 검증이면 강화됨.
+      grep -Eq "login:" "$HLOG" && grep -Eiq "signature verified|Verifying Hash" "$HLOG" && echo HW_HARDENED || echo STILL_EXPOSED
       ```
-      ✅ 마지막 줄 `HW_HARDENED` (JTAG 잠금+플래시 암호화+보안 부팅으로 추출 불가).
-      🔎 UART 셸 비활성+JTAG fuse 끊기+플래시 암호화+보안 부팅+탬퍼 감지. 물리 접근해도 펌웨어를 못 얻는다.
+      ## 📋 확인 사항
+      - `로그인 요구: OK`, `보안 부팅 검증: OK`
+      - 마지막 줄 `HW_HARDENED`
+
+      ## 💡 왜 이걸 하는가?
+      UART 셸에 로그인 요구 + 보안 부팅(서명·dm-verity) + JTAG fuse 잠금 + 플래시 암호화를 적용하면, 물리 접근해도
+      셸을 못 얻고 펌웨어도 못 추출/변조한다. "접근해도 못 얻게"가 하드웨어 방어의 원칙이다.
+
+      ## 🔍 결과 해석 — 정상 `HW_HARDENED`
+    hint: "강화 부트 로그 생성 → grep 로 login: 요구 + 보안부팅 검증 확인 → HW_HARDENED."
+    category: defense
     answer: |
-      before: firmware extractable = True
-      after : firmware extractable = False (JTAG locked + flash encrypted + secure boot)
+      로그인 요구: OK
+      보안 부팅 검증: OK
       HW_HARDENED
-    answer_detail: "디버그 비활성·JTAG 잠금·플래시 암호화·보안 부팅 강화 → HW_HARDENED."
+    answer_detail: "강화 부트 로그(로그인 요구+보안부팅 검증)와 대비. 접근해도 못 얻게."
     verify:
       type: output_contains
       expect: HW_HARDENED
@@ -139,20 +204,28 @@ steps:
 
   - order: 5
     instruction: |
-      ## STEP 5 — 종합 → Assessment
+      ## 🎯 MISSION
+      W03 발견(무인증 UART 셸·펌웨어 추출 가능·강화 대비)을 소견으로 정리한다. (정리: `rm -f /tmp/uart_boot*STU42.log`)
+      ## 💻 실행 명령
       ```bash
       curl -s http://211.170.162.139:10934/api/generate \
-        -d '{"model":"gemma3:4b","prompt":"Write a short note for W03 on IoT hardware interfaces. Findings: an active UART root shell, unlocked JTAG, and plaintext SPI flash were exposed (DEBUG_EXPOSED), allowing firmware extraction via JTAG dump and SPI chip-off (FIRMWARE_EXTRACTABLE), and hardening with disabled debug, locked JTAG, encrypted flash, and secure boot blocked it (HW_HARDENED). Explain that production devices often leave debug interfaces enabled, so defense disables debug, locks JTAG, encrypts flash, and uses secure boot so physical access yields nothing. Start with exactly Assessment on its own line.","stream":false,"options":{"num_predict":330}}' \
-       | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
+        -d '{"model":"gemma3:4b","prompt":"Write a concise note for Week 3 of an IoT security course on hardware interfaces. Facts: a UART boot log showed a BusyBox root shell with no login prompt (uid=0) and interruptible U-Boot, an exposed debug console (DEBUG_EXPOSED); the log also revealed MTD rootfs partitions with no secure-boot hash verification, so firmware can be extracted via JTAG dump or SPI chip-off (FIRMWARE_EXTRACTABLE); a hardened boot log required login and verified secure boot with dm-verity (HW_HARDENED). Explain that production devices often leave the debug console open, so defense requires console login, locks JTAG, encrypts flash, and enables secure boot so physical access yields nothing. Begin with exactly the single word Assessment on its own first line.","stream":false,"options":{"num_predict":330}}' \
+        | python3 -c "import sys,json; r=json.load(sys.stdin).get('response',''); print(r); print('' if 'Assessment' in r else '[형식 미준수 — 재실행]')"
       ```
-      ✅ 출력에 `Assessment`.
-      🔎 정리: 양산에 남은 디버그 인터페이스로 펌웨어 추출. 디버그 비활성+보안 부팅+플래시 암호화로 접근해도 못 얻게.
-      다음 주(W04)는 **펌웨어 분석**.
+      ## 📋 확인 사항 — 첫머리에 `Assessment`
+      ## 🔍 결과 해석 — 정상 첫 줄 `Assessment` / 비정상 `[형식 미준수 — 재실행]`
+
+      ---
+      **다음 주(W04) 예고** — 추출한 펌웨어 정적 분석(하드코딩 비밀·백도어).
+    hint: "curl 로 gemma3 에 발견 넣어 요약, 첫 줄 Assessment 강제. 임시 파일 정리."
+    category: report
     answer: |
       Assessment
-      Production IoT devices often leave debug interfaces (UART root shell, unlocked JTAG, plaintext flash) enabled, allowing firmware extraction.
-      Defense disables debug, locks JTAG, encrypts flash, and uses secure boot so physical access yields nothing.
-    answer_detail: "W03 하드웨어 인터페이스 종합(Assessment). 노출 디버그·펌웨어 추출·보안 부팅/암호화."
+      A UART boot log showed a BusyBox root shell with no login prompt and interruptible U-Boot (exposed
+      debug console), plus MTD rootfs partitions with no secure-boot verification, so firmware can be
+      extracted. A hardened log required login and verified secure boot with dm-verity. Defense requires
+      console login, locked JTAG, encrypted flash, and secure boot so physical access yields nothing.
+    answer_detail: "W03 하드웨어 종합(Assessment): UART 무인증 셸·펌웨어 추출·보안부팅/암호화 강화."
     verify:
       type: output_contains
       expect: Assessment
