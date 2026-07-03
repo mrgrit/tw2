@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 251 · 미션 1064 · ✅pass 40 · 🟡partial 191 (생성 시각 2026-07-03 05:01)
+**집계**: 시나리오 257 · 미션 1106 · ✅pass 46 · 🟡partial 206 (생성 시각 2026-07-03 05:40)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -343,7 +343,7 @@
 | physical-pentest-w14 | 310 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
 | physical-pentest-w15 | 311 | ❌fail | ❌fail | ❌fail | ❌fail | 0/95 |
 
-## secuops  (✅7 🟡7)
+## secuops  (✅13 🟡22)
 
 | 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
 |---|---|---|---|---|---|---|
@@ -352,6 +352,12 @@
 | secuops-w03 | 320 | ❌fail | ❌fail | ❌fail | ❌fail | 0/115 |
 | secuops-w04 | 321 | 🟡partial | ✅pass | ❌fail | ❌fail | 39/102 |
 | secuops-w05 | 322 | ✅pass | ✅pass | ❌fail | ❌fail | 36/117 |
+| secuops-w06 | 323 | ✅pass | 🟡partial | 🟡partial | ❌fail | 60/125 |
+| secuops-w07 | 324 | ❌fail | ❌fail | 🟡partial | ❌fail | 14/114 |
+| secuops-w08 | 325 | ✅pass | ❌fail | 🟡partial | ❌fail | 37/115 |
+| secuops-w09 | 326 | ✅pass | ✅pass | 🟡partial | ❌fail | 54/119 |
+| secuops-w10 | 327 | ✅pass | ❌fail | 🟡partial | ❌fail | 43/117 |
+| secuops-w11 | 328 | ❌fail | ❌fail | ❌fail | ❌fail | 4/115 |
 
 ## secuops-easy  (✅11 🟡16)
 
