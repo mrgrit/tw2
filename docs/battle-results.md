@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 263 · 미션 1148 · ✅pass 51 · 🟡partial 220 (생성 시각 2026-07-03 06:12)
+**집계**: 시나리오 269 · 미션 1190 · ✅pass 53 · 🟡partial 230 (생성 시각 2026-07-03 06:43)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -374,9 +374,15 @@
 | secuops-easy-w05 | 316 | ✅pass | ✅pass | 🟡partial | ❌fail | 53/95 |
 | secuops-easy-w06 | 317 | ✅pass | 🟡partial | 🟡partial | ✅pass | 93/125 |
 
-## soc-adv  (✅2 🟡4)
+## soc-adv  (✅4 🟡14)
 
 | 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
 |---|---|---|---|---|---|---|
 | soc-adv-w01 | 333 | ✅pass | ❌fail | ❌fail | ❌fail | 22/117 |
 | soc-adv-w02 | 334 | ✅pass | 🟡partial | ❌fail | ❌fail | 43/117 |
+| soc-adv-w03 | 335 | ❌fail | ❌fail | ❌fail | ❌fail | 7/118 |
+| soc-adv-w04 | 336 | ❌fail | ❌fail | ❌fail | ❌fail | 10/118 |
+| soc-adv-w05 | 337 | ✅pass | ❌fail | ❌fail | ❌fail | 23/117 |
+| soc-adv-w06 | 338 | ❌fail | ❌fail | ❌fail | ❌fail | 13/118 |
+| soc-adv-w07 | 339 | ✅pass | ❌fail | ❌fail | ❌fail | 21/118 |
+| soc-adv-w08 | 340 | ❌fail | ❌fail | ❌fail | ❌fail | 7/118 |
