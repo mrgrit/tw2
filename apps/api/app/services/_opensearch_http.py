@@ -74,6 +74,33 @@ class OpenSearchHttpClient:
             log.warning("ensure_saved_object %s/%s failed: %s", otype, oid, e)
             return False
 
+    async def refresh_index_pattern(self, dv_id: str, index: str, time_field: str = "ts") -> bool:
+        """데이터뷰(index-pattern)의 field 목록을 현재 매핑 기준으로 재계산·갱신.
+
+        인덱스 매핑은 dynamic 이라 배틀/실습마다 payload.* 새 필드가 자동 생성되지만,
+        데이터뷰 saved-object 는 생성 시점 field 스냅샷을 캐시한다 → 갱신 안 하면 새 필드가
+        대시보드 field 목록/필터에 안 뜬다. 이 함수가 `_fields_for_wildcard` 로 최신 필드를
+        받아 데이터뷰에 다시 심어 '동적 필드'가 대시보드에 반영되게 한다(멱등)."""
+        try:
+            async with self._dash() as c:
+                r = await c.get(
+                    f"{self.dashboards_url}/api/index_patterns/_fields_for_wildcard",
+                    params=[("pattern", f"{index}*"), ("meta_fields", "_source"),
+                            ("meta_fields", "_id"), ("meta_fields", "_index"), ("meta_fields", "_score")])
+                if r.status_code != 200:
+                    return False
+                fields = r.json().get("fields", [])
+                if not fields:
+                    return False
+                r2 = await c.put(
+                    f"{self.dashboards_url}/api/saved_objects/index-pattern/{dv_id}",
+                    json={"attributes": {"title": index, "timeFieldName": time_field,
+                                         "fields": json.dumps(fields)}})
+                return r2.status_code < 300
+        except Exception as e:
+            log.warning("refresh_index_pattern %s failed: %s", dv_id, e)
+            return False
+
     async def ensure_role(self, name: str, index_pattern: str) -> bool:
         body = {"index_permissions": [{
             "index_patterns": [index_pattern],

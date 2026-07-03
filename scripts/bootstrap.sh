@@ -108,6 +108,8 @@ TUBEWAR_LAB_MONITOR=1
 # 컨테이너 기동: bash scripts/setup_siem.sh. DASHBOARDS_URL 은 저장객체(dataview) 생성용 → 로컬로 둘 것.
 OPENSEARCH_URL=${OPENSEARCH_URL:-http://127.0.0.1:9210}
 OPENSEARCH_DASHBOARDS_URL=${OPENSEARCH_DASHBOARDS_URL:-http://127.0.0.1:5602}
+# 저장객체(dataview) ops 전용 내부 URL — 공개 터널은 saved-object API 400 → 항상 로컬.
+OPENSEARCH_DASHBOARDS_INTERNAL_URL=${OPENSEARCH_DASHBOARDS_INTERNAL_URL:-http://127.0.0.1:5602}
 # el34 인프라 IP 단일 노브(가변). IP 바뀌면 여기만 고치고 sync_target_ip.py 실행.
 # 부트스트랩 전에 export TUBEWAR_REF_TARGET_IP=... 로 덮어쓸 수 있음.
 TUBEWAR_REF_TARGET_IP=${TUBEWAR_REF_TARGET_IP:-192.168.0.80}

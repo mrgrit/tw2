@@ -46,6 +46,35 @@ curl -s -H 'osd-xsrf: true' http://127.0.0.1:5602/api/saved_objects/index-patter
 - `index-pattern/dv-<N>` 가 200 이면 대시보드에서 코호트 뷰가 보인다.
 - 라이브 배틀 후 `tubewar-activity-*` 의 `_count` 가 증가하면 lab_monitor 실시간 적재가 도는 것.
 
+## 이벤트 필드 스키마 (동적 생성 + 유사건 그룹핑)
+
+인덱스 매핑은 **dynamic** 이라 배틀/실습 내용마다 새 필드가 자동 생긴다. 단 원본을 `payload` 에만
+두면 분석이 어려우므로, `siem_export.classify()` 가 **중요 지점을 top-level 필드로 분리**하고
+**유사건을 고정 `group_no` 로 그룹핑**한다(건별 필드 폭증 방지). payload 원본도 보존.
+
+| 필드 | 뜻 |
+|---|---|
+| `group` / `group_no` | 이벤트 그룹 라벨 + **필드 그룹 번호**(고정). 대역: 10 정찰 · 20 익스플로잇(웹) · 30 접근/인증 · 40 실행 · 50 무결성 · 90 기타 |
+| `phase` | 킬체인 단계(recon/exploit/access/persistence/detection) |
+| `severity` | info/low/medium/high |
+| `evt_src` | 출처 시스템(suricata/modsec/wazuh/apache/command/fim) |
+| `evt_signature` / `evt_rule_id` | 룰/시그니처 · 룰 id |
+| `evt_cmd` / `evt_rc` | 실행 명령 · 반환코드 |
+| `evt_path` | FIM 대상 경로 |
+
+그룹 번호 예(집계 가능): 10 IDS-정찰스캔 · 20 WAF-SQLi · 21 WAF-XSS · 22 WAF-스캐너탐지 ·
+29 WAF-기타차단 · 30 인증-세션 · 39 SIEM-경보 · 40 명령실행 · 41 명령실패 · 90 기타.
+새 그룹/필드가 필요하면 `classify()` 만 확장하면 된다.
+
+### dynamic 필드가 대시보드에 안 뜰 때 (중요)
+
+인덱스 매핑은 동적이어도 **데이터뷰(index-pattern) saved-object 는 필드 스냅샷을 캐시**한다 →
+새 필드가 대시보드 field 목록에 안 뜬다. 해결:
+- 라이브 경로: `ensure_cohort_objects` 가 매 reconcile 때 `refresh_index_pattern` 호출(자동).
+- 수동/주기: `.venv/bin/python scripts/refresh_siem_fields.py [--cohort N]` (cron/loop 가능).
+- 저장객체 API 는 **공개 터널이 400** 을 준다 → `OPENSEARCH_DASHBOARDS_INTERNAL_URL`(로컬 5602)로
+  ops, 공개 터널은 브라우저 딥링크 전용. bootstrap 이 둘 다 기입.
+
 ## 동작 원리
 
 - 배틀 start → (`TUBEWAR_LAB_MONITOR=1` 이면) `lab_monitor.start(battle_id)` 백그라운드 기동.

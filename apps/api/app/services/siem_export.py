@@ -63,9 +63,59 @@ def physical_index_for(chain: list) -> str:
     return f"{INDEX_PREFIX}-{_slug(str(ref))}"
 
 
+# 이벤트 그룹 분류 — 유사건을 고정 group_no 로 묶고, 분석 중요 필드를 top-level 로 분리.
+# 건별 개별 필드 폭증을 막으면서(payload 는 원본 유지) 대시보드에서 group_no/phase/evt_* 로 딱딱 필터.
+# group_no 대역: 10 정찰 · 20 익스플로잇(웹) · 30 접근/인증 · 40 실행 · 50 무결성 · 90 기타.
+def classify(kind: str, payload) -> dict:
+    p = payload if isinstance(payload, dict) else {}
+    src = str(p.get("src") or "").lower()
+    text = str(p.get("desc") or p.get("rule") or p.get("value") or "").lower()
+    # 분석 중요 필드 분리(top-level)
+    out = {
+        "evt_src": p.get("src"),
+        "evt_signature": p.get("rule") or (p.get("desc") if kind == "alert" else None),
+        "evt_rule_id": p.get("rule_id"),
+        "evt_cmd": p.get("cmd"),
+        "evt_rc": p.get("rc"),
+        "evt_path": p.get("path") or p.get("file"),
+    }
+    if kind == "fim":
+        g, no, ph, sev = "파일무결성(FIM)", 50, "persistence", "medium"
+    elif kind == "command":
+        rc = p.get("rc")
+        if rc not in (0, None, "0"):
+            g, no, ph, sev = "명령실패", 41, "exploit", "low"
+        else:
+            g, no, ph, sev = "명령실행", 40, "exploit", "medium"
+    else:  # alert
+        if "suricata" in src or any(w in text for w in ("scan", "nmap", "syn", "portscan")):
+            g, no, ph, sev = "IDS-정찰스캔", 10, "recon", "medium"
+        elif any(w in src for w in ("modsec", "waf", "apache")) or "modsec" in text:
+            if any(w in text for w in ("union", "sqli", "942", "' or", "or 1=1")):
+                g, no, ph, sev = "WAF-SQLi", 20, "exploit", "high"
+            elif any(w in text for w in ("xss", "<script", "941", "onerror")):
+                g, no, ph, sev = "WAF-XSS", 21, "exploit", "high"
+            elif any(w in text for w in ("sqlmap", "nikto", "scanner", "913", "auto-red")):
+                g, no, ph, sev = "WAF-스캐너탐지", 22, "recon", "medium"
+            else:
+                g, no, ph, sev = "WAF-기타차단", 29, "exploit", "medium"
+        elif "wazuh" in src:
+            if any(w in text for w in ("sshd", "session", "authentication", "login", "pam_unix")):
+                g, no, ph, sev = "인증-세션", 30, "access", "low"
+            else:
+                g, no, ph, sev = "SIEM-경보", 39, "detection", "low"
+        else:
+            g, no, ph, sev = "기타경보", 90, "other", "info"
+    out.update({"group": g, "group_no": no, "phase": ph, "severity": sev})
+    return {k: v for k, v in out.items() if v not in (None, "")}
+
+
 def stamp(event: dict, chain: list) -> dict:
-    """활동 이벤트를 코호트 문맥으로 stamp. 필드: student/infra/ts/kind/cohort_path/scenario_step."""
-    return {
+    """활동 이벤트를 코호트 문맥으로 stamp + 이벤트 분류(그룹/중요필드 분리).
+
+    상위 스키마: student/infra/ts/kind/cohort_path/scenario_step + 분류(group/group_no/phase/
+    severity/evt_*). payload 원본도 보존. dynamic 매핑이라 신규 필드는 자동 생성."""
+    doc = {
         "student": event.get("user_id"),
         "student_name": event.get("user_name"),
         "infra": event.get("infra_id"),
@@ -78,6 +128,8 @@ def stamp(event: dict, chain: list) -> dict:
         "payload": event.get("payload"),
         "battle_id": event.get("battle_id"),
     }
+    doc.update(classify(event.get("kind"), event.get("payload")))
+    return doc
 
 
 async def export_events(client, events: list[dict], chain: list) -> dict:
@@ -117,6 +169,11 @@ async def ensure_cohort_objects(client, chain: list) -> dict:
     if await client.ensure_saved_object("index-pattern", dv_id,
                                         {"title": index, "timeFieldName": "ts"}):
         created.append(f"index-pattern:{dv_id}")
+    # 1b) 필드 새로고침 — dynamic 매핑(배틀/실습별 payload.* 신규 필드)을 데이터뷰에 반영.
+    #     데이터뷰가 존재해도(멱등 skip) 필드는 매 reconcile 갱신해야 대시보드에 새 필드가 뜬다.
+    if hasattr(client, "refresh_index_pattern"):
+        if await client.refresh_index_pattern(dv_id, index):
+            created.append(f"refresh-fields:{dv_id}")
 
     # 2) 저장검색(search): 이 코호트로 스코프 + 활동 표 컬럼. dv 를 reference 로 연결.
     ssj = {"indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index",
@@ -266,9 +323,13 @@ def default_client():
     if not is_enabled():
         return None
     from ._opensearch_http import OpenSearchHttpClient   # lazy
+    # 저장객체(dataview) ops 는 내부 URL 우선 — 공개 터널(trycloudflare)은 saved-object API 에
+    # 400 을 주므로 로컬 OSD 를 쓴다. 딥링크(브라우저용)는 dashboard_deeplink 가 공개 URL 사용.
+    ops_dash = (os.getenv("OPENSEARCH_DASHBOARDS_INTERNAL_URL")
+                or os.getenv("OPENSEARCH_DASHBOARDS_URL", ""))
     return OpenSearchHttpClient(
         os_url=os.environ["OPENSEARCH_URL"],
-        dashboards_url=os.getenv("OPENSEARCH_DASHBOARDS_URL", ""),
+        dashboards_url=ops_dash,
         user=os.getenv("OPENSEARCH_USER", "admin"),
         password=os.getenv("OPENSEARCH_PASSWORD", "admin"),
     )
