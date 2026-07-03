@@ -15,11 +15,12 @@
 3. **순수 semantic 설계 미션**(CPS·IoT·physical 전부, 각 트랙 BLUE 설계) — 인프라에 심을 게 없고
    **구체적 설계 서술**이 산출물이라 자동 하니스로는 통과 불가(합격기준 문구 복사는 채점기가 반려).
 
-> **채점기·시나리오가 정상이라는 근거**: 사람/LLM 이 **제대로 쓴 답안**은 만점이 난다 —
-> 실측 `battle 5` ai-service-pentest-w02 **BLUE-2(semantic 설계) = pass 25/25**. 즉 partial/fail 은
-> 시나리오 결함이 아니라 **자동 하니스가 학생이 아니기 때문**. 배포·구조는 `docs/battle-verification.md`.
+> **채점기·시나리오가 정상이라는 근거**: 실답안(competent submission)은 세 채점 유형 모두에서
+> pass 한다 — 실측 battle 5(AICompanion semantic 25/25) · battle 95(순수 semantic 4미션 83/90) ·
+> battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
+> 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 138 · 미션 567 · ✅pass 15 · 🟡partial 107 (생성 시각 2026-07-02 23:52)
+**집계**: 시나리오 149 · 미션 622 · ✅pass 22 · 🟡partial 129 (생성 시각 2026-07-03 00:54)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -182,13 +183,24 @@
 | aisec-w14 | 193 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
 | aisec-w15 | 194 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
 
-## attack  (✅4 🟡3)
+## attack  (✅11 🟡25)
 
 | 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
 |---|---|---|---|---|---|---|
 | attack-w01 | 210 | ✅pass | 🟡partial | ❌fail | 🟡partial | 41/65 |
 | attack-w02 | 211 | ✅pass | 🟡partial | ❌fail | ❌fail | 35/75 |
 | attack-w03 | 212 | ✅pass | ✅pass | ❌fail | ❌fail | 37/75 |
+| attack-w04 | 213 | ✅pass | 🟡partial | ✅pass | ❌fail | 44/90 |
+| attack-w05 | 214 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 39/90 |
+| attack-w06 | 215 | ✅pass | 🟡partial | 🟡partial | ❌fail | 48/100 |
+| attack-w07 | 216 | 🟡partial | ✅pass | 🟡partial | ❌fail | 48/100 |
+| attack-w08 | 217 | ✅pass | ❌fail | 🟡partial | ❌fail | 29/100 |
+| attack-w09 | 220 | 🟡partial | ✅pass | ❌fail | ❌fail | 43/100 |
+| attack-w10 | 221 | 🟡partial | 🟡partial | ❌fail | ❌fail | 31/100 |
+| attack-w11 | 222 | ❌fail | ❌fail | ❌fail | ❌fail | 0/100 |
+| attack-w12 | 223 | ❌fail | ❌fail | ❌fail | ❌fail | 10/100 |
+| attack-w13 | 224 | 🟡partial | ❌fail | 🟡partial | ❌fail | 31/100 |
+| attack-w14 | 225 | ✅pass | ❌fail | 🟡partial | ❌fail | 26/100 |
 
 ## attack-adv  (✅11 🟡15)
 
