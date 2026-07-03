@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 215 · 미션 917 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 03:16)
+**집계**: 시나리오 221 · 미션 941 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 03:25)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -312,3 +312,9 @@
 | iot-security-w03 | 289 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | iot-security-w04 | 290 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | iot-security-w05 | 291 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| iot-security-w06 | 292 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| iot-security-w07 | 293 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| iot-security-w08 | 294 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
+| iot-security-w09 | 295 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| iot-security-w10 | 296 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| iot-security-w11 | 297 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
