@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 161 · 미션 671 · ✅pass 22 · 🟡partial 158 (생성 시각 2026-07-03 01:42)
+**집계**: 시나리오 167 · 미션 695 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 02:00)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -223,7 +223,7 @@
 | attack-adv-w14 | 208 | ✅pass | ❌fail | ❌fail | ❌fail | 23/100 |
 | attack-adv-w15 | 209 | ✅pass | ❌fail | ❌fail | ❌fail | 24/100 |
 
-## autonomous-security  (✅0 🟡26)
+## autonomous-security  (✅0 🟡35)
 
 | 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
 |---|---|---|---|---|---|---|
@@ -238,3 +238,14 @@
 | autonomous-security-w09 | 235 | 🟡partial | 🟡partial | ❌fail | ❌fail | 23/90 |
 | autonomous-security-w10 | 236 | 🟡partial | 🟡partial | 🟡partial | 🟡partial | 27/90 |
 | autonomous-security-w11 | 237 | 🟡partial | 🟡partial | ❌fail | ❌fail | 11/90 |
+| autonomous-security-w12 | 238 | 🟡partial | 🟡partial | 🟡partial | ❌fail | 18/95 |
+| autonomous-security-w13 | 239 | 🟡partial | 🟡partial | ❌fail | ❌fail | 7/90 |
+| autonomous-security-w14 | 240 | 🟡partial | 🟡partial | ❌fail | ❌fail | 10/90 |
+| autonomous-security-w15 | 241 | 🟡partial | 🟡partial | ❌fail | ❌fail | 25/95 |
+
+## autonomous-systems  (✅0 🟡0)
+
+| 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
+|---|---|---|---|---|---|---|
+| autonomous-systems-w01 | 242 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| autonomous-systems-w02 | 243 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
