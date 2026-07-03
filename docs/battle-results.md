@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 191 · 미션 802 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 02:36)
+**집계**: 시나리오 197 · 미션 832 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 02:47)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -278,3 +278,14 @@
 | cloud-container-w09 | 265 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
 | cloud-container-w10 | 266 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
 | cloud-container-w11 | 267 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
+| cloud-container-w12 | 268 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
+| cloud-container-w13 | 269 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
+| cloud-container-w14 | 270 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
+| cloud-container-w15 | 271 | 🔁review | 🔁review | 🔁review | 🔁review | 0/98 |
+
+## compliance  (✅0 🟡0)
+
+| 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
+|---|---|---|---|---|---|---|
+| compliance-w01 | 272 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
+| compliance-w02 | 273 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
