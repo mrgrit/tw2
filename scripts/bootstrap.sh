@@ -68,14 +68,27 @@ if have apt-get; then
       git curl ca-certificates build-essential sqlite3 openssl libffi-dev libssl-dev
   if ! have node || [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null||echo 0)" -lt 18 ]; then
     say "  Node.js 20 (NodeSource) 설치"
-    curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash -
-    $SUDO apt-get install -y nodejs
+    if curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash -; then
+      $SUDO apt-get install -y nodejs
+    else
+      say "  ⚠ NodeSource 실패 → 배포판 nodejs+npm 로 폴백"
+      $SUDO apt-get install -y nodejs npm
+    fi
   fi
+  # 일부 배포판은 nodejs 패키지에 npm 이 없다 → 별도 보장.
+  have npm || $SUDO apt-get install -y npm || true
 elif have dnf; then
   $SUDO dnf install -y python3 python3-pip python3-devel git curl gcc gcc-c++ make sqlite openssl libffi-devel openssl-devel
   have node || $SUDO dnf module install -y nodejs:20/common || $SUDO dnf install -y nodejs
+  have npm || $SUDO dnf install -y npm || true
 else
   echo "지원 안 되는 패키지매니저(apt/dnf 아님). python3.10+/node18+/git/sqlite 수동 설치 후 --no-* 로 재실행"; exit 1
+fi
+# Node/npm 최종 검증 — 여기서 못 잡으면 뒤늦게 UI 빌드(npm)에서 불명확한 오류로 터진다.
+if ! have node || ! have npm; then
+  echo "✋ Node.js/npm 설치 실패(네트워크/저장소 문제 가능)."
+  echo "   수동 설치 후 재실행: Node 20 LTS — https://nodejs.org  또는  nvm install 20"
+  exit 1
 fi
 say "  python=$(python3 -V 2>&1) node=$(node -v 2>&1) npm=$(npm -v 2>&1)"
 PYMAJ=$(python3 -c 'import sys;print(sys.version_info[0])' 2>/dev/null||echo 0)
