@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 227 · 미션 965 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 03:36)
+**집계**: 시나리오 233 · 미션 965 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 03:38)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -329,3 +329,9 @@
 |---|---|---|---|---|---|---|
 | physical-pentest-w01 | 302 | ❌fail | ❌fail | ❌fail | ❌fail | 3/90 |
 | physical-pentest-w02 | 303 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| physical-pentest-w03 | — | ⚠err | ⚠err | ⚠err | ⚠err | ConnectError: [Errno 111] Conn |
+| physical-pentest-w04 | — | ⚠err | ⚠err | ⚠err | ⚠err | ConnectError: [Errno 111] Conn |
+| physical-pentest-w05 | — | ⚠err | ⚠err | ⚠err | ⚠err | ConnectError: [Errno 111] Conn |
+| physical-pentest-w06 | — | ⚠err | ⚠err | ⚠err | ⚠err | ConnectError: [Errno 111] Conn |
+| physical-pentest-w07 | — | ⚠err | ⚠err | ⚠err | ⚠err | ConnectError: [Errno 111] Conn |
+| physical-pentest-w08 | — | ⚠err | ⚠err | ⚠err | ⚠err | ConnectError: [Errno 111] Conn |
