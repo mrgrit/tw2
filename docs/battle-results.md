@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 287 · 미션 1307 · ✅pass 54 · 🟡partial 233 (생성 시각 2026-07-03 07:34)
+**집계**: 시나리오 293 · 미션 1343 · ✅pass 54 · 🟡partial 233 (생성 시각 2026-07-03 07:48)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -389,6 +389,10 @@
 | soc-w09 | 356 | 🔁review | 🔁review | 🔁review | 🔁review | 0/115 |
 | soc-w10 | 357 | 🔁review | 🔁review | 🔁review | 🔁review | 0/115 |
 | soc-w11 | 358 | 🔁review | 🔁review | 🔁review | 🔁review | 0/115 |
+| soc-w12 | 359 | 🔁review | 🔁review | 🔁review | 🔁review | 0/115 |
+| soc-w13 | 360 | 🔁review | 🔁review | 🔁review | 🔁review | 0/117 |
+| soc-w14 | 361 | 🔁review | 🔁review | 🔁review | 🔁review | 0/115 |
+| soc-w15 | 362 | 🔁review | 🔁review | 🔁review | 🔁review | 0/117 |
 
 ## soc-adv  (✅5 🟡17)
 
@@ -409,3 +413,10 @@
 | soc-adv-w13 | 345 | 🔁review | 🔁review | 🔁review | 🔁review | 0/118 |
 | soc-adv-w14 | 346 | 🔁review | 🔁review | 🔁review | 🔁review | 0/118 |
 | soc-adv-w15 | 347 | 🔁review | 🔁review | 🔁review | 🔁review | 0/118 |
+
+## wazuh-special  (✅0 🟡0)
+
+| 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
+|---|---|---|---|---|---|---|
+| wazuh-special-w01 | 363 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| wazuh-special-w02 | 364 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
