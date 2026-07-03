@@ -131,7 +131,7 @@
 | 피드백 | `/feedback`(로컬 DB) | 건건+병목 피드백 |
 | 활동 타임라인 | `/monitoring/battles/{id}/activity` | ActivityEvent |
 
-- **주의**: `/monitoring/siem/{search,stats,ask}` 는 **중앙 OpenSearch** 경로라 `TUBEWAR_LAB_MONITOR=0`(기본)에서 `enabled:false`. 데모 대시보드는 **OpenSearch가 아니라 로컬 엔드포인트**(progress/clears/activity/feedback) 위에 만든다.
+- **주의**: `/monitoring/siem/{search,stats,ask}` 는 **중앙 OpenSearch** 경로. ~~`TUBEWAR_LAB_MONITOR=0`(기본)에서 `enabled:false`~~ → **v9에서 기본 `=1`로 변경**(bootstrap), 라이브 배틀 활동이 중앙 SIEM에 실시간 적재됨. 데모 대시보드는 로컬 엔드포인트(progress/clears/activity/feedback) + 중앙 SIEM(코호트 뷰) 병용.
 - 검증 완료: `GET /monitoring/battles/1/progress` 가 학생별 완성도(100/75/50/25%)+병목 플래그를 정확히 반환.
 
 ---
@@ -275,3 +275,47 @@ OPENSEARCH_URL=http://127.0.0.1:9210 .venv/bin/python scripts/backfill_siem.py -
 **전제**: docker, (원격 iframe 원할 때) cloudflared.
 
 _작성: Claude Code. 상태: Phase 0·1·2 + G6 + 검증/버그수정 + 중앙 SIEM(네이티브+임베드 OSD) + 배포 스크립트화(v8). `bootstrap → setup_siem → seed → backfill` 로 타 머신 재현._
+
+---
+
+## 16. 관제 실동작 확립 + 적응형 SIEM (v9) — 2026-07-03
+
+시연용 목업을 넘어 **실 인프라 기반 관제가 실제로 도는 상태**로 확립. 관련 상세 문서:
+`docs/battle-verification.md`(배틀 채점), `docs/cohort-siem-setup.md`(코호트 SIEM),
+`docs/initiatives/adaptive-siem-fields.md`(적응형 필드).
+
+### 관제 데이터 소스 실동작
+- **실 Assessor 배포** — `scripts/el34_assessor.py`(mock 아님) → el34 도커 호스트 systemd `el34-assessor`
+  (`:9201`). `docker exec` 로 로그/포트/프로세스 실검사 → 결정론 채점 실동작.
+  (`/activity`도 제공 → lab_monitor 가 pull 하는 관제 활동 소스.)
+- **`TUBEWAR_LAB_MONITOR=1` 기본화** — 배틀 start 시 lab_monitor 자동 기동 → 학생 infra 활동을
+  N초 간격 pull → 중앙 SIEM 적재. (기존 `=0` 이 "중앙 SIEM 로그 안 보임"의 1차 원인이었음.)
+
+### 코호트 중앙 SIEM — "안 보이던" 3대 함정 수정
+1. `LAB_MONITOR=0` → 적재 자체 안 됨 → **=1**.
+2. 배틀 **`cohort_id=NULL`** → identity 캐치올로 감 → `play_scenario`/`run_all_battles` 에
+   **`TW_COHORT_ID`** 로 코호트 아래 배틀 생성.
+3. `backfill_siem` 이 **`OPENSEARCH_DASHBOARDS_URL` 미로딩** → 인덱스만 차고 **dataview 미생성**(대시보드
+   에서 코호트 안 보임) → 모든 `OPENSEARCH_*` 로드하도록 수정. 저장객체 ops 는
+   `OPENSEARCH_DASHBOARDS_INTERNAL_URL`(로컬, 터널 400 회피).
+- **코호트별 dataview**: dv-1(학과)·dv-2(과목)·dv-3(반) 전부 생성(`scripts/refresh_siem_fields.py`).
+
+### 적응형 SIEM 필드 (강사 분석용)
+- `siem_export.classify()` 가 **중요 지점을 top-level 필드로 분리**(`evt_src/evt_signature/evt_rule_id/
+  evt_cmd/evt_rc/evt_path`) + **유사건 그룹핑**(`group_no` 대역 10정찰/20익스플로잇/30접근/40실행/
+  50무결성/90기타 · `phase` · `severity`). 건별 폭증 없이 `group_no`/`phase`로 딱딱 필터·집계.
+- **동적 필드 대시보드 반영**: `refresh_index_pattern`(매 reconcile) + `refresh_siem_fields.py`(주기).
+
+### 배틀 실채점 검증 (관제가 볼 데이터의 신뢰성)
+- 실 배틀이 끝까지 실행·채점(결정론=Assessor, semantic=claude). 자동 하니스는 partial 상한이나,
+  **실답안은 만점**(battle5 25/25, iot-w01 4미션 83/90, autonomous-security RED 42/45).
+- 전 과목 배치 채점 결과표 자동화: `scripts/run_all_battles.py → docs/battle-results.md`.
+
+### 실검증 (v9)
+- 코호트3 라이브 배틀 → SIEM 인덱스 116→3000+ docs 실시간 적재(identity 아님).
+- `group_no` 집계 동작(정찰/WAF/인증/실행 …), dv-1/2/3 각 46필드(신규 분석필드 포함).
+
+### 배포(v9 추가)
+bootstrap `.env` 에 `TUBEWAR_LAB_MONITOR=1` + `OPENSEARCH_URL/DASHBOARDS_URL/DASHBOARDS_INTERNAL_URL`
+자동 기입. el34 Assessor 는 `deploy/el34-assessor.service` 로 별도 배포(도커 호스트).
+순서: `bootstrap → setup_siem → seed_demo_cohort → backfill_siem --cohort <id> → refresh_siem_fields`.
