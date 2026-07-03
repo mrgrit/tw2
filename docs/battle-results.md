@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 221 · 미션 941 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 03:25)
+**집계**: 시나리오 227 · 미션 965 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 03:36)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -318,3 +318,14 @@
 | iot-security-w09 | 295 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | iot-security-w10 | 296 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | iot-security-w11 | 297 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| iot-security-w12 | 298 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| iot-security-w13 | 299 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| iot-security-w14 | 300 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| iot-security-w15 | 301 | 🔁review | 🔁review | ❌fail | ❌fail | 0/95 |
+
+## physical-pentest  (✅0 🟡0)
+
+| 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
+|---|---|---|---|---|---|---|
+| physical-pentest-w01 | 302 | ❌fail | ❌fail | ❌fail | ❌fail | 3/90 |
+| physical-pentest-w02 | 303 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
