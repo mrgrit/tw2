@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 233 · 미션 965 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 03:38)
+**집계**: 시나리오 239 · 미션 989 · ✅pass 22 · 🟡partial 168 (생성 시각 2026-07-03 03:54)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -323,7 +323,7 @@
 | iot-security-w14 | 300 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | iot-security-w15 | 301 | 🔁review | 🔁review | ❌fail | ❌fail | 0/95 |
 
-## physical-pentest  (✅0 🟡0)
+## physical-pentest  (✅0 🟡1)
 
 | 시나리오 | battle | RED-1 | RED-2 | BLUE-1 | BLUE-2 | 점수합 |
 |---|---|---|---|---|---|---|
@@ -335,3 +335,9 @@
 | physical-pentest-w06 | — | ⚠err | ⚠err | ⚠err | ⚠err | ConnectError: [Errno 111] Conn |
 | physical-pentest-w07 | — | ⚠err | ⚠err | ⚠err | ⚠err | ConnectError: [Errno 111] Conn |
 | physical-pentest-w08 | — | ⚠err | ⚠err | ⚠err | ⚠err | ConnectError: [Errno 111] Conn |
+| physical-pentest-w09 | 305 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| physical-pentest-w10 | 306 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| physical-pentest-w11 | 307 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| physical-pentest-w12 | 308 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
+| physical-pentest-w13 | 309 | ❌fail | ❌fail | 🟡partial | ❌fail | 12/90 |
+| physical-pentest-w14 | 310 | ❌fail | ❌fail | ❌fail | ❌fail | 0/90 |
