@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 305 · 미션 1403 · ✅pass 54 · 🟡partial 233 (생성 시각 2026-07-03 08:12)
+**집계**: 시나리오 308 · 미션 1418 · ✅pass 54 · 🟡partial 233 (생성 시각 2026-07-03 08:17)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -437,3 +437,6 @@
 | web-vuln-w10 | 374 | 🔁review | 🔁review | 🔁review | 🔁review | 0/98 |
 | web-vuln-w11 | 375 | 🔁review | 🔁review | 🔁review | 🔁review | 0/98 |
 | web-vuln-w12 | 376 | 🔁review | 🔁review | 🔁review | 🔁review | 0/98 |
+| web-vuln-w13 | 377 | 🔁review | 🔁review | 🔁review | 🔁review | 0/98 |
+| web-vuln-w14 | 378 | 🔁review | 🔁review | 🔁review | 🔁review | 0/98 |
+| web-vuln-w15 | 379 | 🔁review | 🔁review | 🔁review | 🔁review | 0/98 |
