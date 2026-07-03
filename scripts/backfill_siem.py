@@ -19,13 +19,14 @@ import os, sys, argparse, asyncio
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "apps", "api"))
 
-# .env 의 OPENSEARCH_URL 을 자동 로드(명시 env 우선)
-if not os.getenv("OPENSEARCH_URL"):
-    envp = os.path.join(ROOT, ".env")
-    if os.path.exists(envp):
-        for line in open(envp):
-            if line.startswith("OPENSEARCH_URL="):
-                os.environ["OPENSEARCH_URL"] = line.split("=", 1)[1].strip()
+# .env 의 OPENSEARCH_* 를 자동 로드(명시 env 우선). URL 뿐 아니라 DASHBOARDS_URL·USER·PASSWORD 도
+# 로드해야 저장객체(dataview) 생성이 된다(없으면 인덱스만 차고 대시보드에서 안 보임 — 흔한 함정).
+_envp = os.path.join(ROOT, ".env")
+if os.path.exists(_envp):
+    for _line in open(_envp):
+        for _k in ("OPENSEARCH_URL", "OPENSEARCH_DASHBOARDS_URL", "OPENSEARCH_USER", "OPENSEARCH_PASSWORD"):
+            if _line.startswith(_k + "=") and not os.getenv(_k):
+                os.environ[_k] = _line.split("=", 1)[1].strip()
 
 from sqlalchemy import select  # noqa: E402
 from app.db import SessionLocal  # noqa: E402

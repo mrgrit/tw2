@@ -498,15 +498,18 @@ def run_one(sid, mode, target=EL34_HOST):
     blues=sorted(d.get("blue_missions") or [],key=lambda x:x.get("order"))
 
     # el34 = 단일 공유 인스턴스(.151). 외부 공격은 .202 VM→.161(출처 IP 보존), 점검/심기는 .151 docker exec.
+    # TW_COHORT_ID: 배틀을 코호트 아래에서 생성 → lab_monitor 가 활동을 코호트 stamp 하여 중앙 SIEM 적재
+    # (TUBEWAR_LAB_MONITOR=1 이어야 lab_monitor 가 기동해 /activity 를 pull·export 한다).
+    COHORT=int(os.environ.get("TW_COHORT_ID") or 0) or None
     if a.mode=="solo":
         EMAIL="mrgrit@ync.ac.kr"; INFRA=vh.own_infra(EMAIL); HOST=a.target; suf="mrgrit"
-        st,b=vh.create_solo(scn_int,EMAIL,INFRA,monitor="bastion"); bid=b["battle"]["id"]; vh.start(bid,EMAIL)
+        st,b=vh.create_solo(scn_int,EMAIL,INFRA,monitor="bastion",cohort_id=COHORT); bid=b["battle"]["id"]; vh.start(bid,EMAIL)
         RED_EMAIL=BLUE_EMAIL=EMAIL; RHOST=BHOST=HOST
     else:
         # duel: red=shin(infra2) opponent공격, blue=mrgrit(infra1) 자기방어 — 둘 다 동일 el34(.151) 타깃.
         RED_EMAIL="shin@ync.ac.kr"; BLUE_EMAIL="mrgrit@ync.ac.kr"
         BHOST=RHOST=EL34_HOST; suf="shin"
-        st,b=vh.create_duel(scn_int,RED_EMAIL,2,BLUE_EMAIL,1,monitor="bastion"); bid=b["battle"]["id"]; vh.start(bid,RED_EMAIL)
+        st,b=vh.create_duel(scn_int,RED_EMAIL,2,BLUE_EMAIL,1,monitor="bastion",cohort_id=COHORT); bid=b["battle"]["id"]; vh.start(bid,RED_EMAIL)
     print(f"[{a.sid}/{a.mode}] battle={bid} red_host={RHOST} blue_host={BHOST}", flush=True)
     P=Planted(); results=[]
 
