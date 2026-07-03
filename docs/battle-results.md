@@ -20,7 +20,7 @@
 > battle 97(결정론: 실공격→Assessor→pass 42/45). 상세는 **`docs/battle-reference-passes.md`**.
 > 즉 partial/fail 은 시나리오 결함이 아니라 자동 하니스가 학생이 아니기 때문. 배포는 `docs/battle-verification.md`.
 
-**집계**: 시나리오 167 · 미션 695 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 02:00)
+**집계**: 시나리오 173 · 미션 719 · ✅pass 22 · 🟡partial 167 (생성 시각 2026-07-03 02:08)
 
 
 ## agent-ir  (✅0 🟡33)
@@ -249,3 +249,9 @@
 |---|---|---|---|---|---|---|
 | autonomous-systems-w01 | 242 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
 | autonomous-systems-w02 | 243 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| autonomous-systems-w03 | 244 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| autonomous-systems-w04 | 245 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| autonomous-systems-w05 | 246 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| autonomous-systems-w06 | 247 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| autonomous-systems-w07 | 248 | 🔁review | 🔁review | 🔁review | 🔁review | 0/90 |
+| autonomous-systems-w08 | 249 | 🔁review | 🔁review | 🔁review | 🔁review | 0/95 |
