@@ -91,8 +91,9 @@ def check(c):
         if t == "command_ran":
             # 외부 공격자 명령 로그는 6v6 원칙상 미수집 → 타깃 접근로그에서 패턴 흔적으로 근사.
             pat = p.get("pattern") or ""
-            ok, ev = _grep("el34-web", ["/var/log/apache2/ai_access.log", "/var/log/apache2/access.log",
-                                        "/var/log/apache2/admin_access.log"], pat)
+            # AICompanion :8007 요청은 ai_port_access.log 에, 웹 :80 은 ai_access/access 에 남는다.
+            ok, ev = _grep("el34-web", ["/var/log/apache2/ai_access.log", "/var/log/apache2/ai_port_access.log",
+                                        "/var/log/apache2/access.log", "/var/log/apache2/admin_access.log"], pat)
             if ok:
                 return True, "target-side access trace: " + ev
             return False, f"external command_ran not collectable; no target-side trace for '{pat}'"
