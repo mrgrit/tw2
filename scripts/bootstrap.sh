@@ -39,6 +39,7 @@ for a in "$@"; do case "$a" in
 esac; done
 
 RUN_USER="${SUDO_USER:-$(id -un)}"
+RUN_HOME="$(getent passwd "$RUN_USER" 2>/dev/null | cut -d: -f6)"; RUN_HOME="${RUN_HOME:-$HOME}"
 say(){ printf '\n\033[1;36m[bootstrap]\033[0m %s\n' "$*"; }
 have(){ command -v "$1" >/dev/null 2>&1; }
 SUDO=""; [ "$(id -u)" -ne 0 ] && have sudo && SUDO="sudo"
@@ -60,33 +61,70 @@ heal_owner(){
   chown -R "$RUN_USER" .venv .data apps/api/*.egg-info apps/ui/node_modules 2>/dev/null || true
 }
 
+# ---------- Node 20 확보 헬퍼 ----------
+# UI(vite5/tsc5)는 Node 18+ 필요. 배포판 기본 Node 가 낮으면(예: Ubuntu22.04=Node12)
+# UI 빌드가 'Unexpected token ?' 같은 문법오류로 터진다 → 반드시 18+ 를 먼저 확보한다.
+NODE_MIN=18
+node_major(){ node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
+node_ok(){ have node && have npm && [ "$(node_major)" -ge "$NODE_MIN" ]; }
+# apt/dnf 로 Node 확보가 안 될 때(무권한·저장소충돌·네트워크) 공식 정적 tar.xz 를 홈에 풀어
+# rootless 설치한다. sudo 없이도 UI 빌드/서비스가 되도록 PATH 앞에 둔다.
+install_node_rootless(){
+  local ver=v20.18.1 arch narch dest url rc
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) narch=x64;; aarch64|arm64) narch=arm64;; armv7l) narch=armv7l;;
+    *) say "  rootless Node: 미지원 arch=$arch"; return 1;;
+  esac
+  dest="$RUN_HOME/.local/node20"
+  url="https://nodejs.org/dist/${ver}/node-${ver}-linux-${narch}.tar.xz"
+  say "  rootless Node 20 설치 → $dest"
+  AS_USER mkdir -p "$dest" || return 1
+  AS_USER bash -c "curl -fsSL '$url' | tar -xJ -C '$dest' --strip-components=1" \
+    || { say "  rootless Node 다운로드/해제 실패(네트워크 또는 xz-utils 누락?)"; return 1; }
+  export PATH="$dest/bin:$PATH"
+  # 대화형 재실행·서비스가 찾도록 로그인 셸 PATH 에도 멱등 추가.
+  rc="$RUN_HOME/.profile"
+  AS_USER bash -c "grep -q 'node20/bin' '$rc' 2>/dev/null || printf '\n# tw2 bootstrap: rootless Node 20\nexport PATH=\"\$HOME/.local/node20/bin:\$PATH\"\n' >> '$rc'" 2>/dev/null || true
+  node_ok && say "  rootless Node: $(node -v 2>&1) / npm $(npm -v 2>&1)"
+}
+
 # ---------- 1) 시스템 패키지 ----------
 say "1/7 시스템 패키지 설치"
 if have apt-get; then
   $SUDO apt-get update -y
   $SUDO apt-get install -y python3 python3-venv python3-pip python3-dev \
-      git curl ca-certificates build-essential sqlite3 openssl libffi-dev libssl-dev
-  if ! have node || [ "$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null||echo 0)" -lt 18 ]; then
-    say "  Node.js 20 (NodeSource) 설치"
+      git curl ca-certificates build-essential sqlite3 openssl libffi-dev libssl-dev xz-utils
+  if ! node_ok; then
+    say "  Node.js ${NODE_MIN}+ 미확보(현재 $(node -v 2>/dev/null||echo none)) → Node 20(NodeSource) 설치"
+    # NodeSource 의 nodejs 는 npm 을 번들 → 배포판 'npm'·'libnode-dev' 와 dpkg Conflicts.
+    # 이 둘을 먼저 제거하지 않으면 apt-get install nodejs 가 충돌로 실패하고 Node 가 낮은 채로 남아
+    # 뒤늦게 UI 빌드(vite/tsc)가 'Unexpected token ?' 로 터진다 — 이 배포의 npm 오류 근본원인.
+    $SUDO apt-get remove -y --purge npm nodejs nodejs-doc libnode-dev >/dev/null 2>&1 || true
+    $SUDO apt-get autoremove -y >/dev/null 2>&1 || true
     if curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash -; then
-      $SUDO apt-get install -y nodejs
+      $SUDO apt-get install -y nodejs || true
     else
-      say "  ⚠ NodeSource 실패 → 배포판 nodejs+npm 로 폴백"
-      $SUDO apt-get install -y nodejs npm
+      say "  ⚠ NodeSource 실패 → 배포판 nodejs+npm 폴백"
+      $SUDO apt-get install -y nodejs npm || true
     fi
   fi
-  # 일부 배포판은 nodejs 패키지에 npm 이 없다 → 별도 보장.
-  have npm || $SUDO apt-get install -y npm || true
 elif have dnf; then
-  $SUDO dnf install -y python3 python3-pip python3-devel git curl gcc gcc-c++ make sqlite openssl libffi-devel openssl-devel
-  have node || $SUDO dnf module install -y nodejs:20/common || $SUDO dnf install -y nodejs
-  have npm || $SUDO dnf install -y npm || true
+  $SUDO dnf install -y python3 python3-pip python3-devel git curl gcc gcc-c++ make sqlite openssl libffi-devel openssl-devel xz
+  if ! node_ok; then
+    $SUDO dnf module install -y nodejs:20/common || $SUDO dnf install -y nodejs npm || true
+  fi
 else
-  echo "지원 안 되는 패키지매니저(apt/dnf 아님). python3.10+/node18+/git/sqlite 수동 설치 후 --no-* 로 재실행"; exit 1
+  echo "지원 안 되는 패키지매니저(apt/dnf 아님). python3.10+/node18+/git/sqlite 수동 설치 후 재실행"; exit 1
 fi
+
+# 시스템 패키지로 Node ${NODE_MIN}+ 를 못 잡았으면(무권한·저장소충돌·네트워크) rootless 폴백:
+# 공식 정적 빌드를 RUN_USER 홈(~/.local/node20)에 풀고 PATH 앞에 둔다 → sudo 없이도 UI 빌드 가능.
+node_ok || install_node_rootless || true
+
 # Node/npm 최종 검증 — 여기서 못 잡으면 뒤늦게 UI 빌드(npm)에서 불명확한 오류로 터진다.
-if ! have node || ! have npm; then
-  echo "✋ Node.js/npm 설치 실패(네트워크/저장소 문제 가능)."
+if ! node_ok; then
+  echo "✋ Node.js ${NODE_MIN}+/npm 확보 실패(네트워크/저장소/권한 문제 가능)."
   echo "   수동 설치 후 재실행: Node 20 LTS — https://nodejs.org  또는  nvm install 20"
   exit 1
 fi
@@ -195,8 +233,8 @@ fi
 NODE_BIN="$(command -v node)"; NPM_BIN="$(command -v npm)"
 # API subprocess(채점·피드백·SIEM 분석)가 claude CLI 를 찾도록 PATH 에 사용자 로컬 bin 포함.
 # systemd 기본 PATH 엔 ~/.local/bin 이 없어 shutil.which("claude")=None → AI 채점 실패했음.
-RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"; RUN_HOME="${RUN_HOME:-$HOME}"
-API_PATH="$RUN_HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
+# (RUN_HOME 는 상단에서 이미 산출) rootless Node 를 썼다면 node20/bin 도 서비스 PATH 에 포함.
+API_PATH="$RUN_HOME/.local/bin:$RUN_HOME/.local/node20/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
 UI_START="$NPM_BIN run preview -- --host $HOST --port $UI_PORT"
 [ "$UI_MODE" = "dev" ] && UI_START="$NPM_BIN run dev -- --host $HOST --port $UI_PORT"
 if [ "$USE_SYSTEMD" = "1" ] && have systemctl && [ -d /run/systemd/system ]; then
