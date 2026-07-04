@@ -307,9 +307,11 @@ _작성: Claude Code. 상태: Phase 0·1·2 + G6 + 검증/버그수정 + 중앙 
 - **동적 필드 대시보드 반영**: `refresh_index_pattern`(매 reconcile) + `refresh_siem_fields.py`(주기).
 
 ### 배틀 실채점 검증 (관제가 볼 데이터의 신뢰성)
-- 실 배틀이 끝까지 실행·채점(결정론=Assessor, semantic=claude). 자동 하니스는 partial 상한이나,
-  **실답안은 만점**(battle5 25/25, iot-w01 4미션 83/90, autonomous-security RED 42/45).
-- 전 과목 배치 채점 결과표 자동화: `scripts/run_all_battles.py → docs/battle-results.md`.
+- **참조 실답안**(제대로 된 제출)은 세 채점 유형 모두 pass: battle5 25/25 · iot-w01 4미션 83/90 ·
+  autonomous-security RED 42/45. → 시나리오·채점기 정상 근거. (`docs/battle-reference-passes.md`)
+- ⚠ **전 과목 자동 배치 채점은 무효**였다(자동 하니스가 학생 답안을 못 써 리포트가 폴백 문구로
+  도배 + AI 채점 대량 호출실패 63% review) → 회수·삭제. 상세·정정: `docs/battle-results.md`.
+  미션 실검증은 자동 배치가 아니라 **표본 실답안 검수**로 한다.
 
 ### 실검증 (v9)
 - 코호트3 라이브 배틀 → SIEM 인덱스 116→3000+ docs 실시간 적재(identity 아님).
