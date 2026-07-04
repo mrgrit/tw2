@@ -161,6 +161,10 @@ async def go():
 asyncio.run(go())
 " && say "  DB 시드 완료: .data/tw2.sqlite3"
 
+# 이니셔티브 게시판(Post, board=initiative) ← docs/*.md 전부 upsert(멱등). 게시판은 DB 라서
+# 문서 편집만으로는 반영 안 됨 → 배포/문서수정 후 이 시드로 동기화.
+AS_USER .venv/bin/python scripts/seed_initiative_posts.py 2>/dev/null && say "  이니셔티브 게시판 시드 완료(docs → board)" || true
+
 # 등록된 el34 인프라 vm_ip 를 .env 의 단일 노브(TUBEWAR_REF_TARGET_IP)로 정렬(멱등).
 # IP 가 바뀌어도 .env 만 고치고 이 스크립트(또는 sync_target_ip.py) 재실행이면 관제가 따라간다.
 AS_USER python3 scripts/sync_target_ip.py 2>/dev/null || true
