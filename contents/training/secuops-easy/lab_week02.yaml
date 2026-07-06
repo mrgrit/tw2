@@ -4,25 +4,24 @@ version: standalone-easy
 course: secuops-easy
 week: 2
 description: |
-  방화벽 콘솔(192.168.136.145:8081)로 실제 방화벽을 다룬다. 룰을 만들면 콘솔이 생성하는 진짜 nft
-  명령을 확인하고 적용한다. 악성 IP 차단 → SSH 속도 제한 → DNAT 공개 → 연결 추적 → SIEM 상태 →
-  침해대응 시나리오 검증(fw-s01, fw-s11) → 마지막에 실습 룰·객체를 모두 정리(cleanup)한다. 채점
-  명령은 콘솔이 내부에서 호출하는 API 와 동일하다(= GUI 동작 = nft 명령). 적용 결과는 콘솔의
-  `/api/ruleset`(raw nft 텍스트 포함)에서 확인한다.
+  방화벽 장비(`fw`, `10.20.30.1`)에 직접 SSH 접속해 실제 방화벽을 운영자처럼 다룬다. `sudo nft` 로
+  룰을 넣고 `sudo nft list ruleset` 로 반영을 확인한다. 악성 IP 차단 → SSH 속도 제한 → DNAT 공개 →
+  연결 추적(conntrack) → SIEM 연동 확인 → 차단 룰 실측 검증 → named set(그룹) 차단 → 마지막에 실습
+  룰·객체를 모두 정리(cleanup)해 원상 복구한다. (`ssh ccc@10.20.30.1` 비번 `1`, 관리 명령은 `sudo`.)
 difficulty: easy
 duration_minutes: 120
 audience: 보안 솔루션 운영 입문자 (2주차)
 prerequisites:
   - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
-  - el34 호스트 브라우저에서 방화벽 콘솔(192.168.136.145:8081) 접속 가능
+  - 방화벽 장비 접속 가능 (`ssh ccc@10.20.30.1`, 비번 `1`, sudo 보유)
   - W02 강의안 정독 — 체인/룰 순서/stateful/NAT/객체/카운터
 objectives:
-  - "방화벽 구성(테이블/인터페이스)을 콘솔에서 읽는다"
-  - "룰을 만들어 생성되는 nft 명령을 확인하고 적용한다"
+  - "방화벽 장비에 SSH 접속해 구성(테이블)을 nft 로 읽는다"
+  - "sudo nft 로 룰을 직접 만들고 룰셋에서 반영을 확인한다"
   - "SSH 무차별 대입을 rate limit 으로 완화한다"
   - "DNAT 으로 내부 서비스를 외부에 공개한다"
-  - "conntrack 으로 stateful 을 확인하고, 방화벽을 SIEM 에 연동한다"
-  - "침해대응 시나리오(fw-s01, fw-s11)를 검증 통과시키고, 실습 룰을 정리한다"
+  - "conntrack 으로 stateful 을 확인하고, 방화벽의 SIEM 연동을 점검한다"
+  - "차단 룰이 실제 동작(counter)함을 검증하고, 실습 룰을 정리한다"
 pass_threshold: 0.7
 
 steps:
@@ -31,20 +30,25 @@ steps:
     instruction: |
       ## 🎯 미션 — 방화벽 구성 읽기
 
-      방화벽 콘솔(`http://192.168.136.145:8081/`)의 **대시보드**와 **룰 관리**를 열어, 방화벽이 다루는
-      테이블을 확인한다. `inet six_filter`(필터 룰), `ip six_nat`(NAT 룰) 두 개가 우리가 편집할
-      테이블이다. (`ip nat`은 Docker 용이라 콘솔이 보호한다.)
+      방화벽 장비(`fw`, `10.20.30.1`)에 SSH 로 접속해, 방화벽이 다루는 테이블을 직접 확인한다.
+      `inet six_filter`(필터 룰), `ip six_nat`(NAT 룰) 두 개가 우리가 편집할 테이블이다.
+      (`ip nat`은 Docker 용이므로 건드리지 않는다.)
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (방화벽 장비에서 직접)
       ```bash
-      curl -s http://192.168.136.145:8081/api/status
+      # 방화벽 장비에 접속 (비밀번호: 1)
+      ssh ccc@10.20.30.1
+
+      # 방화벽이 다루는 nftables 테이블 확인
+      sudo nft list tables
       ```
       ## ✅ 합격 기준
-      출력의 tables 에 `six_filter` 가 보인다.
-    hint: 'curl -s http://192.168.136.145:8081/api/status'
+      출력의 테이블 목록에 `six_filter` 가 보인다.
+    hint: 'ssh ccc@10.20.30.1 → sudo nft list tables'
     answer: |
-      curl -s http://192.168.136.145:8081/api/status
-    answer_detail: "tables=[ip nat(보호), inet six_filter(편집), ip six_nat(편집)]. editable=true 인 것만 룰 추가 가능."
+      # 방화벽 장비에서 테이블 목록을 직접 확인
+      ssh ccc@10.20.30.1 'sudo nft list tables'
+    answer_detail: "tables = ip nat(Docker용, 건드리지 않음), inet six_filter(필터 편집), ip six_nat(NAT 편집). 우리가 룰을 만들 곳은 six_filter·six_nat."
     verify:
       type: output_contains
       expect: six_filter
@@ -55,24 +59,31 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 미션 — 룰이 만들어내는 nft 명령 미리보기
+      ## 🎯 미션 — 적용할 nft 명령 검토 + 현재 forward 체인 보기
 
-      **룰 관리** 폼에서 — 체인 `forward`, 출발지 `10.20.30.202`, 동작 `drop`, 위치 `top`으로 두고
-      **① 명령 미리보기**를 누른다. 아직 적용하지 말고, 어떤 `nft` 명령이 만들어지는지 본다.
+      악성 IP `192.168.0.202`(공격자)를 차단하는 룰을 넣기 전에, **적용할 명령을 먼저 검토**하고
+      현재 `forward` 체인 상태를 확인한다(적용은 다음 스텝). 우리가 넣을 명령은:
+      `nft insert rule inet six_filter forward ip saddr 192.168.0.202 counter drop`
+      (`insert` = 체인 맨 위에, `counter` = 히트 수 집계, `drop` = 버림).
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (방화벽 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/preview -d '{"chain":"forward","saddr":"10.20.30.202","action":"drop","position":"top"}'
+      # 넣을 명령을 눈으로 검토 (아직 적용 안 함)
+      echo 'nft insert rule inet six_filter forward ip saddr 192.168.0.202 counter drop'
+
+      # 현재 forward 체인 상태 확인 (룰이 어디에 들어갈지)
+      sudo nft list chain inet six_filter forward
       ```
       ## 🔍 무엇을 보나
-      `nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop` — GUI 클릭이 곧
-      이 명령이다. 미리보기는 **실행하지 않는다**(안전).
+      적용 전에 어떤 `nft` 명령이 실행될지, 그리고 현재 forward 체인에 어떤 룰이 있는지 확인한다.
+      운영에서는 룰을 넣기 전 항상 이렇게 검토한다.
       ## ✅ 합격 기준
-      생성된 명령에 `nft insert rule inet six_filter forward` 가 보인다.
-    hint: '미리보기는 실행 없이 명령만 생성. POST /api/rule/preview'
+      검토한 명령에 `nft insert rule inet six_filter forward` 가 보인다.
+    hint: 'echo 로 명령 검토 + sudo nft list chain inet six_filter forward'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/preview -d '{"chain":"forward","saddr":"10.20.30.202","action":"drop","position":"top"}'
-    answer_detail: "미리보기 = nft 명령 문자열만 반환. 적용 전에 무엇이 실행될지 확인하는 안전 단계. insert=top(맨 위)."
+      # 적용할 명령 검토 + 현재 forward 체인 확인 (방화벽 장비에서)
+      ssh ccc@10.20.30.1 "echo 'nft insert rule inet six_filter forward ip saddr 192.168.0.202 counter drop'; sudo nft list chain inet six_filter forward"
+    answer_detail: "적용 전 검토 단계 — 넣을 nft 명령을 확인하고 현재 forward 체인 상태를 본다. insert=top(맨 위). 운영에서 룰 적용 전 항상 검토한다."
     verify:
       type: output_contains
       expect: nft insert rule inet six_filter forward
@@ -83,26 +94,29 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 미션 — 악성 IP 차단 룰 적용 (fw-s01)
+      ## 🎯 미션 — 악성 IP 차단 룰 적용
 
-      이제 **② 적용**을 눌러 룰을 실제로 적용한다. 우측 현재 룰셋에 새 룰이 나타난다. 적용 후
-      `/api/ruleset`에서 그 룰이 반영됐는지 확인한다.
+      이제 검토한 룰을 **실제로 적용**한다(`sudo nft insert`). 방화벽 forward 체인 맨 위에 악성 IP
+      `192.168.0.202` 차단 룰이 생긴다. 적용 후 룰셋에서 반영됐는지 확인한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (방화벽 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop"}' >/dev/null
-      curl -s http://192.168.136.145:8081/api/ruleset | grep -o 10.20.30.202 | head -1
+      # 악성 IP(192.168.0.202) 차단 룰을 forward 체인 맨 위에 적용
+      sudo nft insert rule inet six_filter forward ip saddr 192.168.0.202 counter drop
+
+      # 적용됐는지 룰셋에서 확인
+      sudo nft list ruleset | grep 192.168.0.202
       ```
       ## ✅ 합격 기준
-      적용 후 룰셋에 `10.20.30.202` 가 보인다.
-    hint: 'apply 후 /api/ruleset 에서 10.20.30.202 확인'
+      적용 후 룰셋에 `192.168.0.202` 차단 룰이 보인다.
+    hint: 'sudo nft insert rule ... saddr 192.168.0.202 drop; sudo nft list ruleset | grep'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter forward ip saddr 10.20.30.202 counter drop"}' >/dev/null
-      curl -s http://192.168.136.145:8081/api/ruleset | grep -o 10.20.30.202 | head -1
-    answer_detail: "apply 가 nft 명령을 실제 실행 → forward 체인 맨 위에 saddr drop 룰 생성. 1차 침해대응(악성 IP 차단)."
+      # 악성 IP 차단 룰 적용 + 룰셋에서 확인 (방화벽 장비에서)
+      ssh ccc@10.20.30.1 'sudo nft insert rule inet six_filter forward ip saddr 192.168.0.202 counter drop; sudo nft list ruleset | grep -o "ip saddr 192.168.0.202 counter packets [0-9]* bytes [0-9]* drop" | head -1 || sudo nft list ruleset | grep -o 192.168.0.202 | head -1'
+    answer_detail: "sudo nft insert 가 forward 체인 맨 위에 saddr 192.168.0.202 drop 룰을 실제 생성. 1차 침해대응(악성 IP 차단). counter 로 히트 수를 집계한다."
     verify:
       type: output_contains
-      expect: 10.20.30.202
+      expect: 192.168.0.202
       field: stdout
       semantic:
         intent: "차단 룰을 실제 적용하고 룰셋에 반영됨을 확인 — 1차 침해대응(악성 IP 차단)"
@@ -115,18 +129,21 @@ steps:
       체인 `input`, tcp, dport `22`, ct state `new`, rate `10/minute` + 초과분만(over), 동작 `drop`,
       위치 `top` → 적용한다. 정상 사용자는 통과하고 폭주만 막힌다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (방화벽 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop"}' >/dev/null
-      curl -s http://192.168.136.145:8081/api/ruleset | grep -o "limit rate over" | head -1
+      # SSH(22) 신규 연결이 분당 10회를 넘으면 초과분만 drop (정상 사용자는 통과)
+      sudo nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop
+
+      # 적용 확인
+      sudo nft list ruleset | grep "limit rate over"
       ```
       ## ✅ 합격 기준
       적용된 룰에 `limit rate over` 가 보인다.
-    hint: 'limit rate over = 초과분만 차단'
+    hint: 'sudo nft insert rule ... limit rate over 10/minute drop'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop"}' >/dev/null
-      curl -s http://192.168.136.145:8081/api/ruleset | grep -o "limit rate over" | head -1
-    answer_detail: "limit rate over 10/minute → 분당 10회 초과 신규 연결만 drop. 가용성 보존형 방어."
+      # SSH rate limit 룰 적용 + 확인 (방화벽 장비에서)
+      ssh ccc@10.20.30.1 'sudo nft insert rule inet six_filter input tcp dport 22 ct state new limit rate over 10/minute counter drop; sudo nft list ruleset | grep -o "limit rate over 10/minute" | head -1'
+    answer_detail: "limit rate over 10/minute → 분당 10회 초과 신규 SSH 연결만 drop. 정상 사용자는 통과하는 가용성 보존형 방어."
     verify:
       type: output_contains
       expect: limit rate over
@@ -142,18 +159,21 @@ steps:
       **NAT** 메뉴에서 — DNAT, tcp, 외부 포트 `8088`, 대상 `10.20.32.80:80` → 적용. 외부에서
       `방화벽:8088`로 오면 내부 웹서버로 연결된다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (방화벽 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/nat/apply -d '{"command":"nft add rule ip six_nat prerouting iifname \"eth0\" tcp dport 8088 counter dnat to 10.20.32.80:80"}' >/dev/null
-      curl -s http://192.168.136.145:8081/api/ruleset | grep -o 8088 | head -1
+      # 외부 포트 8088로 온 요청을 내부 웹서버(10.20.32.80:80)로 DNAT (prerouting)
+      sudo nft add rule ip six_nat prerouting iifname "eth0" tcp dport 8088 counter dnat to 10.20.32.80:80
+
+      # 적용 확인
+      sudo nft list ruleset | grep 8088
       ```
       ## ✅ 합격 기준
       적용된 NAT 룰에 외부 포트 `8088` 이 보인다.
-    hint: 'DNAT 은 prerouting 에서. 적용 후 ruleset 에 8088'
+    hint: 'sudo nft add rule ip six_nat prerouting ... dport 8088 dnat to 10.20.32.80:80'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/nat/apply -d '{"command":"nft add rule ip six_nat prerouting iifname \"eth0\" tcp dport 8088 counter dnat to 10.20.32.80:80"}' >/dev/null
-      curl -s http://192.168.136.145:8081/api/ruleset | grep -o 8088 | head -1
-    answer_detail: "prerouting 에서 dport 8088 의 목적지를 10.20.32.80:80 으로 변환. 포트 포워딩(내부 주소 은닉)."
+      # DNAT 룰 적용 + 확인 (방화벽 장비에서)
+      ssh ccc@10.20.30.1 'sudo nft add rule ip six_nat prerouting iifname "eth0" tcp dport 8088 counter dnat to 10.20.32.80:80; sudo nft list ruleset | grep -o "dport 8088" | head -1'
+    answer_detail: "prerouting 훅에서 dport 8088 의 목적지를 10.20.32.80:80 으로 변환. 포트 포워딩(내부 주소 은닉)."
     verify:
       type: output_contains
       expect: "8088"
@@ -169,16 +189,21 @@ steps:
       **Stateful (연결추적)** 메뉴를 연다. 방화벽이 기억하는 연결들이 표로 보인다. `ESTABLISHED`가
       정상적으로 맺어진 연결이며, 그 응답은 `ct state established,related accept` 룰로 자동 통과한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (방화벽 장비에서)
       ```bash
-      curl -s http://192.168.136.145:8081/api/conntrack
+      # 방화벽이 추적 중인 연결 수 (stateful)
+      echo -n "count: "; sudo conntrack -C
+
+      # ESTABLISHED 연결 몇 개 살펴보기
+      sudo conntrack -L 2>/dev/null | grep ESTABLISHED | head -3
       ```
       ## ✅ 합격 기준
-      출력에 `count`(연결 수)가 보인다.
-    hint: 'GET /api/conntrack — count/summary/conns'
+      출력에 `count`(추적 중인 연결 수)가 보인다.
+    hint: 'sudo conntrack -C (연결 수) / sudo conntrack -L (목록)'
     answer: |
-      curl -s http://192.168.136.145:8081/api/conntrack
-    answer_detail: "count/summary/conns. ESTABLISHED 연결의 응답이 자동 통과 = stateful inspection."
+      # 연결 추적(conntrack) 상태를 방화벽 장비에서 직접 확인
+      ssh ccc@10.20.30.1 'echo -n "count: "; sudo conntrack -C; sudo conntrack -L 2>/dev/null | grep -c ESTABLISHED | xargs echo "established:"'
+    answer_detail: "conntrack -C 는 추적 중인 연결 수, -L 은 목록. ESTABLISHED 연결의 응답이 ct state established,related accept 룰로 자동 통과 = stateful inspection."
     verify:
       type: output_contains
       expect: count
@@ -194,16 +219,21 @@ steps:
       **SIEM 연동** 메뉴를 연다. 방화벽 활동(`/var/log/nft_edu/events.log`)이 SIEM 매니저
       (10.20.32.100)로 가도록 연동할 수 있다. 현재 상태와 매니저 주소를 확인한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (방화벽 장비에서)
       ```bash
-      curl -s http://192.168.136.145:8081/api/siem
+      # 방화벽 활동 로그가 쌓이는지
+      ls -l /var/log/nft_edu/events.log
+
+      # 이 방화벽이 어느 SIEM 매니저로 로그를 보내는지 (Wazuh 에이전트 설정)
+      grep -oE '<address>[0-9.]+</address>' /var/ossec/etc/ossec.conf
       ```
       ## ✅ 합격 기준
       출력에 SIEM 매니저 주소 `10.20.32.100` 이 보인다.
-    hint: 'GET /api/siem — manager 10.20.32.100'
+    hint: 'grep <address> /var/ossec/etc/ossec.conf — manager 10.20.32.100'
     answer: |
-      curl -s http://192.168.136.145:8081/api/siem
-    answer_detail: "manager=10.20.32.100. 연동 켜면 events.log 를 Wazuh 에이전트(fw)가 tail → 통합 관제."
+      # 방화벽의 SIEM(Wazuh) 연동 매니저 주소를 장비에서 직접 확인
+      ssh ccc@10.20.30.1 'ls -l /var/log/nft_edu/events.log 2>/dev/null; grep -oE "<address>[0-9.]+</address>" /var/ossec/etc/ossec.conf 2>/dev/null | head -1'
+    answer_detail: "Wazuh 에이전트(fw)가 events.log 를 tail 해 매니저(10.20.32.100)로 전송 → 통합 관제. ossec.conf 의 <address> 가 매니저 주소."
     verify:
       type: output_contains
       expect: 10.20.32.100
@@ -214,28 +244,34 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 미션 — 침해대응 시나리오 검증 (fw-s01)
+      ## 🎯 미션 — 차단 룰이 실제로 걸렸는지 검증
 
-      **침해대응 훈련** 메뉴에서 fw-s01(악성 IP 차단)을 펼치고 **검증**을 누른다. 콘솔이 실제 룰셋을
-      읽어 STEP 3 에서 만든 차단 룰이 올바른지 채점한다(`ok: true`면 통과).
+      침해대응의 핵심은 "룰을 만들었다"가 아니라 **"룰이 실제로 트래픽을 막고 있다"**를 확인하는
+      것이다. S3 에서 넣은 악성 IP 차단 룰이 forward 체인에 살아 있고, 히트 카운터(`packets`)가
+      집계되는지 방화벽 장비에서 직접 확인한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (방화벽 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/scenario/check -d '{"id":"fw-s01"}'
+      # 차단 룰이 handle·counter 와 함께 forward 체인에 있는지 확인
+      sudo nft -a list chain inet six_filter forward | grep 192.168.0.202
       ```
+      ## 🔍 무엇을 보나
+      `ip saddr 192.168.0.202 counter packets N bytes M drop  # handle H` — 룰이 살아 있고(handle),
+      실제로 패킷을 세고 있다(counter). 공격자 192.168.0.202 가 시도하면 packets 가 올라간다.
       ## ✅ 합격 기준
-      검증 결과가 `"ok": true` 다.
-    hint: '침해대응 훈련 → fw-s01 → 검증. POST /api/scenario/check {"id":"fw-s01"}'
+      차단 룰이 counter·handle 과 함께 보인다(출력에 `drop`).
+    hint: 'sudo nft -a list chain inet six_filter forward | grep 192.168.0.202'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/scenario/check -d '{"id":"fw-s01"}'
-    answer_detail: "ok=true, evidence=[{require: ip saddr 10.20.30.202 .*drop, found: true}]. STEP3 룰이 정답 조건 충족."
+      # 차단 룰이 counter·handle 과 함께 살아 있는지 방화벽 장비에서 직접 검증
+      ssh ccc@10.20.30.1 'sudo nft -a list chain inet six_filter forward | grep 192.168.0.202'
+    answer_detail: "룰을 만든 것으로 끝이 아니라 실제 반영·동작을 확인하는 것이 침해대응 검증. nft -a 로 handle 과 counter(packets/bytes)를 보면 룰이 살아서 트래픽을 세고 막는 것을 알 수 있다."
     verify:
       type: output_contains
-      expect: '"ok": true'
+      expect: drop
       field: stdout
       semantic:
-        intent: "작성한 룰이 침해대응 정답 조건을 충족하는지 콘솔이 실측 채점 — 실전 검증"
-        success_criteria: ["scenario check ok=true", "evidence 의 require 충족", "실제 룰셋 기반 채점"]
+        intent: "작성한 차단 룰이 실제로 forward 체인에서 동작(counter/handle)함을 실측 검증 — 실전 검증"
+        success_criteria: ["forward 체인에 saddr 192.168.0.202 drop 룰 존재", "counter/handle 확인", "만든 것이 아니라 동작을 확인"]
 
   - order: 9
     instruction: |
@@ -244,30 +280,37 @@ steps:
       여러 악성 IP를 **그룹 하나**(nftables named set)로 묶고 룰은 그 그룹을 참조한다. **객체**
       메뉴에서 IP 그룹 `blocklist`를 만들고, **룰 관리**에서 `@blocklist`를 drop한 뒤 fw-s11을 검증한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (방화벽 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/object/apply -d '{"create":"nft add set inet six_filter blocklist { type ipv4_addr ; }","element":"nft add element inet six_filter blocklist { 10.20.30.202, 10.20.30.250 }"}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter forward ip saddr @blocklist counter drop"}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/scenario/check -d '{"id":"fw-s11"}'
+      # 1) named set(그룹) blocklist 생성
+      sudo nft add set inet six_filter blocklist "{ type ipv4_addr ; }"
+
+      # 2) 그룹에 악성 IP 두 개 추가
+      sudo nft add element inet six_filter blocklist "{ 192.168.0.202, 10.20.30.250 }"
+
+      # 3) forward 체인에서 @blocklist 를 참조해 drop (룰은 하나, 대상은 그룹 전체)
+      sudo nft insert rule inet six_filter forward ip saddr @blocklist counter drop
+
+      # 4) 확인
+      sudo nft list ruleset | grep blocklist
       ```
       ## 🔍 무엇을 배우나
       그룹에 IP를 추가/삭제하면 룰을 바꾸지 않아도 즉시 반영된다. 여러 룰이 같은 그룹을 재사용할 수
       있어 운영이 일관되고 간단해진다.
       ## ✅ 합격 기준
-      검증 결과가 `"ok": true` 다(그룹 존재 + @blocklist 참조 룰 확인).
-    hint: '객체 blocklist 생성 → @blocklist drop 룰 → fw-s11 검증'
+      룰셋에 `blocklist`(그룹) 과 `@blocklist` 참조 룰이 보인다.
+    hint: 'nft add set/element blocklist → insert rule ... saddr @blocklist drop'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/object/apply -d '{"create":"nft add set inet six_filter blocklist { type ipv4_addr ; }","element":"nft add element inet six_filter blocklist { 10.20.30.202, 10.20.30.250 }"}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/rule/apply -d '{"command":"nft insert rule inet six_filter forward ip saddr @blocklist counter drop"}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8081/api/scenario/check -d '{"id":"fw-s11"}'
-    answer_detail: "named set blocklist(2 IP) + forward 의 @blocklist drop. ok=true. 그룹 구성원만 바꿔 정책을 갱신 — 운영 효율."
+      # named set blocklist 생성 + IP 추가 + @blocklist drop 룰 + 확인 (방화벽 장비에서)
+      ssh ccc@10.20.30.1 'sudo nft add set inet six_filter blocklist "{ type ipv4_addr ; }" 2>/dev/null; sudo nft add element inet six_filter blocklist "{ 192.168.0.202, 10.20.30.250 }"; sudo nft insert rule inet six_filter forward ip saddr @blocklist counter drop; sudo nft list ruleset | grep -o "blocklist" | head -1'
+    answer_detail: "named set blocklist(2 IP) 생성 + forward 의 @blocklist drop 룰. 그룹 구성원만 바꿔 정책을 갱신할 수 있어 운영 효율·일관성이 높다. 여러 룰이 같은 그룹을 재사용한다."
     verify:
       type: output_contains
-      expect: '"ok": true'
+      expect: blocklist
       field: stdout
       semantic:
-        intent: "객체(그룹·Alias)로 다중 IP 를 묶어 룰에서 재사용 — 운영 효율과 일관성"
-        success_criteria: ["named set blocklist 생성", "룰이 @blocklist 참조", "fw-s11 통과"]
+        intent: "객체(그룹·named set)로 다중 IP 를 묶어 룰에서 재사용 — 운영 효율과 일관성"
+        success_criteria: ["named set blocklist 생성", "룰이 @blocklist 참조", "그룹으로 정책 관리"]
 
   - order: 10
     instruction: |
@@ -277,53 +320,44 @@ steps:
       모두 삭제해 방화벽을 원래 상태로 되돌린다. 콘솔의 **룰 관리 / NAT / 객체** 화면의 "삭제"
       버튼으로도 가능하다. (객체는 그것을 참조하는 룰을 먼저 지워야 삭제된다.)
 
-      ## 💻 정리 명령
-      el34 호스트에는 jq 가 없으므로 python3 로 룰셋을 읽어 실습 룰을 일괄 삭제한다.
+      ## 💻 정리 명령 (방화벽 장비에서)
+      방화벽 장비에서 `nft -j`(JSON) 로 룰셋을 읽어, 실습으로 넣은 룰만 handle 로 골라 삭제한다
+      (베이스라인 룰은 건드리지 않는다). 룰을 먼저 지운 뒤 그룹(set)을 지운다.
       ```bash
-      python3 -c '
-      import json, urllib.request as u
-      B="http://192.168.136.145:8081"
-      def post(p,o):
-          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
-          return u.urlopen(r,timeout=8).read().decode()
-      rs=json.load(u.urlopen(B+"/api/ruleset",timeout=8))
-      n=0
-      for t in rs["tables"]:
-          if not t.get("editable"): continue
-          for ch in t["chains"]:
-              for r in ch["rules"]:
-                  mj=" ".join(r.get("matchers",[]))
-                  if ("10.20.30.202" in mj) or ("8088" in mj) or ("@blocklist" in mj) or ("dport 22" in mj and r.get("action")=="drop"):
-                      post("/api/rule/delete",{"family":r["family"],"table":r["table"],"chain":r["chain"],"handle":r["handle"]}); n+=1
-      try: post("/api/object/delete",{"name":"blocklist"})
-      except Exception: pass
-      print("cleanup done deleted=%d"%n)
-      '
+      sudo python3 - <<'PYEOF'
+      import json, subprocess as sp
+      rs = json.loads(sp.check_output(["nft","-j","list","ruleset"]))
+      n = 0
+      for o in rs["nftables"]:
+          r = o.get("rule")
+          if not r: continue
+          s = json.dumps(r)
+          # 실습 룰만: 악성IP차단 / DNAT8088 / @blocklist / SSH rate limit
+          if ("192.168.0.202" in s) or ("8088" in s) or ("blocklist" in s) or ("limit" in s):
+              sp.call(["nft","delete","rule",r["family"],r["table"],r["chain"],"handle",str(r["handle"])]); n += 1
+      sp.call(["nft","delete","set","inet","six_filter","blocklist"], stderr=sp.DEVNULL)
+      print("cleanup done deleted=%d" % n)
+      PYEOF
       ```
       ## ✅ 합격 기준
       실습 룰·객체가 모두 삭제되어 출력에 `cleanup done` 이 보인다(베이스라인은 보존).
     hint: '룰 먼저(@blocklist 참조 포함), 그다음 객체 삭제. python3 로 일괄 → cleanup done'
     answer: |
-      python3 -c '
-      import json, urllib.request as u
-      B="http://192.168.136.145:8081"
-      def post(p,o):
-          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
-          return u.urlopen(r,timeout=8).read().decode()
-      rs=json.load(u.urlopen(B+"/api/ruleset",timeout=8))
-      n=0
-      for t in rs["tables"]:
-          if not t.get("editable"): continue
-          for ch in t["chains"]:
-              for r in ch["rules"]:
-                  mj=" ".join(r.get("matchers",[]))
-                  if ("10.20.30.202" in mj) or ("8088" in mj) or ("@blocklist" in mj) or ("dport 22" in mj and r.get("action")=="drop"):
-                      post("/api/rule/delete",{"family":r["family"],"table":r["table"],"chain":r["chain"],"handle":r["handle"]}); n+=1
-      try: post("/api/object/delete",{"name":"blocklist"})
-      except Exception: pass
-      print("cleanup done deleted=%d"%n)
-      '
-    answer_detail: "실습 룰 4종(saddr drop / dport22 limit / dnat 8088 / @blocklist) + blocklist 그룹 삭제. 룰 먼저 지워야 그룹이 지워짐. 베이스라인 보존."
+      # 방화벽 장비에서 nft -j 로 실습 룰만 handle 로 골라 삭제 + blocklist set 삭제
+      ssh ccc@10.20.30.1 'sudo python3 - <<PYEOF
+      import json, subprocess as sp
+      rs = json.loads(sp.check_output(["nft","-j","list","ruleset"]))
+      n = 0
+      for o in rs["nftables"]:
+          r = o.get("rule")
+          if not r: continue
+          s = json.dumps(r)
+          if ("192.168.0.202" in s) or ("8088" in s) or ("blocklist" in s) or ("limit" in s):
+              sp.call(["nft","delete","rule",r["family"],r["table"],r["chain"],"handle",str(r["handle"])]); n += 1
+      sp.call(["nft","delete","set","inet","six_filter","blocklist"], stderr=sp.DEVNULL)
+      print("cleanup done deleted=%d" % n)
+      PYEOF'
+    answer_detail: "실습 룰 4종(saddr 192.168.0.202 drop / dport22 limit / dnat 8088 / @blocklist) + blocklist 그룹 삭제. nft -j 로 handle 을 찾아 실습 룰만 지운다(룰 먼저 → set). 베이스라인 보존."
     verify:
       type: output_contains
       expect: cleanup done
