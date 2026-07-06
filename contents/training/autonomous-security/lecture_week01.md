@@ -51,7 +51,7 @@
 
 ---
 
-## 0.5 신입생 친화 핵심 개념
+## 0.5 핵심 개념
 
 ### 0.5.1 bastion 처리 루프 — PLANNING → EXECUTING → VALIDATING
 

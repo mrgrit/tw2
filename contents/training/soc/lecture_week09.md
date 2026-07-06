@@ -26,7 +26,7 @@
    모든 대응 단계가 다룰 **사고 대상**을 만든다.
 3. **식별(Identify)** 단계에서 SIEM(`alerts.json`)으로 사고의 출발지·타임라인을, osquery 로
    호스트에 남은 발판을 찾아 사고의 **범위와 심각도**를 증거와 함께 판정한다.
-4. **격리(Contain)** 단계에서 IDS(Suricata) 룰로 공격 출발지(`10.20.30.202`)를 플래그해
+4. **격리(Contain)** 단계에서 IDS(Suricata) 룰로 공격 출발지(`192.168.0.202`)를 플래그해
    확산을 막고, 공유 실습 인프라를 보존하기 위해 그 룰을 **시연 후 안전하게 정리**한다.
 5. **제거(Eradicate)** 와 **복구(Recover)** 단계에서 osquery 로 발판을 빠짐없이 헌팅해
    `userdel`·`rm` 으로 제거하고, 서비스 정상성과 **발판 잔재 0** 을 검증한다.
@@ -185,13 +185,13 @@ graph TD
 
 ```bash
 # (식별-1) SIEM 에서 공격 출발지·타임라인 — 무슨 일이 언제
-docker exec el34-siem sh -c 'tail -1000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -5'
+docker exec el34-siem sh -c 'tail -1000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|[.timestamp,.rule.description]|@tsv" | tail -5'
 
 # (식별-2) osquery 로 호스트에 남은 발판 — 어디까지 뚫렸나
 docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="socw9bd";'
 ```
 
-위 첫 명령은 출발지 `10.20.30.202` 의 경보를 시각순으로 보여줘 "정찰 → 침투"의 진행을
+위 첫 명령은 출발지 `192.168.0.202` 의 경보를 시각순으로 보여줘 "정찰 → 침투"의 진행을
 드러낸다. 둘째 명령이 백도어 계정 `socw9bd` 를 반환하면 — 공격자가 호스트에 계정을 만들
 정도로 **뚫렸다는 결정적 증거** 이므로, 심각도는 "시도"가 아니라 **침해(P1)** 로 확정된다.
 
@@ -214,7 +214,7 @@ docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE usern
 더 심으면 사고가 커진다. 격리는 그 시간을 버는 방화문이다. 단, 격리는 **빠르되 정밀** 해야
 한다 — 너무 넓게 막으면 정상 서비스까지 끊겨 사고 대응이 또 다른 장애를 부른다.
 
-**el34 에서 어떻게.** 공격 출발지(`10.20.30.202`)의 모든 트래픽을 잡아내는 Suricata 룰을
+**el34 에서 어떻게.** 공격 출발지(`192.168.0.202`)의 모든 트래픽을 잡아내는 Suricata 룰을
 추가해 출발지를 **플래그** 한다. 운영 환경이라면 이 룰을 방화벽 `drop` 으로 걸어 실제로
 차단하겠지만, **공유 실습 인프라에서는 다른 학생의 트래픽까지 끊기지 않도록 `alert`(탐지
 플래그)로 시연한 뒤, 시연이 끝나면 룰을 안전하게 삭제(self-clean)** 한다.
@@ -222,19 +222,19 @@ docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE usern
 ```bash
 # (격리) 출발지 플래그 룰을 Suricata local.rules 에 추가 → 리로드
 docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
-alert ip 10.20.30.202 any -> any any (msg:\"SOC W09 IR contain - flag attacker source\"; sid:9509001; rev:1;)
+alert ip 192.168.0.202 any -> any any (msg:\"SOC W09 IR contain - flag attacker source\"; sid:9509001; rev:1;)
 EOF"'
 docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
 
 # (검증) 출발지가 트래픽을 보내면 룰이 eve.json 에 찍히는지 확인
-docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/'
+curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://192.168.0.161/
 docker exec el34-ips sh -c 'sudo grep -c 9509001 /var/log/suricata/eve.json'
 
 # (정리·self-clean) 시연이 끝나면 룰 삭제 → 리로드 (공유 인프라 보존)
 docker exec el34-ips sh -c 'sudo sed -i "/sid:9509001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
 ```
 
-이 룰은 출발지 `10.20.30.202` 가 보내는 **모든** 트래픽(`ip ... any -> any any`)을 잡는다 —
+이 룰은 출발지 `192.168.0.202` 가 보내는 **모든** 트래픽(`ip ... any -> any any`)을 잡는다 —
 즉 공격자 한 명을 통째로 플래그한다. 검증 단계에서 `grep -c 9509001` 의 출력이 1 이상이면
 "격리 룰이 출발지 트래픽을 실제로 포착했다"는 증거다. 마지막 정리 명령이 룰을 지워 다음
 학생의 환경을 그대로 돌려놓는다.
@@ -355,7 +355,7 @@ echo "재발방지: ① WAF 룰 강화 ② 앱 패치/입력검증 ③ 탐지룰
 graph TD
     INC["사고 재현<br/>SQLi 침투 + 백도어 계정 socw9bd<br/>+ 웹쉘 /tmp/socw9_shell.php"]
     ID["① 식별<br/>SIEM alerts.json 출발지·타임라인<br/>+ osquery 백도어 계정 발견 → P1 침해"]
-    CO["② 격리<br/>Suricata 룰 sid 9509001<br/>출발지 10.20.30.202 플래그 (시연 후 정리)"]
+    CO["② 격리<br/>Suricata 룰 sid 9509001<br/>출발지 192.168.0.202 플래그 (시연 후 정리)"]
     ER["③ 제거<br/>osquery 확인 → userdel socw9bd<br/>+ rm 웹쉘"]
     RE["④ 복구<br/>웹 헬스체크 200<br/>+ 계정 잔재 0 = clean"]
     LE["⑤ 교훈<br/>타임라인 · 근본원인(SQLi)<br/>· 재발방지(WAF·패치·탐지룰)"]
@@ -375,7 +375,7 @@ graph TD
 
 ```mermaid
 graph TD
-    ATK["공격자 10.20.30.202<br/>SQLi 로 web 침투"]
+    ATK["공격자 192.168.0.202<br/>SQLi 로 web 침투"]
     BD["발판 ① 백도어 계정<br/>socw9bd<br/>→ 언제든 SSH 재로그인"]
     WS["발판 ② 웹쉘 파일<br/>/tmp/socw9_shell.php<br/>→ HTTP 로 명령 실행"]
     GOAL["지속성 확보<br/>(패치돼도 재진입)"]
@@ -401,14 +401,14 @@ graph TD
 
 | IR 단계 | 무엇을 하나 | el34 컨테이너 | 핵심 도구·경로 |
 |---------|-------------|---------------|----------------|
-| 사고 재현 | SQLi + 발판 심기 | `el34-attacker` / `el34-web` | curl(공격) / useradd·웹쉘 파일 |
+| 사고 재현 | SQLi + 발판 심기 | `외부 공격자 VM 192.168.0.202` / `el34-web` | curl(공격) / useradd·웹쉘 파일 |
 | ① 식별 | 출발지·타임라인 + 발판 확인 | `el34-siem` / `el34-web` | `alerts.json` / osquery |
 | ② 격리 | 출발지 플래그 룰 | `el34-ips` | Suricata `local.rules`·`eve.json` |
 | ③ 제거 | 발판 삭제 | `el34-web` | osquery · `userdel` · `rm` |
 | ④ 복구 | 서비스·잔재 검증 | `el34-web` | curl 헬스체크 · `id` |
 | ⑤ 교훈 | 타임라인·근본원인 정리 | (호스트) | 보고서 |
 
-> **참고 — 출발지 IP 가 보존되는 이유.** 식별·격리가 출발지 `10.20.30.202` 를 키로 삼을 수
+> **참고 — 출발지 IP 가 보존되는 이유.** 식별·격리가 출발지 `192.168.0.202` 를 키로 삼을 수
 > 있는 것은 el34 의 fw 가 SNAT 를 하지 않아 **출처 IP 가 모든 소스에 그대로 보존** 되기
 > 때문이다(W08 §3 에서 상세히 다뤘다). 그래서 SIEM 의 경보, Suricata 의 룰, 모두 같은 진짜
 > 출발지를 가리킨다. 외부 공격자 시나리오라면 출발지가 외부 VM `192.168.0.202` 로 보존된다.
@@ -495,7 +495,7 @@ graph TD
 > **왜 하는가?** 대응의 방향을 정하려면 먼저 "무슨 일이 어디까지"를 증거로 확정해야 한다.
 > 식별이 격리·제거의 범위를 결정한다.
 >
-> **무엇을 알 수 있는가?** SIEM `alerts.json` 으로 출발지(`10.20.30.202`)와 타임라인을,
+> **무엇을 알 수 있는가?** SIEM `alerts.json` 으로 출발지(`192.168.0.202`)와 타임라인을,
 > osquery 로 백도어 계정 `socw9bd` 의 존재를 확인하는 법. 계정 발견 = 침투 성공 → **P1**
 > 심각도 판정.
 >

@@ -20,7 +20,7 @@
 
 1. WSTG-INFO(정보 수집) 단계가 OWASP 웹 점검 방법론에서 **어느 위치**에 있고, 왜 본격 공격보다
    먼저 오는지를 익스플로잇 체인 관점에서 설명한다.
-2. el34 의 `el34-attacker` 컨테이너에서 `curl` 로 표적 vhost(`dvwa.el34.lab` / `juice.el34.lab`) 의
+2. el34 의 `외부 공격자 VM 192.168.0.202` 컨테이너에서 `curl` 로 표적 vhost(`dvwa.el34.lab` / `juice.el34.lab`) 의
    **robots.txt · HTML 주석 · 백업 파일 · VCS 디렉토리 · 에러 메시지**를 빠짐없이 수집한다.
 3. 수집한 응답의 **HTTP 상태 코드(200/403/404)** 를 올바르게 해석한다 — 무엇이 "노출 발견"이고
    무엇이 "없음/차단"인지 구분한다.
@@ -188,16 +188,16 @@ graph TD
 즉 정보 수집의 산출물은 **"다음 공격의 실마리(피벗)"** 다. 점검자가 이 피벗 사슬을 보여 줘야, 운영자는
 "왜 이 작은 노출까지 막아야 하는지"를 납득한다.
 
-### 1.3 el34 에서의 정보 수집 — attacker 컨테이너에서 curl 로
+### 1.3 el34 에서의 정보 수집 — 외부 공격자 VM 192.168.0.202에서 curl 로
 
-el34 에서 이 트랙의 공격·점검은 **내부 발판 공격자 컨테이너 `el34-attacker`**(출처 IP `10.20.30.202`) 에서
-수행한다. attacker 는 방화벽 게이트웨이 `10.20.30.1` 을 거쳐 표적 vhost 에 도달하며, `Host:` 헤더로 어느
-사이트를 점검할지 지정한다. el34 는 SNAT 를 하지 않아 출처 IP `10.20.30.202` 가 방어 스택(Suricata ·
+el34 에서 이 트랙의 공격·점검은 **외부 공격자 VM 공격자 컨테이너 `외부 공격자 VM 192.168.0.202`**(출처 IP `192.168.0.202`) 에서
+수행한다. attacker 는 방화벽 게이트웨이 `192.168.0.161` 을 거쳐 표적 vhost 에 도달하며, `Host:` 헤더로 어느
+사이트를 점검할지 지정한다. el34 는 SNAT 를 하지 않아 출처 IP `192.168.0.202` 가 방어 스택(Suricata ·
 ModSecurity · Apache access.log) 에 그대로 보존된다 — 즉 **점검 행위 자체도 흔적을 남긴다**.
 
 ```mermaid
 graph TD
-    ATK["el34-attacker<br/>10.20.30.202<br/>curl + whatweb"]
+    ATK["외부 공격자 VM<br/>192.168.0.202<br/>curl + whatweb"]
     FW["el34-fw (nftables)<br/>공개 80/443 → DNAT<br/>출처 IP 보존(SNAT 없음)"]
     WEB["el34-web (Apache + ModSec)<br/>Host: 헤더로 vhost 선택"]
     TARGET["표적 vhost<br/>dvwa.el34.lab / juice.el34.lab<br/>robots · 주석 · 백업 · .git · 에러"]
@@ -209,11 +209,11 @@ graph TD
 ```
 
 본 주차의 모든 명령은 **el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 `1`)** 에 접속한 뒤
-`docker exec el34-attacker ...` 형태로 실행한다. 점검 도구로는 `curl`(수동 정밀 점검) 을 주로 쓰고, 필요하면
+`ssh att@192.168.0.202 ...` 형태로 실행한다. 점검 도구로는 `curl`(수동 정밀 점검) 을 주로 쓰고, 필요하면
 W02 에서 배운 `whatweb`(핑거프린팅) 으로 기술 스택을 함께 확인한다.
 
 > ⚠️ **인가된 실습만.** 본 트랙의 모든 점검·공격은 **인가된 실습 환경(el34)** 안에서, 정해진 대상
-> (`el34-attacker` → el34 내부 vhost) 에 한해서만 수행한다. 실제 외부 사이트에 robots.txt 수집이나 `.git`
+> (`외부 공격자 VM 192.168.0.202` → el34 내부 vhost) 에 한해서만 수행한다. 실제 외부 사이트에 robots.txt 수집이나 `.git`
 > 탐색을 시도하는 것은 정보 수집이라도 **무단 접근으로 불법**일 수 있으며 본 과정의 윤리 규정을 위반한다.
 > 정보 수집은 "조용한" 단계처럼 보이지만, 허가 없이 하면 그 자체가 위반이다.
 
@@ -246,7 +246,7 @@ W03 은 **표적이 스스로 흘린 정보**(passive 에 가까운 수집) 에 
 **el34 에서 어떻게 확인.** attacker 에서 표적 vhost 의 `/robots.txt` 를 `curl` 로 가져온다.
 
 ```bash
-docker exec el34-attacker sh -c "curl -s -w '\n[robots=%{http_code}]\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/robots.txt | head"
+curl -s -w '\n[robots=%{http_code}]\n' -H 'Host: dvwa.el34.lab' http://192.168.0.161/robots.txt | head
 ```
 
 **해석.** 응답에 `Disallow: /...` 줄이 보이면 그 경로가 다음 점검 후보다. `[robots=200]` 은 robots.txt 가
@@ -263,7 +263,7 @@ docker exec el34-attacker sh -c "curl -s -w '\n[robots=%{http_code}]\n' -H 'Host
 **el34 에서 어떻게 확인.** 페이지를 받아 `grep` 으로 `<!--` 패턴을 추린다.
 
 ```bash
-docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' http://10.20.30.1/ | grep -ioE '<!--.{0,50}' | head -3 || echo '주석 없음'"
+curl -s -H 'Host: juice.el34.lab' http://192.168.0.161/ | grep -ioE '<!--.{0,50}' | head -3 || echo '주석 없음'
 ```
 
 **해석.** 주석에 내부 경로·자격증명 단서가 보이면 실마리로 기록한다. 아무 주석도 없으면 `주석 없음` 이
@@ -282,7 +282,7 @@ docker exec el34-attacker sh -c "curl -s -H 'Host: juice.el34.lab' http://10.20.
 
 ```bash
 for f in index.php.bak index.php~ config.php.old backup.zip .env; do
-  docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"
+  curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://192.168.0.161/$f
 done; echo
 ```
 
@@ -302,7 +302,7 @@ done; echo
 
 ```bash
 for f in .git/config .git/HEAD .svn/entries .DS_Store; do
-  docker exec el34-attacker sh -c "curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://10.20.30.1/$f"
+  curl -s -o /dev/null -w '$f=%{http_code} ' -H 'Host: dvwa.el34.lab' http://192.168.0.161/$f
 done; echo
 ```
 
@@ -321,7 +321,7 @@ done; echo
 **el34 에서 어떻게 확인.** 응답 헤더에서 서버·버전 단서를, 그리고 W02 의 `whatweb` 으로 기술 스택을 본다.
 
 ```bash
-docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -iE 'server|x-powered-by'"
+curl -sI -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | grep -iE 'server|x-powered-by'
 ```
 
 **해석.** 버전이 그대로 노출되면 그 버전의 알려진 취약점을 다음 단계에서 조사한다. 에러로 내부 경로가 새면
@@ -424,7 +424,7 @@ graph TD
 정보 수집의 표준 흐름을 그대로 따른다.
 
 > **진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 `1`) 에서
-> `docker exec el34-attacker ...` 로 실행한다. **인가된 실습 환경(el34)에서만** 수행한다. 점검 결과는 대부분
+> `ssh att@192.168.0.202 ...` 로 실행한다. **인가된 실습 환경(el34)에서만** 수행한다. 점검 결과는 대부분
 > HTTP 상태 코드로 요약되므로, `=200`(노출) / `=404`(없음) / `=403`(차단) 을 신호로 읽는다(§0.5.4).
 
 ### 미션 1 — 점검: 대상 도달 (10점, survey)
@@ -432,7 +432,7 @@ graph TD
 > **왜 하는가?** 정보 수집의 전제는 표적 vhost 에 실제로 도달 가능해야 한다는 것이다. 점검자는 본격
 > 수집에 앞서 대상이 응답하는지부터 확인한다.
 >
-> **무엇을 알 수 있는가?** attacker 에서 fw 게이트웨이(`10.20.30.1`) 를 거쳐 `juice.el34.lab` /
+> **무엇을 알 수 있는가?** attacker 에서 fw 게이트웨이(`192.168.0.161`) 를 거쳐 `juice.el34.lab` /
 > `dvwa.el34.lab` vhost 가 HTTP 코드로 응답하는지. 정보 수집을 시작할 준비가 됐는지.
 >
 > **결과 해석.** 정상: `juice=200`(또는 `302`) 처럼 코드가 돌아옴 = 대상 도달. 비정상: 무응답·연결 실패면

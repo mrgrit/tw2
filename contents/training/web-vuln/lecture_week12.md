@@ -25,7 +25,7 @@
 
 1. API 가 화면(UI) 없는 또 다른 공격 표면이라는 점을 설명하고, 왜 화면에서 막은 통제가 API
    에서 우회될 수 있는지를 1분 안에 말한다.
-2. el34 의 `el34-attacker` 컨테이너에서 `curl` 로 JuiceShop REST API 에 직접 요청을 보내,
+2. el34 의 `외부 공격자 VM 192.168.0.202` 컨테이너에서 `curl` 로 JuiceShop REST API 에 직접 요청을 보내,
    **공개 자원(`/api/Products` 200)과 보호 자원(`/api/Users` 401)의 경계**를 응답 코드로 매핑한다.
 3. 무인증 엔드포인트(`/api/Feedbacks`)의 응답에 `UserId` 같은 불필요 필드가 섞여 내려오는 것을
    확인해 **과다 데이터 노출(OWASP API3)** 을 입증한다.
@@ -149,7 +149,7 @@ el34 에는 점검 모드가 다른 두 취약 웹이 있다. **`juice.el34.lab`
 모드라 API 응답을 끝까지 받아볼 수 있다(공격성 페이로드를 막지 않고 200 으로 통과시킨다). 반면
 **`dvwa.el34.lab`(DVWA)** 은 WAF 가 **차단(403)** 모드라 SQLi/XSS 같은 패턴 공격이 어떻게 막히는지를
 보기 좋다(이 두 사실은 본 트랙 전체에서 일관된 el34 기준이다). 본 주차의 API 점검은 **JuiceShop** 을
-대상으로 한다. 점검자(`el34-attacker`, 출처 IP `10.20.30.202`)가 fw 의 게이트웨이(`10.20.30.1`)를 통해,
+대상으로 한다. 점검자(`외부 공격자 VM 192.168.0.202`, 출처 IP `192.168.0.202`)가 fw 의 게이트웨이(`192.168.0.161`)를 통해,
 HTTP `Host: juice.el34.lab` 헤더로 표적 vhost 를 지정해 `/api/...` 엔드포인트에 직접 요청을 보낸다.
 
 > **참고 — 본 주차의 점검은 "양호"를 확인하는 일도 점검이다.** el34 의 JuiceShop 은 `/api/Users` 와
@@ -384,7 +384,7 @@ UserId 를 흘림(취약)** 을 입증하는 순서다.
 
 ```mermaid
 graph TD
-    ATK["점검자 el34-attacker<br/>10.20.30.202<br/>curl -H 'Host: juice.el34.lab'"]
+    ATK["점검자 외부 공격자 VM<br/>192.168.0.202<br/>curl -H 'Host: juice.el34.lab'"]
     FW["el34-fw (nftables)<br/>공개 80/443 → DNAT → web 10.20.32.80<br/>※ SNAT 없음 → 출처 IP 보존"]
     WEB["el34-web (Apache + ModSecurity)<br/>Host 헤더로 vhost 라우팅 + WAF(탐지만)"]
     APP["백엔드 표적 JuiceShop (int 10.20.40.81)<br/>REST API /api/... 응답"]
@@ -395,10 +395,10 @@ graph TD
     style APP fill:#3fb950,color:#fff
 ```
 
-점검 요청은 점검자(`10.20.30.202`)에서 출발해 fw 의 게이트웨이(`10.20.30.1`)로 들어가고, fw 가 DNAT 로
+점검 요청은 점검자(`192.168.0.202`)에서 출발해 fw 의 게이트웨이(`192.168.0.161`)로 들어가고, fw 가 DNAT 로
 web(`10.20.32.80`)에 전달한다. web 의 Apache 가 `Host: juice.el34.lab` 헤더를 보고 JuiceShop(int
 `10.20.40.81`)으로 reverse-proxy 한다. el34 의 fw 는 **SNAT 를 하지 않으므로**, web 의 Apache
-access.log 와 ModSecurity audit 에 점검자의 **진짜 출처 IP `10.20.30.202`** 가 그대로 남는다. JuiceShop
+access.log 와 ModSecurity audit 에 점검자의 **진짜 출처 IP `192.168.0.202`** 가 그대로 남는다. JuiceShop
 vhost 의 WAF 는 **탐지만(DetectionOnly)** 모드라, API 점검 요청은 차단되지 않고 200/401 응답을 그대로
 돌려준다 — 그래서 응답 본문(예: `/api/Feedbacks` 의 `UserId`)을 끝까지 받아 노출을 입증할 수 있다.
 
@@ -411,7 +411,7 @@ el34 의 4-tier 세그먼트는 `ext 10.20.30` / `pipe 10.20.31` / `dmz 10.20.32
 ## 4. 점검 명령 빠른 복습 — "무엇을 어디서 보나"
 
 본 주차의 점검 도구는 **`curl`** 하나다. 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서
-`docker exec el34-attacker` 로 실행하며, 표적은 `Host: juice.el34.lab` 헤더로 지정한다.
+`ssh att@192.168.0.202` 로 실행하며, 표적은 `Host: juice.el34.lab` 헤더로 지정한다.
 
 > **용어 — curl 의 핵심 옵션.** `-s`(진행 표시 숨김), `-k`(자체서명 인증서 허용), `-H 'Host: ...'`(어느
 > vhost 를 점검할지 지정), `-o /dev/null -w '%{http_code}'`(본문은 버리고 **응답 코드만** 출력 — 도달성·
@@ -422,8 +422,8 @@ el34 의 4-tier 세그먼트는 `ext 10.20.30` / `pipe 10.20.31` / `dmz 10.20.32
 
 ```bash
 # 공개 자원(200)과 보호 자원(401)을 응답 코드로 구분
-docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'prod=%{http_code}\n'  -H 'Host: juice.el34.lab' http://10.20.30.1/api/Products"
-docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users"
+curl -sk -o /dev/null -w 'prod=%{http_code}\n'  -H 'Host: juice.el34.lab' http://192.168.0.161/api/Products
+curl -sk -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/api/Users
 ```
 
 무엇을 보나 — `/api/Products` 는 `200`(공개), `/api/Users` 는 `401`(보호). 이 두 코드로 API 의 공개/보호
@@ -433,7 +433,7 @@ docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'users=%{http_code}\n'
 
 ```bash
 # 무인증 엔드포인트 응답 본문에서 UserId 필드 추출
-docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Feedbacks | grep -oE 'UserId[^,]*' | head -3"
+curl -sk -H 'Host: juice.el34.lab' http://192.168.0.161/api/Feedbacks | grep -oE 'UserId[^,]*' | head -3
 ```
 
 무엇을 보나 — `/api/Feedbacks` 가 무인증 200 으로 응답하면서 본문에 `UserId`(와 일부 이메일 조각)를
@@ -443,7 +443,7 @@ docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20
 
 ```bash
 # /api/Users/{id} 를 순차로 호출해 객체 수준 인가 상태 확인
-docker exec el34-attacker sh -c "echo -n 'bola='; for id in 1 2 3; do curl -sk -o /dev/null -w \"\$id:%{http_code} \" -H 'Host: juice.el34.lab' http://10.20.30.1/api/Users/\$id; done; echo"
+echo -n 'bola='; for id in 1 2 3; do curl -sk -o /dev/null -w \"\$id:%{http_code} \" -H 'Host: juice.el34.lab' http://192.168.0.161/api/Users/\$id; done; echo
 ```
 
 무엇을 보나 — 각 id 의 응답 코드. el34 JuiceShop 은 `1:401 2:401 3:401` 처럼 **401(보호)** 을 주어
@@ -542,7 +542,7 @@ graph TD
 영향 → 방어 → 보고 순서로 흐른다.
 
 > **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 `docker exec
-> el34-attacker` 로 실행한다. 표적은 **인가된 JuiceShop(`juice.el34.lab`) vhost 만** 점검한다. 신규 도구
+> 외부 공격자 VM 192.168.0.202` 로 실행한다. 표적은 **인가된 JuiceShop(`juice.el34.lab`) vhost 만** 점검한다. 신규 도구
 > 설치는 없다 — `curl` 은 기본 탑재되어 있다. 합격 임계값은 0.7 이다.
 
 ### 미션 1 — 점검: REST API 도달성 (10점, survey)

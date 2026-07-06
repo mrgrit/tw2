@@ -66,7 +66,7 @@
 
 ---
 
-## 0.5 신입생 친화 핵심 개념 — HTTP 요청·응답은 어떻게 생겼나
+## 0.5 핵심 개념 — HTTP 요청·응답은 어떻게 생겼나
 
 위 표는 한 줄 정의라 처음 보는 학생에겐 부족하다. 본 절에서는 본격 점검에 들어가기 전에, HTTP
 요청과 응답이 실제로 어떤 모양인지 일상 비유와 함께 풀어 설명한다. 이 구조가 머릿속에 그려져야
@@ -243,15 +243,15 @@ graph TD
 
 ### 1.3 el34 에서의 점검 대상과 경로
 
-이 트랙의 모든 점검은 **인가된 실습 환경 el34** 안에서만 수행한다. 점검자는 내부 발판 컨테이너
-`el34-attacker`(출처 IP `10.20.30.202`)에서 방화벽 게이트웨이 `10.20.30.1` 을 향해 `Host:` 헤더로
+이 트랙의 모든 점검은 **인가된 실습 환경 el34** 안에서만 수행한다. 점검자는 외부 공격자 VM 컨테이너
+`외부 공격자 VM 192.168.0.202`(출처 IP `192.168.0.202`)에서 방화벽 게이트웨이 `192.168.0.161` 을 향해 `Host:` 헤더로
 대상 vhost 를 지정해 요청을 보낸다. 이번 주의 점검 대상은 차단형 WAF 가 걸린 `dvwa.el34.lab`
 vhost 다.
 
 ```mermaid
 graph TD
-    ATK["el34-attacker (점검자)<br/>출처 10.20.30.202<br/>curl 로 요청 작성"]
-    FW["el34-fw (nftables)<br/>10.20.30.1<br/>L3/L4 통과 (메서드/헤더는 안 봄)"]
+    ATK["외부 공격자 VM 192.168.0.202 (점검자)<br/>출처 192.168.0.202<br/>curl 로 요청 작성"]
+    FW["el34-fw (nftables)<br/>192.168.0.161<br/>L3/L4 통과 (메서드/헤더는 안 봄)"]
     WEB["el34-web (Apache + ModSecurity)<br/>Host 헤더로 vhost 라우팅<br/>+ WAF 검사"]
     APP["dvwa.el34.lab<br/>차단 모드(403)"]
     ATK --> FW --> WEB --> APP
@@ -268,7 +268,7 @@ graph TD
 어디서 막히는가"를 정확히 추적할 수 있다.
 
 > ⚠️ **인가된 실습만.** 본 트랙의 모든 점검은 인가된 실습 환경(el34)의 정해진 대상
-> (`el34-attacker` → el34 내부 vhost)에 한해서만 수행한다. 실제 외부 시스템을 대상으로 한 시도는
+> (`외부 공격자 VM 192.168.0.202` → el34 내부 vhost)에 한해서만 수행한다. 실제 외부 시스템을 대상으로 한 시도는
 > 불법이며 본 과정의 윤리 규정을 위반한다.
 
 ---
@@ -301,7 +301,7 @@ DELETE 가 열려 있으면 콘텐츠를 지울 수 있다. TRACE 는 보낸 요
 `Allow:` 헤더에 허용 메서드 목록을 담아 돌려준다.
 
 ```bash
-docker exec el34-attacker sh -c "curl -s -i -X OPTIONS -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -iE '^Allow|^HTTP'"
+curl -s -i -X OPTIONS -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | grep -iE '^Allow|^HTTP'
 ```
 
 이 명령은 `-X OPTIONS` 로 메서드를 지정하고, `-i` 로 응답 헤더를 출력한 뒤, `Allow` 와 상태 라인
@@ -313,8 +313,8 @@ docker exec el34-attacker sh -c "curl -s -i -X OPTIONS -H 'Host: dvwa.el34.lab' 
 반드시 실제로 보내 본다.
 
 ```bash
-docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'PUT=%{http_code} ' -X PUT -H 'Host: dvwa.el34.lab' http://10.20.30.1/wvtest.txt"
-docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'TRACE=%{http_code}\n' -X TRACE -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+curl -s -o /dev/null -w 'PUT=%{http_code} ' -X PUT -H 'Host: dvwa.el34.lab' http://192.168.0.161/wvtest.txt
+curl -s -o /dev/null -w 'TRACE=%{http_code}\n' -X TRACE -H 'Host: dvwa.el34.lab' http://192.168.0.161/
 ```
 
 **결과 해석.** `-w 'PUT=%{http_code}'` 로 응답 코드만 뽑아 본다. dvwa.el34.lab 은 차단형 WAF 가
@@ -374,7 +374,7 @@ OPTIONS 의 `Allow` 헤더는 **서버가 스스로 신고한 값**이라 실제
 골라 본다.
 
 ```bash
-docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | grep -iE 'strict-transport|content-security|x-frame|x-content' || echo '보안 헤더 누락'"
+curl -sI -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | grep -iE 'strict-transport|content-security|x-frame|x-content' || echo '보안 헤더 누락'
 ```
 
 **결과 해석.** `grep` 이 보안 헤더를 하나도 못 찾으면 `||` 뒤의 `echo` 가 실행되어 "보안 헤더
@@ -418,8 +418,8 @@ docker exec el34-attacker sh -c "curl -sI -H 'Host: dvwa.el34.lab' http://10.20.
 두 헤더 악용을 차례로 시도하고 응답 코드·동작 변화를 관찰한다.
 
 ```bash
-docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'evilhost=%{http_code} ' -H 'Host: evil.attacker.com' http://10.20.30.1/"
-docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'xff=%{http_code}\n' -H 'Host: dvwa.el34.lab' -H 'X-Forwarded-For: 127.0.0.1' http://10.20.30.1/"
+curl -s -o /dev/null -w 'evilhost=%{http_code} ' -H 'Host: evil.attacker.com' http://192.168.0.161/
+curl -s -o /dev/null -w 'xff=%{http_code}\n' -H 'Host: dvwa.el34.lab' -H 'X-Forwarded-For: 127.0.0.1' http://192.168.0.161/
 ```
 
 **결과 해석.** 첫 줄은 정상 vhost 대신 `Host: evil.attacker.com` 을 보내 서버가 어떻게 반응하는지를
@@ -505,7 +505,7 @@ graph TD
 도달 → 메서드 열거 → 위험 메서드 → 보안 헤더 → 헤더 악용 → 탐지 흔적 → 방어 → 점검 보고서.
 
 > **진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서
-> `docker exec el34-attacker`(점검) 또는 `docker exec el34-web`(흔적 확인)로 실행한다. **인가된
+> `ssh att@192.168.0.202`(점검) 또는 `docker exec el34-web`(흔적 확인)로 실행한다. **인가된
 > 실습 환경(el34)에서만** 수행한다. 합격 임계값은 0.7 이다.
 
 ### 미션 1 — 점검 대상 도달 (10점, survey)

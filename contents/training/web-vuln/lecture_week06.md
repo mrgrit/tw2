@@ -25,7 +25,7 @@
 1. XSS 와 CSRF 가 각각 "무엇을(피해자 브라우저의 스크립트 실행 / 피해자의 인증된 세션)"
    악용하는지를 비유 없이 1분 안에 설명하고, 둘이 어떻게 결합(XSS 로 토큰 탈취 → CSRF/세션
    탈취)되는지 말한다.
-2. el34 의 `dvwa.el34.lab` vhost 에 `el34-attacker` 에서 Reflected XSS 페이로드
+2. el34 의 `dvwa.el34.lab` vhost 에 `외부 공격자 VM 192.168.0.202` 에서 Reflected XSS 페이로드
    (`<script>`)를 흘려, ModSec **941 룰군**이 이를 잡아 **403(Forbidden)** 으로 차단하는
    것을 응답 코드로 확인한다.
 3. `<script>` 외의 XSS **변형**(`<img onerror>`, `<svg onload>` 같은 이벤트 핸들러)도 같은
@@ -129,7 +129,7 @@ Secure·SameSite)** 까지 한 묶음으로 점검한다. 점검자는 "XSS 가 
 반복하지 않는다 — 본 주차는 그 세션을 **빌려 쓰는** 쪽이다.
 
 > ⚠️ **인가된 실습만.** 본 주차의 모든 XSS·CSRF 점검은 **인가된 실습 환경(el34)** 안에서,
-> 정해진 대상(`el34-attacker` → el34 내부 `dvwa`/`juice` vhost)에 한해서만 수행한다. 실제 외부
+> 정해진 대상(`외부 공격자 VM 192.168.0.202` → el34 내부 `dvwa`/`juice` vhost)에 한해서만 수행한다. 실제 외부
 > 사이트를 대상으로 한 스크립트 주입·요청 위조 시도는 불법이며 본 과정의 윤리 규정을 위반한다.
 
 ---
@@ -224,7 +224,7 @@ CRS 에서 **941 룰군**이 XSS 탐지를 전담한다. 중요한 것은 **vhos
 
 ```mermaid
 graph TD
-    PAY["XSS 페이로드 요청<br/>(el34-attacker 발신)<br/>예: ?q=&lt;script&gt;alert(1)&lt;/script&gt;"]
+    PAY["XSS 페이로드 요청<br/>(외부 공격자 VM 192.168.0.202 발신)<br/>예: ?q=&lt;script&gt;alert(1)&lt;/script&gt;"]
     R941["ModSec 941 매치<br/>XSS 탐지 → anomaly score 누적"]
     DVWA["dvwa vhost = 차단 모드<br/>949110 발동 → 403 Forbidden"]
     JUICE["juice vhost = DetectionOnly<br/>탐지만 기록, 차단 안 함 → 200"]
@@ -383,7 +383,7 @@ graph TD
 lab 의 8 step 과 1:1 로 대응한다.
 
 > **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서
-> `docker exec el34-attacker`(공격 발신) 또는 `docker exec el34-web`(로그 점검)로 실행한다.
+> `ssh att@192.168.0.202`(공격 발신) 또는 `docker exec el34-web`(로그 점검)로 실행한다.
 > **인가된 실습 환경(el34)에서만** 수행한다. XSS 페이로드의 공백은 반드시 `%20` 으로 인코딩한다.
 > 합격 임계값은 0.7 이다.
 
@@ -392,7 +392,7 @@ lab 의 8 step 과 1:1 로 대응한다.
 > **왜 하는가?** XSS·CSRF 점검의 전제는 대상 vhost(`dvwa.el34.lab`)에 도달 가능해야 한다는
 > 것이다. 점검자는 본격 페이로드를 던지기 전에 항상 대상 응답부터 확인한다.
 >
-> **무엇을 알 수 있는가?** `el34-attacker` 에서 `dvwa.el34.lab` vhost 가 HTTP 코드로 응답하는지
+> **무엇을 알 수 있는가?** `외부 공격자 VM 192.168.0.202` 에서 `dvwa.el34.lab` vhost 가 HTTP 코드로 응답하는지
 > — 즉 점검을 시작할 준비가 됐는지.
 >
 > **결과 해석.** 정상: `dvwa=200`(또는 정상 응답 코드)이 출력되어 대상에 도달함. 비정상: 무응답

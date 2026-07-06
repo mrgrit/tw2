@@ -239,7 +239,7 @@ sqlmap UA 자체도 스캐너 시그니처로 탐지되는 단서다.
 
 ```mermaid
 graph TD
-    REQ["공격자의 HTTP 요청<br/>출발지 10.20.30.202"]
+    REQ["공격자의 HTTP 요청<br/>출발지 192.168.0.202"]
     ACC["Apache access.log<br/>'무엇이 들어왔나'<br/>요청 URL · 응답코드 전체상"]
     MOD["ModSecurity audit<br/>'왜 막혔나'<br/>매치된 CRS 룰 · anomaly 점수"]
     STORY["복원된 침투 경로<br/>침투(942 SQLi) → 웹쉘 작성<br/>→ 웹쉘 사용(.php?c=)"]
@@ -378,12 +378,12 @@ graph TD
 **한 줄 정의.** Contain 은 위협이 더 퍼지기 전에 공격 출발지를 차단해 확산을 막는 단계다 —
 "차단 우선, 분석 나중"(W09).
 
-웹쉘 침해의 격리는 두 갈래다. 첫째, **공격 출발지(`10.20.30.202`)를 IDS 로 플래그**해 그 출처의
+웹쉘 침해의 격리는 두 갈래다. 첫째, **공격 출발지(`192.168.0.202`)를 IDS 로 플래그**해 그 출처의
 추가 행위를 즉시 알아챈다. 본 실습은 Suricata 의 사용자 룰 파일(`local.rules`)에 출발지 격리
 룰(sid **9510001**)을 추가하고 reload 한 뒤, 그 출처의 요청이 룰을 트리거하는지 확인한다.
 
 ```
-alert ip 10.20.30.202 any -> any any (msg:"SOC W10 contain webshell attacker"; sid:9510001; rev:1;)
+alert ip 192.168.0.202 any -> any any (msg:"SOC W10 contain webshell attacker"; sid:9510001; rev:1;)
 ```
 
 둘째, **웹쉘 콜백 포트를 차단**해 외부 통신을 끊는다. 운영 환경이라면 이 두 격리를 방화벽
@@ -391,7 +391,7 @@ alert ip 10.20.30.202 any -> any any (msg:"SOC W10 contain webshell attacker"; s
 **alert(탐지 플래그) 룰로 격리를 시연**하고 직후 **self-clean** 으로 룰을 되돌린다.
 
 > **왜 drop 이 아니라 alert + self-clean 인가.** el34 는 여러 학생이 공유하는 단일 인프라다.
-> 만약 `drop` 룰을 영구로 걸면 그 출발지(공유 attacker 컨테이너)를 쓰는 **다른 학생의 실습까지
+> 만약 `drop` 룰을 영구로 걸면 그 출발지(공유 외부 공격자 VM 192.168.0.202)를 쓰는 **다른 학생의 실습까지
 > 차단**된다. 그래서 본 주차는 격리의 **메커니즘과 효과를 alert 로 시연**하고(룰이 트리거되는지
 > 확인), 시연이 끝나면 추가한 룰을 **스스로 삭제**(self-clean)해 인프라를 원상복구한다. 운영
 > 환경의 영구 firewall drop 과 달리, 공유 학습 환경에 맞춘 안전한 절차다.
@@ -448,7 +448,7 @@ docker exec el34-web sh -c 'ls /tmp/socw10_shell.php 2>/dev/null && echo "잔재
 
 > **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 실행하고,
 > 각 컨테이너 작업은 `docker exec el34-<comp>` 로 한다. 포렌식·헌팅·제거는 `el34-web`, 격리는
-> `el34-ips`, 공격 재현은 `el34-attacker` 가 무대다. 본 주차는 공유 인프라를 쓰므로, 격리 룰과
+> `el34-ips`, 공격 재현은 `외부 공격자 VM 192.168.0.202` 가 무대다. 본 주차는 공유 인프라를 쓰므로, 격리 룰과
 > 웹쉘 재현물은 반드시 **self-clean** 한다. 합격 임계값은 0.7 이다.
 
 ### 미션 1 — 점검: 웹 로그 + osquery 가 준비됐나 (8점)

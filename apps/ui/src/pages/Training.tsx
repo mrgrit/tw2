@@ -21,17 +21,22 @@ const TRACK_META: Record<string, TrackMeta> = {
   'soc-adv': { icon: '🔬', blurb: '위협 헌팅·포렌식·SOAR·퍼플팀·APT 종합 대응', group: '방어·관제', adv: true },
   attack: { icon: '⚔️', blurb: '정찰·웹 익스플로잇·SQLi/XSS·권한상승·CTF', group: '공격·모의침투' },
   'attack-adv': { icon: '🗡️', blurb: 'APT 킬체인·C2·측면 이동·유출·침투 보고서(PTES)', group: '공격·모의침투', adv: true },
+  'physical-pentest': { icon: '🚪', blurb: '물리 보안·물리 침투 킬체인 — 물리적 CIA·위협 분류·조기 탐지', group: '공격·모의침투' },
   'web-vuln': { icon: '🕸️', blurb: 'OWASP·SQLi·XSS·인증·API 보안 (WSTG 방법론)', group: '웹·애플리케이션' },
   'cloud-container': { icon: '☁️', blurb: 'Docker/K8s 보안·CIS·이미지 스캔·런타임 탐지', group: '인프라·거버넌스' },
   compliance: { icon: '📋', blurb: 'ISMS-P·ISO27001·PCI-DSS·CIS·감사·증적', group: '인프라·거버넌스' },
+  'iot-security': { icon: '📡', blurb: 'IoT 보안 — 4대 공격 표면·펌웨어/통신·표준 기반 방어', group: '인프라·거버넌스' },
+  'autonomous-systems': { icon: '🏭', blurb: 'CPS(사이버물리) 보안 — 사이버→물리 공격 경로·안전 우선 다층 방어', group: '인프라·거버넌스' },
   'wazuh-special': { icon: '🦅', blurb: 'Wazuh Dashboard·KQL·4대 보안시스템·자율 에이전트 로그 분석 (특강)', group: '방어·관제' },
   'ai-agent': { icon: '🤖', blurb: 'LLM 에이전트 구조·툴 사용·RAG·가드레일 (Ollama 실습)', group: 'AI·보안' },
   'ai-safety': { icon: '🛟', blurb: '프롬프트 인젝션·탈옥·모델 레드팀 (취약 모델 공격)', group: 'AI·보안' },
   'ai-safety-adv': { icon: '🧨', blurb: 'AI 안전 심화 — 고급 탈옥·정렬 우회·방어 한계', group: 'AI·보안', adv: true },
   'ai-security': { icon: '🔐', blurb: 'AI 시스템 공급망·데이터·모델 보안 위협과 방어', group: 'AI·보안' },
+  'ai-service-pentest': { icon: '🎯', blurb: 'LLM 앱 모의해킹 — OWASP LLM Top 10으로 AICompanion 공격 (인젝션·유출·과잉에이전시)', group: 'AI·보안' },
   aisec: { icon: '🧠', blurb: 'AI 보안 종합 — 공격·방어·거버넌스 통합', group: 'AI·보안' },
   'agent-ir': { icon: '🚨', blurb: 'AI 에이전트 사고대응 — 행위 로그·탐지·격리', group: 'AI·보안' },
   'agent-ir-adv': { icon: '🛰️', blurb: 'AI 에이전트 사고대응 심화 — 자율 위협 헌팅·포렌식', group: 'AI·보안', adv: true },
+  'autonomous-security': { icon: '🔁', blurb: '자율보안 — 자율 루프·자율성 수준·가드레일·Purple Team 순환', group: 'AI·보안' },
 }
 const FALLBACK_META: TrackMeta = { icon: '📚', blurb: 'el34 인프라 기반 보안 트레이닝', group: '기타' }
 const metaOf = (slug: string): TrackMeta => TRACK_META[slug] ?? FALLBACK_META

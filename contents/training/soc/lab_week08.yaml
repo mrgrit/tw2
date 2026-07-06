@@ -8,11 +8,11 @@ description: |
   (포트 스캔 → SQLi → SSH 무차별 대입)을 재현한 뒤, SOC 분석의 네 소스 — 네트워크(Suricata
   eve.json) · 웹(ModSec audit + access.log) · 인증(auth.log) · 통합(Wazuh alerts.json) — 을 교차
   분석한다. el34 가 출처 IP 를 보존(fw 가 SNAT 안 함)하는 성질을 이용해 흩어진 흔적을 같은 출발지
-  IP(10.20.30.202) + 시각으로 묶어 "한 공격자의 단계적 체인"으로 상관하고, 각 단계를 MITRE
+  IP(192.168.0.202) + 시각으로 묶어 "한 공격자의 단계적 체인"으로 상관하고, 각 단계를 MITRE
   ATT&CK(T1046 정찰 → T1190 웹 침투 → T1110 자격증명)으로 매핑해 하나의 공격 서사로 종합한다.
   마지막으로 auth.log 의 Accepted 유무로 침투 성공 여부를 판정하고 우선순위(P1~P4)·에스컬레이션을
   결정한 뒤 종합 보고서로 정리한다. 본 실기는 관측·분석 종합이며 인프라를 변경하지 않는다(룰 작성·계정
-  생성 없음). 모든 명령은 el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 1)에서 실행한다.
+  생성 없음). 공격(재현)은 내 공격 VM `ssh att@192.168.0.202`(비번 1)에서, 분석은 el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비번 1)에서 docker exec로 한다(세 벡터 출처 모두 192.168.0.202).
 difficulty: hard
 duration_minutes: 220
 prerequisites:
@@ -83,23 +83,23 @@ steps:
   - order: 2
     instruction: |
       ## 🎯 다단계 공격 재현 — 스캔 → 웹 → 인증
-      종합 분석의 대상이 될 다단계 공격을 한 공격자(`10.20.30.202`) 관점에서 직접 재현한다. 이 한 번의
+      종합 분석의 대상이 될 다단계 공격을 한 공격자(`192.168.0.202`) 관점에서 직접 재현한다. 이 한 번의
       재현이 이후 모든 분석 미션(미션 3~9)의 원천 데이터다 — 세 단계가 네트워크·웹·인증 소스에 각각
       흔적을 남긴다(lecture §1.1 사슬).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실행 위치:** 스캔·웹 침투는 `el34-attacker`, SSH 무차별 대입은 el34 호스트(127.0.0.1).
+      **실행 위치:** 세 벡터 모두 내 공격 VM `ssh att@192.168.0.202`(비번 1)에서 — 스캔·웹 침투는 공인 진입 192.168.0.161로, SSH 무차별 대입은 el34 호스트(192.168.0.80) SSH로(출처 모두 192.168.0.202).
 
       ```bash
-      # ── el34-attacker 에서: ① 정찰 SYN 포트 스캔(T1046, Suricata eve에 흔적) ──
-      nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned
-      # ── el34-attacker 에서: ② 웹 침투 sqlmap UA UNION SELECT(T1190, ModSec 942/949110) ──
-      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=socw8%27%20UNION%20SELECT%201--%20-"
-      # ── el34 호스트에서: ③ 4계정 SSH 무차별 대입(T1110, auth.log Invalid user) ──
-      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@127.0.0.1 exit 2>/dev/null
-      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 admin@127.0.0.1 exit 2>/dev/null
-      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 oracle@127.0.0.1 exit 2>/dev/null
-      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 test@127.0.0.1 exit 2>/dev/null
+      # ── 외부 공격자 VM 192.168.0.202 에서: ① 정찰 SYN 포트 스캔(T1046, Suricata eve에 흔적) ──
+      sudo nmap -sS -p 20-120 192.168.0.161 -T4 >/dev/null 2>&1; echo scanned
+      # ── 외부 공격자 VM 192.168.0.202 에서: ② 웹 침투 sqlmap UA UNION SELECT(T1190, ModSec 942/949110) ──
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=socw8%27%20UNION%20SELECT%201--%20-"
+      # ── (202에서) el34 호스트(192.168.0.80) SSH에: ③ 4계정 SSH 무차별 대입(T1110, auth.log Invalid user) ──
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@192.168.0.80 exit 2>/dev/null
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 admin@192.168.0.80 exit 2>/dev/null
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 oracle@192.168.0.80 exit 2>/dev/null
+      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 test@192.168.0.80 exit 2>/dev/null
       # SIEM 수렴 대기 후 완료 마커
       sleep 6
       echo "multi-stage done"
@@ -114,14 +114,14 @@ steps:
     points: 10
     answer: |
       # 1) ① 정찰 — SYN 포트 스캔(T1046, Suricata eve에 흔적)
-      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      ssh att@192.168.0.202 'sudo nmap -sS -p 20-120 192.168.0.161 -T4 >/dev/null 2>&1; echo scanned'
       # 2) ② 웹 침투 — sqlmap UA로 UNION SELECT SQLi(T1190, ModSec 942/949110)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw8%27%20UNION%20SELECT%201--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=socw8%27%20UNION%20SELECT%201--%20-\""
       # 3) ③ 자격증명 — 4계정 SSH 무차별 대입(T1110, auth.log Invalid user)
-      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@127.0.0.1 exit 2>/dev/null
-      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 admin@127.0.0.1 exit 2>/dev/null
-      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 oracle@127.0.0.1 exit 2>/dev/null
-      ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 test@127.0.0.1 exit 2>/dev/null
+      ssh att@192.168.0.202 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 root@192.168.0.80 exit 2>/dev/null'
+      ssh att@192.168.0.202 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 admin@192.168.0.80 exit 2>/dev/null'
+      ssh att@192.168.0.202 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 oracle@192.168.0.80 exit 2>/dev/null'
+      ssh att@192.168.0.202 'ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 test@192.168.0.80 exit 2>/dev/null'
       # 4) SIEM 수렴 대기 후 완료 마커
       sleep 6
       echo "multi-stage done"
@@ -150,35 +150,35 @@ steps:
       **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속해 실행한다.
 
       ```bash
-      # 1) eve에서 alert + 출발지 10.20.30.202만 골라 출발지 집계(네트워크 단면 확인)
-      tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.event_type=="alert" and .src_ip=="10.20.30.202")|.src_ip' | sort | uniq -c
+      # 1) eve에서 alert + 출발지 192.168.0.202만 골라 출발지 집계(네트워크 단면 확인)
+      tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.event_type=="alert" and .src_ip=="192.168.0.202")|.src_ip' | sort | uniq -c
       # 2) 같은 공격자의 alert 시그니처 종류 집계(스캔/SQLi)
-      tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.event_type=="alert" and .src_ip=="10.20.30.202")|.alert.signature' | sort | uniq -c | tail -5
+      tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.event_type=="alert" and .src_ip=="192.168.0.202")|.alert.signature' | sort | uniq -c | tail -5
       ```
-      - `select(.event_type=="alert" and .src_ip=="10.20.30.202")` — 룰 매치 이벤트 중 이 공격자 하나만 골라낸다. `.alert.signature | sort | uniq -c` 로 시그니처 분포를 본다.
+      - `select(.event_type=="alert" and .src_ip=="192.168.0.202")` — 룰 매치 이벤트 중 이 공격자 하나만 골라낸다. `.alert.signature | sort | uniq -c` 로 시그니처 분포를 본다.
 
       ## ✅ 합격 기준
-      `10.20.30.202` 출력 시 통과. **근거:** 출발지 10.20.30.202 의 alert 가 잡히고 스캔/SQLi 시그니처가
+      `192.168.0.202` 출력 시 통과. **근거:** 출발지 192.168.0.202 의 alert 가 잡히고 스캔/SQLi 시그니처가
       보이면 통과 — 이 시그니처들이 ATT&CK T1046(정찰)/T1190(침투)의 네트워크 측 증거다.
     hint: 'eve alert signature for .202'
     category: analysis
     points: 10
     answer: |
-      # 1) eve에서 alert + 출발지 10.20.30.202만 골라 출발지 집계(네트워크 단면 확인)
-      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.src_ip" | sort | uniq -c'
+      # 1) eve에서 alert + 출발지 192.168.0.202만 골라 출발지 집계(네트워크 단면 확인)
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.src_ip" | sort | uniq -c'
       # 2) 같은 공격자의 alert 시그니처 종류 집계(스캔/SQLi)
-      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\")|.alert.signature" | sort | uniq -c | tail -5'
-    answer_detail: "네트워크 단면 — 출발지 10.20.30.202 의 alert(스캔/SQLi 시그니처)가 eve.json 에 다수 남는다. event_type=='alert' + src_ip 로 한 공격자만 골라낸 것이 핵심이다. 채점은 출력에 출발지 10.20.30.202 가 보임을 확인한다. 이 시그니처들이 이후 ATT&CK 매핑에서 T1046(정찰)/T1190(침투)의 네트워크 측 증거가 된다."
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.alert.signature" | sort | uniq -c | tail -5'
+    answer_detail: "네트워크 단면 — 출발지 192.168.0.202 의 alert(스캔/SQLi 시그니처)가 eve.json 에 다수 남는다. event_type=='alert' + src_ip 로 한 공격자만 골라낸 것이 핵심이다. 채점은 출력에 출발지 192.168.0.202 가 보임을 확인한다. 이 시그니처들이 이후 ATT&CK 매핑에서 T1046(정찰)/T1190(침투)의 네트워크 측 증거가 된다."
     expected_output: |
-      255 10.20.30.202
-           52 6V6 Path Traversal Attempt
-            3 6V6 Possible nmap SYN scan
-           25 6V6 SQL Injection - UNION SELECT
-           84 6V6 XSS - script tag
+      255 192.168.0.202
+           52 EL34 Path Traversal Attempt
+            3 EL34 Possible nmap SYN scan
+           25 EL34 SQL Injection - UNION SELECT
+           84 EL34 XSS - script tag
             1 CTF8 sqlmap recon
     verify:
       type: output_contains
-      expect: '10.20.30.202'
+      expect: '192.168.0.202'
       field: stdout
       semantic:
         intent: "네트워크 분석"
@@ -303,25 +303,25 @@ steps:
       **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
 
       ```bash
-      # 1) alerts.json 최근 500줄에서 출발지 10.20.30.202 경보의 rule.groups 분포(다소스 수렴 확인)
-      tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="10.20.30.202")|.rule.groups' | sort | uniq -c | head
+      # 1) alerts.json 최근 500줄에서 출발지 192.168.0.202 경보의 rule.groups 분포(다소스 수렴 확인)
+      tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="192.168.0.202")|.rule.groups' | sort | uniq -c | head
       # 2) 해석 — ids/web 등 다소스 그룹이 한 manager로 수렴
       echo "→ ids/web 등 다소스 그룹이 한 manager로 수렴"
       ```
       - `.rule.groups | sort | uniq -c` — 어떤 룰 그룹(예: ids, web 등 다소스)이 모였나 분포. 여러 소스 그룹이 한 manager 에 보이면 수렴이 성립한 것이다.
 
       ## ✅ 합격 기준
-      `ids` 출력 시 통과. **근거:** 출발지 10.20.30.202 의 경보 그룹 분포에 ids 등 다소스가 보이면
+      `ids` 출력 시 통과. **근거:** 출발지 192.168.0.202 의 경보 그룹 분포에 ids 등 다소스가 보이면
       통과 — 네 소스가 한 곳으로 수렴해야 한 화면에서 교차 분석이 가능하다.
     hint: 'alerts.json src .202 그룹 분포'
     category: detect
     points: 10
     answer: |
-      # 1) alerts.json 최근 500줄에서 출발지 10.20.30.202 경보의 rule.groups 분포(다소스 수렴 확인)
-      docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|.rule.groups" | sort | uniq -c | head'
+      # 1) alerts.json 최근 500줄에서 출발지 192.168.0.202 경보의 rule.groups 분포(다소스 수렴 확인)
+      docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|.rule.groups" | sort | uniq -c | head'
       # 2) 해석 — ids/web 등 다소스 그룹이 한 manager로 수렴
       echo "→ ids/web 등 다소스 그룹이 한 manager로 수렴"
-    answer_detail: "네 소스가 Wazuh 한 manager 로 수렴 — 출발지 10.20.30.202 로 묶으면 다단계 경보가 한 곳에 모인다. rule.groups 분포에 ids 등 다소스가 보이는 것이 수렴의 증거다. 채점은 출력에 'ids' 그룹이 보임을 확인한다. 수렴이 성립해야 한 화면에서 교차 분석이 가능하다."
+    answer_detail: "네 소스가 Wazuh 한 manager 로 수렴 — 출발지 192.168.0.202 로 묶으면 다단계 경보가 한 곳에 모인다. rule.groups 분포에 ids 등 다소스가 보이는 것이 수렴의 증거다. 채점은 출력에 'ids' 그룹이 보임을 확인한다. 수렴이 성립해야 한 화면에서 교차 분석이 가능하다."
     expected_output: |
       464 ["ids","suricata"]
       → ids/web 등 다소스 그룹이 한 manager로 수렴
@@ -339,45 +339,45 @@ steps:
     instruction: |
       ## 🎯 교차 상관 — 출처/시간으로 묶기 (종합 분석의 정점)
       흩어진 흔적을 출발지 IP 하나와 시각으로 묶어 "한 공격자의 단계적 체인"임을 입증한다. el34 가
-      출처 IP 를 보존(fw 가 SNAT 안 함)하므로 네트워크·웹·인증의 흔적이 같은 `10.20.30.202` 로 묶이는
+      출처 IP 를 보존(fw 가 SNAT 안 함)하므로 네트워크·웹·인증의 흔적이 같은 `192.168.0.202` 로 묶이는
       것 — 이것이 "한 공격자"임을 증명하는 키다(lecture §3, §6).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
 
       ```bash
-      # 1) alerts.json에서 출발지 10.20.30.202 경보를 [시각,설명] 시간순 최근 8건 — 공격 타임라인
-      tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="10.20.30.202")|[.timestamp,.rule.description]|@tsv' | tail -8
-      # 2) 해석 — 같은 출처 10.20.30.202 + 시간순 = 한 공격자의 단계적 체인
-      echo "→ 같은 출처 10.20.30.202 + 시간순 = 한 공격자의 단계적 체인"
+      # 1) alerts.json에서 출발지 192.168.0.202 경보를 [시각,설명] 시간순 최근 8건 — 공격 타임라인
+      tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="192.168.0.202")|[.timestamp,.rule.description]|@tsv' | tail -8
+      # 2) 해석 — 같은 출처 192.168.0.202 + 시간순 = 한 공격자의 단계적 체인
+      echo "→ 같은 출처 192.168.0.202 + 시간순 = 한 공격자의 단계적 체인"
       ```
-      - `select(.data.src_ip=="10.20.30.202")`(상관 키1: 출발지) + `[.timestamp,.rule.description]|@tsv`(상관 키2: 시간)로 최근 8건을 시간순으로 본다 — 이 출력이 공격 서사의 뼈대다.
+      - `select(.data.src_ip=="192.168.0.202")`(상관 키1: 출발지) + `[.timestamp,.rule.description]|@tsv`(상관 키2: 시간)로 최근 8건을 시간순으로 본다 — 이 출력이 공격 서사의 뼈대다.
 
       ## ✅ 합격 기준
-      `10.20.30.202` 출력 시 통과. **근거:** 출발지 10.20.30.202 의 경보가 시각순으로 나열되면 통과 —
+      `192.168.0.202` 출력 시 통과. **근거:** 출발지 192.168.0.202 의 경보가 시각순으로 나열되면 통과 —
       정찰→침투의 진행이 한 타임라인으로 보이며, 이것이 미션 8 ATT&CK 서사의 뼈대다.
     hint: 'src .202 시간순 체인'
     category: analysis
     points: 12
     answer: |
-      # 1) alerts.json에서 출발지 10.20.30.202 경보를 [시각,설명] 시간순 최근 8건 — 공격 타임라인
-      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -8'
-      # 2) 해석 — 같은 출처 10.20.30.202 + 시간순 = 한 공격자의 단계적 체인
-      echo "→ 같은 출처 10.20.30.202 + 시간순 = 한 공격자의 단계적 체인"
-    answer_detail: "교차 상관 — 네 소스를 두 키(출발지 IP 10.20.30.202 + 시각)로 묶으면 흩어진 단편이 한 공격자의 시간순 체인이 된다. 출처 보존(SNAT 없음) 덕에 같은 IP 로 묶이는 것이 전제다. 채점은 출력에 출발지 10.20.30.202 가 보임을 확인한다. 이 타임라인이 미션 8 ATT&CK 서사의 뼈대다."
+      # 1) alerts.json에서 출발지 192.168.0.202 경보를 [시각,설명] 시간순 최근 8건 — 공격 타임라인
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|[.timestamp,.rule.description]|@tsv" | tail -8'
+      # 2) 해석 — 같은 출처 192.168.0.202 + 시간순 = 한 공격자의 단계적 체인
+      echo "→ 같은 출처 192.168.0.202 + 시간순 = 한 공격자의 단계적 체인"
+    answer_detail: "교차 상관 — 네 소스를 두 키(출발지 IP 192.168.0.202 + 시각)로 묶으면 흩어진 단편이 한 공격자의 시간순 체인이 된다. 출처 보존(SNAT 없음) 덕에 같은 IP 로 묶이는 것이 전제다. 채점은 출력에 출발지 192.168.0.202 가 보임을 확인한다. 이 타임라인이 미션 8 ATT&CK 서사의 뼈대다."
     expected_output: |
-      2026-06-26T14:46:14.551+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
-      2026-06-26T14:46:22.533+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:22.536+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
-      2026-06-26T14:46:30.534+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
-      2026-06-26T14:46:30.534+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:34.598+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:44.549+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:44.551+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
-      → 같은 출처 10.20.30.202 + 시간순 = 한 공격자의 단계적 체인
+      2026-06-26T14:46:14.551+0000	Suricata: Alert - EL34 Bot UA - sqlmap
+      2026-06-26T14:46:22.533+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:22.536+0000	Suricata: Alert - EL34 Bot UA - sqlmap
+      2026-06-26T14:46:30.534+0000	Suricata: Alert - EL34 Bot UA - sqlmap
+      2026-06-26T14:46:30.534+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:34.598+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:44.549+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:44.551+0000	Suricata: Alert - EL34 Bot UA - sqlmap
+      → 같은 출처 192.168.0.202 + 시간순 = 한 공격자의 단계적 체인
     verify:
       type: output_contains
-      expect: '10.20.30.202'
+      expect: '192.168.0.202'
       field: stdout
       semantic:
         intent: "출처/시간 교차 상관"
@@ -393,7 +393,7 @@ steps:
       ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
       # 1) T0 포트 스캔 → 정찰 T1046
-      echo "T0 포트 스캔(10.20.30.202)  → TA0043 정찰 / T1046"
+      echo "T0 포트 스캔(192.168.0.202)  → TA0043 정찰 / T1046"
       # 2) T1 SQLi 침투 → 초기침투 T1190
       echo "T1 SQLi 침투(같은 출처)      → TA0001 초기침투 / T1190"
       # 3) T2 SSH 무차별 대입 → 자격증명 T1110
@@ -413,7 +413,7 @@ steps:
     points: 10
     answer: |
       # 1) T0 포트 스캔 → 정찰 T1046
-      echo "T0 포트 스캔(10.20.30.202)  → TA0043 정찰 / T1046"
+      echo "T0 포트 스캔(192.168.0.202)  → TA0043 정찰 / T1046"
       # 2) T1 SQLi 침투 → 초기침투 T1190
       echo "T1 SQLi 침투(같은 출처)      → TA0001 초기침투 / T1190"
       # 3) T2 SSH 무차별 대입 → 자격증명 T1110
@@ -424,7 +424,7 @@ steps:
       echo "→ 한 공격자가 정찰→웹침투→인증공격. ATT&CK 단계 일관"
     answer_detail: "공격 서사 = 시간순 + ATT&CK 단계 + 출처 일관 + 증거. T1046(정찰)→T1190(웹 침투)→T1110(자격증명)을 '한 공격자가 무엇을 했나'로 한 문장씩 잇는다. 전술(목적)과 기술(수법)을 표준 번호로 붙이면 보고·소통이 일관된다. 채점은 출력에 T1190 이 보임을 확인한다."
     expected_output: |
-      T0 포트 스캔(10.20.30.202)  → TA0043 정찰 / T1046
+      T0 포트 스캔(192.168.0.202)  → TA0043 정찰 / T1046
       T1 SQLi 침투(같은 출처)      → TA0001 초기침투 / T1190
       T2 SSH 무차별 대입(다발)     → TA0006 자격증명 / T1110
       T3 Accepted 유무            → 침투 성공 판정
@@ -469,7 +469,7 @@ steps:
       echo "정찰→침투 체인 진행(성공 흔적 없음) = P2 에스컬레이션(L2/IR로)"
       # 3) 격상 규칙 — 공격 출처 Accepted 발견 시 = P1 침해(즉시 IR)
       echo "공격 출처에서 Accepted 발견 시 = P1 침해(즉시 IR)"
-    answer_detail: "판정 = 체인 깊이 + 침투 여부, 모두 증거 기반. 공격 출처(10.20.30.202/{{ATTACKER_IP}})의 Accepted 수가 0 이면 '시도(P2)', 1 이상이면 '침해(P1)'. 본 시나리오는 웹 403 차단 + Invalid user 다발만 있고 성공 흔적이 없어 시도(P2)이며, 진행형이라 L2/IR 로 에스컬레이션한다. 채점은 출력에 P2 가 보임을 확인한다. '위험해 보인다'가 아니라 Accepted 수로 판정하는 것이 핵심이다."
+    answer_detail: "판정 = 체인 깊이 + 침투 여부, 모두 증거 기반. 공격 출처(192.168.0.202/{{ATTACKER_IP}})의 Accepted 수가 0 이면 '시도(P2)', 1 이상이면 '침해(P1)'. 본 시나리오는 웹 403 차단 + Invalid user 다발만 있고 성공 흔적이 없어 시도(P2)이며, 진행형이라 L2/IR 로 에스컬레이션한다. 채점은 출력에 P2 가 보임을 확인한다. '위험해 보인다'가 아니라 Accepted 수로 판정하는 것이 핵심이다."
     expected_output: |
       0
       정찰→침투 체인 진행(성공 흔적 없음) = P2 에스컬레이션(L2/IR로)
@@ -496,7 +496,7 @@ steps:
       cat <<'EOF'
       # SOC W08 중간고사 보고서
       ## 1. 네 소스: eve(스캔/sqlmap)+ModSec(942/949110)+auth.log(Invalid user 다발)+alerts.json 수렴
-      ## 2. 교차 상관: 모두 출처 10.20.30.202(웹/네트워크), 시간순 체인
+      ## 2. 교차 상관: 모두 출처 192.168.0.202(웹/네트워크), 시간순 체인
       ## 3. ATT&CK 서사: T1046 정찰 → T1190 웹침투 → T1110 인증공격
       ## 4. 판정: 정찰→침투 체인 진행, 공격출처 Accepted 없음 → P2 에스컬레이션(시도/차단)
       ## 결론: 한 로그는 단편, 교차로 봐야 한 공격자의 서사가 보인다
@@ -513,7 +513,7 @@ steps:
       cat <<'EOF'
       # SOC W08 중간고사 보고서
       ## 1. 네 소스: eve(스캔/sqlmap)+ModSec(942/949110)+auth.log(Invalid user 다발)+alerts.json 수렴
-      ## 2. 교차 상관: 모두 출처 10.20.30.202(웹/네트워크), 시간순 체인
+      ## 2. 교차 상관: 모두 출처 192.168.0.202(웹/네트워크), 시간순 체인
       ## 3. ATT&CK 서사: T1046 정찰 → T1190 웹침투 → T1110 인증공격
       ## 4. 판정: 정찰→침투 체인 진행, 공격출처 Accepted 없음 → P2 에스컬레이션(시도/차단)
       ## 결론: 한 로그는 단편, 교차로 봐야 한 공격자의 서사가 보인다
@@ -522,7 +522,7 @@ steps:
     expected_output: |
       # SOC W08 중간고사 보고서
       ## 1. 네 소스: eve(스캔/sqlmap)+ModSec(942/949110)+auth.log(Invalid user 다발)+alerts.json 수렴
-      ## 2. 교차 상관: 모두 출처 10.20.30.202(웹/네트워크), 시간순 체인
+      ## 2. 교차 상관: 모두 출처 192.168.0.202(웹/네트워크), 시간순 체인
       ## 3. ATT&CK 서사: T1046 정찰 → T1190 웹침투 → T1110 인증공격
       ## 4. 판정: 정찰→침투 체인 진행, 공격출처 Accepted 없음 → P2 에스컬레이션(시도/차단)
       ## 결론: 한 로그는 단편, 교차로 봐야 한 공격자의 서사가 보인다

@@ -9,10 +9,10 @@ description: |
   자동 점검을 돌려 el34 dvwa 에서 WAF(ModSecurity 941)에 막혀 '무탐'이 나오는 것을 관찰한다. 핵심
   깨달음: '무탐 = 안전'이 아니다(WAF가 가렸을 뿐). 이어 자동화가 구조적으로 못 보는 영역(로직/인가
   취약점 — W12 BOLA 같은 — 은 템플릿화 불가)을 정리하고, 스캐너 결과를 방어(헤더 보강·CVE 패치·CI/CD
-  통합)로 연결하되 수동 점검과 병행한다는 운영 원칙을 세운다. 표적은 juice/dvwa, 공격은 el34-attacker
-  컨테이너, 인가된 실습만. 모든 명령은 el34 호스트(ssh ccc@{{TARGET_IP}})에서 실행하며, 컨테이너 작업은
-  docker exec -it <컨테이너> bash 로 접속해 수행한다.
-  도구: nuclei v3.3.5(템플릿 10,964개 — egress 차단된 컨테이너 대신 호스트에서 받아 docker cp 로 주입,
+  통합)로 연결하되 수동 점검과 병행한다는 운영 원칙을 세운다. 표적은 juice/dvwa(공인 진입 192.168.0.161), 공격은
+  외부 공격자 VM 192.168.0.202(att/1)에서 — `ssh att@192.168.0.202`(비번 1)로 접속해 수행한다. 인가된 실습만.
+  스캐너 nuclei·dalfox 는 202에 설치돼 있다.
+  도구: nuclei v3.3.5(템플릿 10,964개 — 202에서 nuclei -update-templates 로 받음,
   lecture §2.5 참고)/dalfox/httpx 탑재. nuclei 출력 순서는 비결정적이라 합격은 줄 순서가 아니라 키워드
   포함 여부로 판정한다.
 difficulty: hard
@@ -37,11 +37,11 @@ steps:
       무의미하므로(없는 게 아니라 못 닿은 것), 본격 스캔 전에 항상 도달성부터 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) juice vhost 도달 확인 — Host로 표적 지정, 본문 버리고 응답코드만 juice= 형식으로(무탐과 미도달 혼동 방지)
-      curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/
+      curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/
       ```
       - `curl` = 명령줄 HTTP 클라이언트. `-H 'Host: juice.el34.lab'` 로 표적 vhost(JuiceShop)를 지정하고,
         `-sk`(조용히·인증서 무시) `-o /dev/null`(본문 버림) `-w '...%{http_code}'`(응답 코드만 출력) 으로
@@ -54,7 +54,7 @@ steps:
     points: 10
     answer: |
       # 1) juice vhost 도달 확인 — Host로 표적 지정, 본문 버리고 응답코드만 juice= 형식으로(무탐과 미도달 혼동 방지)
-      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      ssh att@192.168.0.202 "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/"
     answer_detail: "자동화 스캐닝 표적 = JuiceShop(juice.el34.lab). curl 로 fw→web 경로 도달성을 먼저 확인해, 이후 스캐너 무탐이 '취약점 없음'인지 '표적 미도달'인지 혼동하지 않게 한다."
     expected_output: |
       juice=200
@@ -76,17 +76,17 @@ steps:
       자동 식별한다. 기술 스택을 알면 그에 맞는 CVE·오설정 점검으로 좁혀 갈 수 있다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) nuclei tech-detect 템플릿 1개로 표적의 사용 기술을 자동 핑거프린팅(-H로 vhost, -silent 매치만, -nc 색상끔)
-      nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -silent -nc 2>/dev/null
+      nuclei -u http://192.168.0.161 -H 'Host: juice.el34.lab' -t ~/nuclei-templates/http/technologies/tech-detect.yaml -silent -nc 2>/dev/null
       # 2) 해석 — tech-detect 템플릿이 기술(google-font-api 등)을 자동 식별(사람의 수동 헤더 분석을 대체)
       echo "→ tech-detect 템플릿이 기술(google-font-api 등) 자동 핑거프린팅"
       ```
       - `nuclei` = 템플릿 기반 대량 스캐너. `-u` 기본 URL, `-H 'Host: ...'` 표적 vhost 지정,
         `-t <경로>` 사용할 **템플릿** 지정(여기서는 기술 탐지 1개), `-silent` 매치 결과만 출력,
-        `-nc` 색상 끔. (템플릿은 egress 차단된 컨테이너 대신 호스트에서 받아 주입한 것 — lecture §2.5.)
+        `-nc` 색상 끔. (템플릿은 202에서 nuclei -update-templates 로 미리 받아 둠 — lecture §2.5.)
       ## ✅ 합격 기준
       `tech-detect` 출력 시 통과. **근거:** tech-detect 매치가 나타나 기술(예: google-font-api)이 자동
       탐지되면 합격 — 출력 순서는 비결정적이므로 줄 위치가 아니라 매치 내용으로 판정한다.
@@ -95,12 +95,12 @@ steps:
     points: 14
     answer: |
       # 1) nuclei tech-detect 템플릿 1개로 표적의 사용 기술을 자동 핑거프린팅(-H로 vhost, -silent 매치만, -nc 색상끔)
-      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/technologies/tech-detect.yaml -silent -nc 2>/dev/null"
+      ssh att@192.168.0.202 "nuclei -u http://192.168.0.161 -H 'Host: juice.el34.lab' -t ~/nuclei-templates/http/technologies/tech-detect.yaml -silent -nc 2>/dev/null"
       # 2) 해석 — tech-detect 템플릿이 기술(google-font-api 등)을 자동 식별(사람의 수동 헤더 분석을 대체)
       echo "→ tech-detect 템플릿이 기술(google-font-api 등) 자동 핑거프린팅"
     answer_detail: "nuclei tech-detect = 응답 단서로 사용 기술을 자동 핑거프린팅하는 템플릿. 템플릿 1개가 사람의 수동 헤더 분석을 대신한다. 합격은 `tech-detect` 매치(기술 1건 이상) 포함 여부로 판정 — 출력 순서는 비결정적."
     expected_output: |
-      [tech-detect:google-font-api] [http] [info] http://10.20.30.1
+      [tech-detect:google-font-api] [http] [info] http://192.168.0.161
       → tech-detect 템플릿이 기술(google-font-api 등) 자동 핑거프린팅
     verify:
       type: output_contains
@@ -120,11 +120,11 @@ steps:
       XSS·다운그레이드 등에 노출된다. 템플릿 하나가 여러 헤더 누락을 한 번에 점검한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) nuclei 오설정 템플릿 1개로 누락 보안 헤더(CSP/HSTS/Referrer/COOP 등)를 일괄 탐지(앞 10줄만)
-      nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | head -10
+      nuclei -u http://192.168.0.161 -H 'Host: juice.el34.lab' -t ~/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | head -10
       # 2) 해석 — 템플릿 1개로 여러 헤더 누락을 한 번에 점검(수동 점검 여러 번을 대체)
       echo "→ CSP/Referrer-Policy/COOP 등 다수 누락. 템플릿 1개로 모든 헤더 점검"
       ```
@@ -138,18 +138,18 @@ steps:
     points: 14
     answer: |
       # 1) nuclei 오설정 템플릿 1개로 누락 보안 헤더(CSP/HSTS/Referrer/COOP 등)를 일괄 탐지(앞 10줄만)
-      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | head -10"
+      ssh att@192.168.0.202 "nuclei -u http://192.168.0.161 -H 'Host: juice.el34.lab' -t ~/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | head -10"
       # 2) 해석 — 템플릿 1개로 여러 헤더 누락을 한 번에 점검(수동 점검 여러 번을 대체)
       echo "→ CSP/Referrer-Policy/COOP 등 다수 누락. 템플릿 1개로 모든 헤더 점검"
     answer_detail: "nuclei 오설정 템플릿 1개가 CSP/HSTS/Referrer-Policy/COOP 등 누락 보안 헤더를 일괄 탐지한다 — 수동 점검 여러 번을 대체. 합격은 `missing-security-headers` 매치 포함 여부(다수)로 판정. 방어자도 같은 템플릿으로 자기 사이트 누락 헤더를 찾아 닫는다."
     expected_output: |
-      [http-missing-security-headers:strict-transport-security] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:content-security-policy] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:permissions-policy] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:x-permitted-cross-domain-policies] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:referrer-policy] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:cross-origin-embedder-policy] [http] [info] http://10.20.30.1
-      [http-missing-security-headers:cross-origin-opener-policy] [http] [info] http://10.20.30.1
+      [http-missing-security-headers:strict-transport-security] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:content-security-policy] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:permissions-policy] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:x-permitted-cross-domain-policies] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:referrer-policy] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:cross-origin-embedder-policy] [http] [info] http://192.168.0.161
+      [http-missing-security-headers:cross-origin-opener-policy] [http] [info] http://192.168.0.161
       [http-missing-security-headers:cross-origin-resource-policy] [http] [info] ht
     verify:
       type: output_contains
@@ -170,11 +170,11 @@ steps:
       빠지면 평문(HTTP) 다운그레이드 공격에 노출된다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 같은 누락-헤더 템플릿 출력에서 HSTS(strict-transport-security) 한 줄만 추려 누락 확정(W10 수동 결과와 교차검증)
-      nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | grep strict-transport-security
+      nuclei -u http://192.168.0.161 -H 'Host: juice.el34.lab' -t ~/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | grep strict-transport-security
       # 2) 해석 — W10(TLS)에서 본 HSTS 부재를 스캐너가 자동 확정, 수동·자동 일치가 신뢰도를 올림
       echo "→ W10(TLS)에서 본 HSTS 부재를 스캐너가 자동 확정. 수동·자동 결과 교차검증"
       ```
@@ -188,12 +188,12 @@ steps:
     points: 14
     answer: |
       # 1) 같은 누락-헤더 템플릿 출력에서 HSTS(strict-transport-security) 한 줄만 추려 누락 확정(W10 수동 결과와 교차검증)
-      docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | grep strict-transport-security"
+      ssh att@192.168.0.202 "nuclei -u http://192.168.0.161 -H 'Host: juice.el34.lab' -t ~/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | grep strict-transport-security"
       # 2) 해석 — W10(TLS)에서 본 HSTS 부재를 스캐너가 자동 확정, 수동·자동 일치가 신뢰도를 올림
       echo "→ W10(TLS)에서 본 HSTS 부재를 스캐너가 자동 확정. 수동·자동 결과 교차검증"
     answer_detail: "HSTS(strict-transport-security) 누락을 nuclei 가 자동 확정 — W10 수동 점검과 같은 결론. 두 독립 방법의 일치(교차검증)가 발견의 신뢰도를 올린다. 합격은 `strict-transport-security` 매치 포함 여부."
     expected_output: |
-      [http-missing-security-headers:strict-transport-security] [http] [info] http://10.20.30.1
+      [http-missing-security-headers:strict-transport-security] [http] [info] http://192.168.0.161
       → W10(TLS)에서 본 HSTS 부재를 스캐너가 자동 확정. 수동·자동 결과 교차검증
     verify:
       type: output_contains
@@ -214,15 +214,15 @@ steps:
       **941(XSS) 룰**에 걸려 **403** 으로 막힌다. 그래서 dalfox 는 실행 가능한 XSS 를 못 찾는다 — 즉 무탐.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) dalfox로 XSS 자동 점검(파라미터에 페이로드 자동 변이·주입) — dvwa는 WAF(941)가 403 차단 → 무탐, 끝나면 dalfox=done
-      timeout 60 dalfox url 'http://10.20.30.1/?q=test' -H 'Host: dvwa.el34.lab' --silence --no-color 2>&1; echo dalfox=done
+      timeout 60 dalfox url --url 'http://192.168.0.161/?q=test' -H 'Host: dvwa.el34.lab' --silence --no-color 2>&1; echo dalfox=done
       # 2) 해석 — ModSec(941)이 XSS payload 차단 → dalfox 무탐, '무탐=안전' 아님(WAF가 가림)
       echo "→ ModSec(941)이 XSS payload 차단 → dalfox 무탐. '무탐=안전' 아님(WAF가 가림). 자동화 한계"
       ```
-      - `dalfox url '<URL>'` 점검 표적, `-H 'Host: dvwa.el34.lab'` 표적 vhost(DVWA), `--silence` 결과 위주
+      - `dalfox url --url '<URL>'` 점검 표적, `-H 'Host: dvwa.el34.lab'` 표적 vhost(DVWA), `--silence` 결과 위주
         출력, `--no-color` 색상 끔. `timeout 60` 으로 최대 60초 제한, 끝나면 `dalfox=done` 출력.
       ## ✅ 합격 기준
       `dalfox=done` 출력 시 통과. **근거:** 스캔이 끝까지 실행되어 dalfox=done 이 나오면 무탐(자동화 한계)
@@ -232,7 +232,7 @@ steps:
     points: 12
     answer: |
       # 1) dalfox로 XSS 자동 점검(파라미터에 페이로드 자동 변이·주입) — dvwa는 WAF(941)가 403 차단 → 무탐, 끝나면 dalfox=done
-      docker exec el34-attacker sh -c "timeout 60 dalfox url 'http://10.20.30.1/?q=test' -H 'Host: dvwa.el34.lab' --silence --no-color 2>&1; echo dalfox=done"
+      ssh att@192.168.0.202 "timeout 60 dalfox url --url 'http://192.168.0.161/?q=test' -H 'Host: dvwa.el34.lab' --silence --no-color 2>&1; echo dalfox=done"
       # 2) 해석 — ModSec(941)이 XSS payload 차단 → dalfox 무탐, '무탐=안전' 아님(WAF가 가림)
       echo "→ ModSec(941)이 XSS payload 차단 → dalfox 무탐. '무탐=안전' 아님(WAF가 가림). 자동화 한계"
     answer_detail: "dalfox = XSS 특화 자동 스캐너. el34 dvwa 는 ModSecurity 941(XSS)이 페이로드를 403 으로 차단 → dalfox 무탐. 합격은 `dalfox=done`(스캔 완주) 포함 여부. 핵심: 무탐은 'WAF가 가림'일 수 있어 안전을 보장하지 않는다 — 방어 측 WAF 로그(941)를 함께 보면 '없음'과 '가려짐'이 갈린다."

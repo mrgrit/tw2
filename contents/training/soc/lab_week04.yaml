@@ -13,8 +13,9 @@ description: |
   본 트랙 soc 대역 1004xx)을 local_rules.xml에 작성하고 logtest로 발화를 검증한다(라이브 analysisd
   무중단). 마지막에 새 룰이 만드는 오탐(false positive)을 조건 좁히기·level 적정화·화이트리스트로
   줄이는 튜닝까지 다룬다. 공유 SIEM이므로 룰은 검증이 끝나면 백업 복원으로 반드시 삭제(베이스 보존,
-  wazuh-control restart 금지). 명령은 el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 1)에 들어가
-  docker exec el34-siem로 실행한다.
+  wazuh-control restart 금지). 룰 작성·검증은 el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비번 1)에 들어가
+  `docker exec el34-siem`로 하고, 룰을 발화시킬 트리거 공격은 내 공격 VM `ssh att@192.168.0.202`(비번 1)에서
+  공인 진입 192.168.0.161로 보낸다(출처 192.168.0.202로 기록되어 커스텀 룰이 매치).
 difficulty: hard
 duration_minutes: 200
 prerequisites:
@@ -322,46 +323,46 @@ steps:
       흐름과 **보존된 출발지 IP**를 본다.
 
       ### 결과 해석의 핵심 — 출발지 보존
-      el34의 fw는 출발지 주소를 바꾸지 않으므로(SNAT 안 함), 내부 발판 공격자(10.20.30.202)의
+      el34의 fw는 출발지 주소를 바꾸지 않으므로(SNAT 안 함), 외부 공격자 VM 192.168.0.202 공격자(192.168.0.202)의
       출발지 IP가 alerts.json에 **그대로** 남는다. 이 보존이 같은 출처의 반복을 세는 빈도 룰
       (same_source_ip)의 전제다. 운영 룰(restart 적용 시)이라면 이 경보를 커스텀 level로 격상한다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** 공격 재현은 `el34-attacker`, alerts.json 확인은 `el34-siem`.
+      **실습 컨테이너:** 공격 재현은 `외부 공격자 VM 192.168.0.202`, alerts.json 확인은 `el34-siem`.
       각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
 
       ```bash
-      # ── el34-attacker 에서: 스캐너 UA SQLi 요청 (Suricata eve→Wazuh alerts.json 흐름 생성) ──
-      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=socw4%27%20UNION%20SELECT%201--%20-"
+      # ── 외부 공격자 VM 192.168.0.202 에서: 스캐너 UA SQLi 요청 (Suricata eve→Wazuh alerts.json 흐름 생성) ──
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=socw4%27%20UNION%20SELECT%201--%20-"
 
       # ── el34-siem 에서: alerts.json 의 ids 경보 룰ID/출발지 (공격 8초 후, 보존된 출발지 확인) ──
       tail -300 /var/ossec/logs/alerts/alerts.json | jq -c 'select(.rule.groups|index("ids"))|{r:.rule.id,s:.data.src_ip}' | tail -2
       ```
       ## ✅ 합격 기준
-      `10.20.30.202` 출력 시 통과. **근거:** alerts.json 의 ids 경보에 출발지 10.20.30.202 가 보이면
+      `192.168.0.202` 출력 시 통과. **근거:** alerts.json 의 ids 경보에 출발지 192.168.0.202 가 보이면
       통과 — el34 fw 가 SNAT 를 안 해 출발지 IP 가 보존되며, 이 보존이 same_source_ip 빈도 격상의 전제다.
-    hint: '공격 재현 → alerts.json ids src 10.20.30.202'
+    hint: '공격 재현 → alerts.json ids src 192.168.0.202'
     category: detect
     points: 12
     answer: |
       # 1) 스캐너 UA로 SQLi 요청 — Suricata eve→Wazuh alerts.json 흐름 생성
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw4%27%20UNION%20SELECT%201--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=socw4%27%20UNION%20SELECT%201--%20-\""
       # 2) agent ship + manager 처리 대기
       sleep 8
-      # 3) alerts.json의 ids 경보에서 룰ID/출발지 추출 — 보존된 출발지 10.20.30.202 확인
+      # 3) alerts.json의 ids 경보에서 룰ID/출발지 추출 — 보존된 출발지 192.168.0.202 확인
       docker exec el34-siem sh -c 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,s:.data.src_ip}" | tail -2'
-    answer_detail: "커스텀 룰이 잡을 실제 이벤트의 흐름 — 스캐너 공격(sqlmap UA) → Suricata eve → Wazuh alerts.json. alerts.json의 ids 경보에 출발지 10.20.30.202가 보이면 정상(el34 fw가 SNAT를 안 해 출발지 IP가 보존됨을 확인). 이 출발지 보존이 same_source_ip 빈도 격상의 전제이며, 운영 룰(restart 적용 시)이라면 이 경보를 커스텀 level로 격상하게 된다."
+    answer_detail: "커스텀 룰이 잡을 실제 이벤트의 흐름 — 스캐너 공격(sqlmap UA) → Suricata eve → Wazuh alerts.json. alerts.json의 ids 경보에 출발지 192.168.0.202가 보이면 정상(el34 fw가 SNAT를 안 해 출발지 IP가 보존됨을 확인). 이 출발지 보존이 same_source_ip 빈도 격상의 전제이며, 운영 룰(restart 적용 시)이라면 이 경보를 커스텀 level로 격상하게 된다."
     expected_output: |
-      {"r":"86601","s":"10.20.30.202"}
-      {"r":"86601","s":"10.20.30.202"}
+      {"r":"86601","s":"192.168.0.202"}
+      {"r":"86601","s":"192.168.0.202"}
     verify:
       type: output_contains
-      expect: '10.20.30.202'
+      expect: '192.168.0.202'
       field: stdout
       semantic:
         intent: "실제 공격이 alerts.json에 적재됨 확인"
-        success_criteria: ["alerts.json ids 경보", "출발지 10.20.30.202"]
+        success_criteria: ["alerts.json ids 경보", "출발지 192.168.0.202"]
         acceptable_methods: ["**[OSS] 공격 재현 후 alerts.json (권장)**"]
     target_vm: siem
 

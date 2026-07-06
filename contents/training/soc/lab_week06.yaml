@@ -6,12 +6,13 @@ week: 6
 description: |
   분석가의 눈으로 흩어진 경보를 읽는 주차다. 단발 경보(스캔·SQLi·인증 실패)를 하나하나
   떼어 보는 대신, MITRE ATT&CK 전술(왜)/기술(어떻게)로 매핑해 "공격이 지금 어느 단계까지
-  왔나"를 판단한다. 이어 같은 출발지 IP(10.20.30.202) + 시간순으로 묶어 한 공격자의
+  왔나"를 판단한다. 이어 같은 출발지 IP(192.168.0.202) + 시간순으로 묶어 한 공격자의
   캠페인 타임라인으로 재구성하고, ModSec(웹 침투 T1190)과 Suricata(네트워크 정찰 T1046)
   로그로 각 단계를 교차 입증(다소스 상관)한 뒤, ATT&CK 단계 깊이 + 체인 진전 여부로
   P1~P4 우선순위를 매겨 에스컬레이션을 판정한다.
-  관측·분석 중심이며, 공유 SIEM이므로 룰 변경 없이 읽기 위주로 진행한다. 모든 명령은
-  el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 1)에서 `docker exec`로 실행한다.
+  관측·분석 중심이며, 공유 SIEM이므로 룰 변경 없이 읽기 위주로 진행한다. 공격(재현)은 내 공격 VM
+  `ssh att@192.168.0.202`(비번 1)에서 공인 진입 192.168.0.161로, 분석은 el34 호스트(`ssh ccc@{{TARGET_IP}}`,
+  비번 1)에서 `docker exec`로 한다(모든 벡터가 출처 192.168.0.202로 묶임).
   el34는 fw가 출처 IP를 바꾸지 않아(SNAT 없음) 공격자 IP가 Suricata·ModSec·Wazuh 전
   계층에 그대로 보존되며, 이 출처 보존이 캠페인 재구성과 다소스 상관의 전제가 된다.
 difficulty: medium
@@ -22,7 +23,7 @@ prerequisites:
   - "lecture §2(ATT&CK) §3(캠페인) §5(에스컬레이션) 숙지"
 objectives:
   - "임의의 경보를 MITRE ATT&CK 전술(TA번호)/기술(T번호)에 매핑하고, 전술 순서로 공격 단계의 깊이를 판단한다"
-  - "alerts.json에서 같은 출발지(10.20.30.202)의 경보를 시간순으로 추출해 한 공격자의 캠페인 타임라인으로 재구성한다"
+  - "alerts.json에서 같은 출발지(192.168.0.202)의 경보를 시간순으로 추출해 한 공격자의 캠페인 타임라인으로 재구성한다"
   - "웹 침투(T1190)는 ModSec CRS 룰(942·949110 anomaly 차단)로, 네트워크 정찰(T1046)은 Suricata signature로 교차 입증한다(다소스 상관)"
   - "ATT&CK 단계 깊이 + 체인 진전 여부로 사건을 P1~P4로 분류하고 에스컬레이션(L2/IR로 올림) 여부를 근거와 함께 판정한다"
   - "분석 결과를 ATT&CK 매핑 → 캠페인 재구성 → 다소스 증거 → 에스컬레이션 순의 1페이지 보고서로 정리한다"
@@ -70,8 +71,8 @@ steps:
     expected_output: |
       wazuh-analysisd is running...
       {
-        "src": "10.20.30.202",
-        "sig": "Suricata: Alert - 6V6 Bot UA - sqlmap"
+        "src": "192.168.0.202",
+        "sig": "Suricata: Alert - EL34 Bot UA - sqlmap"
       }
     verify:
       type: output_contains
@@ -87,7 +88,7 @@ steps:
     instruction: |
       ## 🎯 목표
       이후 실습에서 매핑·재구성할 원본 경보를 만든다. ATT&CK 전술 순서대로 정찰(포트 스캔)
-      → 초기침투(SQLi)를 한 출발지(10.20.30.202)에서 연속으로 흘려보낸다.
+      → 초기침투(SQLi)를 한 출발지(192.168.0.202)에서 연속으로 흘려보낸다.
 
       ## 📖 개념 (왜 이걸 하나)
       분석할 캠페인이 있어야 분석을 한다. 공격은 보통 "먼저 둘러보고(정찰) 다음에 찌른다
@@ -96,20 +97,20 @@ steps:
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 정찰 — SYN 포트 스캔(T1046, 연결 안 맺는 은밀한 스캔)
-      nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned
+      sudo nmap -sS -p 20-120 192.168.0.161 -T4 >/dev/null 2>&1; echo scanned
       # 2) 초기침투 — sqlmap UA로 SQLi 주입(T1190, 차단형 dvwa)
-      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=socw6%27%20UNION%20SELECT%201--%20-"
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=socw6%27%20UNION%20SELECT%201--%20-"
       # 3) 경보 전파 대기 후 완료 마커
       sleep 6
       echo "chain done"
       ```
 
       ## 🔧 처음 나오는 도구/옵션
-      - `nmap -sS -p 20-120 -T4` — 포트 20~120 범위를 빠른 속도(T4)로 훑는 SYN 스캔(정찰 T1046).
+      - `sudo nmap -sS -p 20-120 -T4` — 포트 20~120 범위를 빠른 속도(T4)로 훑는 SYN 스캔(정찰 T1046).
       - `-A sqlmap/1.7` — User-Agent를 sqlmap으로 위장(탐지 유발용). `?id=...UNION%20SELECT...` = SQL 주입(T1190).
       - `-H 'Host: dvwa.el34.lab'` — 차단형(SecRuleEngine On) vhost 라 SQLi 가 ModSec 에 잡힌다.
 
@@ -121,13 +122,13 @@ steps:
     points: 10
     answer: |
       # 1) 정찰 — SYN 포트 스캔(T1046, 연결 안 맺는 은밀한 스캔)
-      docker exec el34-attacker sh -c 'nmap -sS -p 20-120 10.20.30.1 -T4 >/dev/null 2>&1; echo scanned'
+      ssh att@192.168.0.202 'sudo nmap -sS -p 20-120 192.168.0.161 -T4 >/dev/null 2>&1; echo scanned'
       # 2) 초기침투 — sqlmap UA로 SQLi 주입(T1190, 차단형 dvwa)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw6%27%20UNION%20SELECT%201--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=socw6%27%20UNION%20SELECT%201--%20-\""
       # 3) 경보 전파 대기 후 완료 마커
       sleep 6
       echo "chain done"
-    answer_detail: "정찰(스캔, T1046)→초기침투(SQLi, T1190) — ATT&CK 전술 순서대로 진행되는 공격 체인을 한 출발지(10.20.30.202)에서 재현한다. `chain done` 출력이면 두 단계가 발생한 것으로 판정하며, sleep으로 경보 전파를 기다린 뒤 후속 분석 실습이 같은 출발지의 흔적을 잡을 수 있게 한다."
+    answer_detail: "정찰(스캔, T1046)→초기침투(SQLi, T1190) — ATT&CK 전술 순서대로 진행되는 공격 체인을 한 출발지(192.168.0.202)에서 재현한다. `chain done` 출력이면 두 단계가 발생한 것으로 판정하며, sleep으로 경보 전파를 기다린 뒤 후속 분석 실습이 같은 출발지의 흔적을 잡을 수 있게 한다."
     expected_output: |
       scanned
       chain done
@@ -212,17 +213,17 @@ steps:
       SIEM은 경보를 발생 순서대로 쌓을 뿐, "이 경보와 저 경보가 같은 공격자의 같은 작전"
       이라고 묶어주지 않는다. 그 연결은 분석가의 몫이다. 두 개의 상관 키 —
       **출발지 상관**(같은 src_ip로 묶기)과 **시간순 정렬**(timestamp 오름차순) — 을 쓴다.
-      el34는 fw가 SNAT를 하지 않아 출처 IP가 전 계층에 보존되므로 10.20.30.202로 정확히 묶인다.
+      el34는 fw가 SNAT를 하지 않아 출처 IP가 전 계층에 보존되므로 192.168.0.202로 정확히 묶인다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
 
       ```bash
-      # 1) 출발지 10.20.30.202 경보만 골라 [시각, 룰설명] 시간순 최근 10건 — 캠페인 타임라인
-      tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="10.20.30.202")|[.timestamp,.rule.description]|@tsv' | tail -10
-      # 2) 해석 — 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인
-      echo "→ 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인"
+      # 1) 출발지 192.168.0.202 경보만 골라 [시각, 룰설명] 시간순 최근 10건 — 캠페인 타임라인
+      tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="192.168.0.202")|[.timestamp,.rule.description]|@tsv' | tail -10
+      # 2) 해석 — 출발지 192.168.0.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인
+      echo "→ 출발지 192.168.0.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인"
       ```
 
       ## 🔧 명령 해부
@@ -231,31 +232,31 @@ steps:
       - `[.timestamp,.rule.description]|@tsv` — 시각과 경보 설명만 탭으로 뽑아 `| tail -10` 으로 최근 10건을 시간순으로 읽는다.
 
       ## ✅ 합격 기준
-      `10.20.30.202` 출력 시 통과. **근거:** 출발지 10.20.30.202 의 경보들이 시간순으로 나열되면
+      `192.168.0.202` 출력 시 통과. **근거:** 출발지 192.168.0.202 의 경보들이 시간순으로 나열되면
       통과 — 그 순서가 ATT&CK 전술 순서(정찰→침투)와 맞으면 의도된 캠페인이라는 강한 신호다.
-    hint: 'alerts.json src 10.20.30.202 시간순'
+    hint: 'alerts.json src 192.168.0.202 시간순'
     category: analysis
     points: 14
     answer: |
-      # 1) 출발지 10.20.30.202 경보만 골라 [시각, 룰설명] 시간순 최근 10건 — 캠페인 타임라인
-      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|[.timestamp,.rule.description]|@tsv" | tail -10'
-      # 2) 해석 — 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인
-      echo "→ 출발지 10.20.30.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인"
-    answer_detail: "흩어진 경보를 출발지(src_ip)로 묶고 시간순 정렬하면 한 공격자의 공격 체인이 된다. 출력에 10.20.30.202가 보이면 통과로 판정한다. ATT&CK 전술 순서(정찰→침투)와 시간순이 일치하면 강한 캠페인 신호이며, el34의 출처 IP 보존(fw가 SNAT 안 함)이 이 묶음을 가능하게 하는 전제다. 침해 분석(IR)의 첫걸음 = '이 IP가 언제 무엇을 했나'의 타임라인 작성이다."
+      # 1) 출발지 192.168.0.202 경보만 골라 [시각, 룰설명] 시간순 최근 10건 — 캠페인 타임라인
+      docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|[.timestamp,.rule.description]|@tsv" | tail -10'
+      # 2) 해석 — 출발지 192.168.0.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인
+      echo "→ 출발지 192.168.0.202 + 시간순 + ATT&CK 전술 순서 = 한 공격자의 캠페인"
+    answer_detail: "흩어진 경보를 출발지(src_ip)로 묶고 시간순 정렬하면 한 공격자의 공격 체인이 된다. 출력에 192.168.0.202가 보이면 통과로 판정한다. ATT&CK 전술 순서(정찰→침투)와 시간순이 일치하면 강한 캠페인 신호이며, el34의 출처 IP 보존(fw가 SNAT 안 함)이 이 묶음을 가능하게 하는 전제다. 침해 분석(IR)의 첫걸음 = '이 IP가 언제 무엇을 했나'의 타임라인 작성이다."
     expected_output: |
-      2026-06-26T14:46:14.521+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
-      2026-06-26T14:46:14.524+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:14.530+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:14.532+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
-      2026-06-26T14:46:14.538+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:14.541+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
-      2026-06-26T14:46:14.548+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
-      2026-06-26T14:46:14.551+0000	Suricata: Alert - 6V6 Bot UA - sqlmap
-      2026-06-26T14:46:22.533+0000	Suricata: Alert - 6V6 SQL Injection - UNION SELECT
+      2026-06-26T14:46:14.521+0000	Suricata: Alert - EL34 Bot UA - sqlmap
+      2026-06-26T14:46:14.524+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:14.530+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:14.532+0000	Suricata: Alert - EL34 Bot UA - sqlmap
+      2026-06-26T14:46:14.538+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:14.541+0000	Suricata: Alert - EL34 Bot UA - sqlmap
+      2026-06-26T14:46:14.548+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
+      2026-06-26T14:46:14.551+0000	Suricata: Alert - EL34 Bot UA - sqlmap
+      2026-06-26T14:46:22.533+0000	Suricata: Alert - EL34 SQL Injection - UNION SELECT
       2026-06-26T14:46:22.536+0000	Sur
     verify:
       type: output_contains
-      expect: '10.20.30.202'
+      expect: '192.168.0.202'
       field: stdout
       semantic:
         intent: "시간순+출발지로 캠페인 재구성"
@@ -342,51 +343,51 @@ steps:
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** 스캐너 트래픽은 `el34-attacker`, eve 분석은 `el34-ips`.
+      **실습 컨테이너:** 스캐너 트래픽은 `외부 공격자 VM 192.168.0.202`, eve 분석은 `el34-ips`.
       각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
 
       ```bash
-      # ── el34-attacker 에서: 스캐너 트래픽 생성 (sqlmap UA → Suricata 스캐너 시그니처 유발) ──
-      curl -s -o /dev/null -w 'sent=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw6scan%27%20UNION%20SELECT%201--%20-'
+      # ── 외부 공격자 VM 192.168.0.202 에서: 스캐너 트래픽 생성 (sqlmap UA → Suricata 스캐너 시그니처 유발) ──
+      curl -s -o /dev/null -w 'sent=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=socw6scan%27%20UNION%20SELECT%201--%20-'
 
-      # ── el34-ips 에서: eve 의 alert+출발지 10.20.30.202 signature 집계 (트래픽 3초 후) ──
-      tail -3000 /var/log/suricata/eve.json | jq -rR 'fromjson? | select(.event_type=="alert" and .src_ip=="10.20.30.202") | [.alert.signature_id,.alert.signature]|@tsv' | sort | uniq -c | sort -rn | head -8
+      # ── el34-ips 에서: eve 의 alert+출발지 192.168.0.202 signature 집계 (트래픽 3초 후) ──
+      tail -3000 /var/log/suricata/eve.json | jq -rR 'fromjson? | select(.event_type=="alert" and .src_ip=="192.168.0.202") | [.alert.signature_id,.alert.signature]|@tsv' | sort | uniq -c | sort -rn | head -8
 
       # 해석 — signature로 스캔/정찰(T1046) 입증. 같은 출발지가 ModSec·Suricata 양쪽에 = 다소스 상관
-      echo "→ signature로 스캔/정찰(T1046) 입증. 같은 출발지(10.20.30.202)가 ModSec·Suricata 양쪽에 = 다소스 상관"
+      echo "→ signature로 스캔/정찰(T1046) 입증. 같은 출발지(192.168.0.202)가 ModSec·Suricata 양쪽에 = 다소스 상관"
       ```
 
       ## 🔧 명령 해부
-      - 1) `-A sqlmap/1.7` — User-Agent를 sqlmap으로 위장해 Suricata 스캐너 룰(6V6 Bot UA - sqlmap)을 유발. 윈도우에 신선한 alert를 보장(재현성).
+      - 1) `-A sqlmap/1.7` — User-Agent를 sqlmap으로 위장해 Suricata 스캐너 룰(EL34 Bot UA - sqlmap)을 유발. 윈도우에 신선한 alert를 보장(재현성).
       - 3) `jq -rR "fromjson? | …"` — 각 줄을 raw로 읽어 `fromjson?` 로 파싱하되, 깨진 JSON 줄(eve.json 절단 라인)은 `?` 로 건너뛴다(jq 중단 방지).
-      - `select(.event_type=="alert" and .src_ip=="10.20.30.202")` → `sort | uniq -c | sort -rn | head -8` — alert만 골라 signature별 횟수를 **빈도순**으로 집계(사전순 tail은 핵심 룰을 놓침).
+      - `select(.event_type=="alert" and .src_ip=="192.168.0.202")` → `sort | uniq -c | sort -rn | head -8` — alert만 골라 signature별 횟수를 **빈도순**으로 집계(사전순 tail은 핵심 룰을 놓침).
 
       ## ✅ 합격 기준
       `sqlmap` 출력 시 통과. **근거:** 방금 생성한 sqlmap UA 요청이 Suricata 의 'Bot UA - sqlmap'
-      signature로 잡혀 빈도 상위에 보이면 통과 — 같은 출발지 10.20.30.202 가 ModSec·Suricata 양쪽에
+      signature로 잡혀 빈도 상위에 보이면 통과 — 같은 출발지 192.168.0.202 가 ModSec·Suricata 양쪽에
       찍힌 것을 확인하면 다소스 상관으로 캠페인 단계가 확정된다.
     hint: 'eve alert signature_id'
     category: analysis
     points: 12
     answer: |
       # 1) 스캐너 트래픽 생성 — sqlmap UA 요청으로 Suricata 스캐너 시그니처를 유발(신선한 alert 확보)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sent=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=socw6scan%27%20UNION%20SELECT%201--%20-'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'sent=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=socw6scan%27%20UNION%20SELECT%201--%20-'"
       # 2) Suricata가 eve.json에 기록할 시간을 잠깐 확보
       sleep 3
-      # 3) eve에서 alert+출발지 10.20.30.202만 골라 signature 집계(fromjson?로 깨진 JSON 줄 건너뜀, 빈도순)
-      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rR "fromjson? | select(.event_type==\"alert\" and .src_ip==\"10.20.30.202\") | [.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | sort -rn | head -8'
+      # 3) eve에서 alert+출발지 192.168.0.202만 골라 signature 집계(fromjson?로 깨진 JSON 줄 건너뜀, 빈도순)
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rR "fromjson? | select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\") | [.alert.signature_id,.alert.signature]|@tsv" | sort | uniq -c | sort -rn | head -8'
       # 4) 해석 — signature로 스캔/정찰(T1046) 입증, 같은 출발지가 웹·네트워크 양쪽에 = 다소스 상관
-      echo "→ signature로 스캔/정찰(T1046) 입증. 같은 출발지(10.20.30.202)가 ModSec·Suricata 양쪽에 = 다소스 상관"
-    answer_detail: "캠페인의 정찰/스캐너 단계를 Suricata로 입증한다. 먼저 sqlmap UA 요청을 보내 'Bot UA - sqlmap' signature를 신선하게 유발(재현성 확보)하고, eve.json을 jq -rR fromjson? 로 견고하게(절단 라인 건너뜀) 읽어 출발지 10.20.30.202의 alert signature를 빈도순으로 집계한다. 출력에 sqlmap signature가 보이면 통과. signature_id로 탐지 내용을, 보존된 출발지(10.20.30.202)로 동일 공격자임을 읽는다. 이 네트워크 증거가 ModSec의 웹 증거와 같은 출발지에서 만나면 다소스 상관이 완성된다."
+      echo "→ signature로 스캔/정찰(T1046) 입증. 같은 출발지(192.168.0.202)가 ModSec·Suricata 양쪽에 = 다소스 상관"
+    answer_detail: "캠페인의 정찰/스캐너 단계를 Suricata로 입증한다. 먼저 sqlmap UA 요청을 보내 'Bot UA - sqlmap' signature를 신선하게 유발(재현성 확보)하고, eve.json을 jq -rR fromjson? 로 견고하게(절단 라인 건너뜀) 읽어 출발지 192.168.0.202의 alert signature를 빈도순으로 집계한다. 출력에 sqlmap signature가 보이면 통과. signature_id로 탐지 내용을, 보존된 출발지(192.168.0.202)로 동일 공격자임을 읽는다. 이 네트워크 증거가 ModSec의 웹 증거와 같은 출발지에서 만나면 다소스 상관이 완성된다."
     expected_output: |
       sent=403
-           89 1000003	6V6 Bot UA - sqlmap
-           84 1000002	6V6 XSS - script tag
-           59 1000004	6V6 Path Traversal Attempt
-           23 1000001	6V6 SQL Injection - UNION SELECT
-            3 1000005	6V6 Possible nmap SYN scan
+           89 1000003	EL34 Bot UA - sqlmap
+           84 1000002	EL34 XSS - script tag
+           59 1000004	EL34 Path Traversal Attempt
+           23 1000001	EL34 SQL Injection - UNION SELECT
+            3 1000005	EL34 Possible nmap SYN scan
             1 9408001	CTF8 sqlmap recon
-      → signature로 스캔/정찰(T1046) 입증. 같은 출발지(10.20.30.202)가 ModSec·Suricata 양쪽에 = 다소스 상관
+      → signature로 스캔/정찰(T1046) 입증. 같은 출발지(192.168.0.202)가 ModSec·Suricata 양쪽에 = 다소스 상관
     verify:
       type: output_contains
       expect: 'sqlmap'
@@ -477,7 +478,7 @@ steps:
       cat <<'EOF'
       # SOC W06 캠페인 분석 보고서
       ## 1. ATT&CK: 스캔(T1046 정찰)→SQLi(T1190 침투)→(인증 T1110)
-      ## 2. 캠페인: 출발지 10.20.30.202, 시간순 정찰→침투 체인
+      ## 2. 캠페인: 출발지 192.168.0.202, 시간순 정찰→침투 체인
       ## 3. 증거: ModSec(942→949110), Suricata(scan signature_id), 출처 보존
       ## 4. 에스컬레이션: 정찰→침투 체인 진행 = P2(L2/IR로)
       ## 결론: ATT&CK으로 읽으면 흩어진 경보가 '어느 단계까지 온 캠페인'으로 보인다
@@ -486,7 +487,7 @@ steps:
 
       ## 🔧 각 절에 담을 내용
       - **1. ATT&CK 매핑** — 스캔=T1046, SQLi=T1190, (인증=T1110) 등 경보별 전술/기술.
-      - **2. 캠페인 재구성** — 출발지 10.20.30.202, 시간순 정찰→침투 체인.
+      - **2. 캠페인 재구성** — 출발지 192.168.0.202, 시간순 정찰→침투 체인.
       - **3. 심층 증거** — ModSec(942→949110), Suricata(scan signature), 출처 IP 보존.
       - **4. 에스컬레이션** — 정찰→침투 전진 = P2(L2/IR로), 근거 명시.
 
@@ -500,7 +501,7 @@ steps:
       cat <<'EOF'
       # SOC W06 캠페인 분석 보고서
       ## 1. ATT&CK: 스캔(T1046 정찰)→SQLi(T1190 침투)→(인증 T1110)
-      ## 2. 캠페인: 출발지 10.20.30.202, 시간순 정찰→침투 체인
+      ## 2. 캠페인: 출발지 192.168.0.202, 시간순 정찰→침투 체인
       ## 3. 증거: ModSec(942→949110), Suricata(scan signature_id), 출처 보존
       ## 4. 에스컬레이션: 정찰→침투 체인 진행 = P2(L2/IR로)
       ## 결론: ATT&CK으로 읽으면 흩어진 경보가 '어느 단계까지 온 캠페인'으로 보인다
@@ -509,7 +510,7 @@ steps:
     expected_output: |
       # SOC W06 캠페인 분석 보고서
       ## 1. ATT&CK: 스캔(T1046 정찰)→SQLi(T1190 침투)→(인증 T1110)
-      ## 2. 캠페인: 출발지 10.20.30.202, 시간순 정찰→침투 체인
+      ## 2. 캠페인: 출발지 192.168.0.202, 시간순 정찰→침투 체인
       ## 3. 증거: ModSec(942→949110), Suricata(scan signature_id), 출처 보존
       ## 4. 에스컬레이션: 정찰→침투 체인 진행 = P2(L2/IR로)
       ## 결론: ATT&CK으로 읽으면 흩어진 경보가 '어느 단계까지 온 캠페인'으로 보인다

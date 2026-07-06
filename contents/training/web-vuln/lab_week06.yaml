@@ -10,9 +10,9 @@ description: |
   juice 에서는 200(탐지만)으로 갈리는 것을 응답 코드로 본다. 응답을 점검해 CSRF 토큰 유무,
   세션 쿠키 속성(HttpOnly/Secure/SameSite), CSP 헤더 유무를 확인하고, 출력 인코딩(근본)+CSP(2차)
   +HttpOnly, CSRF 토큰+SameSite+재인증으로 이어지는 방어 우선순위를 정리한다.
-  대상은 dvwa(차단)/juice(탐지만) vhost. 공격은 el34-attacker 에서 발신하며 XSS payload 의
-  공백은 반드시 %20 으로 인코딩한다. 인가된 실습 환경(el34)에서만 수행하고, 모든 명령은
-  el34 호스트(ssh ccc@{{TARGET_IP}})에서 실행하고, 컨테이너 작업은 docker exec -it <컨테이너> bash 로 접속해 수행한다.
+  대상은 dvwa(차단)/juice(탐지만) vhost. 공격은 외부 공격자 VM 192.168.0.202(att/1)에서 공인 진입
+  192.168.0.161로 발신하며(XSS payload 의 공백은 반드시 %20 으로 인코딩) — `ssh att@192.168.0.202`(비번 1)로
+  접속해 수행하고, 탐지 로그 확인은 `ssh ccc@{{TARGET_IP}}`(el34 호스트) 후 `docker exec -it el34-web bash`. 인가된 실습만.
 difficulty: medium
 duration_minutes: 160
 prerequisites:
@@ -34,13 +34,13 @@ steps:
       대상이 무응답이면 이후 결과를 신뢰할 수 없다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 내부 발판(attacker)에서 dvwa vhost 도달 확인 — Host 헤더로 vhost 지정, 본문 버리고 응답코드만 dvwa= 형식으로
-      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/
+      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa vhost 도달 확인 — Host 헤더로 vhost 지정, 본문 버리고 응답코드만 dvwa= 형식으로
+      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://192.168.0.161/
       ```
-      `el34-attacker`(내부 발판, 출처 10.20.30.202)에서 fw 게이트웨이(10.20.30.1)로 요청을
+      `외부 공격자 VM 192.168.0.202`(att·1, 출처 192.168.0.202)에서 fw 게이트웨이(192.168.0.161)로 요청을
       보내되, `Host: dvwa.el34.lab` 헤더로 dvwa vhost 를 지정한다. curl 옵션은 `-s`(진행 표시
       숨김), `-o /dev/null`(본문 버림), `-w 'dvwa=%{http_code}'`(응답 코드만 출력)다.
       ## ✅ 합격 기준
@@ -50,8 +50,8 @@ steps:
     category: survey
     points: 10
     answer: |
-      # 1) 내부 발판(attacker)에서 dvwa vhost 도달 확인 — Host 헤더로 vhost 지정, 본문 버리고 응답코드만 dvwa= 형식으로
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa vhost 도달 확인 — Host 헤더로 vhost 지정, 본문 버리고 응답코드만 dvwa= 형식으로
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://192.168.0.161/"
     answer_detail: "XSS·CSRF 점검 대상 = web 컨테이너의 dvwa vhost(차단 모드). `Host: dvwa.el34.lab` 헤더로 라우팅된 정상 응답 코드가 나오면 대상 도달 = 점검 시작 준비 완료. 판정은 출력에 `dvwa=`(응답 코드)가 포함되는지로 한다."
     expected_output: |
       dvwa=302
@@ -73,11 +73,11 @@ steps:
       (차단 모드)의 WAF 가 이를 어떻게 막는지 응답 코드로 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) Reflected XSS(?q=<script>alert(1)</script>)를 dvwa에 전송 → 응답코드만 xss= 형식으로(941→949110→403 차단 확인)
-      curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<script>alert(1)</script>'
+      curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<script>alert(1)</script>'
       # 2) 해석 — <script> 주입이 941에 탐지되어 403 차단
       echo "→ <script> 주입 → 941 탐지 → 403"
       ```
@@ -92,7 +92,7 @@ steps:
     points: 12
     answer: |
       # 1) Reflected XSS(?q=<script>alert(1)</script>)를 dvwa에 전송 → 응답코드만 xss= 형식으로(941→949110→403 차단 확인)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<script>alert(1)</script>'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<script>alert(1)</script>'"
       # 2) 해석 — <script> 주입이 941에 탐지되어 403 차단
       echo "→ <script> 주입 → 941 탐지 → 403"
     answer_detail: "Reflected XSS = 요청 파라미터(?q=)가 응답에 즉시 반사되어 피해자 브라우저에서 실행되는 XSS. `<script>alert(1)</script>` 가 ModSec 941 룰군에 매치 → anomaly score 누적 → 949110 발동 → dvwa(차단 모드)에서 403. 판정은 출력에 `403` 이 포함되는지로 한다."
@@ -117,13 +117,13 @@ steps:
       속성이다. 여기서는 스크립트 태그 없는 변형도 941 룰군이 커버하는지 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) 이벤트 핸들러 변형 <img src=x onerror=alert(1)>를 %20 인코딩해 dvwa에 전송 → img= 응답코드
-      curl -s -o /dev/null -w 'img=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<img%20src=x%20onerror=alert(1)>'
+      curl -s -o /dev/null -w 'img=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<img%20src=x%20onerror=alert(1)>'
       # 2) 또 다른 변형 <svg onload=alert(1)>도 전송 → svg= 응답코드(스크립트 태그 없는 변형도 941 커버 확인)
-      curl -s -o /dev/null -w 'svg=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<svg%20onload=alert(1)>'
+      curl -s -o /dev/null -w 'svg=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<svg%20onload=alert(1)>'
       # 3) 해석 — 이벤트 핸들러(onerror/onload)도 941이 탐지(403)
       echo "→ 이벤트 핸들러(onerror/onload)도 941이 탐지"
       ```
@@ -140,9 +140,9 @@ steps:
     points: 12
     answer: |
       # 1) 이벤트 핸들러 변형 <img src=x onerror=alert(1)>를 %20 인코딩해 dvwa에 전송 → img= 응답코드
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'img=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<img%20src=x%20onerror=alert(1)>'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'img=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<img%20src=x%20onerror=alert(1)>'"
       # 2) 또 다른 변형 <svg onload=alert(1)>도 전송 → svg= 응답코드(스크립트 태그 없는 변형도 941 커버 확인)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'svg=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<svg%20onload=alert(1)>'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'svg=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<svg%20onload=alert(1)>'"
       # 3) 해석 — 이벤트 핸들러(onerror/onload)도 941이 탐지(403)
       echo "→ 이벤트 핸들러(onerror/onload)도 941이 탐지"
     answer_detail: "XSS 변형 = `<script>` 외에 `<img onerror>`·`<svg onload>` 같은 이벤트 핸들러로 스크립트를 실행시키는 우회. ModSec 941 룰군(libinjection 기반)이 이런 변형까지 폭넓게 커버해 dvwa 에서 403 으로 차단. URL 의 공백은 반드시 %20 으로 인코딩해야 페이로드가 잘리지 않는다(필수). 판정은 출력에 `403` 이 포함되는지로 한다. 교훈: XSS 방어는 특정 단어 차단이 아니라 출력 인코딩이라는 근본 처리여야 한다."
@@ -168,11 +168,11 @@ steps:
       점검자는 상태 변경 폼/요청에 이 토큰이 포함되는지를 가장 먼저 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) dvwa 응답 HTML에서 CSRF 토큰 필드(csrf/user_token/anti-csrf)를 대소문자 무시로 추출(없으면 위조 가능 안내)
-      curl -s -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | { grep -ioE 'csrf|user_token|anti.?csrf' || echo 'CSRF 토큰 미발견 → 위조 가능'; } | head -3
+      curl -s -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | { grep -ioE 'csrf|user_token|anti.?csrf' || echo 'CSRF 토큰 미발견 → 위조 가능'; } | head -3
       # 2) 해석 — 상태 변경 요청에 예측 불가 CSRF 토큰이 없으면 피해자 세션으로 위조 가능
       echo "→ 상태 변경 요청에 예측 불가 CSRF 토큰 없으면 위조 가능(피해자 세션 악용)"
       ```
@@ -187,7 +187,7 @@ steps:
     points: 12
     answer: |
       # 1) dvwa 응답 HTML에서 CSRF 토큰 필드(csrf/user_token/anti-csrf)를 대소문자 무시로 추출(없으면 위조 가능 안내)
-      docker exec el34-attacker sh -c "curl -s -H 'Host: dvwa.el34.lab' http://10.20.30.1/ | { grep -ioE 'csrf|user_token|anti.?csrf' || echo 'CSRF 토큰 미발견 → 위조 가능'; } | head -3"
+      ssh att@192.168.0.202 "curl -s -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | { grep -ioE 'csrf|user_token|anti.?csrf' || echo 'CSRF 토큰 미발견 → 위조 가능'; } | head -3"
       # 2) 해석 — 상태 변경 요청에 예측 불가 CSRF 토큰이 없으면 피해자 세션으로 위조 가능
       echo "→ 상태 변경 요청에 예측 불가 CSRF 토큰 없으면 위조 가능(피해자 세션 악용)"
     answer_detail: "CSRF 점검 = 상태 변경 폼/요청에 예측 불가능한 CSRF 토큰(예: dvwa 의 user_token)이 포함되는지 확인. 없으면 공격자 페이지가 피해자의 인증된 세션으로 위조 요청(비밀번호·이메일 변경 등)을 전송할 수 있다. 단, XSS 가 가능하면 같은 페이지에서 토큰이 읽혀 이 방어도 무력화됨(XSS 방어가 전제). 판정은 출력에 `CSRF` 가 포함되는지로 한다."
@@ -259,11 +259,11 @@ steps:
       /외부 스크립트 실행을 거부해 피해를 줄이는 2차 방어선이다. 여기서는 그 헤더의 유무를 본다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) juice 응답 헤더에서 CSP/X-Frame 확인 후, CSP 유무를 명시적으로 판정(마커 CSP)
-      H=$(curl -sI -H 'Host: juice.el34.lab' http://10.20.30.1/); echo "$H" | grep -iE 'content-security|x-frame'; echo "$H" | grep -iq 'content-security-policy' && echo 'CSP=설정됨' || echo 'CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)'
+      H=$(curl -sI -H 'Host: juice.el34.lab' http://192.168.0.161/); echo "$H" | grep -iE 'content-security|x-frame'; echo "$H" | grep -iq 'content-security-policy' && echo 'CSP=설정됨' || echo 'CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)'
       # 2) 해석 — juice는 X-Frame-Options(SAMEORIGIN)는 있으나 CSP 미설정 = XSS 2차 방어선 부재
       echo "→ juice: X-Frame-Options 있음 / CSP 없음 → XSS 출력인코딩 한 곳만 뚫려도 막을 2차 방어선 부재"
       ```
@@ -279,7 +279,7 @@ steps:
     points: 12
     answer: |
       # 1) juice 응답 헤더에서 CSP/X-Frame 확인 후, CSP 유무를 명시적으로 판정(마커 CSP)
-      docker exec el34-attacker sh -c "H=\$(curl -sI -H 'Host: juice.el34.lab' http://10.20.30.1/); echo \"\$H\" | grep -iE 'content-security|x-frame'; echo \"\$H\" | grep -iq 'content-security-policy' && echo 'CSP=설정됨' || echo 'CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)'"
+      ssh att@192.168.0.202 "H=\$(curl -sI -H 'Host: juice.el34.lab' http://192.168.0.161/); echo \"\$H\" | grep -iE 'content-security|x-frame'; echo \"\$H\" | grep -iq 'content-security-policy' && echo 'CSP=설정됨' || echo 'CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)'"
       # 2) 해석 — juice는 X-Frame-Options(SAMEORIGIN)는 있으나 CSP 미설정 = XSS 2차 방어선 부재
       echo "→ juice: X-Frame-Options 있음 / CSP 없음 → XSS 출력인코딩 한 곳만 뚫려도 막을 2차 방어선 부재"
     answer_detail: "CSP 점검 = 응답 헤더의 Content-Security-Policy 유무. 실측상 juice 는 X-Frame-Options: SAMEORIGIN(클릭재킹 완화)은 설정돼 있으나 CSP 는 없다 → XSS 의 2차 방어선이 부재. CSP 는 출력 인코딩이 한 군데서 빠져도 브라우저가 인라인/외부 스크립트 실행을 거부해 피해를 완화하는데, 없으면 XSS 방어가 출력 인코딩 하나에만 의존한다. 판정은 'CSP=미설정' 출력(마커 CSP)으로 한다."

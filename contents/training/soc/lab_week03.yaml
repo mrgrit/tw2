@@ -8,11 +8,11 @@ description: |
   access.log 는 "무엇이 들어왔나"(요청 전체상), ModSecurity audit 은 "왜 막혔나"(WAF 의 판단),
   Suricata eve.json 은 "네트워크에서 무엇이 보였나"(시그니처·세션). 본 실습은 차단형 vhost
   `dvwa.el34.lab` 에 세 종류 공격을 흘려 세 로그를 동시에 채운 뒤, 각 로그를 직접 열어 강점과
-  한계를 확인하고(전체 요청 / WAF 룰 판단 / 네트워크 시그니처), 같은 출발지(10.20.30.202)로 한
+  한계를 확인하고(전체 요청 / WAF 룰 판단 / 네트워크 시그니처), 같은 출발지(192.168.0.202)로 한
   공격자·한 사건으로 교차 상관하며, 마지막으로 Wazuh SIEM 의 alerts.json 한 스트림으로 수렴함을
-  확인한다. el34 는 fw 가 SNAT 하지 않아 세 로그 모두 실제 공격자 IP 를 보존하므로 교차 상관이
-  가능하다. 관측·분석 중심이며 인프라는 변경하지 않는다. 모든 명령은 el34 호스트
-  (`ssh ccc@{{TARGET_IP}}`, 비밀번호 1)에서 `docker exec` 로 실행한다.
+  확인한다. el34 는 fw 가 SNAT 하지 않아 세 로그 모두 실제 공격자 IP(192.168.0.202)를 보존하므로 교차
+  상관이 가능하다. 관측·분석 중심이며 인프라는 변경하지 않는다. 공격(재현)은 내 공격 VM
+  `ssh att@192.168.0.202`(비번 1)에서, 분석은 `ssh ccc@{{TARGET_IP}}`(el34 호스트, 비번 1)에서 `docker exec`로 한다.
 difficulty: medium
 duration_minutes: 180
 prerequisites:
@@ -24,7 +24,7 @@ objectives:
   - "ModSec audit 에서 6자리 CRS 룰 ID(942 SQLi/941 XSS/913 스캐너/949110 누적 차단)와 응답코드(403/200)·remote_address 를 식별한다"
   - "Apache access 에서 요청 라인·client IP·응답코드 분포(전체상)를 분석한다"
   - "Suricata eve 에서 한 출발지의 event_type 분포(alert/http/flow)와 alert 시그니처를 식별한다"
-  - "세 로그를 같은 출발지(10.20.30.202)로 교차 상관해 한 사건으로 묶고, Wazuh alerts.json 수렴을 확인한다"
+  - "세 로그를 같은 출발지(192.168.0.202)로 교차 상관해 한 사건으로 묶고, Wazuh alerts.json 수렴을 확인한다"
   - "세 로그 강점을 합친 교차 분석 보고서를 작성한다"
 pass_threshold: 0.7
 steps:
@@ -91,7 +91,7 @@ steps:
     instruction: |
       ## 🎯 웹 공격 재현 — SQLi + XSS + 스캐너
 
-      분석할 흔적을 직접 만든다. attacker 컨테이너에서 차단형 vhost `dvwa.el34.lab` 로 SQLi 와
+      분석할 흔적을 직접 만든다. 외부 공격자 VM 192.168.0.202에서 차단형 vhost `dvwa.el34.lab` 로 SQLi 와
       XSS 를 보내고, 첫 요청에는 스캐너 User-Agent(`sqlmap/1.7`)를 실어 세 종류 공격을 한
       공격자가 보낸 것으로 재현한다. 이 한 줄의 curl 들이 세 로그(access·audit·eve)에 동시에
       흔적을 남긴다.
@@ -102,20 +102,20 @@ steps:
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
       # 1) SQLi — 스캐너 UA(sqlmap/1.7)로 UNION SELECT 주입(942 SQLi + 913 scanner 자극)
-      curl -s -o /dev/null -A 'sqlmap/1.7' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=socw3%27%20UNION%20SELECT%201--%20-"
+      curl -s -o /dev/null -A 'sqlmap/1.7' -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=socw3%27%20UNION%20SELECT%201--%20-"
       # 2) XSS — <script> 페이로드 주입(941 XSS 자극)
-      curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"
+      curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://192.168.0.161/?q=<script>alert(1)</script>"
       # 3) Wazuh agent ship 대기(수렴 확인 대비) 후 완료 마커
       sleep 3
       echo "web attacks done"
       ```
 
       ## 🔧 도구·옵션 풀이
-      - `el34-attacker` — 내부 발판 공격자 컨테이너(출발지 10.20.30.202).
+      - `외부 공격자 VM 192.168.0.202` — 외부 공격자 VM 192.168.0.202 공격자 컨테이너(출발지 192.168.0.202).
       - `curl -s -o /dev/null` — 조용히(-s) 응답 본문을 버리고(-o /dev/null) 요청만 발생.
       - `-A 'sqlmap/1.7'` — User-Agent 를 스캐너로 위장 → ModSec 913(스캐너) 룰군을 자극.
       - `?id=...UNION SELECT...` = SQLi(942 룰군), `?q=<script>...` = XSS(941 룰군) payload.
@@ -128,13 +128,13 @@ steps:
     points: 10
     answer: |
       # 1) SQLi — 스캐너 UA(sqlmap/1.7)로 UNION SELECT 주입(942 SQLi + 913 scanner 자극)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A 'sqlmap/1.7' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw3%27%20UNION%20SELECT%201--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -A 'sqlmap/1.7' -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=socw3%27%20UNION%20SELECT%201--%20-\""
       # 2) XSS — <script> 페이로드 주입(941 XSS 자극)
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      ssh att@192.168.0.202 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://192.168.0.161/?q=<script>alert(1)</script>"'
       # 3) Wazuh agent ship 대기(수렴 확인 대비) 후 완료 마커
       sleep 3
       echo "web attacks done"
-    answer_detail: "한 공격자(10.20.30.202)가 SQLi(942)/XSS(941)/스캐너 UA(913)로 차단형 dvwa 를 친다. 같은 요청이 세 로그에 다르게 남는다 — Apache access(요청 라인+응답코드), ModSec audit(걸린 CRS 룰), Suricata eve(네트워크 시그니처·세션). `sleep 3` 은 Wazuh agent 가 manager 로 ship 할 시간을 주기 위함(실습 7 의 수렴 확인 대비). 흔적이 생성되면 STEP 3~5 에서 각 로그를 열어 분석한다."
+    answer_detail: "한 공격자(192.168.0.202)가 SQLi(942)/XSS(941)/스캐너 UA(913)로 차단형 dvwa 를 친다. 같은 요청이 세 로그에 다르게 남는다 — Apache access(요청 라인+응답코드), ModSec audit(걸린 CRS 룰), Suricata eve(네트워크 시그니처·세션). `sleep 3` 은 Wazuh agent 가 manager 로 ship 할 시간을 주기 위함(실습 7 의 수렴 확인 대비). 흔적이 생성되면 STEP 3~5 에서 각 로그를 열어 분석한다."
     expected_output: |
       web attacks done
     verify:
@@ -183,7 +183,7 @@ steps:
 
       ## ✅ 합격 기준
       `942` 출력 시 통과. **근거:** 공격 룰(942/941/913)과 누적 차단 룰 949110, 응답코드 403,
-      remote_address(10.20.30.202)가 식별되면 통과 — 949110 이 보이면 점수 누적으로 차단까지 간 것.
+      remote_address(192.168.0.202)가 식별되면 통과 — 949110 이 보이면 점수 누적으로 차단까지 간 것.
     hint: 'modsec audit 의 9xxxxx rule + response.status'
     category: analysis
     points: 14
@@ -264,13 +264,13 @@ steps:
       echo "→ access는 모든 요청(client IP, 요청라인, status)을 기록 — 탐지는 없지만 전체상"
     answer_detail: "Apache access 는 공격 여부와 무관하게 모든 요청을 기록한다 — client IP, 요청 라인, 응답코드(403 차단/200 통과). WAF 판단은 없지만 '무엇이 들어왔나'의 전체상을 준다. ModSec audit 이 '거른 것'만 본다면 access 는 거른 것+통과한 것+정상 요청까지 전부 본다 — 그래서 같은 출발지가 차단 전후로 어떤 정상 요청을 섞어 보냈는지(탐색·위장 패턴) 같은 맥락이 여기서만 보인다. 단, '403 인 이유(어떤 룰)'는 access 에 없고 audit 의 몫이라 두 로그를 반드시 함께 본다."
     expected_output: |
-      10.20.30.202 - - [26/Jun/2026:14:45:24 +0000] "GET / HTTP/1.1" 302 423 "-" "curl/7.81.0"
-      10.20.30.202 - - [26/Jun/2026:14:45:24 +0000] "GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.1" 403 439 "-" "curl/7.81.0"
-      10.20.30.202 - - [26/Jun/2026:14:45:24 +0000] "GET /?id=1%2527%20UNION%20SELECT HTTP/1.1" 403 439 "-" "curl/7.81.0"
-      10.20.30.202 - - [26/Jun/2026:14:45:24 +0000] "GET /?id=1%27%20%55NION%20%53ELECT HTTP/1.1" 403 439 "-" "curl/7.81.0"
-      10.20.30.202 - - [26/Jun/2026:14:45:25 +0000] "GET /?id=1%27%20UN/**/ION%20SE/**/LECT HTTP/1.1" 302 423 "-" "curl/7.81.0"
-      10.20.30.202 - - [26/Jun/2026:14:45:25 +0000] "GET /?id=1%27%09UNION%09SELECT HTTP/1.1" 403 439 "-" "curl/7.81.0"
-      10.20.30.202 - - [26/
+      192.168.0.202 - - [26/Jun/2026:14:45:24 +0000] "GET / HTTP/1.1" 302 423 "-" "curl/7.81.0"
+      192.168.0.202 - - [26/Jun/2026:14:45:24 +0000] "GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.1" 403 439 "-" "curl/7.81.0"
+      192.168.0.202 - - [26/Jun/2026:14:45:24 +0000] "GET /?id=1%2527%20UNION%20SELECT HTTP/1.1" 403 439 "-" "curl/7.81.0"
+      192.168.0.202 - - [26/Jun/2026:14:45:24 +0000] "GET /?id=1%27%20%55NION%20%53ELECT HTTP/1.1" 403 439 "-" "curl/7.81.0"
+      192.168.0.202 - - [26/Jun/2026:14:45:25 +0000] "GET /?id=1%27%20UN/**/ION%20SE/**/LECT HTTP/1.1" 302 423 "-" "curl/7.81.0"
+      192.168.0.202 - - [26/Jun/2026:14:45:25 +0000] "GET /?id=1%27%09UNION%09SELECT HTTP/1.1" 403 439 "-" "curl/7.81.0"
+      192.168.0.202 - - [26/
     verify:
       type: output_contains
       expect: '403'
@@ -299,8 +299,8 @@ steps:
       **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속해 실행한다.
 
       ```bash
-      # 1) 출발지 10.20.30.202의 event_type 분포(alert/http/flow)
-      tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.src_ip=="10.20.30.202")|.event_type' | sort | uniq -c
+      # 1) 출발지 192.168.0.202의 event_type 분포(alert/http/flow)
+      tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.src_ip=="192.168.0.202")|.event_type' | sort | uniq -c
       # 2) alert 이벤트의 시그니처 집계(무엇으로 탐지됐나)
       tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.event_type=="alert")|.alert.signature' | sort | uniq -c | tail -5
       # 3) 해석 — alert(시그니처)/http(트랜잭션)/flow(세션). WAF가 못 본 네트워크 공격도 잡음
@@ -308,7 +308,7 @@ steps:
       ```
 
       ## 🔧 도구·옵션 풀이
-      - `jq -rc "select(.src_ip==\"10.20.30.202\")|.event_type"` — eve.json 한 줄=한 JSON 에서
+      - `jq -rc "select(.src_ip==\"192.168.0.202\")|.event_type"` — eve.json 한 줄=한 JSON 에서
         출발지가 공격자인 이벤트만 골라 event_type 만 raw(-r) 출력.
       - `select(.event_type==\"alert\")|.alert.signature` — alert 이벤트의 시그니처 문장
         (예: "ET SCAN ...")만 뽑는다 = "무엇으로 탐지됐는지".
@@ -321,8 +321,8 @@ steps:
     category: analysis
     points: 14
     answer: |
-      # 1) 출발지 10.20.30.202의 event_type 분포(alert/http/flow)
-      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.src_ip==\"10.20.30.202\")|.event_type" | sort | uniq -c'
+      # 1) 출발지 192.168.0.202의 event_type 분포(alert/http/flow)
+      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.src_ip==\"192.168.0.202\")|.event_type" | sort | uniq -c'
       # 2) alert 이벤트의 시그니처 집계(무엇으로 탐지됐나)
       docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\")|.alert.signature" | sort | uniq -c | tail -5'
       # 3) 해석 — alert(시그니처)/http(트랜잭션)/flow(세션). WAF가 못 본 네트워크 공격도 잡음
@@ -333,10 +333,10 @@ steps:
             4 fileinfo
           113 flow
          1322 http
-           62 6V6 Path Traversal Attempt
-            3 6V6 Possible nmap SYN scan
-           15 6V6 SQL Injection - UNION SELECT
-           84 6V6 XSS - script tag
+           62 EL34 Path Traversal Attempt
+            3 EL34 Possible nmap SYN scan
+           15 EL34 SQL Injection - UNION SELECT
+           84 EL34 XSS - script tag
             1 CTF8 sqlmap recon
       → alert(시그니처)/http(트랜잭션)/flow(세션). WAF가 못 본 네트워크 공격도 잡음
     verify:
@@ -354,7 +354,7 @@ steps:
     instruction: |
       ## 🎯 교차 상관 — 세 로그 같은 출발지
 
-      흩어진 세 흔적을 한 사건으로 묶는다. 세 로그가 같은 공격자(10.20.30.202)를 가리키는지
+      흩어진 세 흔적을 한 사건으로 묶는다. 세 로그가 같은 공격자(192.168.0.202)를 가리키는지
       직접 맞춰 본다 — 이게 SOC 분석의 핵심 동작이다.
 
       ## 💡 개념 한 줄
@@ -373,10 +373,10 @@ steps:
       echo "[Apache access]"; sudo tail -50 /var/log/apache2/dvwa_access.log | grep -oE "10\.20\.30\.202" | head -1
 
       # ── el34-ips 에서: Suricata eve alert 의 같은 IP ──
-      echo "[Suricata eve]"; tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.event_type=="alert")|.src_ip' | grep -m1 "10.20.30.202"
+      echo "[Suricata eve]"; tail -3000 /var/log/suricata/eve.json | jq -rc 'select(.event_type=="alert")|.src_ip' | grep -m1 "192.168.0.202"
 
-      # 상관 — 세 로그 모두 10.20.30.202 = 한 공격자(el34 출처 보존)
-      echo "→ 세 로그 모두 10.20.30.202 = 한 공격자 (el34 출처 보존)"
+      # 상관 — 세 로그 모두 192.168.0.202 = 한 공격자(el34 출처 보존)
+      echo "→ 세 로그 모두 192.168.0.202 = 한 공격자 (el34 출처 보존)"
       ```
 
       ## 🔧 도구·옵션 풀이
@@ -386,9 +386,9 @@ steps:
       - 세 로그가 web/web/ips 두 컨테이너에 흩어져 있어도 출발지 하나로 묶인다.
 
       ## ✅ 합격 기준
-      `10.20.30.202` 출력 시 통과. **근거:** 세 로그 모두 출발지 10.20.30.202 가 나오면 한 공격자·
+      `192.168.0.202` 출력 시 통과. **근거:** 세 로그 모두 출발지 192.168.0.202 가 나오면 한 공격자·
       한 사건으로 상관된 것 — 교차의 가치는 한 로그만으로는 못 내리는 결론을 잡는 데 있다.
-    hint: '세 로그의 10.20.30.202 교차 매칭'
+    hint: '세 로그의 192.168.0.202 교차 매칭'
     category: analysis
     points: 14
     answer: |
@@ -397,25 +397,25 @@ steps:
       # 2) Apache access에서 같은 IP 추출
       echo "[Apache access]"; docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/dvwa_access.log | grep -oE "10\.20\.30\.202" | head -1'
       # 3) Suricata eve alert에서 같은 IP 추출
-      echo "[Suricata eve]"; docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\")|.src_ip" | grep -m1 "10.20.30.202"'
-      # 4) 상관 — 세 로그 모두 10.20.30.202 = 한 공격자(el34 출처 보존)
-      echo "→ 세 로그 모두 10.20.30.202 = 한 공격자 (el34 출처 보존)"
-    answer_detail: "교차 상관 = 여러 로그를 공통 키로 묶어 '같은 공격자의 같은 사건'으로 재구성하는 분석. 가장 강력한 키는 출발지 IP — ModSec remote_address = Apache client IP = Suricata src_ip = 10.20.30.202 이면 한 사건이다. 이게 신뢰할 만한 이유는 el34 가 fw 에서 SNAT 하지 않아 세 로그 모두 진짜 공격자 IP 를 보기 때문(중간에서 IP 가 바뀌면 상관 자체가 불가능). 교차의 진짜 가치는 '같은 IP 확인'이 아니라 한 로그만으로는 못 내리는 결론 — 예: ModSec 403(차단)인데 Suricata flow 에 대용량 전송이 보이면 다른 경로로 성공했을 의심 — 을 잡는 데 있다."
+      echo "[Suricata eve]"; docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\")|.src_ip" | grep -m1 "192.168.0.202"'
+      # 4) 상관 — 세 로그 모두 192.168.0.202 = 한 공격자(el34 출처 보존)
+      echo "→ 세 로그 모두 192.168.0.202 = 한 공격자 (el34 출처 보존)"
+    answer_detail: "교차 상관 = 여러 로그를 공통 키로 묶어 '같은 공격자의 같은 사건'으로 재구성하는 분석. 가장 강력한 키는 출발지 IP — ModSec remote_address = Apache client IP = Suricata src_ip = 192.168.0.202 이면 한 사건이다. 이게 신뢰할 만한 이유는 el34 가 fw 에서 SNAT 하지 않아 세 로그 모두 진짜 공격자 IP 를 보기 때문(중간에서 IP 가 바뀌면 상관 자체가 불가능). 교차의 진짜 가치는 '같은 IP 확인'이 아니라 한 로그만으로는 못 내리는 결론 — 예: ModSec 403(차단)인데 Suricata flow 에 대용량 전송이 보이면 다른 경로로 성공했을 의심 — 을 잡는 데 있다."
     expected_output: |
       [ModSec audit]
-      10.20.30.202
+      192.168.0.202
       [Apache access]
-      10.20.30.202
+      192.168.0.202
       [Suricata eve]
-      10.20.30.202
-      → 세 로그 모두 10.20.30.202 = 한 공격자 (el34 출처 보존)
+      192.168.0.202
+      → 세 로그 모두 192.168.0.202 = 한 공격자 (el34 출처 보존)
     verify:
       type: output_contains
-      expect: '10.20.30.202'
+      expect: '192.168.0.202'
       field: stdout
       semantic:
         intent: "세 로그를 같은 출발지로 교차 상관"
-        success_criteria: ["세 로그 10.20.30.202", "한 공격자 상관"]
+        success_criteria: ["세 로그 192.168.0.202", "한 공격자 상관"]
         acceptable_methods:
           - "**[OSS] 세 로그 출발지 매칭 (권장)**"
     target_vm: web
@@ -438,40 +438,40 @@ steps:
       **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
 
       ```bash
-      # 1) manager alerts.json 최근 400줄에서 출발지 10.20.30.202 경보만 필터 → 룰ID/설명(최근 5)
-      tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="10.20.30.202")|{r:.rule.id,d:.rule.description}' | tail -5
-      # 2) 해석 — 세 로그를 안 열어도 SIEM에서 출발지 10.20.30.202의 사건이 한눈에 보인다
-      echo "→ 세 로그를 일일이 안 열어도 SIEM에서 출발지 10.20.30.202의 사건이 한눈에 보인다"
+      # 1) manager alerts.json 최근 400줄에서 출발지 192.168.0.202 경보만 필터 → 룰ID/설명(최근 5)
+      tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.data.src_ip=="192.168.0.202")|{r:.rule.id,d:.rule.description}' | tail -5
+      # 2) 해석 — 세 로그를 안 열어도 SIEM에서 출발지 192.168.0.202의 사건이 한눈에 보인다
+      echo "→ 세 로그를 일일이 안 열어도 SIEM에서 출발지 192.168.0.202의 사건이 한눈에 보인다"
       ```
 
       ## 🔧 도구·옵션 풀이
       - `tail -400 alerts.json` — manager 가 수렴시킨 최근 경보 400줄(한 줄=한 JSON 경보).
-      - `select(.data.src_ip==\"10.20.30.202\")` — 공격자 출발지로 경보를 필터링.
+      - `select(.data.src_ip==\"192.168.0.202\")` — 공격자 출발지로 경보를 필터링.
       - `.rule.id`/`.rule.description` — Wazuh 가 붙인 룰 ID·설명(사람이 읽을 평결 문장)을 뽑는다.
 
       ## ✅ 합격 기준
-      `10.20.30.202` 출력 시 통과. **근거:** alerts.json 에 출발지 10.20.30.202 의 경보가 수렴해
+      `192.168.0.202` 출력 시 통과. **근거:** alerts.json 에 출발지 192.168.0.202 의 경보가 수렴해
       보이면 통과 — 단 specific 한 SQLi/XSS 룰 대신 일반 Apache 4xx 룰이 더 자주 보이는데, 이는
       의도된 gap 으로 W04 에서 사용자 정의 decoder+custom rule 로 해결한다.
-    hint: 'alerts.json 의 src 10.20.30.202 경보'
+    hint: 'alerts.json 의 src 192.168.0.202 경보'
     category: detect
     points: 12
     answer: |
-      # 1) manager alerts.json 최근 400줄에서 출발지 10.20.30.202 경보만 필터 → 룰ID/설명(최근 5)
-      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"10.20.30.202\")|{r:.rule.id,d:.rule.description}" | tail -5'
-      # 2) 해석 — 세 로그를 안 열어도 SIEM에서 출발지 10.20.30.202의 사건이 한눈에 보인다
-      echo "→ 세 로그를 일일이 안 열어도 SIEM에서 출발지 10.20.30.202의 사건이 한눈에 보인다"
+      # 1) manager alerts.json 최근 400줄에서 출발지 192.168.0.202 경보만 필터 → 룰ID/설명(최근 5)
+      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|{r:.rule.id,d:.rule.description}" | tail -5'
+      # 2) 해석 — 세 로그를 안 열어도 SIEM에서 출발지 192.168.0.202의 사건이 한눈에 보인다
+      echo "→ 세 로그를 일일이 안 열어도 SIEM에서 출발지 192.168.0.202의 사건이 한눈에 보인다"
     answer_detail: "web agent(apache access + modsec audit) + ips agent(suricata eve)가 Wazuh manager 로 ship → alerts.json 한 스트림으로 수렴. SIEM 에서 출발지로 묶어 보면 세 로그를 일일이 안 열어도 한 사건이 보인다 — 매일 수천 경보를 다루는 SOC 의 실제 워크플로다. 한 가지 의도된 한계: 본 주차 기본 decoder/rule 은 941/942 같은 specific 룰 ID 를 그대로 격상시키지 않아 일반 Apache 4xx 룰이 더 자주 보인다. 이건 고장이 아니라 '수렴은 되지만 정밀 격상은 아직'이라는 출발점이며, 사용자 정의 decoder+custom rule 로 해결하는 것이 W04 의 주제다."
     expected_output: |
-      {"r":"86601","d":"Suricata: Alert - 6V6 SQL Injection - UNION SELECT"}
-      {"r":"86601","d":"Suricata: Alert - 6V6 Bot UA - sqlmap"}
-      {"r":"86601","d":"Suricata: Alert - 6V6 Bot UA - sqlmap"}
-      {"r":"86601","d":"Suricata: Alert - 6V6 SQL Injection - UNION SELECT"}
-      {"r":"86601","d":"Suricata: Alert - 6V6 XSS - script tag"}
-      → 세 로그를 일일이 안 열어도 SIEM에서 출발지 10.20.30.202의 사건이 한눈에 보인다
+      {"r":"86601","d":"Suricata: Alert - EL34 SQL Injection - UNION SELECT"}
+      {"r":"86601","d":"Suricata: Alert - EL34 Bot UA - sqlmap"}
+      {"r":"86601","d":"Suricata: Alert - EL34 Bot UA - sqlmap"}
+      {"r":"86601","d":"Suricata: Alert - EL34 SQL Injection - UNION SELECT"}
+      {"r":"86601","d":"Suricata: Alert - EL34 XSS - script tag"}
+      → 세 로그를 일일이 안 열어도 SIEM에서 출발지 192.168.0.202의 사건이 한눈에 보인다
     verify:
       type: output_contains
-      expect: '10.20.30.202'
+      expect: '192.168.0.202'
       field: stdout
       semantic:
         intent: "세 로그가 Wazuh로 수렴 확인"
@@ -498,10 +498,10 @@ steps:
       # 1) heredoc(<<'EOF' ... EOF)으로 교차 분석 보고서 출력 — ModSec→access→eve→교차 상관→SIEM 결론
       cat <<'EOF'
       # SOC W03 웹 공격 교차 분석 보고서
-      ## 1. ModSec: 942(SQLi)/941(XSS)/913(scanner) → 949110 차단(403), remote 10.20.30.202
+      ## 1. ModSec: 942(SQLi)/941(XSS)/913(scanner) → 949110 차단(403), remote 192.168.0.202
       ## 2. Apache access: GET /?id=...UNION... 403 (요청 전체상 + client IP)
-      ## 3. Suricata eve: alert(시그니처)+http+flow, src 10.20.30.202
-      ## 4. 교차 상관: 세 로그 모두 10.20.30.202 = 한 공격자
+      ## 3. Suricata eve: alert(시그니처)+http+flow, src 192.168.0.202
+      ## 4. 교차 상관: 세 로그 모두 192.168.0.202 = 한 공격자
       ## 5. SIEM 통합: web/ips agent → alerts.json 한 스트림, 출발지로 사건 종합
       ## 결론: 한 공격도 세 로그에 다르게 남는다 — 교차로 봐야 전체상(차단됐어도 다른 경로 성공 여부 등)
       EOF
@@ -516,20 +516,20 @@ steps:
     answer: |
       cat <<'EOF'
       # SOC W03 웹 공격 교차 분석 보고서
-      ## 1. ModSec: 942(SQLi)/941(XSS)/913(scanner) → 949110 차단(403), remote 10.20.30.202
+      ## 1. ModSec: 942(SQLi)/941(XSS)/913(scanner) → 949110 차단(403), remote 192.168.0.202
       ## 2. Apache access: GET /?id=...UNION... 403 (요청 전체상 + client IP)
-      ## 3. Suricata eve: alert(시그니처)+http+flow, src 10.20.30.202
-      ## 4. 교차 상관: 세 로그 모두 10.20.30.202 = 한 공격자
+      ## 3. Suricata eve: alert(시그니처)+http+flow, src 192.168.0.202
+      ## 4. 교차 상관: 세 로그 모두 192.168.0.202 = 한 공격자
       ## 5. SIEM 통합: web/ips agent → alerts.json 한 스트림, 출발지로 사건 종합
       ## 결론: 한 공격도 세 로그에 다르게 남는다 — 교차로 봐야 전체상(차단됐어도 다른 경로 성공 여부 등)
       EOF
-    answer_detail: "교차 분석 = 각 로그의 강점(access 전체상 / audit WAF 판단 / eve 네트워크)을 합쳐 한 공격자·한 사건으로 종합하는 것. 보고서에는 세 로그가 같은 출발지(10.20.30.202)임, 각 로그가 답한 질문(무엇이 들어왔나/왜 막혔나/네트워크는 어땠나), 그리고 한 로그만으로는 못 내리는 통합 결론(차단됐어도 다른 경로 성공 여부 등)이 들어가야 한다. 한 로그만 보면 놓치는 것을 교차로 잡는 게 SOC 분석의 핵심이며, 이 보고서는 분석가가 사건을 종결할 때 작성하는 실제 산출물이다."
+    answer_detail: "교차 분석 = 각 로그의 강점(access 전체상 / audit WAF 판단 / eve 네트워크)을 합쳐 한 공격자·한 사건으로 종합하는 것. 보고서에는 세 로그가 같은 출발지(192.168.0.202)임, 각 로그가 답한 질문(무엇이 들어왔나/왜 막혔나/네트워크는 어땠나), 그리고 한 로그만으로는 못 내리는 통합 결론(차단됐어도 다른 경로 성공 여부 등)이 들어가야 한다. 한 로그만 보면 놓치는 것을 교차로 잡는 게 SOC 분석의 핵심이며, 이 보고서는 분석가가 사건을 종결할 때 작성하는 실제 산출물이다."
     expected_output: |
       # SOC W03 웹 공격 교차 분석 보고서
-      ## 1. ModSec: 942(SQLi)/941(XSS)/913(scanner) → 949110 차단(403), remote 10.20.30.202
+      ## 1. ModSec: 942(SQLi)/941(XSS)/913(scanner) → 949110 차단(403), remote 192.168.0.202
       ## 2. Apache access: GET /?id=...UNION... 403 (요청 전체상 + client IP)
-      ## 3. Suricata eve: alert(시그니처)+http+flow, src 10.20.30.202
-      ## 4. 교차 상관: 세 로그 모두 10.20.30.202 = 한 공격자
+      ## 3. Suricata eve: alert(시그니처)+http+flow, src 192.168.0.202
+      ## 4. 교차 상관: 세 로그 모두 192.168.0.202 = 한 공격자
       ## 5. SIEM 통합: web/ips agent → alerts.json 한 스트림, 출발지로 사건 종합
       ## 결론: 한 공격도 세 로그에 다르게 남는다 — 교차로 봐야 전체상(차단됐어도 다른 경로 성공 여부 등)
     verify:

