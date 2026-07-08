@@ -151,24 +151,26 @@ steps:
 
       ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      # 1) SecRule 을 커스텀 룰 파일(edu_rules.conf)에 추가
-      echo 'SecRule REQUEST_HEADERS:User-Agent "@contains sqlmap" "id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:EDU-sqlmap-block,severity:CRITICAL"' | sudo tee -a /etc/modsecurity/edu_rules.conf
-
-      # 2) 문법 검사(configtest) — 통과해야 안전
-      sudo apache2ctl configtest
-
-      # 3) 무중단 reload
+      # 1) WAF 장비에 접속해 커스텀 룰 파일을 편집기로 연다
+      ssh ccc@10.20.32.80
+      sudo nano /etc/modsecurity/edu_rules.conf
+      ```
+      편집기 맨 아래에 다음 SecRule 한 줄을 입력하고 저장한다(nano: `Ctrl+O`→`Enter`, 종료 `Ctrl+X`):
+      ```
+      SecRule REQUEST_HEADERS:User-Agent "@contains sqlmap" "id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:EDU-sqlmap-block,severity:CRITICAL"
+      ```
+      그다음 문법 검사(통과해야 안전) → 무중단 reload → 확인:
+      ```bash
+      sudo apache2ctl configtest      # Syntax OK 여야 함
       sudo apache2ctl graceful
-
-      # 4) 내 룰이 등록됐는지 확인
-      grep -o 'id:9000011' /etc/modsecurity/edu_rules.conf
+      grep id:9000011 /etc/modsecurity/edu_rules.conf
       ```
       ## ✅ 합격 기준
       configtest 통과(Syntax OK) 후 reload 되고 `id:9000011` 이 등록된다.
-    hint: 'echo SecRule | sudo tee -a edu_rules.conf; apache2ctl configtest; graceful; grep 9000011'
+    hint: 'sudo nano edu_rules.conf 로 SecRule 추가·저장 → apache2ctl configtest → graceful → grep 9000011'
     answer: |
-      # SecRule 을 edu_rules.conf 에 추가 + configtest + graceful reload + 확인 (WAF 장비에서)
-      ssh ccc@10.20.32.80 'echo "SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:EDU-sqlmap-block,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest 2>&1 | tail -1; sudo apache2ctl graceful >/dev/null 2>&1; grep -o "id:9000011" /etc/modsecurity/edu_rules.conf | head -1'
+      # (편집기로 SecRule 추가·저장한 것과 동일 — 채점용 비대화식) configtest + graceful + 확인 (WAF 장비에서)
+      ssh ccc@10.20.32.80 'grep -q id:9000011 /etc/modsecurity/edu_rules.conf || echo "SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:EDU-sqlmap-block,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest 2>&1 | tail -1; sudo apache2ctl graceful >/dev/null 2>&1; grep -o "id:9000011" /etc/modsecurity/edu_rules.conf | head -1'
     answer_detail: "SecRule 을 /etc/modsecurity/edu_rules.conf(전역 include)에 추가 → apache2ctl configtest 로 문법 검사 → Syntax OK 면 graceful reload. id:9000011 등장 = 적용 성공. configtest 가 실무의 안전장치."
     verify:
       type: output_contains
@@ -186,13 +188,15 @@ steps:
       **살아남는다**. (운영 WAF 를 죽이지 않는 안전장치)
 
       ## 💻 실행 명령 (WAF 장비에서)
+      편집기로 임시 룰 파일을 하나 만들어 **일부러 틀린 룰**을 넣어 본다 —
+      `sudo nano /etc/modsecurity/edu-bad.conf` 로 열어 다음 한 줄을 넣고 저장:
+      ```
+      SecRule ARGS "@rx (unclosed" "id:9000098,phase:2,deny,bogusaction"
+      ```
+      그다음 문법 검사 → **실패**를 확인하고, reload 하지 말고 그 파일을 지워 되돌린다:
       ```bash
-      # 일부러 문법 틀린 SecRule 을 임시 파일에 넣고 configtest 로 검사
-      echo 'SecRule ARGS "@rx (unclosed" "id:9000098,phase:2,deny,bogusaction"' | sudo tee /etc/modsecurity/edu-bad.conf
-
-      # configtest 가 실패하면 → reload 하지 않고 나쁜 룰을 제거(웹서버 보존)
-      sudo apache2ctl configtest    # Syntax error ... 로 실패
-      sudo rm -f /etc/modsecurity/edu-bad.conf    # 되돌림 (reload 안 했으니 운영 WAF 무사)
+      sudo apache2ctl configtest      # Syntax error ... 로 실패
+      sudo rm -f /etc/modsecurity/edu-bad.conf      # 되돌림 (reload 안 했으니 운영 WAF 무사)
       ```
       ## ✅ 합격 기준
       configtest 가 실패해 `문법 오류` 로 거부된다(reload 안 함 → 기존 설정·웹서버 보존).
@@ -217,10 +221,14 @@ steps:
       요청을 자연 URL 로 보내 **403 차단**을 확인한다. dvwa 는 전역 On(차단) vhost 다.
 
       ## 💻 실행 명령
+      ① WAF 장비에서 차단 SecRule 을 추가한다 — `sudo nano /etc/modsecurity/edu_rules.conf` 로 열어
+      맨 아래에 다음 한 줄을 추가·저장한 뒤 검사·reload:
+      ```
+      SecRule ARGS "@contains EDUBLKW5" "id:9000077,phase:2,t:none,deny,status:403,log,msg:EDU-live-block,severity:CRITICAL"
+      ```
       ```bash
-      # ① WAF 장비에서 차단 룰 추가 + reload
       ssh ccc@10.20.32.80
-      echo 'SecRule ARGS "@contains EDUBLKW5" "id:9000077,phase:2,t:none,deny,status:403,log,msg:EDU-live-block,severity:CRITICAL"' | sudo tee -a /etc/modsecurity/edu_rules.conf
+      # (nano 로 위 줄 추가·저장 후)
       sudo apache2ctl configtest && sudo apache2ctl graceful
       ```
 
@@ -237,8 +245,8 @@ steps:
       차단되어 응답 코드 `403` 이 보인다(브라우저면 403 Forbidden 페이지).
     hint: '차단 룰 적용 후 그 패턴으로 자연 URL 접속 → 403'
     answer: |
-      # ① WAF 장비에서 EDUBLKW5 차단 룰 적용
-      ssh ccc@10.20.32.80 'echo "SecRule ARGS \"@contains EDUBLKW5\" \"id:9000077,phase:2,t:none,deny,status:403,log,msg:EDU-live-block,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest >/dev/null 2>&1 && sudo apache2ctl graceful >/dev/null 2>&1; echo applied'
+      # ① (편집기로 SecRule 추가·저장한 것과 동일 — 채점용 비대화식) WAF 장비에서 차단 룰 적용
+      ssh ccc@10.20.32.80 'grep -q id:9000077 /etc/modsecurity/edu_rules.conf || echo "SecRule ARGS \"@contains EDUBLKW5\" \"id:9000077,phase:2,t:none,deny,status:403,log,msg:EDU-live-block,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest >/dev/null 2>&1 && sudo apache2ctl graceful >/dev/null 2>&1; echo applied'
       # ② 공격 VM(202)에서 그 패턴으로 자연 URL 요청 → 403
       ssh att@192.168.0.202 "curl -s -o /dev/null -w '응답: %{http_code}\n' 'http://dvwa.el34.lab/?q=EDUBLKW5'"
     answer_detail: "ARGS @contains EDUBLKW5 deny → 그 파라미터가 든 요청은 dvwa(On)에서 403 으로 차단된다. WAF 가 실제로 막는 것을 응답 코드로 확인(modsec_audit.log 에도 기록). 자연 URL(http://dvwa.el34.lab) 사용."
@@ -315,16 +323,16 @@ steps:
       가능하다. (호스트에 jq 가 없으므로 python3 로 처리.)
 
       ## 💻 정리 명령 (WAF 장비에서)
+      실습으로 추가한 EDU SecRule 을 지운다 — `sudo nano /etc/modsecurity/edu_rules.conf` 로 열어
+      실습 룰(id 9000000+) 줄들을 지우고 저장(nano: 줄 삭제 `Ctrl+K`, 저장 `Ctrl+O`→종료 `Ctrl+X`)한 뒤:
       ```bash
-      # 실습 SecRule(id 9xxxxxx)만 edu_rules.conf 에서 삭제 + reload
-      sudo sed -i -E '/id:9[0-9]{6}/d' /etc/modsecurity/edu_rules.conf
-      sudo apache2ctl graceful >/dev/null 2>&1; echo "cleanup done"
+      sudo apache2ctl graceful      # 반영
       ```
       ## ✅ 합격 기준
       실습 룰이 모두 삭제되어 `cleanup done` 이 보인다(CRS 보호는 유지).
-    hint: "sudo sed -i -E '/id:9[0-9]{6}/d' edu_rules.conf; apache2ctl graceful → cleanup done"
+    hint: 'sudo nano edu_rules.conf 로 EDU 룰 줄 삭제·저장 → apache2ctl graceful'
     answer: |
-      # 실습 SecRule(id 9xxxxxx)만 삭제 + graceful reload (WAF 장비에서)
+      # (편집기로 EDU 룰 줄을 지운 것과 동일 — 채점용 비대화식) 실습 SecRule 삭제 + graceful (WAF 장비에서)
       ssh ccc@10.20.32.80 "sudo sed -i -E '/id:9[0-9]{6}/d' /etc/modsecurity/edu_rules.conf 2>/dev/null; sudo apache2ctl graceful >/dev/null 2>&1; echo 'cleanup done'"
     answer_detail: "edu_rules.conf 에서 id 가 9로 시작하는 7자리(9000000 이상) 실습 SecRule 만 지우고 graceful reload. OWASP CRS 와 기본 보호는 그대로 유지된다 — 실습 후 WAF 를 원상 복구하는 운영 위생."
     verify:
