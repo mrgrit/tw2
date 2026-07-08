@@ -390,10 +390,10 @@ el34 의 4-tier 세그먼트는 `ext 10.20.30` / `pipe 10.20.31` / `dmz 10.20.32
 
 ```bash
 # 셸 캡처(플래그) — 리스너 포트 48008 을 띄우고 osquery 로 확인
-docker exec el34-web sh -c 'nohup python3 -m http.server 48008 >/dev/null 2>&1 & echo shell_captured'
-docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=48008;'
+ssh ccc@10.20.32.80 'nohup python3 -m http.server 48008 >/dev/null 2>&1 & echo shell_captured'
+ssh ccc@10.20.32.80 ss -tlnp 2>/dev/null | grep ':48008'
 # 확인 즉시 self-clean (공유 인프라 보존)
-docker exec el34-web sh -c 'pkill -f "[h]ttp.server 48008"; true'
+ssh ccc@10.20.32.80 'pkill -f "[h]ttp.server 48008"; true'
 ```
 
 위 명령에서 `python3 -m http.server 48008` 은 포트 48008 에 간단한 리스너를 띄우는 가장 단순한 방법으로,
@@ -405,8 +405,9 @@ docker exec el34-web sh -c 'pkill -f "[h]ttp.server 48008"; true'
 
 ## 4. 도구별 빠른 복습 — "무엇을 어디서 쓰나"
 
-시험에서 각 단계를 수행·검증하는 핵심 명령을 한 번에 정리한다. 모든 명령은 el34
-호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 `docker exec el34-<comp>` 로 실행한다.
+시험에서 각 단계를 수행·검증하는 핵심 명령을 한 번에 정리한다. 공격은 내 공격 VM
+(`ssh att@192.168.0.202`, 비번 1)에서 자연 URL 로, 표적/방어 확인은 각 장비(`ssh ccc@10.20.32.80` web /
+`ssh ccc@10.20.31.2` IPS, 비번 1)에 직접 접속해 실행한다.
 
 ### 4.1 정찰 — 외부 공격자 VM 192.168.0.202 / nmap
 
@@ -426,7 +427,7 @@ SQLi 는 입력에 SQL 문법을 주입하는 공격이다(W03–W04). 스캐너
 페이로드를 보내면, 같은 요청이 정찰 신호(UA)와 침투 신호(SQLi)를 동시에 담는다.
 
 ```bash
-curl -s -o /dev/null -w 'exploit=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=ct8%27%20UNION%20SELECT%201--%20-\"
+curl -s -o /dev/null -w 'exploit=%{http_code}\n' -A sqlmap/1.7 \"http://dvwa.el34.lab/?id=ct8%27%20UNION%20SELECT%201--%20-\"
 ```
 
 무엇을 보나 — 응답 코드. dvwa(차단 모드)에서는 `403`(WAF 차단)이 정상이다. 403 은 "여기는 차단형"이라는
@@ -442,9 +443,9 @@ curl -s -o /dev/null -w 'exploit=%{http_code}\n' -A sqlmap/1.7 -H 'Host: dvwa.el
 로 질의하는 도구다(W06).
 
 ```bash
-docker exec el34-web sh -c 'nohup python3 -m http.server 48008 >/dev/null 2>&1 & echo shell_captured'
-docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=48008;'
-docker exec el34-web sh -c 'pkill -f "[h]ttp.server 48008"; true'
+ssh ccc@10.20.32.80 'nohup python3 -m http.server 48008 >/dev/null 2>&1 & echo shell_captured'
+ssh ccc@10.20.32.80 ss -tlnp 2>/dev/null | grep ':48008'
+ssh ccc@10.20.32.80 'pkill -f "[h]ttp.server 48008"; true'
 ```
 
 무엇을 보나 — osquery 결과에 포트 48008 과 그 주인 프로세스(pid)가 보이면 플래그 캡처 입증. **확인 즉시
@@ -457,14 +458,14 @@ docker exec el34-web sh -c 'pkill -f "[h]ttp.server 48008"; true'
 
 ```bash
 # WAF 흔적: 매치된 CRS 룰 ID 모으기 (913 정찰 / 942 SQLi 등)
-docker exec el34-web sh -c 'sudo tail -100 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head'
+ssh ccc@10.20.32.80 'sudo tail -100 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head'
 # IDS 정찰 탐지 룰(sid 9408001) 추가 → reload → 트리거 → eve 확인 → sed 삭제(베이스 보존)
-docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+ssh ccc@10.20.31.2 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
 alert http any any -> any any (msg:\"CTF8 sqlmap recon\"; http.user_agent; content:\"sqlmap\"; nocase; fast_pattern; sid:9408001; rev:1;)
 EOF"'
-docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
 # (트리거 후) eve 확인 → 정리
-docker exec el34-ips sh -c 'sudo sed -i "/sid:9408001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+ssh ccc@10.20.31.2 'sudo sed -i "/sid:9408001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
 ```
 
 무엇을 보나 — WAF 흔적에 913(정찰)·942(SQLi)가 보이고, 내가 만든 IDS 룰(sid 9408001)이 eve.json 에
@@ -545,8 +546,8 @@ graph TD
 결과 해석(정상 vs 비정상) / 실전 활용. 미션은 익스플로잇 체인을 따라 점검 → ① 정찰 → ② 침투 → ③ 셸
 캡처(플래그) → IDS 탐지 룰 → 방어자 역재구성 → 플래그 검증·정리 → CTF 보고서 순서로 흐른다.
 
-> **시험 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`)에서 `docker exec el34-<comp>`
-> 로. **인가된 실습 환경(el34)에서만** 수행한다. 셸(리스너)과 IDS 룰은 각 미션에서 심으면 그 미션에서
+> **시험 진행 원칙.** 공격은 `ssh att@192.168.0.202`(자연 URL), 표적/방어 확인은 각 장비
+> (`ssh ccc@10.20.32.80`·`ssh ccc@10.20.31.2`)에 직접 접속해. **인가된 실습 환경(el34)에서만** 수행한다. 셸(리스너)과 IDS 룰은 각 미션에서 심으면 그 미션에서
 > 정리한다(self-clean). 합격 임계값은 0.7 이다.
 
 ### 미션 1 — 점검: 도구 + 대상 (8점, survey)
