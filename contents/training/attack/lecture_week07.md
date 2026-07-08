@@ -379,7 +379,7 @@ ModSec audit log 는 web 컨테이너의 `/var/log/apache2/modsec_audit.log` 에
 추려 보면 어떤 공격 유형이 탐지됐는지 한눈에 파악된다(lab step 5 의 명령).
 
 ```bash
-docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log \
+ssh ccc@10.20.32.80 'sudo tail -150 /var/log/apache2/modsec_audit.log \
   | grep -oE "9[0-9]{5}" | sort -u | grep -E "^93[0-9]"'
 ```
 
