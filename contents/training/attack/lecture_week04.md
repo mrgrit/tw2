@@ -197,15 +197,15 @@ DB·테이블·데이터까지 자동으로 덤프한다.
 ```bash
 # 공격 VM에 접속(ssh att@192.168.0.202, 비번 1) 후 실행
 sqlmap \
-  -u 'http://192.168.0.161/rest/products/search?q=test' \
-  -H 'Host: juice.el34.lab' --batch --level=1 --risk=1
+  -u 'http://juice.el34.lab/rest/products/search?q=test' \
+  --batch --level=1 --risk=1
 ```
 
 각 옵션의 의미를 짚어둔다. 처음 보는 옵션을 모르고 넘어가면 결과 해석이 막힌다.
 
-- `-u <URL>` — 공격 대상 URL. 공인 진입 `192.168.0.161` 로 보내고
-  `-H 'Host: ...'` 로 어느 vhost 인지 지정한다(W01 의 vhost 라우팅 구조 그대로).
-- `-H 'Host: juice.el34.lab'` — Apache 가 어느 vhost(여기서는 juiceshop)로 보낼지 결정하는
+- `-u <URL>` — 공격 대상 URL. 자연 URL `http://juice.el34.lab/...` 은 `/etc/hosts` 를 통해 공인 진입
+  `192.168.0.161` 로 가고, 호스트명(juice.el34.lab)이 곧 어느 vhost 인지 지정한다(W01 의 vhost 라우팅 그대로).
+- 자연 URL `http://juice.el34.lab/...` — 호스트명이 Apache 가 어느 vhost(여기서는 juiceshop)로 보낼지 결정하는
   Host 헤더. el34 는 단일 web 컨테이너가 11 vhost 를 host 헤더로 구분한다.
 - `--batch` — 모든 질문에 기본값으로 자동 응답(무인 진행). 실습 자동화에 필수.
 - `--level=1`(1~5) — 테스트 **범위**. 높일수록 더 많은 위치(헤더·쿠키 등)까지 주입.
@@ -374,7 +374,7 @@ query)다.** 공격자가 코드 수준 방어가 된 대상에서 SQLi 가 안 
 
 각 실습은 **4 축**(왜 하는가 / 무엇을 알 수 있는가 / 결과 해석 / 실전 활용)으로 설명한다.
 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에 접속한 뒤 `docker exec
-외부 공격자 VM 192.168.0.202 ...`(공격) 또는 `docker exec el34-web ...`(로그 확인)로 실행한다. **인가된
+외부 공격자 VM `192.168.0.202`(공격) 또는 `ssh ccc@10.20.32.80`(로그 확인)로 실행한다. **인가된
 실습 환경에서만 수행한다.**
 
 ### 실습 1 — 점검: sqlmap + 대상 도달
