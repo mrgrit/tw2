@@ -12,12 +12,12 @@ description: |
   저속) ↔ 탐지(대량·고속)의 trade-off 를 정리한다. 공격은 외부 공격자 VM 192.168.0.202(att/1, scapy 2.4.4,
   raw socket 은 sudo 로 사용), 방어는 el34-ips 의 Suricata. 작성한 IDS 룰은 sid(9409xxx)로 self-clean 해
   베이스 룰을 보존한다. 공격은 `ssh att@192.168.0.202`(비번 1)로 접속해 대상 192.168.0.161에 수행하고,
-  IDS 흔적 확인은 `ssh ccc@{{TARGET_IP}}`(el34 호스트) 후 `docker exec -it el34-ips bash`로 한다.
+  IDS 흔적 확인은 IPS 장비 `ssh ccc@10.20.31.2`(비번 1)에서 한다.
 difficulty: hard
 duration_minutes: 180
 prerequisites:
   - "W01–W08 통과"
-  - "el34 호스트 SSH + docker exec"
+  - "공격 VM ssh att@192.168.0.202 + IPS 장비 ssh ccc@10.20.31.2 (비번 1)"
   - "lecture §2(scapy) §3(비정상 스캔) §4(탐지) 숙지"
 objectives:
   - "패킷 크래프팅의 개념을 이해하고 scapy 로 IP()/TCP() 패킷을 한 필드씩 조립·전송한다"
@@ -209,7 +209,7 @@ steps:
       # 2) 탐지 전파 대기
       sleep 5
       # 3) eve.json에서 출처 192.168.0.202의 scan 시그니처 집계(SNAT 없어 출처 보존)
-      docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
+      ssh ccc@10.20.31.2 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
       # 4) 해석 — 대량 SYN(200포트)이 임계 초과 → scan 탐지, 소량은 임계 미달(은밀)
       echo "→ 대량 SYN(200포트)이 Suricata 임계 초과 → scan 탐지. 소량은 임계 미달(은밀)"
     answer_detail: "임계 기반 탐지는 빈도·규모로 잡는다 — 소량 스캔(미션 2 의 6~7개)은 임계 미달로 통과하지만 대량(1~200, 100+ 포트)은 Suricata 의 스캔 임계를 초과해 eve.json 에 'scan' 시그니처로 남는다. 출처 IP 192.168.0.202(SNAT 없어 보존) 필터로 집계한 결과에 scan 이 보이면 탐지. 공격자는 느림·소량으로 회피, 방어자는 임계 튜닝(미탐↔오탐 균형)으로 대응한다."
@@ -320,19 +320,19 @@ steps:
     points: 14
     answer: |
       # 1) NULL 스캔(flags:0) 탐지룰 추가 — 정상엔 없는 모양이라 단발도 잡힘(sid 9409001)
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      ssh ccc@10.20.31.2 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert tcp any any -> any any (msg:\"W9 NULL scan detected\"; flags:0; sid:9409001; rev:1;)
       EOF"'
       # 2) 적용 전 룰 문법 검증(-T) — "successfully loaded" 확인
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -2'
+      ssh ccc@10.20.31.2 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -2'
       # 3) 무중단 reload 후 NULL 패킷 트리거(여러 포트)
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules >/dev/null'; sleep 2
+      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules >/dev/null'; sleep 2
       ssh att@192.168.0.202 'sudo python3 -c "from scapy.all import *; [sr(IP(dst='\''192.168.0.161'\'')/TCP(dport=p,flags=0),timeout=1,verbose=0) for p in (80,443,22,8001)]; print('\''null sent'\'')"'
       sleep 4
       # 4) eve.json에서 9409001 매치 수(베스트에포트)
-      docker exec el34-ips sh -c 'sudo grep -c "9409001" /var/log/suricata/eve.json'
+      ssh ccc@10.20.31.2 'sudo grep -c "9409001" /var/log/suricata/eve.json'
       # 5) self-clean — 룰 삭제 + reload + 잔재 0 확인(base 보존)
-      docker exec el34-ips sh -c 'sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "rule_removed (잔재=$(grep -c 9409001 /etc/suricata/rules/local.rules))"'
+      ssh ccc@10.20.31.2 'sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "rule_removed (잔재=$(grep -c 9409001 /etc/suricata/rules/local.rules))"'
     answer_detail: "비정상 스캔은 시그니처로 잡는다 — NULL 스캔(flags:0)은 정상 트래픽엔 없어 명확한 탐지 대상. Suricata flags:0 룰(9409001) 작성→문법검증(suricata -T, successfully loaded)→reload→NULL 트리거→eve 확인. 끝나면 sed 삭제로 base 보존. 임계로는 단발을 못 잡지만 시그니처는 정상에 없는 모양 하나만으로 잡는다는 게 핵심."
     expected_output: |
       26/6/2026 -- 14:45:15 - <Warning> - [ERRCODE: SC_ERR_EVENT_ENGINE(210)] - can't suppress sid 9005011, gid 1: unknown rule

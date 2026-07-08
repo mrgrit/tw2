@@ -335,7 +335,7 @@ trade-off 위에 있다.
 python3 -c "from scapy.all import *; \
   sr(IP(dst='192.168.0.161')/TCP(dport=(1,200),flags='S'),timeout=6,verbose=0); print('mass scan sent')"
 sleep 5
-docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
+ssh ccc@10.20.31.2 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
 ```
 
 명령을 해석하면 이렇다. `dport=(1,200)` 은 포트 1번부터 200번까지를 **범위**로 지정하는
@@ -394,18 +394,18 @@ flags=0 단 하나만 잡으면 되는 **명확한 시그니처 대상**이다.
 
 ```bash
 # ① NULL 스캔(flags:0) 탐지룰을 local.rules 에 추가 (sid 9409001)
-docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+ssh ccc@10.20.31.2 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
 alert tcp any any -> any any (msg:\"W9 NULL scan detected\"; flags:0; sid:9409001; rev:1;)
 EOF"'
 # ② 무중단 reload (데몬을 멈추지 않고 룰만 다시 읽음)
-docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'; sleep 2
+ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'; sleep 2
 # ③ 트리거 — NULL 패킷 전송
 sudo python3 -c "from scapy.all import *; sr(IP(dst='192.168.0.161')/TCP(dport=80,flags=0),timeout=2,verbose=0); print('null sent')"
 sleep 4
 # ④ eve.json 에서 내 룰(9409001)이 잡혔는지 확인
-docker exec el34-ips sh -c 'sudo grep "9409001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature}"'
+ssh ccc@10.20.31.2 'sudo grep "9409001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature}"'
 # ⑤ self-clean — 내 sid 만 삭제 후 reload (베이스 룰 보존)
-docker exec el34-ips sh -c 'sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
+ssh ccc@10.20.31.2 'sudo sed -i "/sid:9409001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null'
 ```
 
 룰 한 줄의 문법을 읽어 보자. `alert tcp any any -> any any` 는 "어떤 출발지에서 어떤
@@ -486,7 +486,7 @@ graph TD
 왜 하는가 / 무엇을 알 수 있는가 / 결과 해석(정상 vs 비정상) / 실전 활용.
 
 > **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`)에서
-> `ssh att@192.168.0.202`(공격) 또는 `docker exec el34-ips`(방어)로 실행한다. **인가된
+> `ssh att@192.168.0.202`(공격) 또는 `ssh ccc@10.20.31.2`(방어)로 실행한다. **인가된
 > 실습 환경(el34)에서만** 수행하며, IDS 룰은 그 미션 안에서 self-clean 한다. 합격 임계값은
 > 0.7 이다.
 
