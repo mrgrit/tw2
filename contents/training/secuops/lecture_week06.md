@@ -711,18 +711,18 @@ APT: 침해 후 /root/.ssh/authorized_keys 에 새 key 추가 → 영구 재진�
 ### 실습 1 — osqueryi 진입 + version + 158 테이블 (10분)
 
 ```bash
-docker exec el34-web sh -c 'sudo osqueryi --json "SELECT version, build_distro FROM osquery_info LIMIT 1;"'
-docker exec el34-web sh -c 'sudo osqueryi ".tables" 2>&1 | wc -l'
-docker exec el34-fw sh -c 'sudo osqueryi --json "SELECT version FROM kernel_info;"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT version, build_distro FROM osquery_info LIMIT 1;"'
+ssh ccc@10.20.32.80 'sudo osqueryi ".tables" 2>&1 | wc -l'
+ssh ccc@10.20.30.1 'sudo osqueryi --json "SELECT version FROM kernel_info;"'
 ```
 
 ### 실습 2 — 6 핵심 테이블 (15분)
 
 ```bash
-docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name FROM processes ORDER BY pid DESC LIMIT 5;"'
-docker exec el34-bastion sh -c 'sudo osqueryi --json "SELECT username, uid, shell FROM users WHERE uid >= 1000;"'
-docker exec el34-fw sh -c 'sudo osqueryi --json "SELECT port, address, pid FROM listening_ports WHERE address NOT LIKE \"127.%\";"'
-docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path, mtime FROM file WHERE path = \"/etc/passwd\";"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT pid, name FROM processes ORDER BY pid DESC LIMIT 5;"'
+sh -c 'sudo osqueryi --json "SELECT username, uid, shell FROM users WHERE uid >= 1000;"'
+ssh ccc@10.20.30.1 'sudo osqueryi --json "SELECT port, address, pid FROM listening_ports WHERE address NOT LIKE \"127.%\";"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT path, mtime FROM file WHERE path = \"/etc/passwd\";"'
 ```
 
 ### 실습 3 — SQL JOIN 패턴 (15분)
@@ -740,7 +740,7 @@ docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path, mtime FROM file W
 ### 실습 6 — Wazuh ship 검증 (10분)
 
 ```bash
-docker exec el34-web sh -c 'sudo grep -A3 "osquery" /var/ossec/etc/ossec.conf'
+ssh ccc@10.20.32.80 'sudo grep -A3 "osquery" /var/ossec/etc/ossec.conf'
 ```
 
 ### 실습 7 — **R/B/P** (Red 가 새 사용자 / cron / authorized_keys 추가 → Blue 헌팅)
@@ -784,31 +784,31 @@ graph TD
 **Red — 호스트 침해 시뮬 (학습용, 빠른 cleanup)**:
 ```bash
 # 1. 새 사용자 추가
-docker exec el34-web sh -c 'sudo useradd -m -s /bin/bash -u 1099 fakeintruder' 2>/dev/null
+ssh ccc@10.20.32.80 'sudo useradd -m -s /bin/bash -u 1099 fakeintruder' 2>/dev/null
 
 # 2. authorized_keys 추가
-docker exec el34-web sh -c 'echo "ssh-rsa AAAAB3FAKEKEY fakeintruder@evil" | sudo tee -a /root/.ssh/authorized_keys'
+ssh ccc@10.20.32.80 'echo "ssh-rsa AAAAB3FAKEKEY fakeintruder@evil" | sudo tee -a /root/.ssh/authorized_keys'
 
 # 3. cron entry 추가
-docker exec el34-web sh -c 'echo "* * * * * root /tmp/backdoor.sh" | sudo tee /etc/cron.d/w07_backdoor'
+ssh ccc@10.20.32.80 'echo "* * * * * root /tmp/backdoor.sh" | sudo tee /etc/cron.d/w07_backdoor'
 ```
 
 **Blue — osquery 헌팅 5 쿼리**:
 ```bash
 # 1. 새 사용자
-docker exec el34-web sh -c 'sudo osqueryi --json "SELECT username, uid FROM users WHERE uid = 1099;"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT username, uid FROM users WHERE uid = 1099;"'
 
 # 2. 새 authorized_keys
-docker exec el34-web sh -c 'sudo osqueryi --json "SELECT * FROM authorized_keys WHERE key LIKE \"%FAKEKEY%\";"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT * FROM authorized_keys WHERE key LIKE \"%FAKEKEY%\";"'
 
 # 3. 새 cron
-docker exec el34-web sh -c 'sudo osqueryi --json "SELECT * FROM crontab WHERE path = \"/etc/cron.d/w07_backdoor\";"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT * FROM crontab WHERE path = \"/etc/cron.d/w07_backdoor\";"'
 
 # 4. 의심 process (있다면)
-docker exec el34-web sh -c 'sudo osqueryi --json "SELECT pid, name, cmdline FROM processes WHERE cmdline LIKE \"%backdoor%\";"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT pid, name, cmdline FROM processes WHERE cmdline LIKE \"%backdoor%\";"'
 
 # 5. SUID / world-writable 변경 (없을 것)
-docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path FROM suid_bin WHERE path LIKE \"%intruder%\";"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT path FROM suid_bin WHERE path LIKE \"%intruder%\";"'
 ```
 
 **Purple — scheduled query 자동화**:
@@ -835,9 +835,9 @@ docker exec el34-web sh -c 'sudo osqueryi --json "SELECT path FROM suid_bin WHER
 
 **Cleanup (실험 종료)**:
 ```bash
-docker exec el34-web sh -c 'sudo userdel -r fakeintruder' 2>/dev/null
-docker exec el34-web sh -c 'sudo sed -i "/FAKEKEY/d" /root/.ssh/authorized_keys'
-docker exec el34-web sh -c 'sudo rm -f /etc/cron.d/w07_backdoor'
+ssh ccc@10.20.32.80 'sudo userdel -r fakeintruder' 2>/dev/null
+ssh ccc@10.20.32.80 'sudo sed -i "/FAKEKEY/d" /root/.ssh/authorized_keys'
+ssh ccc@10.20.32.80 'sudo rm -f /etc/cron.d/w07_backdoor'
 ```
 
 ---
@@ -898,7 +898,7 @@ osquery 는 이 세 도구를 모두 SQL 테이블로 추상화해서 한 화면
 attacker VM 에서 학습 환경의 web VM 에 SSH 로 들어간다고 가정한다. 학습 환경 한정으로 실행한다.
 
 ```bash
-docker exec -it el34-attacker bash
+ssh att@192.168.0.202
 # 비밀번호: ccc
 ```
 
@@ -932,7 +932,7 @@ echo 'ssh-rsa AAAA... FAKEKEY intruder@attacker' \
 학생이 web VM 에 osqueryi 로 진입한다.
 
 ```bash
-docker exec -it el34-web bash
+ssh ccc@10.20.32.80
 sudo osqueryi
 ```
 
@@ -1024,7 +1024,7 @@ sudo sed -i '/FAKEKEY/d' /root/.ssh/authorized_keys
 attacker VM 에서 web VM 에 SSH 로 진입해 backdoor cron 파일을 만든다.
 
 ```bash
-docker exec -it el34-attacker bash
+ssh att@192.168.0.202
 ssh -o StrictHostKeyChecking=no admin@10.20.32.80
 
 # web VM 안 (학습 환경 한정)
@@ -1048,7 +1048,7 @@ echo '* * * * * root /bin/true   # W06-CASE2-BACKDOOR' \
 web VM 에서 osqueryi 로 들어가 crontab 테이블을 본다.
 
 ```bash
-docker exec -it el34-web bash
+ssh ccc@10.20.32.80
 sudo osqueryi
 ```
 
@@ -1125,7 +1125,7 @@ sudo rm -f /etc/cron.d/w07_backdoor
 attacker VM 에서 web VM 에 SSH 로 들어가 의심 위치에서 listener 를 띄운다.
 
 ```bash
-docker exec -it el34-attacker bash
+ssh att@192.168.0.202
 ssh -o StrictHostKeyChecking=no admin@10.20.32.80
 
 # web VM 안 (학습 환경 한정)
@@ -1148,7 +1148,7 @@ echo $!
 web VM 에서 osqueryi 로 들어가 한 줄 SQL 을 실행한다.
 
 ```bash
-docker exec -it el34-web bash
+ssh ccc@10.20.32.80
 sudo osqueryi
 ```
 
@@ -1288,7 +1288,7 @@ T+1s   Blue 1차 (file_events realtime)
        └→ Wazuh syscheck realtime alert 발송 (rule 5901, level 10)
 
 T+5s   Blue 2차 (운영자 의 osquery SQL 헌팅)
-       └→ docker exec el34-web sh -c 'sudo osqueryi --json "SELECT u.username, u.uid, a.key
+       └→ ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT u.username, u.uid, a.key
              FROM users u JOIN authorized_keys a ON u.uid=a.uid
              WHERE u.uid > 1000"'
        └→ 결과 = bdadm uid=1001 + ssh-rsa ... attacker@evil
