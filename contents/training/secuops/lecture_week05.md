@@ -388,7 +388,7 @@ graph TD
   "transaction": {
     "time": "11/May/2026:21:49:35.107228 +0000",
     "transaction_id": "agJO73VIRPe167IxJ80PhwAAAFM",
-    "remote_address": "10.20.30.202",
+    "remote_address": "192.168.0.202",
     "remote_port": 34018,
     "local_address": "10.20.32.80",
     "local_port": 80
@@ -399,7 +399,7 @@ graph TD
       "host": "juice.el34.lab",
       "user-agent": "curl/7.81.0",
       "accept": "*/*",
-      "x-forwarded-for": "10.20.30.202"
+      "x-forwarded-for": "192.168.0.202"
     }
   },
   "response": {
@@ -417,7 +417,7 @@ graph TD
       "Warning. Operator GE matched 5 at TX:inbound_anomaly_score. [file \"RESPONSE-980-CORRELATION.conf\"] [id \"980130\"] [msg \"Inbound Anomaly Score Exceeded (Total Inbound Score: 15 - SQLI=0,XSS=15,RFI=0,LFI=0,RCE=0,PHPI=0,HTTP=0,SESS=0): individual paranoia level scores: 15, 0, 0, 0\"]"
     ],
     "error_messages": [
-      "[file \"apache2_util.c\"] [line 271] [level 3] [client 10.20.30.202] ModSecurity: Warning. detected XSS using libinjection. [id \"941100\"] ... [hostname \"juice.el34.lab\"] [uri \"/\"] [unique_id \"agJO...\"]",
+      "[file \"apache2_util.c\"] [line 271] [level 3] [client 192.168.0.202] ModSecurity: Warning. detected XSS using libinjection. [id \"941100\"] ... [hostname \"juice.el34.lab\"] [uri \"/\"] [unique_id \"agJO...\"]",
       ...
     ]
   }
@@ -464,7 +464,7 @@ jq -r '.audit_data.messages[]' modsec_audit.log | \
 XSS audit log:
 ```json
 "transaction": {
-  "remote_address": "10.20.30.202",   ← 실제 공격자 IP (el34 출처 보존)
+  "remote_address": "192.168.0.202",   ← 실제 공격자 IP (el34 출처 보존)
   ...
 },
 "request": {
@@ -475,7 +475,7 @@ XSS audit log:
 ```
 
 해석:
-- `remote_address: 10.20.30.202` — ModSec 가 본 source = **실제 공격자**. el34 는 fw 가 SNAT 하지 않아 보존
+- `remote_address: 192.168.0.202` — ModSec 가 본 source = **실제 공격자**. el34 는 fw 가 SNAT 하지 않아 보존
 - `x-forwarded-for: null` — el34 는 XFF 가 없다 (필요 없음). 출처가 이미 remote_address 에 보존
 
 ### 6.2 운영 — remote_address 기반 ModSec IP 룰 (el34)
@@ -485,10 +485,10 @@ ModSec 룰을 client IP 기반으로 작성하려면 `REMOTE_ADDR` (= remote_add
 
 ```
 # ❌ 부적합 — 모든 trafffic 의 REMOTE_ADDR 이 ips IP
-SecRule REMOTE_ADDR "@ipMatch 10.20.30.202" "id:9006001,phase:1,deny"
+SecRule REMOTE_ADDR "@ipMatch 192.168.0.202" "id:9006001,phase:1,deny"
 
 # ✅ 적합 — XFF 사용
-SecRule REMOTE_ADDR "@ipMatch 10.20.30.202" \
+SecRule REMOTE_ADDR "@ipMatch 192.168.0.202" \
     "id:9006001,phase:1,deny"
 ```
 
@@ -704,7 +704,7 @@ src 를 프록시 IP 로 가리는 환경에선 REMOTE_ADDR 가 프록시 IP 로
 
 ```mermaid
 graph TD
-    R["🔴 Red Team<br/>attacker (10.20.30.202)<br/>3 시나리오<br/>① XSS payload<br/>② SQLi UNION<br/>③ scanner UA"]
+    R["🔴 Red Team<br/>attacker (192.168.0.202)<br/>3 시나리오<br/>① XSS payload<br/>② SQLi UNION<br/>③ scanner UA"]
 
     FE["🌐 web Apache<br/>(L7 reverse proxy + WAF)<br/>vhost 라우팅"]
     WEB["🌐 web Apache<br/>(10.20.32.80)<br/>ModSec inline<br/>5 phase 처리"]
@@ -777,12 +777,12 @@ T+3ms  Apache 응답 = 403 Forbidden + ModSec audit log 기록
        └→ unique_id = "ZjK..." (audit log 추적용)
 
 T+5s   Blue 1차 탐지 (실시간 운영자)
-       └→ docker exec el34-web sh -c "sudo tail -1 /var/log/apache2/modsec_audit.log | jq .messages"
+       └→ ssh ccc@10.20.32.80 "sudo tail -1 /var/log/apache2/modsec_audit.log | jq .messages"
        └→ 3 룰 매치 = XSS 명확
 
 T+10s  Blue 2차 분석 (Wazuh agent 의 forward)
        └→ Wazuh modsec decoder 의 alert (rule id 87151, level 7)
-       └→ Wazuh dashboard 의 src IP = 10.20.30.202
+       └→ Wazuh dashboard 의 src IP = 192.168.0.202
        └→ Wazuh agent state = active (모니터링 정상)
 
 T+1m   Purple Gap 식별
@@ -830,44 +830,44 @@ T+30m  Purple AAR 보고서
 ### 실습 1 — 설정 + audit log 구조 점검 (10분)
 
 ```bash
-docker exec el34-web sh -c 'sudo grep -E "^SecRuleEngine|^SecAuditLog|^SecRequestBody|^SecResponseBody" /etc/modsecurity/modsecurity.conf'
-docker exec el34-web sh -c 'sudo apache2ctl -M 2>&1 | grep -i security'
-docker exec el34-web sh -c 'sudo dpkg -l | grep -E "modsec|crs"'
+ssh ccc@10.20.32.80 'sudo grep -E "^SecRuleEngine|^SecAuditLog|^SecRequestBody|^SecResponseBody" /etc/modsecurity/modsecurity.conf'
+ssh ccc@10.20.32.80 'sudo apache2ctl -M 2>&1 | grep -i security'
+ssh ccc@10.20.32.80 'sudo dpkg -l | grep -E "modsec|crs"'
 ```
 
 ### 실습 2 — CRS 룰 파일 + paranoia (15분)
 
 ```bash
-docker exec el34-web sh -c 'sudo ls /usr/share/modsecurity-crs/rules/ | wc -l'
-docker exec el34-web sh -c 'sudo ls /etc/apache2/sites-enabled/ | wc -l'
-docker exec el34-web sh -c 'sudo grep -l "tx.paranoia_level" /etc/apache2/sites-enabled/* 2>/dev/null | head'
+ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/ | wc -l'
+ssh ccc@10.20.32.80 'sudo ls /etc/apache2/sites-enabled/ | wc -l'
+ssh ccc@10.20.32.80 'sudo grep -l "tx.paranoia_level" /etc/apache2/sites-enabled/* 2>/dev/null | head'
 ```
 
 ### 실습 3 — XSS 공격 + audit log 분석 (20분)
 
 ```bash
-docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "%{http_code}\n" -H "Host: juice.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+ssh att@192.168.0.202 'curl -s -o /dev/null -w "%{http_code}\n" "http://juice.el34.lab/?q=<script>alert(1)</script>"'
 # 403 응답
 
 sleep 2
-docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{ip:.transaction.remote_address, status:.response.status, msg_count:(.audit_data.messages | length)}"'
+ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{ip:.transaction.remote_address, status:.response.status, msg_count:(.audit_data.messages | length)}"'
 
 # 매치된 룰 ID 추출
-docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"[0-9]+\"\\]" | sort | uniq'
+ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"[0-9]+\"\\]" | sort | uniq'
 ```
 
 ### 실습 4 — SQLi 공격 + audit (20분)
 
 ```bash
-docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: juice.el34.lab' \"http://10.20.30.1/?q=1' OR '1'='1\""
+ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}\n' \"http://juice.el34.lab/?q=1' OR '1'='1\""
 sleep 2
-docker exec el34-web sh -c 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"942[0-9]+\"\\]"'
+ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"942[0-9]+\"\\]"'
 ```
 
 ### 실습 5 — paranoia 변경 시뮬 (15분)
 
 ```bash
-docker exec el34-web sh -c 'sudo find / -name "crs-setup.conf" 2>/dev/null'
+ssh ccc@10.20.32.80 'sudo find / -name "crs-setup.conf" 2>/dev/null'
 # el34 환경에서는 crs-setup.conf 가 vhost 단위 또는 별 경로에 있을 수 있음
 
 # vhost 단위 paranoia 2 설정 시뮬 (실 적용 X)
@@ -890,15 +890,15 @@ echo '<LocationMatch "/api/legacy/">
 ```bash
 # Red — 5 공격 burst
 for payload in "?q=<script>alert(1)</script>" "?q=1'OR'1'='1" "?q=../../etc/passwd" "?q=;cat /etc/passwd" "?q=<?php system('id'); ?>"; do
-  docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code} ' -H 'Host: juice.el34.lab' 'http://10.20.30.1/$payload'"
+  ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code} ' 'http://juice.el34.lab/$payload'"
 done
 sleep 5
 
 # Blue — audit log 의 룰 카테고리 분포
-docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"[0-9]+\"\\]" | sort | uniq -c | sort -rn | head'
+ssh ccc@10.20.32.80 'sudo tail -50 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"[0-9]+\"\\]" | sort | uniq -c | sort -rn | head'
 
 # Purple — anomaly score 분석
-docker exec el34-web sh -c 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+" | head'
+ssh ccc@10.20.32.80 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "Total Score: [0-9]+" | head'
 ```
 
 ---
@@ -971,12 +971,10 @@ attacker VM 내부에서 다음 두 줄을 짧은 간격으로 보낸다.
 ```bash
 # attacker VM 내부 (학습 환경 한정)
 curl -s -o /dev/null -w "%{http_code}\n" \
-    -H "Host: juice.el34.lab" \
-    "http://10.20.30.1/search?q=%3Cscript%3Ealert(1)%3C/script%3E"
+    "http://juice.el34.lab/search?q=%3Cscript%3Ealert(1)%3C/script%3E"
 
 curl -s -o /dev/null -w "%{http_code}\n" \
-    -H "Host: juice.el34.lab" \
-    "http://10.20.30.1/search?q=%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E"
+    "http://juice.el34.lab/search?q=%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E"
 ```
 
 각 줄의 의미는 다음과 같다.
@@ -991,7 +989,7 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 web VM 의 `/var/log/apache2/modsec_audit.log` 에 한 transaction 마다 한 JSON 줄이 추가된다. 그 JSON 안의 `audit_data.messages[]` 에 매칭된 룰 id 와 anomaly score 가 기록된다.
 
 ```json
-{"transaction": {"client_ip":"10.20.30.202", ...},
+{"transaction": {"client_ip":"192.168.0.202", ...},
  "request": {"uri":"/search?q=...", ...},
  "audit_data": {
    "messages": [
@@ -1016,7 +1014,7 @@ sudo tail -2 /var/log/apache2/modsec_audit.log | jq '.transaction.client_ip, .re
 
 각 라인을 확인한다.
 
-- `remote_address` — 10.20.30.202 (실제 공격자, el34 출처 보존) 인지 본다. el34-attacker 면 학습 환경 시도다.
+- `remote_address` — 192.168.0.202 (실제 공격자, el34 출처 보존) 인지 본다. el34-attacker 면 학습 환경 시도다.
 - `request.uri` — URL-decoded 페이로드의 일부가 보인다.
 - `messages[]` — 941100, 941110, 941160 같은 XSS 시리즈 룰 id 가 보이면 매칭 확인.
 
@@ -1083,8 +1081,7 @@ ssh el34-attacker
 
 # attacker VM 내부 (학습 환경 한정)
 curl -s -o /dev/null -w "%{http_code}\n" \
-    -H "Host: juice.el34.lab" \
-    "http://10.20.30.1/login?username=admin%27%20OR%20%271%27%3D%271&password=any"
+    "http://juice.el34.lab/login?username=admin%27%20OR%20%271%27%3D%271&password=any"
 ```
 
 URL-decoded 형태는 `?username=admin' OR '1'='1&password=any` 다. classic SQLi 시도다.
@@ -1173,10 +1170,9 @@ ssh el34-attacker
 
 # attacker VM 내부 (학습 환경 한정)
 curl -s -o /dev/null -w "%{http_code}\n" \
-    -H "Host: juice.el34.lab" \
     -X POST \
     -d "comment=오늘 SELECT 와 WHERE 절을 학습했어요. 정말 재미있네요." \
-    http://10.20.30.1/api/comment
+    http://juice.el34.lab/api/comment
 ```
 
 ModSec 의 SQLi 룰 (942xxx) 중 일부가 "SELECT", "WHERE" 같은 키워드를 잡아 false positive 차단을 일으킨다. 응답 코드가 403 이면 false positive 발생이다.
@@ -1368,7 +1364,7 @@ jq -r '.audit_data.messages[]' | grep -oE 'Total Score: [0-9]+'
 jq -r '.audit_data.messages[]' | grep "980130" | grep -oE 'XSS=[0-9]+|SQLI=[0-9]+|RFI=[0-9]+|LFI=[0-9]+|RCE=[0-9]+'
 
 # 5. remote_address 가 attacker IP 인 transaction (el34 출처 보존)
-jq 'select(.request.headers."x-forwarded-for"=="10.20.30.202") | {time:.transaction.time, status:.response.status}'
+jq 'select(.request.headers."x-forwarded-for"=="192.168.0.202") | {time:.transaction.time, status:.response.status}'
 
 # 6. POST body 의 sensitive pattern 검색
 jq -r '.request | select(.request_line | startswith("POST"))'
