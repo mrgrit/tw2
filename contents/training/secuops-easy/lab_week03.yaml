@@ -4,23 +4,24 @@ version: standalone-easy
 course: secuops-easy
 week: 3
 description: |
-  IPS 콘솔(192.168.136.145:8082)로 Suricata 탐지룰을 배운다. 룰을 구조 분석기로 분해해 보고, 폼으로
-  탐지룰을 만들어 생성되는 Suricata rule 을 확인한 뒤 적용한다(로딩 성공/실패 즉시 확인). 그다음
-  공격을 재현해 eve.json 에서 alert 가 잡히는지 확인하고, 침해대응 시나리오(ips-s01)를 검증한다.
-  마지막에 실습 룰(sid 9000000+)을 정리한다. IPS 룰은 alert(탐지) 라서 트래픽을 막지 않는다.
+  IPS 장비(`ips`, `10.20.31.2`)에 직접 SSH 접속해 Suricata 탐지룰을 배운다. 실제 룰 파일을 읽어 구조를
+  분해하고, `sudo tee -a local.rules` + `suricatasc -c reload-rules` 로 탐지룰을 직접 만들어 무중단
+  적용한다(로딩 성공/실패 즉시 확인). 그다음 내 공격 VM(`192.168.0.202`)에서 sqlmap 으로 공격을 재현해
+  eve.json 에서 내 룰의 alert 가 잡히는지 확인하고, 룰 구성을 자가 검증한 뒤 실습 룰(sid 9000000+)을
+  정리한다. IPS 룰은 alert(탐지)라서 트래픽을 막지 않는다. (`ssh ccc@10.20.31.2` 비번 `1`, 관리는 `sudo`.)
 difficulty: easy
 duration_minutes: 120
 audience: 보안 솔루션 운영 입문자 (3주차)
 prerequisites:
   - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
-  - el34 호스트 브라우저에서 IPS 콘솔(192.168.136.145:8082) 접속 가능
+  - IPS 장비 접속 가능 (`ssh ccc@10.20.31.2`, 비번 `1`, sudo 보유) + 공격 VM `ssh att@192.168.0.202`
   - W03 강의안 정독 — 헤더+옵션, 탐지 버퍼, HOME_NET / W01~W02 실습 완료
 objectives:
-  - "IPS 가동/로딩 룰 수/HOME_NET 을 콘솔에서 확인한다"
+  - "IPS 장비에서 Suricata 가동/로딩 룰 수/HOME_NET 을 확인한다"
   - "탐지룰을 헤더+옵션으로 분해해 이해한다"
-  - "폼으로 탐지룰을 만들어 Suricata rule 을 확인하고 적용한다"
+  - "sudo tee + suricatasc reload 로 탐지룰을 직접 만들어 적용한다"
   - "공격을 재현해 eve.json 의 alert 로 탐지를 확인한다"
-  - "침해대응 시나리오(ips-s01)를 검증 통과시키고 실습 룰을 정리한다"
+  - "내 룰의 구성(버퍼/content/nocase)을 자가 검증하고 실습 룰을 정리한다"
 pass_threshold: 0.7
 
 steps:
@@ -29,22 +30,30 @@ steps:
     instruction: |
       ## 🎯 미션 — IPS 상태 확인
 
-      IPS 콘솔(`http://192.168.136.145:8082/`) **대시보드**를 연다. Suricata 가 가동 중인지, 탐지룰이
-      몇 개 로딩됐는지(`rules_loaded`, 0보다 커야 함), 실패가 0(`rules_failed`)인지 확인한다.
+      IPS 장비(`ips`, `10.20.31.2`)에 SSH 로 접속해, Suricata 가 가동 중인지와 탐지룰이 몇 개
+      로딩돼 있는지 직접 확인한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (IPS 장비에서)
       ```bash
-      curl -s http://192.168.136.145:8082/api/status
+      # IPS 장비에 접속 (비밀번호: 1)
+      ssh ccc@10.20.31.2
+
+      # Suricata 가동 확인
+      pgrep -af suricata
+
+      # 로딩된 탐지룰 수 (활성 룰만)
+      grep -hcE '^(alert|drop)' /etc/suricata/rules/*.rules 2>/dev/null | paste -sd+ | bc
       ```
       ## ✅ 합격 기준
-      출력에 `rules_loaded` 가 보이고 running 이 true 다.
-    hint: 'curl -s http://192.168.136.145:8082/api/status'
+      Suricata 가 가동 중(`suricata` 프로세스)이고 탐지룰이 로딩돼 있다.
+    hint: 'ssh ccc@10.20.31.2 → pgrep -af suricata; 룰 수 집계'
     answer: |
-      curl -s http://192.168.136.145:8082/api/status
-    answer_detail: "running=true, rules_loaded>=5, rules_failed=0. failed>0 이면 잘못된 룰 존재 → 탐지 무력화 위험."
+      # IPS 장비에서 Suricata 가동 + 로딩 룰 수를 직접 확인
+      ssh ccc@10.20.31.2 'pgrep -af suricata; echo -n "rules loaded: "; grep -hcE "^(alert|drop)" /etc/suricata/rules/*.rules 2>/dev/null | paste -sd+ | bc'
+    answer_detail: "pgrep 로 Suricata 프로세스 가동, 룰 파일의 활성 룰(alert/drop) 수 집계. 잘못된 룰이 있으면 reload 시 실패 → 탐지 무력화 위험이므로 룰 로딩 상태를 늘 확인한다."
     verify:
       type: output_contains
-      expect: rules_loaded
+      expect: suricata
       field: stdout
       semantic:
         intent: "IPS 가동/로딩 룰/실패 수 확인 — 탐지 엔진 건강 점검 습관"
@@ -57,16 +66,18 @@ steps:
       **구성·디렉토리** 메뉴에서 HOME_NET, 룰 디렉토리, eve.json 경로를 확인한다. 우리 실습망은
       공격자도 HOME_NET 안이라, 룰 출발지를 `any`로 둔다는 점을 기억한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (IPS 장비에서)
       ```bash
-      curl -s http://192.168.136.145:8082/api/config
+      # Suricata 설정에서 HOME_NET·룰경로·eve 경로 확인
+      grep -E 'HOME_NET|default-rule-path|rule-files|eve' /etc/suricata/suricata.yaml | grep -vE '^\s*#' | head
       ```
       ## ✅ 합격 기준
       출력에 `HOME_NET` 이 보인다.
-    hint: 'curl -s http://192.168.136.145:8082/api/config'
+    hint: "grep HOME_NET /etc/suricata/suricata.yaml"
     answer: |
-      curl -s http://192.168.136.145:8082/api/config
-    answer_detail: "HOME_NET=[192.168.0.0/16,10.0.0.0/8,172.16.0.0/12]. 폐쇄망이라 공격자도 HOME_NET → 룰은 any 사용."
+      # Suricata 설정에서 HOME_NET 등을 IPS 장비에서 직접 확인
+      ssh ccc@10.20.31.2 "grep -E 'HOME_NET|default-rule-path|eve' /etc/suricata/suricata.yaml | grep -vE '^\s*#' | head"
+    answer_detail: "HOME_NET 이 우리 사설망(192.168/10/172.16)을 가리킨다. 폐쇄망이라 공격자도 HOME_NET 안 → 룰의 출발지를 any 로 둔다. suricata.yaml 이 설정의 중심."
     verify:
       type: output_contains
       expect: HOME_NET
@@ -77,21 +88,27 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 미션 — 룰 구조 분석기로 분해
+      ## 🎯 미션 — 실제 탐지룰을 읽고 구조 분해하기
 
-      **룰 구조 분석기**에 기본 sqlmap 탐지 룰을 붙여넣고 "분석"을 누른다. 헤더(action/proto/
-      src/dir/dst)와 옵션(msg/flow/버퍼/content/sid)이 카드로 분해된다.
+      IPS 장비의 실제 룰 파일에서 sqlmap 탐지 룰을 찾아 읽는다. 탐지룰은 **헤더**(action/proto/
+      src/방향/dst)와 **옵션**(msg/flow/버퍼/content/sid)으로 이뤄진다. 특히 **탐지 버퍼**
+      (`http.user_agent` 등)가 "요청의 어느 부분을 검사할지"를 정한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (IPS 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/analyze -d '{"rule":"alert http any any -> any any (msg:\"el34 Bot UA - sqlmap\"; flow:to_server; http.user_agent; content:\"sqlmap\"; nocase; sid:1000003; rev:2;)"}'
+      # 실제 룰 파일에서 sqlmap 탐지 룰을 찾아 읽는다
+      grep -rh 'sqlmap' /etc/suricata/rules/*.rules | head -1
       ```
+      ## 🔍 무엇을 보나
+      `alert http any any -> any any (msg:"...sqlmap"; flow:to_server; http.user_agent; content:"sqlmap";
+      nocase; sid:...;)` — 헤더 5부분 + 옵션. `http.user_agent` 가 검사 버퍼(User-Agent 헤더를 검사).
       ## ✅ 합격 기준
-      분해 결과에 탐지 버퍼 `http.user_agent` 가 보인다.
-    hint: '룰 구조 분석기에 붙여넣고 분석. POST /api/rule/analyze'
+      찾은 룰에 탐지 버퍼 `http.user_agent` 가 보인다.
+    hint: "grep sqlmap /etc/suricata/rules/*.rules — 헤더+옵션 구조 읽기"
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/analyze -d '{"rule":"alert http any any -> any any (msg:\"el34 Bot UA - sqlmap\"; flow:to_server; http.user_agent; content:\"sqlmap\"; nocase; sid:1000003; rev:2;)"}'
-    answer_detail: "action=alert, proto=http, 버퍼=http.user_agent, content=sqlmap, sid=1000003. 버퍼가 검사 부위를 정한다."
+      # 실제 sqlmap 탐지 룰을 IPS 장비에서 찾아 읽고 구조 분해
+      ssh ccc@10.20.31.2 "grep -rh 'sqlmap' /etc/suricata/rules/*.rules | grep 'http.user_agent' | head -1"
+    answer_detail: "action=alert, proto=http, 헤더=any any -> any any, 탐지버퍼=http.user_agent, content=sqlmap, sid. 버퍼가 '요청의 어느 부위를 검사할지'를 정한다 — 룰 읽기의 핵심."
     verify:
       type: output_contains
       expect: http.user_agent
@@ -108,16 +125,22 @@ steps:
       `http.uri`, content `UNION`, nocase 체크, flow `to_server`, msg `EDU SQLi UNION` →
       **① 룰 미리보기**.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (IPS 장비에서)
+      우리가 만들 UNION 탐지 룰(적용은 다음 스텝, 지금은 검토):
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/preview -d '{"action":"alert","proto":"http","buffer":"http.uri","content":"UNION","nocase":true,"flow":"to_server","msg":"EDU SQLi UNION"}'
+      # 만들 탐지룰을 눈으로 검토 (URI 에 UNION 이 오면 alert)
+      echo 'alert http any any -> any any (msg:"EDU SQLi UNION"; flow:to_server; http.uri; content:"UNION"; nocase; sid:9000001; rev:1;)'
       ```
+      ## 🔍 무엇을 보나
+      헤더 `alert http any any -> any any`(폐쇄망이라 any) + 옵션(msg / flow:to_server / 버퍼 http.uri /
+      content:"UNION" / nocase / sid:9000001). 요청 URI 에 UNION 이 나오면 탐지한다.
       ## ✅ 합격 기준
-      생성된 룰이 `alert http any any -> any any` 로 시작한다.
-    hint: '미리보기는 미실행. POST /api/rule/preview'
+      검토한 룰이 `alert http any any -> any any` 로 시작한다.
+    hint: 'echo 로 만들 Suricata 룰 검토'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/preview -d '{"action":"alert","proto":"http","buffer":"http.uri","content":"UNION","nocase":true,"flow":"to_server","msg":"EDU SQLi UNION"}'
-    answer_detail: 'alert http any any -> any any (msg:"EDU SQLi UNION"; flow:to_server; http.uri; content:"UNION"; nocase; sid:9000001; rev:1;)'
+      # 만들 UNION 탐지룰을 IPS 장비에서 검토
+      ssh ccc@10.20.31.2 'echo "alert http any any -> any any (msg:\"EDU SQLi UNION\"; flow:to_server; http.uri; content:\"UNION\"; nocase; sid:9000001; rev:1;)"'
+    answer_detail: 'alert http any any -> any any (msg:"EDU SQLi UNION"; flow:to_server; http.uri; content:"UNION"; nocase; sid:9000001; rev:1;). 적용 전 룰을 검토하는 습관 — 문법·버퍼·sid 를 미리 점검.'
     verify:
       type: output_contains
       expect: alert http any any -> any any
@@ -130,50 +153,67 @@ steps:
     instruction: |
       ## 🎯 미션 — 룰 적용 + 로딩 확인
 
-      **② 적용 + reload**를 누른다. 콘솔이 local.rules 에 추가하고 reload 한 뒤, loaded/failed 를
-      보여 준다. 적용 후 `/api/rules`에서 내 룰(sid 9000001)이 등록됐는지 확인한다.
+      이제 룰을 local.rules 에 추가하고 reload 한 뒤 로딩 결과를
+      local.rules 에 룰을 추가하고 suricatasc 로 reload 한 뒤, 내 룰(sid 9000001)이 등록됐는지 확인한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (IPS 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert http any any -> any any (msg:\"EDU SQLi UNION\"; flow:to_server; http.uri; content:\"UNION\"; nocase; sid:9000001; rev:1;)"}' >/dev/null
-      curl -s http://192.168.136.145:8082/api/rules | grep -o 9000001 | head -1
+      # 1) 만든 룰을 local.rules 에 추가
+      echo 'alert http any any -> any any (msg:"EDU SQLi UNION"; flow:to_server; http.uri; content:"UNION"; nocase; sid:9000001; rev:1;)' | sudo tee -a /etc/suricata/rules/local.rules
+
+      # 2) Suricata 에 룰 다시 읽히기 (무중단 reload)
+      sudo suricatasc -c "reload-rules"
+
+      # 3) 내 룰이 등록됐는지 확인
+      grep -o 'sid:9000001' /etc/suricata/rules/local.rules | head -1
       ```
       ## ✅ 합격 기준
-      적용 후 룰 목록에 내 룰 `9000001` 이 보인다(loaded 증가, failed 불변).
-    hint: 'apply 후 /api/rules 에서 9000001 확인'
+      적용·reload 후 local.rules 에 내 룰 `9000001` 이 보인다(reload 결과 `"return": "OK"`).
+    hint: 'echo 룰 | sudo tee -a local.rules; sudo suricatasc -c reload-rules; grep 9000001'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/rule/apply -d '{"rule":"alert http any any -> any any (msg:\"EDU SQLi UNION\"; flow:to_server; http.uri; content:\"UNION\"; nocase; sid:9000001; rev:1;)"}' >/dev/null
-      curl -s http://192.168.136.145:8082/api/rules | grep -o 9000001 | head -1
-    answer_detail: "apply 가 local.rules 에 추가 + suricatasc reload-rules. 정상 로딩되면 rules 목록에 sid 9000001 이 나타난다. 문법 틀리면 failed 증가."
+      # 룰을 local.rules 에 추가 + reload + 확인 (IPS 장비에서)
+      ssh ccc@10.20.31.2 'echo "alert http any any -> any any (msg:\"EDU SQLi UNION\"; flow:to_server; http.uri; content:\"UNION\"; nocase; sid:9000001; rev:1;)" | sudo tee -a /etc/suricata/rules/local.rules >/dev/null; sudo suricatasc -c "reload-rules" >/dev/null; grep -o "sid:9000001" /etc/suricata/rules/local.rules | head -1'
+    answer_detail: "룰을 local.rules 에 추가한 뒤 suricatasc reload-rules 로 무중단 재로딩. 문법이 맞으면 로딩되고(sid:9000001 등록), 틀리면 reload 가 실패한다 — 즉시 피드백 루프."
     verify:
       type: output_contains
       expect: "9000001"
       field: stdout
       semantic:
         intent: "룰을 적용하고 reload·로딩 결과를 즉시 확인 — 문법 피드백 루프 체득"
-        success_criteria: ["ok=true", "reload OK", "loaded 증가/failed 불변", "rules 목록에 sid 등록"]
+        success_criteria: ["reload OK", "loaded 증가/failed 불변", "local.rules 에 sid 등록"]
 
   - order: 6
     instruction: |
-      ## 🎯 미션 — 공격 재현 → eve.json 에서 탐지 확인
+      ## 🎯 미션 — 공격을 일으켜 내 룰이 잡는지 확인 (탐지 테스트)
 
-      공격자(el34-attacker)에서 UNION SQLi 요청을 보낸 뒤, IPS 콘솔 **이벤트(eve.json)**를 alert
-      필터로 보면 방금 만든 룰이 잡은 alert 가 나타난다.
+      "룰을 만들었다"로 끝이 아니라, **실제 공격을 일으켜 내 룰이 잡는지** 봐야 한다. 내 공격 VM
+      (`192.168.0.202`)에서 URI 에 `UNION SELECT` 가 든 요청을 보내 방금 만든 룰을 테스트한다. vhost 는
+      `/etc/hosts` 에 등록돼 있어 **자연 URL(`http://juice.el34.lab/...`)** 로 바로 보낸다(`-H Host` 불필요).
+      그다음 IPS 장비의 `eve.json` 에서 내 룰의 alert 를 본다.
 
-      ## 💻 확인 명령
+      > 💡 **화면으로 보기:** 학생 PC 브라우저에서 `http://juice.el34.lab/?q=1 UNION SELECT 1` 을 직접
+      > 열어도 같은 탐지가 난다. 실제 공격 도구(sqlmap 등)로 SQLi 를 돌리면 baseline sqlmap/UNION 룰까지
+      > 함께 뜨는 것도 볼 수 있다. (탐지룰 테스트는 그 룰이 노리는 패턴을 정확히 보내는 게 확실하다.)
+
+      ## 💻 실행 명령
       ```bash
-      docker exec el34-attacker curl -s -o /dev/null -H "Host: juice.el34.lab" "http://10.20.30.1/?q=1%20UNION%20SELECT%201"
-      sleep 3
-      curl -s "http://192.168.136.145:8082/api/eve?type=alert&n=50"
+      # ① 내 공격 VM 에서 URI 에 UNION 이 든 요청 (자연 URL, -H Host 불필요)
+      ssh att@192.168.0.202
+      curl -s -o /dev/null 'http://juice.el34.lab/?q=1 UNION SELECT 1'
+
+      # ② IPS 장비에서 내 룰(EDU SQLi UNION)이 잡은 alert 확인
+      ssh ccc@10.20.31.2
+      tail -400 /var/log/suricata/eve.json | jq -rc 'select(.event_type=="alert" and (.alert.signature|test("UNION";"i")))|.alert.signature' | tail -3
       ```
       ## ✅ 합격 기준
-      최근 alert 에 `UNION` 관련 signature 가 보인다.
-    hint: 'UNION 공격 재현 후 eve alert 확인. expect: UNION'
+      IPS eve.json 의 alert signature 에 `UNION`(내 룰 EDU SQLi UNION)이 보인다.
+    hint: '자연 URL 로 UNION 요청 → IPS eve.json 에서 UNION alert'
     answer: |
-      docker exec el34-attacker curl -s -o /dev/null -H "Host: juice.el34.lab" "http://10.20.30.1/?q=1%20UNION%20SELECT%201"
-      sleep 3
-      curl -s "http://192.168.136.145:8082/api/eve?type=alert&n=50"
-    answer_detail: "eve alert 에 'EDU SQLi UNION'(내 룰)이 signature 로 보임 — 실제 탐지 증거. URI 의 UNION 을 http.uri 버퍼에서 탐지."
+      # ① 공격 VM(202)에서 URI 에 UNION 이 든 요청을 자연 URL 로 보냄 (내 룰 테스트)
+      ssh att@192.168.0.202 "curl -s -o /dev/null 'http://juice.el34.lab/?q=1 UNION SELECT 1'; curl -s -o /dev/null 'http://dvwa.el34.lab/?id=1 UNION SELECT 1'; echo sent"
+      # ② IPS 장비 eve.json 에서 내 룰(EDU SQLi UNION)이 잡은 alert 확인
+      ssh ccc@10.20.31.2 "sleep 2; tail -500 /var/log/suricata/eve.json | jq -rc 'select(.event_type==\"alert\" and (.alert.signature|test(\"UNION\";\"i\")))|.alert.signature' | tail -3"
+    answer_detail: "URI 에 UNION 이 든 요청을 보내면 내가 만든 http.uri content:UNION 룰이 eve.json 에 'EDU SQLi UNION' alert 로 남긴다 — 룰이 실제 공격을 탐지한다는 실증. 탐지룰 테스트는 그 룰이 노리는 패턴을 정확히 보내 확인한다(sqlmap 같은 도구는 baseline 룰까지 함께 유발)."
     verify:
       type: output_contains
       expect: UNION
@@ -184,28 +224,34 @@ steps:
 
   - order: 7
     instruction: |
-      ## 🎯 미션 — 침해대응 시나리오 검증 (ips-s01)
+      ## 🎯 미션 — 내 탐지룰이 올바르게 구성됐는지 검증
 
-      **침해대응 훈련**에서 ips-s01(SQLi UNION)을 펼치고 **검증**을 누른다. 콘솔이 local.rules 를
-      읽어 STEP 5 에서 만든 UNION 룰이 정답 조건을 충족하는지 채점한다(`ok: true`면 통과).
+      침해대응의 마무리는 "내 룰이 정답 조건을 갖췄나" 자가 점검이다. SQLi UNION 탐지룰이라면 반드시
+      ① 올바른 탐지 버퍼(`http.uri`) ② 탐지 문자열(`content:"UNION"`) ③ 대소문자 무시(`nocase`)를
+      갖춰야 한다. 내가 만든 룰(sid 9000001)이 이 조건을 충족하는지 직접 확인한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (IPS 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s01"}'
+      # 내 룰이 http.uri + UNION + nocase 조건을 갖췄는지 확인
+      grep 'sid:9000001' /etc/suricata/rules/local.rules | grep -oE 'http\.uri|content:"UNION"|nocase'
       ```
+      ## 🔍 무엇을 보나
+      `http.uri`, `content:"UNION"`, `nocase` 세 조건이 모두 나오면 룰이 정답대로 구성된 것이다.
+      하나라도 빠지면(예: 버퍼가 없거나 nocase 누락) 탐지가 새거나 대소문자 우회에 뚫린다.
       ## ✅ 합격 기준
-      검증 결과가 `"ok": true` 다.
-    hint: '침해대응 훈련 ips-s01 검증. POST /api/scenario/check {"id":"ips-s01"}'
+      내 룰에 탐지 버퍼 `http.uri` 가 있음이 확인된다(+ UNION, nocase).
+    hint: "grep sid:9000001 local.rules → http.uri / content UNION / nocase 확인"
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8082/api/scenario/check -d '{"id":"ips-s01"}'
-    answer_detail: "ok=true, evidence require=(?i)http.uri;content:UNION;nocase found=true. STEP5 룰이 정답 조건 충족."
+      # 내 UNION 탐지룰이 http.uri+UNION+nocase 조건을 갖췄는지 IPS 장비에서 자가 검증
+      ssh ccc@10.20.31.2 "grep 'sid:9000001' /etc/suricata/rules/local.rules | grep -oE 'http\.uri|content:\"UNION\"|nocase'"
+    answer_detail: "룰이 정답 조건(http.uri 버퍼 + content UNION + nocase)을 갖췄는지 자가 점검. 버퍼가 없으면 요청 전체를 검사해 오탐↑, nocase 가 없으면 UnIoN 같은 대소문자 우회에 뚫린다 — 이래서 룰 검증이 필요하다."
     verify:
       type: output_contains
-      expect: '"ok": true'
+      expect: http.uri
       field: stdout
       semantic:
-        intent: "작성한 탐지룰이 시나리오 정답을 충족하는지 콘솔이 실측 채점"
-        success_criteria: ["scenario check ok=true", "require 충족", "ruleset 기반 채점"]
+        intent: "작성한 탐지룰이 올바른 버퍼·content·nocase 를 갖췄는지 실제 룰 파일로 자가 검증"
+        success_criteria: ["http.uri 버퍼 존재", "content UNION 존재", "nocase 존재"]
 
   - order: 8
     instruction: |
@@ -214,16 +260,18 @@ steps:
       **SIEM 연동** 메뉴에서 eve.json 이 Wazuh 매니저(10.20.32.100)로 가는지 확인한다. 대개 이미
       연동돼 있다(Suricata alert → Wazuh rule.id 86601).
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (IPS 장비에서)
       ```bash
-      curl -s http://192.168.136.145:8082/api/siem
+      # 이 IPS 가 어느 SIEM 매니저로 로그를 보내는지 (Wazuh 에이전트 설정)
+      grep -oE '<address>[0-9.]+</address>' /var/ossec/etc/ossec.conf
       ```
       ## ✅ 합격 기준
       출력에 매니저 주소 `10.20.32.100` 이 보인다.
-    hint: 'GET /api/siem — manager 10.20.32.100'
+    hint: 'grep <address> /var/ossec/etc/ossec.conf — manager 10.20.32.100'
     answer: |
-      curl -s http://192.168.136.145:8082/api/siem
-    answer_detail: "integrated=true, manager=10.20.32.100. IPS alert 가 SIEM 으로 모여 방화벽·WAF 와 통합 관제."
+      # IPS 의 SIEM(Wazuh) 매니저 주소를 장비에서 직접 확인
+      ssh ccc@10.20.31.2 'grep -oE "<address>[0-9.]+</address>" /var/ossec/etc/ossec.conf | head -1'
+    answer_detail: "Wazuh 에이전트가 eve.json 을 매니저(10.20.32.100)로 전송 → IPS alert 가 SIEM 으로 모여 방화벽·WAF 와 통합 관제(Suricata alert → Wazuh rule.id 86601)."
     verify:
       type: output_contains
       expect: 10.20.32.100
@@ -240,42 +288,21 @@ steps:
       **탐지룰 관리** 목록에서 각 룰의 "삭제" 버튼으로도 지울 수 있다. (호스트에 jq 가 없으므로
       python3 로 처리한다.)
 
-      ## 💻 정리 명령
+      ## 💻 정리 명령 (IPS 장비에서)
       ```bash
-      python3 -c '
-      import json, urllib.request as u
-      B="http://192.168.136.145:8082"
-      def post(p,o):
-          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
-          return u.urlopen(r,timeout=8).read().decode()
-      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
-      n=0
-      for r in rs.get("rules",[]):
-          sid=str(r.get("sid",""))
-          if r.get("edu") or (sid.isdigit() and int(sid)>=9000000):
-              post("/api/rule/delete",{"sid":sid}); n+=1
-      print("cleanup done deleted=%d"%n)
-      '
+      # 실습 룰(sid 9000000 이상)만 local.rules 에서 삭제 (기본 룰 1000000번대는 보존)
+      sudo sed -i -E '/sid:9[0-9]{6}/d' /etc/suricata/rules/local.rules
+
+      # 룰 다시 읽히기
+      sudo suricatasc -c "reload-rules" >/dev/null; echo "cleanup done"
       ```
       ## ✅ 합격 기준
       실습 룰이 모두 삭제되어 `cleanup done` 이 보인다(기본 룰은 보존).
-    hint: '탐지룰 관리의 삭제 버튼. python3 로 edu 룰(sid>=9000000) 일괄 삭제 → cleanup done'
+    hint: "sudo sed -i -E '/sid:9[0-9]{6}/d' local.rules; suricatasc reload-rules → cleanup done"
     answer: |
-      python3 -c '
-      import json, urllib.request as u
-      B="http://192.168.136.145:8082"
-      def post(p,o):
-          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
-          return u.urlopen(r,timeout=8).read().decode()
-      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
-      n=0
-      for r in rs.get("rules",[]):
-          sid=str(r.get("sid",""))
-          if r.get("edu") or (sid.isdigit() and int(sid)>=9000000):
-              post("/api/rule/delete",{"sid":sid}); n+=1
-      print("cleanup done deleted=%d"%n)
-      '
-    answer_detail: "edu=true 또는 sid>=9000000 인 룰만 삭제 → reload. 기본 룰(1000000번대) 보존, loaded 기본값 복귀."
+      # 실습 룰(sid 9xxxxxx)만 삭제 + reload (IPS 장비에서)
+      ssh ccc@10.20.31.2 "sudo sed -i -E '/sid:9[0-9]{6}/d' /etc/suricata/rules/local.rules; sudo suricatasc -c 'reload-rules' >/dev/null; echo 'cleanup done'"
+    answer_detail: "sid 가 9로 시작하는 7자리(9000000 이상) 실습 룰만 local.rules 에서 지우고 reload. 기본 룰(1000000번대)은 보존된다. 실습 후 IPS 룰셋을 원상 복구하는 운영 위생."
     verify:
       type: output_contains
       expect: cleanup done
