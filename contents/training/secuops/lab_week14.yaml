@@ -9,14 +9,14 @@ description: |
   ATT&CK(T1136/T1053)에 매단 가설로 추적해, osquery 스냅샷(지금 남은 것)과 sysmon 이벤트(잠깐 떴다 죽은
   인코딩 셸)를 결합해 끄집어낸다. 발견은 STIX Sighting/ATT&CK 매핑/MISP TLP로 표준 문서화하고, Wazuh
   룰(id 101401)로 굳혀 재발 시 자동 탐지로 전환(운영화)한다. 위협 헌팅 5단계(가설→질의→발견→문서화→
-  운영화)를 완주한다. 모든 명령은 el34 호스트(`ssh ccc@{{TARGET_IP}}`)에서 `docker exec el34-<comp>`로
+  운영화)를 완주한다. 각 장비에 직접 접속(fw 10.20.30.1/ips 31.2/web 32.80/siem 32.100, 공격 192.168.0.202, root은 sudo)해 실행한다.
   실행하며 sysmon 관측만 호스트 `/var/log/syslog`다. el34-web/el34-siem은 공유 자원이므로 룰은
   wazuh-logtest로만 검증하고 실습 발판(계정/cron/룰)은 끝나면 self-clean으로 베이스를 보존한다.
 difficulty: hard
 duration_minutes: 200
 prerequisites:
   - "W07(osquery)·W11(sysmon)·W12–W13(인텔/룰) 통과"
-  - "el34 호스트 SSH(ssh ccc@{{TARGET_IP}}) + docker exec"
+  - "장비 직접 SSH: ssh ccc@<장비IP>(fw 10.20.30.1/ips 31.2/web 32.80/siem 32.100) + 공격 ssh att@192.168.0.202 (비번 1)"
   - "lecture §2(5단계) §3(가설) §4(질의) §6(운영화) 숙지"
 objectives:
   - "헌팅의 전제인 3종 텔레메트리(osquery 스냅샷 + sysmon 이벤트 + Wazuh 평결) 가용성 점검"
@@ -65,11 +65,11 @@ steps:
     points: 8
     answer: |
       echo "=== osquery (스냅샷) ==="
-      docker exec el34-web osqueryi --version
+      ssh ccc@10.20.32.80 osqueryi --version
       echo "=== sysmon (이벤트) ==="
       systemctl is-active sysmon
       echo "=== Wazuh (평결) ==="
-      docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      ssh ccc@10.20.32.100 /var/ossec/bin/wazuh-control status | grep analysisd
     answer_detail: "헌팅의 전제 = 텔레메트리 가용성. osquery(현재 상태 스냅샷, '지금 남은 것'에 강함) + sysmon(과거 이벤트 스트림, '잠깐 떴다 죽은 것'에 강함) + Wazuh(평결, 발견을 룰로 굳힘)를 결합해 '지금 있는 것 + 과거에 일어난 것'을 빠짐없이 캔다. 채점은 셋 중 sysmon `active`를 기준 신호로 본다 — 단명 프로세스 헌팅(STEP 5)이 이것 없이는 불가하기 때문. 하나라도 죽어 있으면 그 영역은 사냥 불능이다."
     verify:
       type: output_contains
@@ -96,7 +96,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+      **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
       userdel -r huntme 2>/dev/null; useradd -m -s /bin/bash huntme && echo planted
@@ -117,8 +117,8 @@ steps:
     points: 10
     answer: |
       echo "=== 가설: persistence(T1136/T1053)가 잠복했을 것 ==="
-      docker exec el34-web sh -c 'userdel -r huntme 2>/dev/null; useradd -m -s /bin/bash huntme && echo planted'
-      docker exec el34-web sh -c 'echo "*/5 * * * * root /tmp/.huntme.sh" > /etc/cron.d/huntme_persist; echo cron_planted'
+      ssh ccc@10.20.32.80 'userdel -r huntme 2>/dev/null; useradd -m -s /bin/bash huntme && echo planted'
+      ssh ccc@10.20.32.80 'echo "*/5 * * * * root /tmp/.huntme.sh" > /etc/cron.d/huntme_persist; echo cron_planted'
       echo "→ 경보는 안 떴다. 이제 가설로 사냥한다."
     answer_detail: "능동 헌팅은 경보를 안 기다린다. 조용한 persistence(계정 huntme + cron huntme_persist)는 정상 운영 행위와 똑같이 생겨 탐지 룰이 없으면 alerts.json에 한 줄도 안 남는다 — 그래서 ATT&CK Persistence(TA0003: T1136 계정 / T1053 cron)에 매단 가설을 세워 선제적으로 캔다. 채점은 `planted` 출력으로 발판 재현을 확인. 이 발판이 STEP 3~5 헌팅의 사냥 대상이 되고, STEP 6에서 탐지 룰로 굳혀진다."
     verify:
@@ -144,7 +144,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+      **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
       osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE uid>=1000 AND shell LIKE "%/bash";'
@@ -162,7 +162,7 @@ steps:
     points: 12
     answer: |
       echo "=== osquery 계정 헌팅 (uid>=1000 + bash shell) ==="
-      docker exec el34-web osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE uid>=1000 AND shell LIKE "%/bash";'
+      ssh ccc@10.20.32.80 osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE uid>=1000 AND shell LIKE "%/bash";'
     answer_detail: "가설(백도어 계정 T1136)을 osquery users로 검증 — uid>=1000(시스템 계정 제외) + 로그인 가능 shell(`%/bash`)로 좁혀 huntme를 끄집어낸다. 이름이 아니라 '예상 밖 로그인 계정'이라는 행동 패턴을 단서로 하는 TTP 헌팅이라, 공격자가 계정명을 바꿔도 잡힌다. 핵심은 baseline(정상 계정 목록)과의 대조 — baseline 없이는 huntme가 정상인지 가릴 수 없다. 채점은 출력에 huntme 포함 여부."
     verify:
       type: output_contains
@@ -187,7 +187,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+      **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
       osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%huntme%";'
@@ -205,9 +205,9 @@ steps:
     points: 12
     answer: |
       echo "=== osquery cron persistence 헌팅 ==="
-      docker exec el34-web osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%huntme%";'
+      ssh ccc@10.20.32.80 osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%huntme%";'
       echo "=== (보강) authorized_keys 벡터도 점검 ==="
-      docker exec el34-web osqueryi --json 'SELECT key_file,algorithm FROM authorized_keys LIMIT 3;' 2>/dev/null || echo "(authorized_keys 없음)"
+      ssh ccc@10.20.32.80 osqueryi --json 'SELECT key_file,algorithm FROM authorized_keys LIMIT 3;' 2>/dev/null || echo "(authorized_keys 없음)"
     answer_detail: "persistence는 한 벡터가 아니다 — 계정(users, T1136) 외 cron(crontab, T1053)·SSH키(authorized_keys, T1098)도 캔다. 한 발판만 지우고 다른 것을 놓치면 남은 cron이 계정을 다시 만들어 꼬리 자르기가 실패하므로, 헌팅은 가설의 여러 발현을 빠짐없이 질의한다. 채점은 crontab 출력에 huntme_persist 포함 여부."
     verify:
       type: output_contains
@@ -258,7 +258,7 @@ steps:
     points: 14
     answer: |
       echo "=== 단명 인코딩 프로세스 재현(이미 종료) ==="
-      docker exec el34-web python3 -c "import base64; base64.b64decode('aGk=')  # w14 hunt sim" 2>/dev/null
+      ssh ccc@10.20.32.80 python3 -c "import base64; base64.b64decode('aGk=')  # w14 hunt sim" 2>/dev/null
       sleep 5
       echo "=== sysmon 이벤트 헌팅 (osquery 스냅샷은 못 잡는 단명) ==="
       grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -oaE "b64decode[^<]{0,60}" | head -1
@@ -288,7 +288,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+      **SIEM 장비:** `ssh ccc@10.20.32.100`(비번 `1`)로 접속해 실행한다.
       (이 단계는 이미 bare — el34-siem 안에서 그대로 실행한다.)
 
       ```bash
@@ -320,8 +320,8 @@ steps:
     category: manipulation
     points: 16
     answer: |
-      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w14_lr.bak'
-      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      ssh ccc@10.20.32.100 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w14_lr.bak'
+      ssh ccc@10.20.32.100 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
       <group name=\"edu_w14,\">
         <rule id=\"101401\" level=\"12\">
           <decoded_as>json</decoded_as>
@@ -330,12 +330,12 @@ steps:
         </rule>
       </group>
       EOF"'
-      docker exec el34-siem sh -c 'cat > /tmp/w14t.json <<EOF
+      ssh ccc@10.20.32.100 'cat > /tmp/w14t.json <<EOF
       {"hunt_finding":"backdoor-account","user":"huntme"}
       EOF'
       echo "=== 운영화 룰 logtest ==="
-      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w14t.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/w14t.json'
-      docker exec el34-siem sh -c 'sudo cp /tmp/w14_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w14_lr.bak; echo "복원 잔재=$(grep -c 101401 /var/ossec/etc/rules/local_rules.xml)"'
+      ssh ccc@10.20.32.100 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w14t.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/w14t.json'
+      ssh ccc@10.20.32.100 'sudo cp /tmp/w14_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w14_lr.bak; echo "복원 잔재=$(grep -c 101401 /var/ossec/etc/rules/local_rules.xml)"'
     answer_detail: "헌팅의 마무리 = 재발 자동 탐지. 수동으로 찾은 패턴(backdoor-account)을 Wazuh 룰 101401(level 12, json decoder + hunt_finding field 매치)로 굳히면 다음엔 헌팅 없이 경보가 뜬다 — 헌터의 1회 노력을 SIEM에 영구 저장하는 운영화다. 운영에서는 이 룰을 영구 유지하지만, 공유 el34-siem이라 logtest로 발화만 검증하고 cp로 베이스 복원(self-clean). 채점은 logtest 출력에 101401 발화 + 복원 잔재 0."
     verify:
       type: output_contains
@@ -455,7 +455,7 @@ steps:
       ## 💻 확인 명령
 
       **실습 컨테이너:** 발판 정리/잔재는 `el34-web`, 룰 잔재는 `el34-siem`.
-      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
       # ── el34-web 에서: 발판(계정/cron) 정리 + 잔재 확인 ──
@@ -472,8 +472,8 @@ steps:
     category: cleanup
     points: 5
     answer: |
-      docker exec el34-web sh -c 'userdel -r huntme 2>/dev/null; rm -f /etc/cron.d/huntme_persist; id huntme 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /etc/cron.d/huntme_persist 2>/dev/null && echo "cron 잔재!" || echo "cron ok"'
-      docker exec el34-siem sh -c 'echo "101401 잔재=$(grep -c 101401 /var/ossec/etc/rules/local_rules.xml)"'
+      ssh ccc@10.20.32.80 'userdel -r huntme 2>/dev/null; rm -f /etc/cron.d/huntme_persist; id huntme 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /etc/cron.d/huntme_persist 2>/dev/null && echo "cron 잔재!" || echo "cron ok"'
+      ssh ccc@10.20.32.100 'echo "101401 잔재=$(grep -c 101401 /var/ossec/etc/rules/local_rules.xml)"'
       echo "---check done---"
     answer_detail: "헌팅 실습 발판(huntme 계정 + huntme_persist cron)과 운영화 룰(101401)을 정리 — 공유 호스트(el34-web)/매니저(el34-siem) 베이스 보존. '내가 심은 것은 내가 정리한다'가 공유 환경의 기본 의무. 단, 운영에선 101401 같은 운영화 룰은 영구 유지(재발 자동 탐지)하지만 공유 실습 환경이라 삭제한다 — 발판은 어느 경우든 제거 대상. 채점은 계정/cron/룰 잔재 0 + 'check done' 출력."
     verify:

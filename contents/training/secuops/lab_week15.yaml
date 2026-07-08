@@ -8,16 +8,16 @@ description: |
   ③ 호스트 발판·측면이동 → ④ C2 채널·유출 → ⑤ 대응·복구)으로 들어온다. W08 중간고사가 3단계
   사슬을 5종 장비로 끊는 시험이었다면, 기말은 거기에 ④ C2(sysmon+위협인텔)와 ⑤ IR(보고서)을 더해
   킬체인 전 주기를 다룬다. 14주의 모든 무기(방화벽·IDS·WAF·osquery·SIEM·sysmon·위협인텔)를 하나의
-  캠페인에 총동원해 각 단계를 탐지·차단·헌팅하고, 출처 IP 10.20.30.202(SNAT 없음 → 보존)로 5단계를
+  캠페인에 총동원해 각 단계를 탐지·차단·헌팅하고, 출처 IP 192.168.0.202(SNAT 없음 → 보존)로 5단계를
   한 캠페인 타임라인에 엮어 APT IR 보고서로 종합한다. 핵심 평가는 단일 무기 실력이 아니라, 한
   캠페인을 전 계층에서 추적·대응하고 한 사건으로 종합하는 통합 능력이다.
-  모든 명령은 el34 호스트(`ssh ccc@{{TARGET_IP}}`)에서 `docker exec el34-<comp>`(sysmon은 호스트 syslog).
+  각 장비에 직접 접속(fw 10.20.30.1/ips 31.2/web 32.80/siem 32.100, 공격 192.168.0.202, root은 sudo)해 실행한다.
   IDS/Wazuh 룰은 추가→검증→삭제, 발판(계정·리스너)은 self-clean — 끝나면 베이스 상태로 복원.
 difficulty: hard
 duration_minutes: 300
 prerequisites:
   - "W01–W14 전부 통과"
-  - "el34 호스트 SSH(ssh ccc@{{TARGET_IP}}) + docker exec"
+  - "장비 직접 SSH: ssh ccc@<장비IP>(fw 10.20.30.1/ips 31.2/web 32.80/siem 32.100) + 공격 ssh att@192.168.0.202 (비번 1)"
   - "lecture §3(단계별 대응) §4(IR 보고서) 숙지"
 objectives:
   - "동원할 전 무기(fw/ips/web/host/sysmon/siem)의 가용성을 시험 전 점검한다"
@@ -25,7 +25,7 @@ objectives:
   - "APT ② 웹 익스플로잇(SQLi)이 WAF anomaly 누적(942100→949110)으로 403 차단됨을 audit 로 확인한다"
   - "APT ③ 호스트 발판(C2 리스너 61515/백도어 계정 w15ghost)을 osquery 의 SQL 질의(users·listening_ports JOIN)로 사냥한다"
   - "APT ④ C2 단명·인코딩 명령을 sysmon ProcessCreate(EventID 1)로 포착하고, IOC를 Wazuh 인텔 룰(id 101510, level 13)로 격상한다"
-  - "APT ⑤ 5계층 흔적의 SIEM(Wazuh) 수렴을 확인하고 출처 IP(10.20.30.202)로 한 캠페인 타임라인으로 상관한다"
+  - "APT ⑤ 5계층 흔적의 SIEM(Wazuh) 수렴을 확인하고 출처 IP(192.168.0.202)로 한 캠페인 타임라인으로 상관한다"
   - "5단계를 단계별 무기·증거·출처 상관·재발 방지(인텔 격상)로 종합한 APT IR 보고서를 작성한다"
   - "공유 인프라에 심은 모든 흔적(계정/리스너/IDS 룰/Wazuh 룰)을 self-clean 해 베이스 상태로 복원한다"
 pass_threshold: 0.7
@@ -77,11 +77,11 @@ steps:
     category: survey
     points: 8
     answer: |
-      echo "=== fw(nftables DNAT) ==="; docker exec el34-fw sh -c 'sudo nft list ruleset 2>/dev/null | grep -c dnat'
-      echo "=== ips(Suricata) ==="; docker exec el34-ips sh -c 'suricata -V 2>/dev/null | head -1'
-      echo "=== host(osquery) ==="; docker exec el34-web osqueryi --version
+      echo "=== fw(nftables DNAT) ==="; ssh ccc@10.20.30.1 'sudo nft list ruleset 2>/dev/null | grep -c dnat'
+      echo "=== ips(Suricata) ==="; ssh ccc@10.20.31.2 'suricata -V 2>/dev/null | head -1'
+      echo "=== host(osquery) ==="; ssh ccc@10.20.32.80 osqueryi --version
       echo "=== sysmon ==="; systemctl is-active sysmon
-      echo "=== siem(Wazuh) ==="; docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd
+      echo "=== siem(Wazuh) ==="; ssh ccc@10.20.32.100 /var/ossec/bin/wazuh-control status | grep analysisd
     answer_detail: "기말은 전 무기 동원 — fw(L4 DNAT)·IDS(Suricata)·WAF/osquery(web)·sysmon(호스트 이벤트 스트림)·Wazuh(SIEM analysisd). 다층 방어는 전 계층이 모두 살아 있어야 성립한다. 하나라도 죽으면 그 단계가 사각(blind spot)이 된다 — 방화벽이 죽으면 진입 경로를, sysmon 이 죽으면 단명 C2 명령을, analysisd 가 죽으면 5단계 수렴을 통째로 놓친다. 그래서 시험 본 단계에 들어가기 전 반드시 전 무기 가용성부터 확인한다."
     verify:
       type: output_contains
@@ -102,7 +102,7 @@ steps:
       스캐너로 훑어 약점을 찾는 것이다. sqlmap·nikto 같은 스캐너는 자기 정체를 드러내는
       **User-Agent(UA)** 문자열(예: `sqlmap/1.7`)을 HTTP 헤더에 담는다.
 
-      이 APT(`el34-attacker`, 출처 10.20.30.202)가 sqlmap UA 로 `dvwa.el34.lab` 표면을 훑으면,
+      이 APT(`el34-attacker`, 출처 192.168.0.202)가 sqlmap UA 로 `dvwa.el34.lab` 표면을 훑으면,
       WAF(ModSecurity/CRS)의 **913 룰군(scanner detection)** 이 이를 audit 에 기록한다. 같은 UA 는
       다음 미션(STEP 3)에서 학생이 만들 IDS 룰로 네트워크에서도 잡힌다 — **한 캠페인의 한 행위를 두
       무기가 다른 층위로 본다.**
@@ -110,11 +110,11 @@ steps:
       ## 💻 실행 명령
 
       **실습 컨테이너:** 정찰은 `el34-attacker`, audit 확인은 `el34-web`.
-      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
       # ── el34-attacker 에서: sqlmap UA 정찰 ──
-      curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=apt15-1"
+      curl -s -o /dev/null -A "sqlmap/1.7" "http://dvwa.el34.lab/?id=apt15-1"
 
       # ── el34-web 에서: WAF scanner 탐지(913) (정찰 3초 후) ──
       sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "913[0-9]{3}" | sort -u
@@ -123,7 +123,7 @@ steps:
       ## 🔍 도구·옵션 풀이
       - `curl -A "sqlmap/1.7"` — `-A` 는 요청의 User-Agent 헤더를 지정한다. 스캐너 UA 를 흉내 내 APT
         정찰을 재현한다.
-      - `-H "Host: dvwa.el34.lab"` — Host 헤더로 web 의 Apache vhost(dvwa, 차단 모드)를 고른다. 요청은
+      - 자연 URL `http://dvwa.el34.lab/` — web 의 Apache vhost(dvwa, 차단 모드)를 고른다. 요청은
         fw 게이트웨이 `http://10.20.30.1` 로 보내지만 도착 vhost 는 이 헤더가 결정한다.
       - `-s -o /dev/null` — 본문은 버리고(`-o /dev/null`) 조용히(`-s`) 보낸다. 여기서는 audit 흔적만
         본다.
@@ -136,10 +136,10 @@ steps:
     category: recon
     points: 8
     answer: |
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=apt15-1"'
+      ssh att@192.168.0.202 'curl -s -o /dev/null -A "sqlmap/1.7" "http://dvwa.el34.lab/?id=apt15-1"'
       sleep 3
       echo "=== WAF scanner 탐지(913) ==="
-      docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "913[0-9]{3}" | sort -u'
+      ssh ccc@10.20.32.80 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "913[0-9]{3}" | sort -u'
     answer_detail: "APT 1단계 정찰 — 스캐너 UA(sqlmap)가 OWASP CRS 의 913xxx 룰군(scanner detection)에 매치되어 modsec_audit.log 에 기록된다. 핵심 깨달음 — 방화벽은 패킷의 IP/포트(L3/L4)만 보므로 HTTP 헤더 안의 UA 문자열을 못 본다. 따라서 정찰 탐지는 방화벽이 아니라 IDS/WAF 의 영역이다. 같은 sqlmap UA 가 다음 미션의 IDS 룰(sid 9015001)로도 잡혀, 두 무기가 한 캠페인의 정찰을 다른 층위(WAF=HTTP 의미 / IDS=네트워크 문자열)로 본다 — 이 교차가 종합 평가의 출발점이다."
     verify:
       type: output_contains
@@ -167,7 +167,7 @@ steps:
       ## 💻 실행 명령
 
       **실습 컨테이너:** IDS 룰 작성·reload·검증·정리는 `el34-ips`, 트리거는 `el34-attacker`.
-      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
       # ── el34-ips 에서: 룰 작성 + 무중단 reload ──
@@ -177,7 +177,7 @@ steps:
       sudo suricatasc -c reload-rules
 
       # ── el34-attacker 에서: 트리거 (sqlmap UA) ──
-      curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=apt15-3"
+      curl -s -o /dev/null -A "sqlmap/1.7" "http://dvwa.el34.lab/?id=apt15-3"
 
       # ── el34-ips 에서: eve.json 확인 + 정리(sid 삭제, 베이스 보존) (트리거 4초 후) ──
       sudo grep "9015001" /var/log/suricata/eve.json | tail -1 | jq '{sig:.alert.signature,src:.src_ip}'
@@ -202,17 +202,17 @@ steps:
     category: manipulation
     points: 12
     answer: |
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      ssh ccc@10.20.31.2 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"APT15 sqlmap recon UA\"; http.user_agent; content:\"sqlmap\"; nocase; fast_pattern; classtype:web-application-attack; sid:9015001; rev:1;)
       EOF"'
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -1'
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
+      ssh ccc@10.20.31.2 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -1'
+      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
       sleep 2
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=apt15-3"'
+      ssh att@192.168.0.202 'curl -s -o /dev/null -A "sqlmap/1.7" "http://dvwa.el34.lab/?id=apt15-3"'
       sleep 4
       echo "=== eve.json alert ==="
-      docker exec el34-ips sh -c 'sudo grep "9015001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature,src:.src_ip}"'
-      docker exec el34-ips sh -c 'sudo sed -i "/sid:9015001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
+      ssh ccc@10.20.31.2 'sudo grep "9015001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature,src:.src_ip}"'
+      ssh ccc@10.20.31.2 'sudo sed -i "/sid:9015001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo rule_removed'
     answer_detail: "APT 정찰을 IDS 커스텀 룰(sid 9015001, http.user_agent fast_pattern)로 네트워크에서 탐지한다. 같은 sqlmap 정찰을 WAF 는 913(HTTP 의미)으로, IDS 는 UA 문자열(네트워크)로 — 한 캠페인의 한 행위를 두 무기가 다른 관점으로 본다. 룰 수명주기(추가 → 무중단 reload → 트리거 → eve.json 검증 → sed 삭제)를 끝내고, base 룰(sid 1000001–1000005)을 보존하는 것까지가 운영자의 책임이다. 신종 정찰 도구가 나타나면 이렇게 직접 탐지 룰을 작성·배포·검증한 뒤 임시 룰은 정리해 baseline 을 깨끗이 유지한다."
     verify:
       type: output_contains
@@ -238,10 +238,10 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM 장비:** `ssh att@192.168.0.202`(비번 `1`)로 접속해 실행한다.
 
       ```bash
-      curl -s -o /dev/null -w '침투 응답:%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=apt15-4%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-"
+      curl -s -o /dev/null -w '침투 응답:%{http_code}\n' "http://dvwa.el34.lab/?id=apt15-4%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-"
       ```
 
       ## 🔍 도구·옵션 풀이
@@ -249,7 +249,7 @@ steps:
         `%20` 은 공백이다. `UNION SELECT user,password FROM users` 로 users 테이블의 비밀번호를
         덧붙여 빼내려는 전형적 기법이고, `-- -` 은 뒤따르는 원래 SQL 을 주석 처리한다.
       - `-w '침투 응답:%{http_code}'` — 응답 본문 대신 HTTP 상태 코드만 출력한다. WAF 차단이면 403.
-      - `-H 'Host: dvwa.el34.lab'` — 차단 모드 vhost(dvwa)를 고른다. 같은 페이로드라도 juice(탐지만)
+      - 자연 URL `http://dvwa.el34.lab/` — 차단 모드 vhost(dvwa)를 고른다. 같은 페이로드라도 juice(탐지만)
         vhost 로 보내면 차단되지 않는다 — vhost 별 정책 차이를 이해하는 게 핵심.
 
       ## ✅ 합격 기준
@@ -259,7 +259,7 @@ steps:
     points: 10
     answer: |
       echo "=== APT 2단계 웹 익스플로잇 ==="
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w '침투 응답:%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=apt15-4%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w '침투 응답:%{http_code}\n' \"http://dvwa.el34.lab/?id=apt15-4%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
     answer_detail: "APT 2단계 웹 익스플로잇 — SQLi(UNION SELECT)로 웹앱 침투를 시도한다. dvwa(차단 모드) vhost 에서 WAF(ModSec+CRS)가 anomaly 누적 임계 초과로 403 차단한다(상세 메커니즘은 다음 STEP 5 에서 audit 로 확인). 핵심 깨달음 — osquery 는 호스트 내부를 보는 도구라 네트워크를 흐르는 SQLi 요청 자체는 못 본다. 웹 침투 차단은 WAF 의 영역이다. dvwa(차단)/juice(탐지만)의 vhost 별 정책 차이를 이해해야 운영에서 어느 자산을 차단 모드로 둘지 판단할 수 있다."
     verify:
       type: output_contains
@@ -287,11 +287,11 @@ steps:
       ## 💻 실행 명령
 
       **실습 컨테이너:** SQLi 재현은 `el34-attacker`, audit 확인은 `el34-web`.
-      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
       # ── el34-attacker 에서: SQLi 재현 ──
-      curl -s -o /dev/null -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=apt15-5%27%20UNION%20SELECT%201,2--%20-"
+      curl -s -o /dev/null "http://dvwa.el34.lab/?id=apt15-5%27%20UNION%20SELECT%201,2--%20-"
 
       # ── el34-web 에서: audit 의 942/949 (3초 후) ──
       sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "94[29]1[0-9]{2}" | sort -u
@@ -311,11 +311,11 @@ steps:
     category: detect
     points: 12
     answer: |
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=apt15-5%27%20UNION%20SELECT%201,2--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null \"http://dvwa.el34.lab/?id=apt15-5%27%20UNION%20SELECT%201,2--%20-\""
       sleep 3
       echo "=== audit 942/949 ==="
-      docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "94[29]1[0-9]{2}" | sort -u'
-    answer_detail: "WAF 차단은 단일 룰이 아니라 anomaly score 누적의 결과다 — 942100(SQL Injection)이 점수를 올리고, 누적이 임계(기본 5)를 넘으면 949110(Inbound Anomaly Score Exceeded)이 발동해 403 으로 차단한다. audit 에 942100 과 949110 이 함께 보이는 것이 이 2단계 메커니즘의 증거다. 이 구조를 이해해야 오탐/정탐 튜닝 시 임계값과 룰 paranoia 수준을 제대로 조정할 수 있다. 또한 audit 의 remote_address 가 출처 10.20.30.202 로 보존되는 것이 ⑤ 단계의 출처 상관과 직결된다."
+      ssh ccc@10.20.32.80 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "94[29]1[0-9]{2}" | sort -u'
+    answer_detail: "WAF 차단은 단일 룰이 아니라 anomaly score 누적의 결과다 — 942100(SQL Injection)이 점수를 올리고, 누적이 임계(기본 5)를 넘으면 949110(Inbound Anomaly Score Exceeded)이 발동해 403 으로 차단한다. audit 에 942100 과 949110 이 함께 보이는 것이 이 2단계 메커니즘의 증거다. 이 구조를 이해해야 오탐/정탐 튜닝 시 임계값과 룰 paranoia 수준을 제대로 조정할 수 있다. 또한 audit 의 remote_address 가 출처 192.168.0.202 로 보존되는 것이 ⑤ 단계의 출처 상관과 직결된다."
     verify:
       type: output_contains
       expect: '949110'
@@ -341,7 +341,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+      **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
       nohup python3 -m http.server 61515 >/dev/null 2>&1 & echo c2_started
@@ -367,12 +367,12 @@ steps:
     category: response
     points: 10
     answer: |
-      docker exec el34-web sh -c 'nohup python3 -m http.server 61515 >/dev/null 2>&1 & echo c2_started'
-      docker exec el34-web sh -c 'userdel -r w15ghost 2>/dev/null; useradd -m -s /bin/bash w15ghost && echo account_created'
+      ssh ccc@10.20.32.80 'nohup python3 -m http.server 61515 >/dev/null 2>&1 & echo c2_started'
+      ssh ccc@10.20.32.80 'userdel -r w15ghost 2>/dev/null; useradd -m -s /bin/bash w15ghost && echo account_created'
       sleep 1
       echo "=== C2 리스너 61515 확인 ==="
-      docker exec el34-web osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=61515;'
-      docker exec el34-web sh -c 'pkill -f "http.server 61515" 2>/dev/null; echo listener_killed'
+      ssh ccc@10.20.32.80 osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=61515;'
+      ssh ccc@10.20.32.80 'pkill -f "http.server 61515" 2>/dev/null; echo listener_killed'
     answer_detail: "APT 3단계 발판·측면이동 — 비표준 포트 C2 리스너(61515, MITRE T1571)와 백도어 계정(w15ghost, MITRE T1136)을 심는다. 이는 침투 후 재진입 수단을 확보하고 거점을 넓히는 행위로, 모두 네트워크 장비(방화벽·IDS·WAF)가 못 보는 호스트 내부에서 일어난다. 공격이 어떤 모습인지 알아야 다음 미션에서 osquery 로 사냥할 수 있다. 리스너는 본 미션에서 종료하고, 계정은 다음 헌팅 미션(STEP 7)을 위해 남긴 뒤 STEP 12 에서 최종 정리한다."
     verify:
       type: output_contains
@@ -398,7 +398,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+      **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
       nohup python3 -m http.server 61515 >/dev/null 2>&1 & sleep 1
@@ -423,12 +423,12 @@ steps:
     category: analysis
     points: 12
     answer: |
-      docker exec el34-web sh -c 'nohup python3 -m http.server 61515 >/dev/null 2>&1 & sleep 1; echo ready'
+      ssh ccc@10.20.32.80 'nohup python3 -m http.server 61515 >/dev/null 2>&1 & sleep 1; echo ready'
       echo "=== C2 리스너 헌팅 (JOIN) ==="
-      docker exec el34-web osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=61515;'
+      ssh ccc@10.20.32.80 osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=61515;'
       echo "=== 백도어 계정 헌팅 ==="
-      docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w15ghost";'
-      docker exec el34-web sh -c 'pkill -f "http.server 61515" 2>/dev/null; echo hunted'
+      ssh ccc@10.20.32.80 osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w15ghost";'
+      ssh ccc@10.20.32.80 'pkill -f "http.server 61515" 2>/dev/null; echo hunted'
     answer_detail: "APT 발판을 osquery 로 사냥한다 — 리스너는 listening_ports ⨝ processes(USING pid)로 포트 61515 의 주인 프로세스를 짚고, 계정은 users 로 w15ghost 를 찾는다. 포트 번호만으로는 '누가 듣는지' 를 모르지만 JOIN 으로 프로세스까지 식별하는 것이 헌팅의 핵심이다. 방화벽·IDS 가 못 본 호스트 내부의 측면이동·C2 발판을 호스트 가시성으로 끄집어낸다 — 이것이 C2 통신·역방향 셸의 비표준 리스너와 백도어 계정을 잡는 표준 헌팅 패턴이다."
     verify:
       type: output_contains
@@ -483,7 +483,7 @@ steps:
     points: 12
     answer: |
       echo "=== APT 4단계 인코딩 C2 명령(단명) ==="
-      docker exec el34-web python3 -c "import base64; base64.b64decode('YzI=')  # apt15 c2 sim" 2>/dev/null
+      ssh ccc@10.20.32.80 python3 -c "import base64; base64.b64decode('YzI=')  # apt15 c2 sim" 2>/dev/null
       sleep 5
       echo "=== sysmon ProcessCreate 이벤트 (스냅샷은 못 잡음) ==="
       grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -oaE "b64decode[^<]{0,60}" | head -1
@@ -514,7 +514,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+      **SIEM 장비:** `ssh ccc@10.20.32.100`(비번 `1`)로 접속해 실행한다.
       (이 단계는 이미 bare — el34-siem 안에서 그대로 실행한다.)
 
       ```bash
@@ -528,7 +528,7 @@ steps:
         </rule>
       </group>
       EOF'
-      echo '{"apt_ioc":"apt15-c2","src_ip":"10.20.30.202"}' | sudo /var/ossec/bin/wazuh-logtest
+      echo '{"apt_ioc":"apt15-c2","src_ip":"192.168.0.202"}' | sudo /var/ossec/bin/wazuh-logtest
       sudo cp /tmp/w15_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w15_lr.bak
       ```
 
@@ -549,8 +549,8 @@ steps:
     category: manipulation
     points: 14
     answer: |
-      docker exec el34-siem sh -c 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w15_lr.bak'
-      docker exec el34-siem sh -c 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
+      ssh ccc@10.20.32.100 'sudo cp /var/ossec/etc/rules/local_rules.xml /tmp/w15_lr.bak'
+      ssh ccc@10.20.32.100 'sudo bash -c "cat >> /var/ossec/etc/rules/local_rules.xml <<EOF
       <group name=\"edu_w15,\">
         <rule id=\"101510\" level=\"13\">
           <decoded_as>json</decoded_as>
@@ -559,12 +559,12 @@ steps:
         </rule>
       </group>
       EOF"'
-      docker exec el34-siem sh -c 'cat > /tmp/w15t.json <<EOF
-      {"apt_ioc":"apt15-c2","src_ip":"10.20.30.202"}
+      ssh ccc@10.20.32.100 'cat > /tmp/w15t.json <<EOF
+      {"apt_ioc":"apt15-c2","src_ip":"192.168.0.202"}
       EOF'
       echo "=== APT IOC 격상 logtest ==="
-      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w15t.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/w15t.json'
-      docker exec el34-siem sh -c 'sudo cp /tmp/w15_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w15_lr.bak; echo "복원 잔재=$(grep -c 101510 /var/ossec/etc/rules/local_rules.xml)"'
+      ssh ccc@10.20.32.100 'sudo /var/ossec/bin/wazuh-logtest < /tmp/w15t.json 2>&1 | grep -aE "id:|level:|Alert to be" | head -4; rm -f /tmp/w15t.json'
+      ssh ccc@10.20.32.100 'sudo cp /tmp/w15_lr.bak /var/ossec/etc/rules/local_rules.xml; sudo rm -f /tmp/w15_lr.bak; echo "복원 잔재=$(grep -c 101510 /var/ossec/etc/rules/local_rules.xml)"'
     answer_detail: "이 APT 의 IOC(apt15-c2)를 Wazuh 룰 101510 level 13 으로 격상한다 — 같은 APT 가 재발/변형해 같은 IOC 를 쓰면 평범한 경보로 묻히지 않고 자동으로 고위험으로 뜬다. W12 의 IOC 매칭 + W13 의 격상 패턴을 이 캠페인에 적용하는 것이다. 공유 manager 는 재시작하면 다른 학생의 ingest 가 끊기므로 라이브 적용 대신 wazuh-logtest(모의재판)로만 격상 로직을 검증하고, 끝나면 cp 복원으로 베이스를 원상복구한다. 캠페인의 IOC 를 이렇게 운영화(operationalize)해 재발을 자동 탐지하게 만드는 것이 APT 대응의 특징 — '막았다' 를 넘어 '다음에 자동으로 잡힌다' 까지다."
     verify:
       type: output_contains
@@ -585,51 +585,51 @@ steps:
       수렴** 하고, 모두 같은 출처 IP 로 한 캠페인에 엮이는지 확인한다. 흩어진 흔적을 한 공격자의 한
       캠페인으로 묶지 못하면 운영자는 별개 사건으로 착각한다.
 
-      이것이 가능한 이유는 **el34 가 SNAT 를 하지 않아 출처 IP(10.20.30.202)가 전 계층에 보존** 되기
+      이것이 가능한 이유는 **el34 가 SNAT 를 하지 않아 출처 IP(192.168.0.202)가 전 계층에 보존** 되기
       때문이다(§lecture §4). 만약 fw 가 SNAT 를 했다면 안쪽 장비는 fw IP 만 보게 되어 상관이 불가능
       했을 것이다. 여기서는 새 SQLi 한 번을 더 흘려 보내 수렴을 확인한다.
 
       ## 💻 실행 명령
 
       **실습 컨테이너:** 공격은 `el34-attacker`, 수렴 확인은 `el34-siem`.
-      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
       # ── el34-attacker 에서: SQLi 한 번 더(수렴 확인용) ──
-      curl -s -o /dev/null -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=apt15-10%27%20UNION%20SELECT%201--%20-"
+      curl -s -o /dev/null "http://dvwa.el34.lab/?id=apt15-10%27%20UNION%20SELECT%201--%20-"
 
       # ── el34-siem 에서: alerts.json 출처별 수렴 (공격 8초 후, 한 APT 캠페인) ──
       tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc 'select(.rule.groups|index("ids"))|.data.src_ip' | sort | uniq -c | tail -3
       ```
 
       ## 🔍 도구·옵션 풀이
-      - 첫 `curl` — 출처 10.20.30.202 에서 SQLi 를 한 번 더 발생시켜 alerts.json 에 최신 흔적을
+      - 첫 `curl` — 출처 192.168.0.202 에서 SQLi 를 한 번 더 발생시켜 alerts.json 에 최신 흔적을
         남긴다(이 출처가 수렴함을 보기 위함).
       - `sleep 8` — 공격이 Suricata eve.json → ips agent → manager → alerts.json 까지 흐르는 파이프
         라인 지연을 기다린다(W09). 너무 짧으면 아직 안 적재됐을 수 있다.
       - `jq -rc 'select(.rule.groups|index("ids"))|.data.src_ip'` — alerts.json 최근 400줄에서 ids
         그룹(네트워크 탐지) 경보의 출처 IP 만 뽑는다.
       - `sort | uniq -c | tail -3` — 출처별로 묶어 개수를 세어, 어느 출처가 반복 수렴하는지 본다.
-        10.20.30.202 가 다수면 이 APT 가 한 출처로 엮인 것이다.
+        192.168.0.202 가 다수면 이 APT 가 한 출처로 엮인 것이다.
 
       ## ✅ 합격 기준
-      alerts.json에 출처 `10.20.30.202`가 (다단계) 수렴한다.
-    hint: 'alerts.json ids 그룹의 출처 10.20.30.202 (한 캠페인)'
+      alerts.json에 출처 `192.168.0.202`가 (다단계) 수렴한다.
+    hint: 'alerts.json ids 그룹의 출처 192.168.0.202 (한 캠페인)'
     category: analysis
     points: 12
     answer: |
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=apt15-10%27%20UNION%20SELECT%201--%20-\""
+      ssh att@192.168.0.202 "curl -s -o /dev/null \"http://dvwa.el34.lab/?id=apt15-10%27%20UNION%20SELECT%201--%20-\""
       sleep 8
       echo "=== alerts.json 출처별 수렴 (한 APT 캠페인) ==="
-      docker exec el34-siem sh -c 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.rule.groups|index(\"ids\"))|.data.src_ip" | sort | uniq -c | tail -3'
-    answer_detail: "APT 5단계의 흔적(IDS/WAF/host/C2)이 Wazuh alerts.json 한 곳으로 수렴하고, 모두 같은 출처 10.20.30.202 를 가리킨다. el34 는 SNAT 를 하지 않으므로 출처 IP 가 전 계층에 보존되며, 이것이 흩어진 흔적을 한 APT 캠페인으로 엮는 키다. 출처 IP + 시각으로 5단계를 한 캠페인 타임라인으로 재구성하는 것이 APT 대응의 핵심 — 만약 출처가 fw IP 로 보인다면 SNAT 가 끼었거나 다른 사건을 본 것이므로 상관 전제를 재점검해야 한다. 이것이 실제 사고 조사에서 다중 소스 로그를 한 타임라인으로 잇는 표준 기법이다."
+      ssh ccc@10.20.32.100 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.rule.groups|index(\"ids\"))|.data.src_ip" | sort | uniq -c | tail -3'
+    answer_detail: "APT 5단계의 흔적(IDS/WAF/host/C2)이 Wazuh alerts.json 한 곳으로 수렴하고, 모두 같은 출처 192.168.0.202 를 가리킨다. el34 는 SNAT 를 하지 않으므로 출처 IP 가 전 계층에 보존되며, 이것이 흩어진 흔적을 한 APT 캠페인으로 엮는 키다. 출처 IP + 시각으로 5단계를 한 캠페인 타임라인으로 재구성하는 것이 APT 대응의 핵심 — 만약 출처가 fw IP 로 보인다면 SNAT 가 끼었거나 다른 사건을 본 것이므로 상관 전제를 재점검해야 한다. 이것이 실제 사고 조사에서 다중 소스 로그를 한 타임라인으로 잇는 표준 기법이다."
     verify:
       type: output_contains
-      expect: '10.20.30.202'
+      expect: '192.168.0.202'
       field: stdout
       semantic:
         intent: "5단계 SIEM 수렴 + 출처 IP로 한 캠페인 상관"
-        success_criteria: ["alerts.json 수렴", "출처 10.20.30.202 보존", "캠페인 타임라인"]
+        success_criteria: ["alerts.json 수렴", "출처 192.168.0.202 보존", "캠페인 타임라인"]
         acceptable_methods:
           - "**[OSS] alerts.json 출처 집계 (권장)**"
     target_vm: siem
@@ -651,7 +651,7 @@ steps:
       ## 💻 보고서 양식
       ```markdown
       # el34 W15 APT IR 보고서 (학번, 이름)
-      ## 캠페인 개요 (출처 10.20.30.202, 5단계)
+      ## 캠페인 개요 (출처 192.168.0.202, 5단계)
       ## 단계별 대응 (무기/증거)
       ## 출처 IP 상관 타임라인
       ## 다층 방어 결론 + 재발 방지(인텔 룰)
@@ -660,7 +660,7 @@ steps:
       ## 🔍 작성 지침
       - **단계별 대응 표** 의 각 행에 STEP 2–9 에서 직접 확보한 **증거** 를 적는다 — 정찰(eve sig /
         audit 913), 침투(403 + remote IP), 발판(uid / pid:port), C2(b64decode cmdline / logtest).
-      - **출처 상관** — 5단계 모두 출처 10.20.30.202(보존)임을 명시해 한 캠페인임을 입증한다.
+      - **출처 상관** — 5단계 모두 출처 192.168.0.202(보존)임을 명시해 한 캠페인임을 입증한다.
       - **결론** — "단일 무기로 APT 를 못 막는다 → 다층 방어 + SIEM 수렴 + 인텔 격상(재발 자동탐지)"
         의 종합 결론을 적는다. lecture §3.2 의 IR 보고서 구조를 따른다.
 
@@ -672,16 +672,16 @@ steps:
     answer: |
       cat <<'EOF'
       # el34 W15 APT IR 보고서 (수료)
-      ## 캠페인: 외부 APT 10.20.30.202 → 5단계 킬체인
+      ## 캠페인: 외부 APT 192.168.0.202 → 5단계 킬체인
       ## 단계별 대응
       | 단계 | 공격 | 무기 | 증거 |
       |------|------|------|------|
       | ① 정찰 | sqlmap UA | IDS(9015001)+WAF(913) | eve sig / audit 913 |
-      | ② 침투 | SQLi | WAF(942→949110) | 403 + remote 10.20.30.202 |
+      | ② 침투 | SQLi | WAF(942→949110) | 403 + remote 192.168.0.202 |
       | ③ 발판 | 61515 / w15ghost | osquery(listening_ports/users) | JOIN pid:port / uid |
       | ④ C2 | 인코딩 명령 | sysmon(1) + 인텔룰(101510) | b64decode EventID / logtest |
-      | ⑤ 대응 | — | SIEM 수렴 + 출처 상관 | alerts.json src 10.20.30.202 |
-      ## 상관: 5단계 모두 출처 10.20.30.202(보존) → 한 APT 캠페인
+      | ⑤ 대응 | — | SIEM 수렴 + 출처 상관 | alerts.json src 192.168.0.202 |
+      ## 상관: 5단계 모두 출처 192.168.0.202(보존) → 한 APT 캠페인
       ## 결론: 단일 무기로 APT 못 막음 → 다층 방어 + SIEM 수렴 + 인텔 격상(재발 자동탐지)
       EOF
     answer_detail: "APT IR 보고서 = 5단계를 단계별 무기·증거 + 출처 IP 상관 타임라인 + 재발 방지(인텔 격상)로 종합한 문서다. 표준 구조는 개요 → 단계별 대응 → 상관 → 결론·재발 방지로, 실제 사고 대응 후 경영진·감사에 제출하는 양식이다. 채점의 핵심은 마지막 열 — '막았다' 가 아니라 각 단계에서 직접 확보한 증거(eve/audit/osquery/sysmon/logtest 결과)다. 수료의 핵심은 한 캠페인을 전 계층에서 끝까지 추적·대응하고, 한 사건으로 종합하며, IOC 격상으로 재발까지 막는 통합 능력이다."
@@ -710,7 +710,7 @@ steps:
       ## 💻 확인 명령
 
       **실습 컨테이너:** 계정/리스너는 `el34-web`, IDS 룰은 `el34-ips`, Wazuh 룰은 `el34-siem`.
-      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
       # ── el34-web 에서: 계정/리스너 잔재 ──
@@ -741,11 +741,11 @@ steps:
     category: cleanup
     points: 6
     answer: |
-      docker exec el34-web sh -c 'userdel -r w15ghost 2>/dev/null; id w15ghost 2>/dev/null && echo "계정 잔재!" || echo "user ok"; pgrep -f "http.server 61515" && echo "리스너 잔재!" || echo "listener ok"'
+      ssh ccc@10.20.32.80 'userdel -r w15ghost 2>/dev/null; id w15ghost 2>/dev/null && echo "계정 잔재!" || echo "user ok"; pgrep -f "http.server 61515" && echo "리스너 잔재!" || echo "listener ok"'
       echo "=== IDS sid 9015001 잔재 ==="
-      docker exec el34-ips sh -c 'sudo grep -c "9015001" /etc/suricata/rules/local.rules'
+      ssh ccc@10.20.31.2 'sudo grep -c "9015001" /etc/suricata/rules/local.rules'
       echo "=== Wazuh rule 101510 잔재 ==="
-      docker exec el34-siem sh -c 'echo "101510 잔재=$(grep -c 101510 /var/ossec/etc/rules/local_rules.xml)"'
+      ssh ccc@10.20.32.100 'echo "101510 잔재=$(grep -c 101510 /var/ossec/etc/rules/local_rules.xml)"'
       echo "---check done---"
     answer_detail: "기말 마무리 = 모든 실습 흔적(계정 w15ghost / 리스너 61515 / IDS sid 9015001 / Wazuh 룰 101510)을 베이스로 복원한다. 각 미션에서 self-clean 했더라도 여기서 일괄 점검해 잔재 0 을 보장한다 — 계정은 userdel, 리스너는 pkill, IDS 룰은 sed 삭제, Wazuh 룰은 cp 복원으로 이미 정리됐어야 한다. 공유 인프라를 다음 학생에게 깨끗이 넘기는 것, 즉 변경분을 추적·원복하는 변경 관리는 보안 운영자의 기본 규율이다."
     verify:

