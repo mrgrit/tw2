@@ -239,10 +239,10 @@ graph TD
 el34 에서는 이런 인코딩 변형을 다음처럼 보낸다(이중 인코딩 예).
 
 ```bash
-curl -s -o /dev/null -w 'double=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%2527%20UNION'
+curl -s -o /dev/null -w 'double=%{http_code}\n' 'http://dvwa.el34.lab/?id=1%2527%20UNION'
 ```
 
-이 명령에서 `-H 'Host: dvwa.el34.lab'` 는 fw 게이트웨이(192.168.0.161)에 보내되 Host 헤더로
+이 명령에서 `` 는 fw 게이트웨이(dvwa.el34.lab)에 보내되 Host 헤더로
 dvwa vhost 를 지정하고, `-w 'double=%{http_code}'` 는 응답 코드만 출력한다. **el34 의 실제
 동작은 대부분 여전히 403** 이다 — 그 이유가 §4 의 정규화다.
 
@@ -313,8 +313,8 @@ graph TD
 el34 에서는 주석·탭 변형을 다음처럼 보낸다.
 
 ```bash
-curl -s -o /dev/null -w 'cmt=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%27%20UN/**/ION%20SE/**/LECT'
-curl -s -o /dev/null -w 'tab=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?id=1%27%09UNION%09SELECT'
+curl -s -o /dev/null -w 'cmt=%{http_code}\n' 'http://dvwa.el34.lab/?id=1%27%20UN/**/ION%20SE/**/LECT'
+curl -s -o /dev/null -w 'tab=%{http_code}\n' 'http://dvwa.el34.lab/?id=1%27%09UNION%09SELECT'
 ```
 
 이 변형들 중 **탭·대소문자는 el34 에서 여전히 403** 으로 막힌다 — CRS 정규화(다음 절)의
@@ -507,7 +507,7 @@ el34 의 이 실습은 그 결론을 **직접 겪어** 얻게 한다 — 단순 
 흐른다.
 
 > **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서
-> `ssh att@192.168.0.202`(공격) 또는 `docker exec el34-web`(로그 분석)로 실행한다.
+> `ssh att@192.168.0.202`(공격) 또는 `ssh ccc@10.20.32.80`(로그 분석)로 실행한다.
 > **인가된 실습 환경(el34)에서만** 수행한다. 대상은 차단형 vhost `dvwa.el34.lab` 이며, 우회
 > 성공 여부는 응답 코드(403=차단)와 modsec_audit.log 로 판정한다. 합격 임계값은 0.7 이다.
 
