@@ -11,13 +11,13 @@ description: |
   URL 인코딩)와 CRS의 정규화로 인한 한계, ④ ModSec 941 룰군 탐지 분석(941 누적 → 949110 차단),
   ⑤ 차단(dvwa 403) vs 탐지만(juice 200) 운영 모드 차이, ⑥ 근본 방어(출력 인코딩·CSP·HttpOnly).
   공격은 외부 공격자 VM 192.168.0.202(att/1)에서 공인 진입 192.168.0.161로 수행한다 —
-  `ssh att@192.168.0.202`(비번 1)로 접속해 공격하고, 방어(WAF) 로그 분석은 `ssh ccc@{{TARGET_IP}}`(el34
-  호스트) 후 `docker exec -it el34-web bash`로 시선을 바꿔 확인한다. 인가된 el34 실습 환경 안에서만 수행한다.
+  `ssh att@192.168.0.202`(비번 1)로 접속해 공격하고, 방어(WAF) 로그 분석은 WAF 장비
+  `ssh ccc@10.20.32.80`(비번 1)에서 시선을 바꿔 확인한다. 인가된 el34 실습 환경 안에서만 수행한다.
 difficulty: medium
 duration_minutes: 170
 prerequisites:
   - "W01–W04 통과"
-  - "el34 호스트 SSH + docker exec"
+  - "공격 VM ssh att@192.168.0.202 + 방어 WAF 장비 ssh ccc@10.20.32.80 (비번 1)"
   - "lecture §2(3유형) §3(변형) §4(우회) 숙지"
 objectives:
   - "Reflected XSS 기본형을 dvwa에 전송하고 ModSec 차단(403)을 확인한다"
@@ -42,11 +42,11 @@ steps:
 
       ```bash
       # 1) dvwa(차단 모드) 도달성 — 응답코드만
-      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://192.168.0.161/
+      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' http://dvwa.el34.lab/
       # 2) juice(DetectionOnly, 탐지만) 도달성 — 응답코드만
-      curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/
+      curl -s -o /dev/null -w 'juice=%{http_code}\n' http://juice.el34.lab/
       ```
-      - `-o /dev/null`(본문 버림), `-w '%{http_code}'`(응답 코드만), `-H 'Host: ...'`(web Apache 의 vhost 라우팅 지정).
+      - `-o /dev/null`(본문 버림), `-w '%{http_code}'`(응답 코드만), 자연 URL `http://dvwa.el34.lab/`(호스트명이 web Apache 의 vhost 라우팅 지정).
       ## ✅ 합격 기준
       `dvwa` 출력 시 통과. **근거:** 대상이 도달(응답 코드 출력)하면 통과 — 200/302 등이면 정상,
       무응답·503 이면 라우팅·backend 점검.
@@ -55,9 +55,9 @@ steps:
     points: 10
     answer: |
       # 1) dvwa(차단 모드) 도달성 — 응답코드만
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://192.168.0.161/"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' http://dvwa.el34.lab/"
       # 2) juice(DetectionOnly, 탐지만) 도달성 — 응답코드만
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'juice=%{http_code}\n' http://juice.el34.lab/"
     answer_detail: "XSS 공방 대상 두 곳의 도달성을 확인한다 — dvwa(SecRuleEngine On, 차단 모드)와 juice(DetectionOnly, 탐지만). 두 vhost가 모두 응답해야 이후 같은 payload로 '차단(403) vs 탐지만(200)'을 비교할 수 있다. 채점은 출력에 'dvwa' 문자열(도달 신호)이 보이는지로 판정한다."
     expected_output: |
       dvwa=302
@@ -86,10 +86,16 @@ steps:
 
       ```bash
       # 1) Reflected XSS 기본형(<script>alert(1)</script>) — 차단형 dvwa 응답코드
-      curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<script>alert(1)</script>'
+      curl -s -o /dev/null -w 'xss=%{http_code}\n' 'http://dvwa.el34.lab/?q=<script>alert(1)</script>'
       # 2) 해석 — <script> XSS가 941(XSS)+949110에 차단(403)
       echo "→ <script> XSS가 941(XSS)+949110에 차단(403)"
       ```
+      > 💡 **화면으로 보기(운영 모드 차이):** 학생 PC 브라우저에서
+      > `http://dvwa.el34.lab/?q=<script>alert(1)</script>` 를 열면 dvwa(차단형)는 **403 Forbidden 페이지**가
+      > 뜬다(WAF 가 payload 를 막음). 같은 요청을 `http://juice.el34.lab/...` (탐지형)로 열면 **200 으로
+      > 통과**한다(WAF 는 로그만 남기고 차단 안 함 — 뒤 스텝에서 modsec_audit 로 탐지 확인). 자동 XSS
+      > 탐지는 `dalfox url 'http://juice.el34.lab/rest/products/search?q=test' -S` 로 돌려볼 수 있다.
+
       - `?q=<script>alert(1)</script>`(검색 파라미터에 스크립트 태그). 공백 없는 payload라 추가 인코딩 없이 전송(공백 있으면 미션 3처럼 %20 필요).
 
       ## ✅ 합격 기준
@@ -100,7 +106,7 @@ steps:
     points: 12
     answer: |
       # 1) Reflected XSS 기본형(<script>alert(1)</script>) — 차단형 dvwa 응답코드
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'xss=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<script>alert(1)</script>'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'xss=%{http_code}\n' 'http://dvwa.el34.lab/?q=<script>alert(1)</script>'"
       # 2) 해석 — <script> XSS가 941(XSS)+949110에 차단(403)
       echo "→ <script> XSS가 941(XSS)+949110에 차단(403)"
     answer_detail: "Reflected XSS는 요청 파라미터가 즉시 응답에 반사되어 실행되는 유형이다(저장되지 않으므로 공격자는 악성 링크 클릭을 유도해야 한다). 기본 payload <script>alert(1)</script>를 차단 모드 vhost(dvwa)에 보내면 CRS 941 룰군(941100 등)이 탐지해 anomaly score를 누적하고, 949110이 임계 초과로 403 차단한다. 즉 '941이 직접 막은' 것이 아니라 '941 탐지 → 누적 → 949110 차단'의 2단계다. 채점은 출력에 '403'이 보이는지로 판정한다."
@@ -136,9 +142,9 @@ steps:
 
       ```bash
       # 1) img onerror 변형 — 이미지 로딩 실패 시 onerror로 실행(공백 %20)
-      curl -s -o /dev/null -w 'img=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<img%20src=x%20onerror=alert(1)>'
+      curl -s -o /dev/null -w 'img=%{http_code}\n' 'http://dvwa.el34.lab/?q=<img%20src=x%20onerror=alert(1)>'
       # 2) svg onload 변형 — SVG 로드 시 onload로 실행(공백 %20)
-      curl -s -o /dev/null -w 'svg=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<svg%20onload=alert(1)>'
+      curl -s -o /dev/null -w 'svg=%{http_code}\n' 'http://dvwa.el34.lab/?q=<svg%20onload=alert(1)>'
       # 3) 해석 — 태그/이벤트 다양화로 필터 우회 시도, CRS 941은 이벤트 핸들러도 잡음
       echo "→ 태그/이벤트 다양화(img/svg/onerror/onload)로 필터 우회 시도 — CRS 941은 이벤트 핸들러도 잡음"
       ```
@@ -151,9 +157,9 @@ steps:
     points: 12
     answer: |
       # 1) img onerror 변형 — 이미지 로딩 실패 시 onerror로 실행(공백 %20)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'img=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<img%20src=x%20onerror=alert(1)>'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'img=%{http_code}\n' 'http://dvwa.el34.lab/?q=<img%20src=x%20onerror=alert(1)>'"
       # 2) svg onload 변형 — SVG 로드 시 onload로 실행(공백 %20)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'svg=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<svg%20onload=alert(1)>'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'svg=%{http_code}\n' 'http://dvwa.el34.lab/?q=<svg%20onload=alert(1)>'"
       # 3) 해석 — 태그/이벤트 다양화로 필터 우회 시도, CRS 941은 이벤트 핸들러도 잡음
       echo "→ 태그/이벤트 다양화(img/svg/onerror/onload)로 필터 우회 시도 — CRS 941은 이벤트 핸들러도 잡음"
     answer_detail: "XSS는 <script> 태그 외에도 이벤트 핸들러(img의 onerror, svg의 onload, body의 onload 등)나 스킴(javascript:)만으로 실행된다 — 그래서 '스크립트 태그만 거르기' 식 방어는 우회된다. el34에서는 payload 공백을 %20으로 인코딩해 전송해야 요청이 깨지지 않는다(%20은 우회가 아니라 전송용 표기이며 WAF는 디코드 후 검사). CRS 941 룰군은 onerror=/onload= 같은 이벤트 핸들러 패턴(941160 NoScript 등)도 탐지하므로 변형도 403으로 막힌다. 채점은 출력에 '403'이 보이는지로 판정한다."
@@ -186,9 +192,9 @@ steps:
 
       ```bash
       # 1) 대소문자 우회 — <ScRiPt>(태그 대소문자 섞기)
-      curl -s -o /dev/null -w 'case=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<ScRiPt>alert(1)</ScRiPt>'
+      curl -s -o /dev/null -w 'case=%{http_code}\n' 'http://dvwa.el34.lab/?q=<ScRiPt>alert(1)</ScRiPt>'
       # 2) URL 인코딩 우회 — %3Cscript%3E(<,>를 인코딩)
-      curl -s -o /dev/null -w 'enc=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=%3Cscript%3Ealert(1)%3C/script%3E'
+      curl -s -o /dev/null -w 'enc=%{http_code}\n' 'http://dvwa.el34.lab/?q=%3Cscript%3Ealert(1)%3C/script%3E'
       # 3) 해석 — CRS는 정규화(대소문자 통일/URL 디코드) 후 검사 → 단순 우회는 여전히 403
       echo "→ CRS는 정규화(대소문자 통일/URL 디코드) 후 검사 → 단순 우회는 여전히 403"
       ```
@@ -201,9 +207,9 @@ steps:
     points: 12
     answer: |
       # 1) 대소문자 우회 — <ScRiPt>(태그 대소문자 섞기)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'case=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<ScRiPt>alert(1)</ScRiPt>'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'case=%{http_code}\n' 'http://dvwa.el34.lab/?q=<ScRiPt>alert(1)</ScRiPt>'"
       # 2) URL 인코딩 우회 — %3Cscript%3E(<,>를 인코딩)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'enc=%{http_code}\n' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=%3Cscript%3Ealert(1)%3C/script%3E'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'enc=%{http_code}\n' 'http://dvwa.el34.lab/?q=%3Cscript%3Ealert(1)%3C/script%3E'"
       # 3) 해석 — CRS는 정규화(대소문자 통일/URL 디코드) 후 검사 → 단순 우회는 여전히 403
       echo "→ CRS는 정규화(대소문자 통일/URL 디코드) 후 검사 → 단순 우회는 여전히 403"
     answer_detail: "단순 WAF 우회(대소문자 <ScRiPt>, URL 인코딩 %3Cscript%3E)는 ModSec CRS의 정규화에 무력하다 — CRS는 패턴 비교 전에 URL 디코드·대소문자 통일·엔티티 해제로 원형(<script>...)을 복원한 뒤 941 룰군과 매치하므로, 두 시도 모두 여전히 403으로 차단된다. 다만 단순 우회가 막힌다고 WAF가 만능은 아니다 — 특정 출력 컨텍스트에 맞춘 고급 우회나 서버를 안 거치는 DOM-based XSS는 WAF로 잡기 어렵다(WAF는 보조 방어선). 채점은 출력에 '403'이 보이는지로 판정한다."
@@ -230,7 +236,7 @@ steps:
       앞 미션들이 남긴 XSS 매치를 집계해, **941 룰군 탐지 → 949110 차단**의 2단계를 읽어낸다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+      **방어자 시선:** WAF 장비에 직접 접속한다 — `ssh ccc@10.20.32.80`(비번 `1`). ModSecurity audit 로그가 여기 있다.
 
       ```bash
       # 1) modsec_audit 최근 150줄에서 941(XSS)/949110 룰ID 집계 — 내 XSS 탐지 흔적
@@ -248,7 +254,7 @@ steps:
     points: 12
     answer: |
       # 1) modsec_audit 최근 150줄에서 941(XSS)/949110 룰ID 집계 — 내 XSS 탐지 흔적
-      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
+      ssh ccc@10.20.32.80 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
       # 2) 해석 — 941xxx(XSS 룰군)이 script/onerror/onload 패턴을 잡고 949110에서 차단
       echo "→ 941xxx(XSS 룰군)이 <script>/onerror/onload 패턴을 잡고, 949110에서 차단"
     answer_detail: "XSS는 CRS의 941 룰군(REQUEST-941-APPLICATION-ATTACK-XSS)이 탐지한다 — 941100(libinjection으로 <script> 탐지)/941110(스크립트 태그)/941160(NoScript, onerror=·onload= 이벤트 핸들러) 등이 변형별로 매치된다. 각 941 매치가 anomaly score를 누적하고, 임계(기본 5) 초과 시 949110이 403으로 차단한다. 즉 audit log에서 941xxx(탐지)와 949110(누적 차단)을 함께 봐야 '탐지 → 누적 → 차단'의 전 과정이 보인다. 매치된 개별 룰 ID는 vhost별 *_error.log(예: dvwa_error.log)에도 id \"941160\" 형식으로 기록된다. 채점은 출력에 '941'이 보이는지로 판정한다."
@@ -286,9 +292,9 @@ steps:
 
       ```bash
       # 1) 같은 XSS payload를 dvwa(차단 모드)로 — 응답코드
-      curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<script>alert(1)</script>'
+      curl -s -o /dev/null -w 'dvwa=%{http_code} ' 'http://dvwa.el34.lab/?q=<script>alert(1)</script>'
       # 2) 같은 payload를 juice(DetectionOnly)로 — 응답코드
-      curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' 'http://192.168.0.161/?q=<script>alert(1)</script>'
+      curl -s -o /dev/null -w 'juice=%{http_code}\n' 'http://juice.el34.lab/?q=<script>alert(1)</script>'
       # 3) 해석 — dvwa=403(차단)/juice=200(DetectionOnly), WAF 정책 차이
       echo "→ dvwa=403(차단), juice=200(DetectionOnly). WAF 정책 차이"
       ```
@@ -302,9 +308,9 @@ steps:
     points: 12
     answer: |
       # 1) 같은 XSS payload를 dvwa(차단 모드)로 — 응답코드
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code} ' -H 'Host: dvwa.el34.lab' 'http://192.168.0.161/?q=<script>alert(1)</script>'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code} ' 'http://dvwa.el34.lab/?q=<script>alert(1)</script>'"
       # 2) 같은 payload를 juice(DetectionOnly)로 — 응답코드
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' 'http://192.168.0.161/?q=<script>alert(1)</script>'"
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'juice=%{http_code}\n' 'http://juice.el34.lab/?q=<script>alert(1)</script>'"
       # 3) 해석 — dvwa=403(차단)/juice=200(DetectionOnly), WAF 정책 차이
       echo "→ dvwa=403(차단), juice=200(DetectionOnly). WAF 정책 차이"
     answer_detail: "같은 XSS payload라도 vhost의 WAF 운영 모드에 따라 결과가 다르다 — dvwa(SecRuleEngine On)는 941 탐지 + 949110 누적으로 403 차단, juice(DetectionOnly)는 941이 탐지해 로그만 남기고 차단 없이 200 통과. 이는 버그가 아니라 의도된 정책이다: DetectionOnly는 신규 룰을 운영 배포 전 차단 없이 탐지만 하며 오탐(false-positive)을 먼저 관찰하는 단계로, 안정성 확인 후 차단 모드로 전환한다. 공격자 관점에서는 juice처럼 탐지만 하는 대상은 payload가 통과해 실제 피해자 브라우저에서 실행될 수 있어 위험하다. 채점은 출력에 'juice=200'이 보이는지로 판정한다."
