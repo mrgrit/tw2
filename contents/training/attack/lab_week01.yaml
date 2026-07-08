@@ -16,14 +16,14 @@ description: |
   전 계층을 실제로 통과하고, 내 출처 IP(192.168.0.202)가 각 방어 계층에 그대로 보존된다.
 
   - 공격 실습: `ssh att@192.168.0.202`(비밀번호 `1`) 로 공격 VM 에 접속해 명령을 실행한다.
-  - 방어 가시성(파랑 시선): 방어 콘솔은 el34 호스트에 있다 — `ssh ccc@{{TARGET_IP}}` 후
-    `docker exec -it el34-ips bash` 로 Suricata 로그를 본다(공격자→방어자 시선 전환).
+  - 방어 가시성(파랑 시선): IPS 장비에 직접 접속한다 — `ssh ccc@10.20.31.2`(비밀번호 `1`) 후
+    `tail /var/log/suricata/eve.json` 로 Suricata 로그를 본다(공격자→방어자 시선 전환).
   - 인가된 실습 환경(el34)에서만, 제공된 대상(192.168.0.161)에만 수행한다(외부 시도 절대 금지).
 difficulty: medium
 duration_minutes: 150
 prerequisites:
   - "공격 VM 접속: ssh att@192.168.0.202 (비밀번호 1) — nmap/curl 등 도구 설치됨"
-  - "방어 가시성 확인용 el34 호스트: ssh ccc@{{TARGET_IP}} + docker exec el34-ips"
+  - "방어 가시성 확인용 IPS 장비: ssh ccc@10.20.31.2 (비밀번호 1) — Suricata eve.json"
   - "lecture §1(PTES/RoE) §3-§5(정찰/가시성) 숙지"
 objectives:
   - "PTES 방법론과 RoE 안에서 정찰을 개시한다(인가된 환경 한정)"
@@ -52,10 +52,14 @@ steps:
       ```bash
       # 1) 정찰 도구(nmap/curl) 설치 경로 확인 — 경로 나오면 설치됨
       which nmap curl
-      # 2) 대상(공인 진입 192.168.0.161) 도달성 — HTTP 응답코드만(dvwa vhost로 분기)
-      curl -s -o /dev/null -w "도달=%{http_code}\n" -H "Host: dvwa.el34.lab" http://192.168.0.161/
+      # 2) 대상 도달성 — HTTP 응답코드만 (자연 URL: dvwa.el34.lab)
+      curl -s -o /dev/null -w "도달=%{http_code}\n" http://dvwa.el34.lab/
       ```
-      - `which nmap curl`(두 도구 경로 확인), `curl -s -o /dev/null -w "%{http_code}"`(본문 버리고 응답코드만), `-H "Host: ..."`(web Apache 가 vhost 로 분기).
+      > 💡 vhost 는 공격 VM 의 `/etc/hosts` 에 `192.168.0.161 dvwa.el34.lab juice.el34.lab ...` 로 등록돼
+      > 있어, `http://dvwa.el34.lab/` 처럼 **자연 URL** 로 바로 접속한다(브라우저에서 그 주소를 여는 것과
+      > 동일 — Host 헤더가 자동으로 실린다). `-H "Host:"` + 생 IP 를 반복할 필요가 없다.
+
+      - `which nmap curl`(두 도구 경로 확인), `curl -s -o /dev/null -w "%{http_code}"`(본문 버리고 응답코드만), 자연 URL `http://dvwa.el34.lab/`(웹 Apache 가 호스트명으로 vhost 분기).
 
       ## ✅ 합격 기준
       `nmap` 출력 시 통과. **근거:** which 가 nmap/curl 경로를 출력하고 도달성 curl 이 200/302/403 같은
@@ -68,7 +72,7 @@ steps:
       # 1) 정찰 도구(nmap/curl) 설치 경로 확인 — 경로 나오면 설치됨
       ssh att@192.168.0.202 'which nmap curl'
       # 2) 대상(공인 진입 192.168.0.161) 도달성 — HTTP 응답코드만(dvwa vhost로 분기)
-      ssh att@192.168.0.202 'curl -s -o /dev/null -w "도달=%{http_code}\n" -H "Host: dvwa.el34.lab" http://192.168.0.161/'
+      ssh att@192.168.0.202 'curl -s -o /dev/null -w "도달=%{http_code}\n" http://dvwa.el34.lab/'
     answer_detail: "정찰 도구(nmap/curl)의 설치와 대상(공인 진입 192.168.0.161) 도달성을 확인하는 것이 침투의 출발점이다. 공격자는 자기 공격 VM(192.168.0.202)에 로그인해 거기서 공격하며(실제 공격자 위치), which 가 경로를 출력하고 도달 curl 이 HTTP 코드를 반환하면 통과로 판정한다."
     expected_output: |
       /usr/bin/nmap
@@ -194,11 +198,15 @@ steps:
 
       ```bash
       # 1) dvwa vhost 헤더만(curl -I) — Server 헤더/응답코드로 기술 스택 핑거프린팅
-      curl -sI -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | head -8
-      # 2) 다른 vhost(juice) 헤더 — Host 바꾸면 다른 앱이 응답(별개 공격 표면)
-      curl -sI -H 'Host: juice.el34.lab' http://192.168.0.161/ | head -3
+      curl -sI http://dvwa.el34.lab/ | head -8
+      # 2) 다른 vhost(juice) 헤더 — 호스트명 바꾸면 다른 앱이 응답(별개 공격 표면)
+      curl -sI http://juice.el34.lab/ | head -3
       ```
-      - `curl -I`(헤더만 HEAD 요청), `-s`(silent). `Server:` 헤더=웹 서버 종류·버전, `Set-Cookie` 이름=백엔드 언어 단서. Host 를 바꿔 vhost 열거.
+      > 💡 **브라우저로도 보기:** 학생 PC 브라우저에서 `http://dvwa.el34.lab/`·`http://juice.el34.lab/` 를
+      > 열면 서로 다른 앱이 뜬다(같은 IP·포트, 호스트명만 다름). 응답 헤더(Server 등)는 브라우저 개발자도구
+      > → Network 탭에서 볼 수 있고, CLI 로는 `curl -I` 가 헤더만 빠르게 보여준다.
+
+      - `curl -I`(헤더만 HEAD 요청), `-s`(silent). `Server:` 헤더=웹 서버 종류·버전, `Set-Cookie` 이름=백엔드 언어 단서. 자연 URL 의 호스트명(dvwa/juice)을 바꿔 vhost 열거.
 
       ## ✅ 합격 기준
       `HTTP` 출력 시 통과. **근거:** HTTP 응답 라인과 Server 헤더가 보이면 식별 성공 — vhost(dvwa vs
@@ -208,8 +216,8 @@ steps:
     points: 12
     answer: |
       # 공격 VM(192.168.0.202)에서 실행:
-      ssh att@192.168.0.202 "curl -sI -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | head -8"
-      ssh att@192.168.0.202 "curl -sI -H 'Host: juice.el34.lab' http://192.168.0.161/ | head -3"
+      ssh att@192.168.0.202 "curl -sI http://dvwa.el34.lab/ | head -8"
+      ssh att@192.168.0.202 "curl -sI http://juice.el34.lab/ | head -3"
     answer_detail: "curl -I 로 Server 헤더와 응답 코드를 식별하면 웹 서버 종류·버전(Apache)을 알 수 있고, Host 헤더를 dvwa/juice 로 바꾸면 vhost별로 다른 앱이 응답함을 확인한다. 각 vhost 가 서로 다른 익스플로잇 표면이므로 빠짐없이 열거할수록 표면이 넓어진다. 출력에 HTTP 응답이 보이면 통과 판정한다."
     expected_output: |
       HTTP/1.1 302 Found
@@ -245,8 +253,8 @@ steps:
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
-      **방어 콘솔:** 공격 VM 에서 나와, 방어자 콘솔로 이동한다 — `ssh ccc@{{TARGET_IP}}`(el34 호스트)
-      접속 후 `docker exec -it el34-ips bash` 로 Suricata 컨테이너에 들어간다.
+      **방어자 시선:** 공격 VM 에서 나와, IPS 장비에 직접 접속한다 — `ssh ccc@10.20.31.2`(비밀번호 `1`).
+      Suricata 로그(eve.json)는 이 장비에 있다.
 
       ```bash
       # 1) eve.json에서 alert+내 출발지(192.168.0.202)만 골라 출발지 집계(내 정찰 탐지 확인)
@@ -265,11 +273,11 @@ steps:
     category: analysis
     points: 14
     answer: |
-      # 방어 콘솔(el34 호스트 → el34-ips)에서 실행:
+      # 방어자 시선(IPS 장비 10.20.31.2)에서 실행:
       # 1) eve.json에서 alert+내 출발지(192.168.0.202)만 골라 출발지 집계(내 정찰 탐지 확인)
-      docker exec el34-ips sh -c 'tail -2000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.src_ip" | sort | uniq -c'
+      ssh ccc@10.20.31.2 'tail -2000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.src_ip" | sort | uniq -c'
       # 2) 내 스캔이 무슨 시그니처로 탐지됐는지(예: Nmap/SCAN)
-      docker exec el34-ips sh -c 'tail -2000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.alert.signature" | sort | uniq -c | tail -3'
+      ssh ccc@10.20.31.2 'tail -2000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.alert.signature" | sort | uniq -c | tail -3'
       # 3) 해석 — 내 스캔이 출발지 192.168.0.202로 탐지됨, 회피는 느린(-T2)/분산 스캔(고급)
       echo "→ 내 스캔이 출발지 192.168.0.202로 탐지됨. 느린 스캔(-T2)/분산으로 회피 가능(고급)"
     answer_detail: "공격자도 자기 행동의 탐지를 알아야 한다. 스캔이 Suricata eve.json 에 출발지 192.168.0.202 로 잡히면 '시끄러운' 정찰이며, el34 는 출처 IP 를 보존하므로 실전이라면 이 IP 가 즉시 차단된다. 회피의 출발점은 느린(-T2)·분산 스캔이다. 출력에 192.168.0.202 가 보이면 방어 가시성 확인으로 통과 판정한다."
