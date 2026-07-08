@@ -497,7 +497,7 @@ persistence → execution → 탐지 매핑 → 커버리지 갭 → Caldera 구
 흐른다.
 
 > **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 `1`)에서 실행한다.
-> 점검의 Wazuh 확인은 `docker exec el34-siem`, 에뮬레이션·탐지는 `docker exec el34-web` 로 한다.
+> Wazuh 확인은 `ssh ccc@10.20.32.100`(SIEM), 에뮬레이션·탐지는 표적 web `ssh ccc@10.20.32.80` 로 한다.
 > **인가된 실습 환경(el34)에서만** 수행하며, 계정 흔적은 self-clean 한다. 합격 임계값은 0.7 이다.
 
 ### 미션 1 — 점검: Caldera + Wazuh (10점, survey)
