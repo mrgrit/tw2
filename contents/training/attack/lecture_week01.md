@@ -390,8 +390,33 @@ tail /var/log/suricata/eve.json
 
 > **내 공격 VM에 미리 설치된 도구.** 외부 공격자 VM 에는 정찰·공격 도구가 사전
 > 설치되어 있다 — `nmap`(포트/서비스 스캔), `curl`(HTTP 요청), `nikto`(웹 취약점 스캔),
-> `ffuf`(디렉터리 브루트), `sqlmap`(SQLi 자동화), `hydra`(인증 브루트), `nuclei`(템플릿
-> 기반 스캔) 등. 본 주차는 그중 정찰의 기본인 `nmap` 과 `curl` 에 집중한다.
+> `whatweb`(기술 스택 핑거프린팅), `ffuf`/`gobuster`(디렉터리 브루트), `sqlmap`(SQLi 자동화),
+> `dalfox`(XSS 자동화), `python3-scapy`(패킷 크래프팅) 등. 본 주차는 그중 정찰의 기본인
+> `nmap` 과 `curl` 에 집중한다.
+
+### 3.4 도구 설치 — 내 공격 박스를 직접 꾸릴 때 (참고, 한 번만)
+
+이 트랙의 공격 VM(`192.168.0.202`)에는 위 도구가 이미 깔려 있어 바로 쓴다. 하지만 실무에서는
+**자기 공격 박스를 스스로 꾸리는 것**이 기본이므로, 한 번은 설치 방법을 알아 두자. Debian/Ubuntu
+계열 기준이며, 대부분 배포판 패키지(`apt`)로 끝난다.
+
+```bash
+# 1) 배포판 패키지로 한 번에 (가장 흔한 도구들)
+sudo apt-get update
+sudo apt-get install -y nmap nikto whatweb curl gobuster sqlmap python3-scapy
+
+# 2) Go 기반 도구 — 배포판에 있으면 apt, 없으면 go install 또는 릴리스 바이너리
+sudo apt-get install -y ffuf                       # 없으면: go install github.com/ffuf/ffuf/v2@latest
+go install github.com/hahwul/dalfox/v2@latest      # dalfox(XSS). 또는 GitHub 릴리스 바이너리 내려받기
+
+# 3) 설치 확인 — 경로가 나오면 사용 가능
+which nmap nikto whatweb ffuf gobuster sqlmap dalfox
+```
+
+- **apt 로 대부분 해결**: nmap·nikto·whatweb·curl·gobuster·sqlmap·scapy 는 배포판 패키지에 있다.
+- **Go 도구(`ffuf`·`dalfox`)**: 최신판은 `go install ...@latest`(Go 필요: `sudo apt-get install -y golang`)
+  로 받거나, 프로젝트 GitHub 의 **Releases** 에서 정적 바이너리를 내려받아 `PATH` 에 둔다.
+- 설치 후 `which <도구>` 로 경로가 나오면 준비 완료 — 실습 랩의 `which`/`command -v` 점검이 곧 이 확인이다.
 
 ---
 
