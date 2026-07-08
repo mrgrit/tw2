@@ -14,12 +14,12 @@ audience: 보안 솔루션 운영 입문자 (1주차)
 prerequisites:
   - el34 호스트 SSH 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
   - 학생 PC `/etc/hosts` 에 공인 IP `{{WEB_ENTRY}}` 의 11 vhost (`*.el34.lab`) 매핑 (web 접근용)
-  - 컨테이너 작업은 호스트에서 `docker exec el34-<name>` 로 수행 (컨테이너 내부 root)
+  - 인프라 인벤토리는 el34 호스트에서 `docker ps`(ccc docker 접근), 각 장비 점검은 `ssh ccc@<장비IP>`, 공격은 `ssh att@192.168.0.202`)
 
 objectives:
   - 4-tier 토폴로지의 보안 핵심 16 컨테이너 가시화(el34 전체 40여 개) + 4 bridge 분리 검증
   - 5종 보안 솔루션 (방화벽/IPS/WAF/SIEM/호스트 가시화) 가동 상태 확인
-  - el34 접근 모델 (호스트 SSH + docker exec) 로 컨테이너 진입 + 외부 직접 IP 접속 차단 검증
+  - 접근 모델 (인벤토리=호스트 docker / 장비=ssh ccc@IP / 공격=ssh att@202) 이해 + 외부 직접 IP 접속 차단 검증
   - web Apache 의 11 vhost 라우팅 (host header 별) + 운영/학생 트래픽의 ModSec 적용 차이
   - "Red/Blue/Purple 통합 — 공격 1건의 4 도구 흔적 추적 + gap 식별"
 
@@ -36,12 +36,12 @@ steps:
 
       el34 호스트에서 `docker ps` 로 **보안 핵심 16개 컨테이너**가 모두 `Up` 상태인지 확인한다.
       (el34 전체는 OpenCTI/MISP·Wazuh 스택까지 포함해 40여 개가 돌지만, 본 주차 보안 운영 대상은
-      그중 핵심 16개다.) bastion 컨테이너도 docker 소켓을 가지므로 `docker exec el34-bastion docker ps` 로 동일하게 확인 가능.
+      그중 핵심 16개다.) bastion 컨테이너도 docker 소켓을 가지므로 `docker ps` 로 동일하게 확인 가능.
 
       ## 💻 실행 명령
 
       **실습 컨테이너:** `el34-bastion` — 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 1)에서
-      `docker exec -it el34-bastion bash` 로 접속한 뒤 아래를 한 줄씩 실행한다.
+      el34 호스트(ccc는 docker 접근 가능)에서 아래를 한 줄씩 실행한다.
 
       ```bash
       # 1. 전체 컨테이너 가시화 (핵심 16 + OpenCTI/MISP·Wazuh 스택 = 40여 개)
@@ -78,11 +78,11 @@ steps:
 
       - **정상**: 핵심 16개 모두 `Up` + 비정상 0건 (전체 40여 개 중)
       - **비정상**: `Restarting` / `Exited` 1개라도 있으면 즉시 `docker logs <name>` 로 원인 파악
-    hint: docker exec el34-bastion sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
+    hint: sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
     category: survey
     points: 8
     answer: |
-      docker exec el34-bastion sh -c 'docker ps --format "{{.Names}} {{.Status}}"' | tee /tmp/w01s1.txt
+      sh -c 'docker ps --format "{{.Names}} {{.Status}}"' | tee /tmp/w01s1.txt
       echo "--- 보안 핵심 16개 수 (el34 전체는 40여 개) ---"
       grep -cE "el34-(bastion|attacker|fw|ips|web|siem|wazuh-indexer|wazuh-dashboard|portal|juiceshop|dvwa|neobank|govportal|mediforum|adminconsole|aicompanion)( |$)" /tmp/w01s1.txt
       echo "--- 비정상 컨테이너 ---"
@@ -104,12 +104,12 @@ steps:
           - Up 키워드
           - bastion / fw / ips / web / siem 5 핵심 컨테이너 포함
         acceptable_methods:
-          - docker exec el34-bastion sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
+          - sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
           - |
             **[OSS] docker ps 표준** — 가장 자주.
-              docker exec el34-bastion sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
+              sh -c 'docker ps --format "{{.Names}} {{.Status}}"'
               # 보안 핵심 16개 수 (el34 전체는 40여 개)
-              docker exec el34-bastion sh -c 'docker ps --format "{{.Names}}" | grep -cE "el34-(bastion|attacker|fw|ips|web|siem|wazuh-indexer|wazuh-dashboard|portal|juiceshop|dvwa|neobank|govportal|mediforum|adminconsole|aicompanion)$"'
+              sh -c 'docker ps --format "{{.Names}}" | grep -cE "el34-(bastion|attacker|fw|ips|web|siem|wazuh-indexer|wazuh-dashboard|portal|juiceshop|dvwa|neobank|govportal|mediforum|adminconsole|aicompanion)$"'
             예상 출력 `el34-bastion Up … / el34-attacker Up … / …(전체 40여 개) / 핵심 16`.
             운영 해석: 보안 핵심 16개가 모두 Up 인지 확인. 핵심 수가 16 미만이면 Exited 점검.
           - |
@@ -121,22 +121,22 @@ steps:
             운영 해석: compose 단위로 의존성 검증 (ips 가 fw 보다 먼저 시작 시 fail).
           - |
             **[OSS] docker stats — 자원 사용** — 모니터링.
-              docker exec el34-bastion sh -c 'docker stats --no-stream --format "{{.Name}} {{.CPUPerc}} {{.MemUsage}}"'
+              sh -c 'docker stats --no-stream --format "{{.Name}} {{.CPUPerc}} {{.MemUsage}}"'
             예상 출력 `el34-wazuh-indexer 5.0% 1.2GiB / 5.8GiB / ...`.
             운영 해석: indexer 가 1GB+ 메모리 사용 정상 (heap 1g). 그 외는 100MB 내.
           - |
             **[OSS] docker inspect — fw/ips dual NIC** — 토폴로지.
               for c in el34-fw el34-ips; do
                 echo "=== $c ==="
-                docker exec el34-bastion sh -c "docker inspect $c --format '{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}}={{\$v.IPAddress}} {{end}}'"
+                sh -c "docker inspect $c --format '{{range \$k,\$v := .NetworkSettings.Networks}}{{\$k}}={{\$v.IPAddress}} {{end}}'"
               done
             예상 출력 `el34-ext=10.20.30.1 el34-pipe=10.20.31.1 / el34-pipe=10.20.31.2 el34-dmz=10.20.32.1`.
             운영 해석: fw + ips 각 2 NIC = 라우터 모드. 1 NIC 만 있으면 forward 불가.
           - |
             **[OSS] docker network ls — 4 bridge** — 토폴로지.
-              docker exec el34-bastion sh -c 'docker network ls | grep el34'
+              sh -c 'docker network ls | grep el34'
               for n in el34-ext el34-pipe el34-dmz el34-int; do
-                docker exec el34-bastion sh -c "docker network inspect $n --format '{{(index .IPAM.Config 0).Subnet}}'"
+                sh -c "docker network inspect $n --format '{{(index .IPAM.Config 0).Subnet}}'"
               done
             예상 출력 `el34-ext / el34-pipe / el34-dmz / el34-int / 10.20.30.0/24 / 10.20.31.0/24 / 10.20.32.0/24 / 10.20.40.0/24`.
             운영 해석: 4 bridge 의 subnet 이 CURRICULUM 의 4-tier 와 일치.
@@ -155,8 +155,8 @@ steps:
             → default backend (waf) 로 떨어짐.
           - |
             **[OSS] sudo NOPASSWD 검증** — 학습 환경 전제.
-              docker exec el34-fw sh -c 'sudo -n nft list tables 2>&1 | head -3'
-              docker exec el34-fw sh -c 'cat /etc/sudoers.d/ccc 2>/dev/null'
+              ssh ccc@10.20.30.1 'sudo -n nft list tables 2>&1 | head -3'
+              ssh ccc@10.20.30.1 'cat /etc/sudoers.d/ccc 2>/dev/null'
             예상 출력 `table inet six_filter / ccc ALL=(ALL) NOPASSWD: ALL`.
             운영 해석: 학습 환경만 NOPASSWD. production 절대 금지.
         negative_signs:
@@ -176,45 +176,45 @@ steps:
 
       ## 💻 실행 명령
 
-      여러 컨테이너를 확인하는 단계라 호스트(`ssh ccc@{{TARGET_IP}}`)에서 컨테이너마다 `docker exec` 한다(for문 없이 한 줄씩).
+      여러 장비를 확인하는 단계라 각 장비에 `ssh ccc@<IP>` 로 접속하거나, 인벤토리는 호스트 `docker ps` 로 한다(for문 없이 한 줄씩).
 
       ```bash
       # fw / ips / web / siem 각 컨테이너의 hostname 을 한 줄씩 질의
-      docker exec el34-fw hostname
-      docker exec el34-ips hostname
-      docker exec el34-web hostname
-      docker exec el34-siem hostname        # 출력: wazuh.manager (siem 컨테이너 hostname)
+      ssh ccc@10.20.30.1 hostname
+      ssh ccc@10.20.31.2 hostname
+      ssh ccc@10.20.32.80 hostname
+      ssh ccc@10.20.32.100 hostname        # 출력: wazuh.manager (siem 컨테이너 hostname)
       ```
 
       ## 📋 확인 사항
 
-      - `docker exec el34-fw hostname` → `fw`
-      - `docker exec el34-ips hostname` → `ips`
-      - `docker exec el34-web hostname` → `web`
-      - `docker exec el34-siem hostname` → `wazuh.manager` (siem 컨테이너 hostname)
+      - `ssh ccc@10.20.30.1 hostname` → `fw`
+      - `ssh ccc@10.20.31.2 hostname` → `ips`
+      - `ssh ccc@10.20.32.80 hostname` → `web`
+      - `ssh ccc@10.20.32.100 hostname` → `wazuh.manager` (siem 컨테이너 hostname)
       - 4 hostname 모두 응답이 나와야 정상
 
       ## 💡 왜 이걸 하는가?
 
       el34 의 접근 모델 검증. 외부(학생 PC LAN)에서 fw/ips/web/siem 의 내부 IP 로 **직접 접속은
       불가** (docker bridge 가 외부에 라우팅되지 않음). 외부 진입은 공인 IP(.161 web / .151 호스트 SSH /
-      bastion :2204)로만 가능하고, 컨테이너 작업은 호스트에 들어와 `docker exec` 로 한다. bastion 은
+      bastion :2204)로만 가능하고, 장비 점검은 각 장비 `ssh ccc@<IP>`, 인벤토리는 호스트 `docker ps` 로 한다. bastion 은
       외부 운영 진입의 "안내데스크"(감사된 단일 진입점) 역할이다.
 
       ## 🔍 결과 해석
 
-      - **정상**: 4 hostname 모두 응답 → docker exec 접근 동작
+      - **정상**: 4 hostname 모두 응답 → 장비 SSH 접근 동작
       - **비정상 1**: 1+ 컨테이너 오류 → 해당 컨테이너 상태(`docker ps -a`) 점검
       - **비정상 2**: docker 명령 자체 실패 → 호스트에서 ccc 의 docker 권한(그룹) 점검
     hint: |
-      docker exec el34-fw hostname  (fw/ips/web/siem 각각 한 줄씩)
+      ssh ccc@10.20.30.1 hostname  (fw/ips/web/siem 각각 한 줄씩)
     category: survey
     points: 8
     answer: |
-      docker exec el34-fw hostname
-      docker exec el34-ips hostname
-      docker exec el34-web hostname
-      docker exec el34-siem hostname
+      ssh ccc@10.20.30.1 hostname
+      ssh ccc@10.20.31.2 hostname
+      ssh ccc@10.20.32.80 hostname
+      ssh ccc@10.20.32.100 hostname
     answer_detail: |
       4 컨테이너 모두 hostname 응답 — 예상: `fw / ips / web / wazuh.manager`. siem 의
       hostname 은 컨테이너 안에서 `wazuh.manager`. 오류 발생 시 `docker ps -a` 로 해당
@@ -225,7 +225,7 @@ steps:
       field: stdout
       semantic:
         intent: |
-          el34 docker exec 접근 검증. 호스트에서 4 컨테이너 (fw/ips/web/siem) 의
+          장비 SSH 접근 검증. 4 장비 (fw/ips/web/siem) 의
           hostname 응답 → 컨테이너 진입 정상.
         success_criteria:
           - fw hostname 출력
@@ -234,9 +234,9 @@ steps:
           - wazuh.manager 또는 siem hostname
         acceptable_methods:
           - |
-            **[OSS] for + docker exec + hostname** — 표준.
-              for h in fw ips web siem; do
-                docker exec el34-$h hostname
+            **[OSS] for + ssh ccc@IP + hostname** — 표준.
+              for h in 10.20.30.1 10.20.31.2 10.20.32.80 10.20.32.100; do
+                ssh ccc@$h hostname
               done
             예상 출력 `fw / ips / web / wazuh.manager`.
             운영 해석: 4 hostname 모두 응답 → 정상.
@@ -249,28 +249,28 @@ steps:
             (호스트 .151 안에서는 bridge 가 보이므로 결과가 다르다 — 이 검증은 외부 PC 기준.)
           - |
             **[OSS] bastion sshd_config 의 AllowTcpForwarding** — 외부 진입점 점검.
-              docker exec el34-bastion sh -c 'grep -E "^AllowTcpForwarding|^GatewayPorts|^MaxSessions" /etc/ssh/sshd_config'
+              sh -c 'grep -E "^AllowTcpForwarding|^GatewayPorts|^MaxSessions" /etc/ssh/sshd_config'
             예상 출력 `AllowTcpForwarding yes / GatewayPorts no / MaxSessions 10`.
             운영 해석: bastion 을 ProxyJump 로 쓸 때 AllowTcpForwarding yes 가 필수.
           - |
             **[OSS] PermitRootLogin 검증** — 보안.
-              for h in fw ips web siem; do
+              for h in 10.20.30.1 10.20.31.2 10.20.32.80 10.20.32.100; do
                 echo "--- $h ---"
-                docker exec el34-$h sh -c 'grep -E "^PermitRootLogin" /etc/ssh/sshd_config'
+                ssh ccc@$h 'grep -E "^PermitRootLogin" /etc/ssh/sshd_config'
               done
             예상 출력 `PermitRootLogin` 설정 × 4.
             운영 해석: root 직접 로그인 정책 확인.
           - |
             **[OSS] 각 컨테이너의 uname + id** — 정체성.
-              for h in fw ips web siem; do
+              for h in 10.20.30.1 10.20.31.2 10.20.32.80 10.20.32.100; do
                 echo "=== $h ==="
-                docker exec el34-$h sh -c 'hostname; uname -r; id'
+                ssh ccc@$h 'hostname; uname -r; id'
               done
             예상 출력 `fw / 6.x.0-... / uid=0(root) ...`.
-            운영 해석: kernel 공통 (Docker container), docker exec 는 root.
+            운영 해석: kernel 공통 (Docker container), 장비 SSH 는 ccc(sudo 보유).
         negative_signs:
           - hostname 출력 누락 (1+ 컨테이너)
-          - docker exec 오류
+          - SSH 접근 오류
           - 내부 IP 직접 접속 시도
     target_vm: bastion
 
@@ -292,7 +292,7 @@ steps:
       ## 💻 실행 명령
 
       **실습 컨테이너:** nftables 점검은 `el34-fw`, 라우팅 실측은 `el34-attacker`. 각 컨테이너에
-      `docker exec -it el34-<name> bash` 로 접속해 아래를 실행한다.
+      각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 아래를 실행한다.
 
       ```bash
       # ── el34-fw 에서: nftables 정책 점검 ──
@@ -305,10 +305,10 @@ steps:
 
       # ── el34-attacker 에서: 4 host header 라우팅 실측 (for문 대신 4줄) ──
       # 4. fw→ips→web Apache vhost 응답코드
-      curl -sk -o /dev/null -w 'juice.el34.lab: %{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/
-      curl -sk -o /dev/null -w 'siem.el34.lab: %{http_code}\n' -H 'Host: siem.el34.lab' http://10.20.30.1/
-      curl -sk -o /dev/null -w 'portal.el34.lab: %{http_code}\n' -H 'Host: portal.el34.lab' http://10.20.30.1/
-      curl -sk -o /dev/null -w 'bastion.el34.lab: %{http_code}\n' -H 'Host: bastion.el34.lab' http://10.20.30.1/
+      curl -sk -o /dev/null -w 'juice.el34.lab: %{http_code}\n' http://juice.el34.lab/
+      curl -sk -o /dev/null -w 'siem.el34.lab: %{http_code}\n' http://siem.el34.lab/
+      curl -sk -o /dev/null -w 'portal.el34.lab: %{http_code}\n' http://portal.el34.lab/
+      curl -sk -o /dev/null -w 'bastion.el34.lab: %{http_code}\n' http://bastion.el34.lab/
       ```
 
       ## 📋 확인 사항
@@ -337,16 +337,16 @@ steps:
     points: 10
     answer: |
       echo "=== nft tables (el34-fw) ==="
-      docker exec el34-fw sh -c 'nft list tables'
+      ssh ccc@10.20.30.1 'nft list tables'
       echo "=== forward chain ==="
-      docker exec el34-fw sh -c 'nft list chain inet six_filter forward'
+      ssh ccc@10.20.30.1 'nft list chain inet six_filter forward'
       echo "=== six_nat DNAT ==="
-      docker exec el34-fw sh -c 'nft list table ip six_nat'
+      ssh ccc@10.20.30.1 'nft list table ip six_nat'
       echo "=== 4 host header 라우팅 (el34-attacker) ==="
-      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice.el34.lab: %{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
-      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'siem.el34.lab: %{http_code}\n' -H 'Host: siem.el34.lab' http://10.20.30.1/"
-      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'portal.el34.lab: %{http_code}\n' -H 'Host: portal.el34.lab' http://10.20.30.1/"
-      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'bastion.el34.lab: %{http_code}\n' -H 'Host: bastion.el34.lab' http://10.20.30.1/"
+      ssh att@192.168.0.202 "curl -sk -o /dev/null -w 'juice.el34.lab: %{http_code}\n' http://juice.el34.lab/"
+      ssh att@192.168.0.202 "curl -sk -o /dev/null -w 'siem.el34.lab: %{http_code}\n' http://siem.el34.lab/"
+      ssh att@192.168.0.202 "curl -sk -o /dev/null -w 'portal.el34.lab: %{http_code}\n' http://portal.el34.lab/"
+      ssh att@192.168.0.202 "curl -sk -o /dev/null -w 'bastion.el34.lab: %{http_code}\n' http://bastion.el34.lab/"
     answer_detail: |
       table 3 (`ip nat / inet six_filter / ip six_nat`) + chain forward 의 default
       policy accept + `six_nat` prerouting 의 DNAT 규칙(80/443/9100 → 내부). 4 host header
@@ -365,35 +365,35 @@ steps:
         acceptable_methods:
           - |
             **[OSS] nft list tables — 표준** — 3 table 가시화.
-              docker exec el34-fw sh -c 'nft list tables'
+              ssh ccc@10.20.30.1 'nft list tables'
             예상 출력 `table ip nat / table inet six_filter / table ip six_nat`.
             운영 해석: `ip nat` 은 docker, el34 정책은 `inet six_filter`(필터) + `ip six_nat`(DNAT).
           - |
             **[OSS] six_nat DNAT 규칙** — 공인→내부 전달.
-              docker exec el34-fw sh -c 'nft list table ip six_nat'
+              ssh ccc@10.20.30.1 'nft list table ip six_nat'
             예상 출력 `chain prerouting { ... tcp dport 80 dnat to ... ; tcp dport 443 dnat to ... }`.
             운영 해석: 공인 .161 의 80/443/9100 을 내부로 보내는 규칙. L7 라우팅은 web 의 Apache vhost 가 한다.
           - |
             **[OSS] curl + 4 host header — 라우팅 실증** — 동적.
-              for h in juice.el34.lab siem.el34.lab portal.el34.lab bastion.el34.lab; do
-                docker exec el34-attacker sh -c "curl -sk -o /dev/null -w '$h: %{http_code}\n' -H 'Host: $h' http://10.20.30.1/"
+              for h in juice.el34.lab dvwa.el34.lab neobank.el34.lab govportal.el34.lab; do
+                ssh att@192.168.0.202 "curl -sk -o /dev/null -w '$h: %{http_code}\n' http://$h/"
               done
             예상 출력 `juice.el34.lab: 200 / siem.el34.lab: 302 / portal.el34.lab: 200 / bastion.el34.lab: 200`.
             운영 해석: fw→ips→web Apache vhost chain 전체 정상. 503 이면 backend down.
           - |
             **[OSS] sysctl ip_forward — 라우터 전제** — 커널.
-              docker exec el34-fw sh -c 'sysctl net.ipv4.ip_forward'
+              ssh ccc@10.20.30.1 'sysctl net.ipv4.ip_forward'
             예상 출력 `net.ipv4.ip_forward = 1`.
             운영 해석: 0 이면 nftables 룰이 있어도 forward 못함.
           - |
             **[OSS] ip route show — 라우팅 테이블** — 토폴로지.
-              docker exec el34-fw sh -c 'ip -4 route show'
+              ssh ccc@10.20.30.1 'ip -4 route show'
             예상 출력 `10.20.30.0/24 dev eth0 / 10.20.31.0/24 dev eth1 / 10.20.32.0/24 via 10.20.31.2 / 10.20.40.0/24 via 10.20.31.2`.
             운영 해석: dmz/int 가 ips (10.20.31.2) 경유. ips 가 다음 hop.
           - |
             **[OSS] tcpdump — 라이브 트래픽** — 검증.
-              docker exec el34-fw sh -c 'timeout 5 tcpdump -ni eth0 "tcp port 80" -c 10 2>&1 | head -15'
-              docker exec el34-fw sh -c 'timeout 5 tcpdump -ni eth1 "tcp port 80" -c 10 2>&1 | head -15'
+              ssh ccc@10.20.30.1 'timeout 5 tcpdump -ni eth0 "tcp port 80" -c 10 2>&1 | head -15'
+              ssh ccc@10.20.30.1 'timeout 5 tcpdump -ni eth1 "tcp port 80" -c 10 2>&1 | head -15'
             예상 출력 `ext NIC + pipe NIC 양쪽에 SYN 패킷`.
             운영 해석: 양쪽 NIC 모두 트래픽 → fw 가 forward 동작.
         negative_signs:
@@ -414,7 +414,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속 후 한 줄씩 실행.
+      **IPS 장비:** `ssh ccc@10.20.31.2`(비번 `1`)로 접속 후 한 줄씩 실행.
 
       ```bash
       # 1. Suricata 프로세스 (두 NIC sniff 확인)
@@ -452,13 +452,13 @@ steps:
     points: 10
     answer: |
       echo "=== Suricata 프로세스 (2 NIC) ==="
-      docker exec el34-ips sh -c 'pgrep -a Suricata'
+      ssh ccc@10.20.31.2 'pgrep -a Suricata'
       echo "=== version + uptime ==="
-      docker exec el34-ips sh -c 'sudo suricatasc -c version; sudo suricatasc -c uptime'
+      ssh ccc@10.20.31.2 'sudo suricatasc -c version; sudo suricatasc -c uptime'
       echo "=== event_type 분포 (최근 500) ==="
-      docker exec el34-ips sh -c 'sudo tail -500 /var/log/suricata/eve.json | jq -r .event_type 2>/dev/null | sort | uniq -c | sort -rn | head'
+      ssh ccc@10.20.31.2 'sudo tail -500 /var/log/suricata/eve.json | jq -r .event_type 2>/dev/null | sort | uniq -c | sort -rn | head'
       echo "=== drop 비율 ==="
-      docker exec el34-ips sh -c 'sudo suricatasc -c dump-counters 2>&1 | jq ".message | {pkts: .[\"capture.kernel_packets\"], drops: .[\"capture.kernel_drops\"], alerts: .[\"detect.alert\"]}"'
+      ssh ccc@10.20.31.2 'sudo suricatasc -c dump-counters 2>&1 | jq ".message | {pkts: .[\"capture.kernel_packets\"], drops: .[\"capture.kernel_drops\"], alerts: .[\"detect.alert\"]}"'
     answer_detail: |
       `-i eth1 -i eth0 --runmode autofp` 두 NIC sniff. event_type 분포에서 `flow` 가
       가장 많고 `http`/`tls`/`dns`/`alert` 가 섞여 있어야 정상. drops/pkts ratio < 1%
@@ -477,47 +477,47 @@ steps:
         acceptable_methods:
           - |
             **[OSS] pgrep -a + ps** — 프로세스.
-              docker exec el34-ips sh -c 'pgrep -a Suricata'
-              docker exec el34-ips sh -c 'ps -o pid,vsz,rss,pcpu,cmd -p $(pgrep Suricata)'
+              ssh ccc@10.20.31.2 'pgrep -a Suricata'
+              ssh ccc@10.20.31.2 'ps -o pid,vsz,rss,pcpu,cmd -p $(pgrep Suricata)'
             예상 출력 `29 suricata -i eth1 -i eth0 -c /etc/suricata/suricata.yaml --runmode autofp -l /var/log/suricata`.
             운영 해석: 메모리 800MB+ 정상 (룰셋 로드). 100MB 이하면 룰셋 load 실패.
           - |
             **[OSS] suricatasc -c version / uptime / dump-counters** — 내부 메트릭.
-              docker exec el34-ips sh -c 'sudo suricatasc -c version'
-              docker exec el34-ips sh -c 'sudo suricatasc -c uptime'
-              docker exec el34-ips sh -c 'sudo suricatasc -c dump-counters 2>&1 | jq ".message | with_entries(select(.value > 0)) | to_entries | sort_by(-.value) | .[:10]"'
+              ssh ccc@10.20.31.2 'sudo suricatasc -c version'
+              ssh ccc@10.20.31.2 'sudo suricatasc -c uptime'
+              ssh ccc@10.20.31.2 'sudo suricatasc -c dump-counters 2>&1 | jq ".message | with_entries(select(.value > 0)) | to_entries | sort_by(-.value) | .[:10]"'
             예상 출력 `{version: 6.0.4} / {uptime: 191968} / [{key: capture.kernel_packets, value: 1234567}, ...]`.
             운영 해석: 내부 socket 통신. dump-counters 가 100+ 카운터 + 가장 큰 값
             10개 정렬.
           - |
             **[OSS] jq + eve.json event_type 분포** — 분석.
-              docker exec el34-ips sh -c 'sudo tail -500 /var/log/suricata/eve.json | jq -r .event_type | sort | uniq -c | sort -rn'
+              ssh ccc@10.20.31.2 'sudo tail -500 /var/log/suricata/eve.json | jq -r .event_type | sort | uniq -c | sort -rn'
             예상 출력 `314 flow / 156 tls / 9 stats / 8 alert / 7 fileinfo / 6 http`.
             운영 해석: flow 가 가장 많음. http+tls+alert 섞여 있어야 protocol decoder
             동작.
           - |
             **[OSS] alert 추출 — sid 매핑** — 룰 동작.
-              docker exec el34-ips sh -c 'sudo grep ''"event_type":"alert"'' /var/log/suricata/eve.json | jq "{ts:.timestamp, sig:.alert.signature, sid:.alert.signature_id}" | head -5'
+              ssh ccc@10.20.31.2 'sudo grep ''"event_type":"alert"'' /var/log/suricata/eve.json | jq "{ts:.timestamp, sig:.alert.signature, sid:.alert.signature_id}" | head -5'
             예상 출력 `{ts: ..., sig: "ET SCAN ...", sid: 2003020}`.
             운영 해석: alert 가 ETOpen 룰 ID 매치. 2000xxx = SCAN, 2010xxx = WEB.
           - |
             **[OSS] iface 별 sniff 통계** — 두 NIC 균형.
-              docker exec el34-ips sh -c 'sudo tail -500 /var/log/suricata/eve.json | jq -r .in_iface | sort | uniq -c'
+              ssh ccc@10.20.31.2 'sudo tail -500 /var/log/suricata/eve.json | jq -r .in_iface | sort | uniq -c'
             예상 출력 `300 eth0 / 200 eth1`.
             운영 해석: 두 NIC 모두 트래픽. 한쪽 0 이면 promisc 또는 link down.
           - |
             **[OSS] suricata.yaml 의 af-packet 정의** — config.
-              docker exec el34-ips sh -c 'sudo grep -A3 "af-packet:" /etc/suricata/suricata.yaml | head -15'
+              ssh ccc@10.20.31.2 'sudo grep -A3 "af-packet:" /etc/suricata/suricata.yaml | head -15'
             예상 출력 `af-packet: / - interface: eth0 / - interface: eth1 / ...`.
             운영 해석: 2 interface 정의. cluster-id / cluster-type / threads 옵션도.
           - |
             **[OSS] 룰셋 카운트** — 활성.
-              docker exec el34-ips sh -c 'sudo wc -l /var/lib/suricata/rules/suricata.rules 2>/dev/null || sudo wc -l /etc/suricata/rules/*.rules 2>&1 | tail -1'
+              ssh ccc@10.20.31.2 'sudo wc -l /var/lib/suricata/rules/suricata.rules 2>/dev/null || sudo wc -l /etc/suricata/rules/*.rules 2>&1 | tail -1'
             예상 출력 `30000+ /var/lib/suricata/rules/suricata.rules`.
             운영 해석: ETOpen 통합 30,000+ 라인 = 활성 룰 25,000+ (주석 제외).
           - |
             **[OSS] /var/log/suricata/stats.log — 10초 주기** — 시계열.
-              docker exec el34-ips sh -c 'sudo tail -20 /var/log/suricata/stats.log'
+              ssh ccc@10.20.31.2 'sudo tail -20 /var/log/suricata/stats.log'
             예상 출력 `<time> | counter name | total value` 형식.
             운영 해석: 10초 단위 메트릭 dump. trend 분석.
         negative_signs:
@@ -539,7 +539,7 @@ steps:
       ## 💻 실행 명령
 
       **실습 컨테이너:** 설정·로그 점검은 `el34-web`, XSS 전송은 `el34-attacker`. 각 컨테이너에
-      `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
       # ── el34-web 에서: Apache/ModSec 설정 점검 ──
@@ -550,7 +550,7 @@ steps:
 
       # ── el34-attacker 에서: XSS payload 전송 ──
       # 3. XSS → 403 차단 검증
-      curl -s -o /dev/null -w "XSS: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"
+      curl -s -o /dev/null -w "XSS: %{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"
 
       # ── el34-web 에서: 차단 흔적 확인 ──
       # 4. error.log 의 매치 룰 ID 941/942 (audit JSON엔 룰 배열 없어 error.log 사용)
@@ -580,15 +580,15 @@ steps:
     points: 12
     answer: |
       echo "=== Apache 모듈 ==="
-      docker exec el34-web sh -c 'sudo apache2ctl -M 2>&1 | grep -iE "security|proxy|ssl"'
+      ssh ccc@10.20.32.80 'sudo apache2ctl -M 2>&1 | grep -iE "security|proxy|ssl"'
       echo "=== ModSec engine + audit ==="
-      docker exec el34-web sh -c 'sudo grep -E "^SecRuleEngine|^SecAuditLog|^SecAuditEngine|^SecAuditLogFormat" /etc/modsecurity/modsecurity.conf'
+      ssh ccc@10.20.32.80 'sudo grep -E "^SecRuleEngine|^SecAuditLog|^SecAuditEngine|^SecAuditLogFormat" /etc/modsecurity/modsecurity.conf'
       echo "=== 11 vhost ==="
-      docker exec el34-web sh -c 'sudo ls /etc/apache2/sites-enabled/'
+      ssh ccc@10.20.32.80 'sudo ls /etc/apache2/sites-enabled/'
       echo "=== XSS 페이로드 → 403 (dvwa = 차단형 vhost) ==="
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "%{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+      ssh att@192.168.0.202 'curl -s -o /dev/null -w "%{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
       sleep 1
-      docker exec el34-web sh -c 'grep -oE "id \"94[0-9]{4}\"" /var/log/apache2/dvwa_error.log | tail -3'
+      ssh ccc@10.20.32.80 'grep -oE "id \"94[0-9]{4}\"" /var/log/apache2/dvwa_error.log | tail -3'
     answer_detail: |
       mod_security2 + proxy + ssl 모듈 로드 + SecRuleEngine On + JSON 형식 audit
       log. 11 vhost (랜딩 + 8 vuln + portal/siem/bastion 3 운영). 차단형 vhost(dvwa)에
@@ -608,49 +608,49 @@ steps:
         acceptable_methods:
           - |
             **[OSS] apache2ctl -M — 모듈 목록** — 표준.
-              docker exec el34-web sh -c 'sudo apache2ctl -M 2>&1 | grep -iE "security|proxy|ssl|rewrite|headers"'
+              ssh ccc@10.20.32.80 'sudo apache2ctl -M 2>&1 | grep -iE "security|proxy|ssl|rewrite|headers"'
             예상 출력 `security2_module (shared) / proxy_module (shared) / proxy_http_module / ssl_module / rewrite_module / headers_module`.
             운영 해석: 6 핵심 모듈. security2 가 ModSec, proxy 가 reverse proxy.
           - |
             **[OSS] modsecurity.conf 핵심 키** — 정책.
-              docker exec el34-web sh -c 'sudo grep -E "^Sec(RuleEngine|AuditLog|AuditEngine|AuditLogFormat|RequestBody|ResponseBody|DefaultAction)" /etc/modsecurity/modsecurity.conf'
+              ssh ccc@10.20.32.80 'sudo grep -E "^Sec(RuleEngine|AuditLog|AuditEngine|AuditLogFormat|RequestBody|ResponseBody|DefaultAction)" /etc/modsecurity/modsecurity.conf'
             예상 출력 `SecRuleEngine On / SecAuditEngine RelevantOnly / SecAuditLogFormat JSON / SecAuditLog /var/log/apache2/modsec_audit.log / SecRequestBodyAccess On / SecResponseBodyAccess On / SecDefaultAction "phase:2,log,auditlog,deny,status:403"`.
             운영 해석: On + JSON + RelevantOnly = Wazuh decoder 친화 + 디스크 효율.
           - |
             **[OSS] CRS 룰셋 파일 수** — 룰셋 활성.
-              docker exec el34-web sh -c 'sudo ls /usr/share/modsecurity-crs/rules/ | wc -l'
-              docker exec el34-web sh -c 'sudo ls /usr/share/modsecurity-crs/rules/REQUEST-9*.conf | head'
+              ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/ | wc -l'
+              ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/REQUEST-9*.conf | head'
             예상 출력 `31 / REQUEST-901-INITIALIZATION.conf / REQUEST-941-...-XSS.conf / REQUEST-942-...-SQLI.conf`.
             운영 해석: 31 룰 파일. 941 (XSS), 942 (SQLi), 930 (LFI), 932 (RCE) 핵심.
           - |
             **[OSS] curl XSS → 403 응답** — 동작 검증.
-              docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "XSS: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+              ssh att@192.168.0.202 'curl -s -o /dev/null -w "XSS: %{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
               sleep 2
-              docker exec el34-web sh -c 'sudo tail -3 /var/log/apache2/modsec_audit.log | head -1 | jq "{code: .transaction.response.http_code, msgs: [.transaction.messages[]? | select(.id | startswith(\"941\")) | .id]}"'
+              ssh ccc@10.20.32.80 'sudo tail -3 /var/log/apache2/modsec_audit.log | head -1 | jq "{code: .transaction.response.http_code, msgs: [.transaction.messages[]? | select(.id | startswith(\"941\")) | .id]}"'
             예상 출력 `XSS: 403 / {"code":403,"msgs":["941100","941160"]}`.
             운영 해석: 941100 = libinjection 매칭. 403 차단.
           - |
             **[OSS] 11 vhost 검증** — reverse proxy.
-              docker exec el34-web sh -c 'sudo ls /etc/apache2/sites-enabled/'
+              ssh ccc@10.20.32.80 'sudo ls /etc/apache2/sites-enabled/'
               # sites-enabled 는 sites-available 로의 심볼릭 링크라 grep 은 -R(링크 추적) 필요(-r 은 0건)
-              docker exec el34-web sh -c 'sudo grep -RhE "ProxyPass /" /etc/apache2/sites-enabled/ | grep -v socket.io | head'
+              ssh ccc@10.20.32.80 'sudo grep -RhE "ProxyPass /" /etc/apache2/sites-enabled/ | grep -v socket.io | head'
             예상 출력 `000-landing.conf / 010-juice.conf / 020-dvwa.conf / … / 12 파일` + `ProxyPass / http://juiceshop:3000/ / ProxyPass / http://dvwa:80/ …`(대상은 IP 가 아니라 컨테이너 **hostname**; juiceshop→10.20.40.81, dvwa→10.20.40.82 으로 resolve).
             운영 해석: 각 vhost 가 int 백엔드 컨테이너로 reverse proxy(ProxyPass)→ WAF 검사 후 전달. 8 vuln + 랜딩 + 운영 vhost.
           - |
             **[OSS] modsec_audit.log JSON 라인 수** — 활성.
-              docker exec el34-web sh -c 'sudo wc -l /var/log/apache2/modsec_audit.log'
-              docker exec el34-web sh -c 'sudo grep -oE ''"id":"[0-9]+"'' /var/log/apache2/modsec_audit.log | sort | uniq -c | sort -rn | head'
+              ssh ccc@10.20.32.80 'sudo wc -l /var/log/apache2/modsec_audit.log'
+              ssh ccc@10.20.32.80 'sudo grep -oE ''"id":"[0-9]+"'' /var/log/apache2/modsec_audit.log | sort | uniq -c | sort -rn | head'
             예상 출력 `600+ / 30 "id":"941100" / 25 "id":"942100" / ...`.
             운영 해석: 600+ transaction 기록. 941 (XSS) 가 가장 자주.
           - |
             **[OSS] CRS paranoia + anomaly** — 룰 강도.
-              docker exec el34-web sh -c 'sudo find / -name "crs-setup.conf" 2>/dev/null | head -1 | xargs sudo grep -E "tx.paranoia|inbound_anomaly|outbound_anomaly" 2>/dev/null | head'
+              ssh ccc@10.20.32.80 'sudo find / -name "crs-setup.conf" 2>/dev/null | head -1 | xargs sudo grep -E "tx.paranoia|inbound_anomaly|outbound_anomaly" 2>/dev/null | head'
             예상 출력 `setvar:tx.paranoia_level=1 / setvar:tx.inbound_anomaly_score_threshold=5 / setvar:tx.outbound_anomaly_score_threshold=4`.
             운영 해석: paranoia 1 + threshold 5 = 표준 운영. W06 에서 튜닝.
           - |
             **[OSS] Apache access.log + error.log** — 보조.
-              docker exec el34-web sh -c 'sudo tail -3 /var/log/apache2/access.log'
-              docker exec el34-web sh -c 'sudo grep -i modsec /var/log/apache2/error.log 2>/dev/null | tail -3'
+              ssh ccc@10.20.32.80 'sudo tail -3 /var/log/apache2/access.log'
+              ssh ccc@10.20.32.80 'sudo grep -i modsec /var/log/apache2/error.log 2>/dev/null | tail -3'
             예상 출력 `<ip> - - [<date>] "GET /?q=<script>..." 403 / [client ...] ModSecurity: Warning. ...`.
             운영 해석: error.log 의 ModSec 메시지 = audit log 의 index.
         negative_signs:
@@ -674,7 +674,7 @@ steps:
       ## 💻 실행 명령
 
       **실습 컨테이너:** Wazuh manager 점검은 `el34-siem`, cluster health 는 `el34-wazuh-indexer`.
-      각 컨테이너에 `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      각 컨테이너에 각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
       # ── el34-siem 에서: Wazuh manager 점검 ──
@@ -687,7 +687,7 @@ steps:
 
       # ── el34-wazuh-indexer 에서: cluster health ──
       # 4. OpenSearch cluster health
-      curl -sk -u admin:SecretPassword https://localhost:9200/_cluster/health | jq
+      curl -sk -u admin:SecretPassword https://10.20.32.110:9200/_cluster/health | jq
       ```
 
       ## 📋 확인 사항
@@ -716,13 +716,13 @@ steps:
     points: 12
     answer: |
       echo "=== 10 daemon 가동 ==="
-      docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-control status'
+      ssh ccc@10.20.32.100 'sudo /var/ossec/bin/wazuh-control status'
       echo "=== 2 agent (ips/web) ==="
-      docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -l'
+      ssh ccc@10.20.32.100 'sudo /var/ossec/bin/agent_control -l'
       echo "=== 3 listening port ==="
-      docker exec el34-siem sh -c 'sudo ss -tlnp | grep -E ":(1514|1515|55000)"'
+      ssh ccc@10.20.32.100 'sudo ss -tlnp | grep -E ":(1514|1515|55000)"'
       echo "=== cluster health ==="
-      docker exec el34-bastion sh -c 'docker exec el34-wazuh-indexer curl -sk -u admin:SecretPassword https://localhost:9200/_cluster/health | jq -c "{status, nodes:.number_of_nodes, shards:.active_shards}"'
+      ssh ccc@10.20.32.100 'curl -sk -u admin:SecretPassword https://10.20.32.110:9200/_cluster/health | jq -c "{status, nodes:.number_of_nodes, shards:.active_shards}"'
     answer_detail: |
       10 daemon running (analysisd / remoted / modulesd / monitord / logcollector /
       syscheckd / execd / db / authd / apid). 2 agent (003 ips / 004 web) 모두
@@ -741,46 +741,46 @@ steps:
         acceptable_methods:
           - |
             **[OSS] wazuh-control status** — 표준.
-              docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-control status'
+              ssh ccc@10.20.32.100 'sudo /var/ossec/bin/wazuh-control status'
             예상 출력 `wazuh-modulesd is running / monitord is running / logcollector is running / remoted is running / syscheckd is running / analysisd is running / execd is running / db is running / authd is running / apid is running`.
             운영 해석: 10 running + 6 not running (default-off). clusterd, maild,
             agentlessd, integratord, dbd, csyslogd 가 default-off.
           - |
             **[OSS] agent_control -l + -i** — 등록 agent.
-              docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -l'
-              docker exec el34-siem sh -c 'sudo /var/ossec/bin/agent_control -i 003'
+              ssh ccc@10.20.32.100 'sudo /var/ossec/bin/agent_control -l'
+              ssh ccc@10.20.32.100 'sudo /var/ossec/bin/agent_control -i 003'
             예상 출력 `003 ips Active / 004 web Active`.
             운영 해석: 2 agent + 000 server (fw 컨테이너는 agent 미설치). Active 가 아니면
             enrollment 또는 1514 통신 점검.
           - |
             **[OSS] ss -tlnp + 1514/1515/55000** — listening.
-              docker exec el34-siem sh -c 'sudo ss -tlnp | grep -E ":(1514|1515|55000)"'
+              ssh ccc@10.20.32.100 'sudo ss -tlnp | grep -E ":(1514|1515|55000)"'
             예상 출력 `LISTEN ... :1514 wazuh-remoted / LISTEN ... :1515 wazuh-authd / LISTEN ... :55000 python3`.
             운영 해석: 3 port 모두 listen → enrollment + event ingestion + API 가능.
           - |
             **[OSS] _cluster/health (OpenSearch)** — indexer.
-              docker exec el34-bastion sh -c 'docker exec el34-wazuh-indexer curl -sk -u admin:SecretPassword https://localhost:9200/_cluster/health | jq'
+              ssh ccc@10.20.32.100 'curl -sk -u admin:SecretPassword https://10.20.32.110:9200/_cluster/health | jq'
             예상 출력 `{"status":"green","number_of_nodes":1,"active_shards":N}` (샤드 수는 환경마다).
             운영 해석: 단일 노드 + replica 0 → green. replica 1+ 면 yellow.
           - |
             **[OSS] alerts.json 최근 alert** — 데이터 흐름.
-              docker exec el34-siem sh -c 'sudo tail -3 /var/ossec/logs/alerts/alerts.json | tail -1 | jq "{ts: .timestamp, agent: .agent.name, rule_id: .rule.id, level: .rule.level, desc: .rule.description}"'
+              ssh ccc@10.20.32.100 'sudo tail -3 /var/ossec/logs/alerts/alerts.json | tail -1 | jq "{ts: .timestamp, agent: .agent.name, rule_id: .rule.id, level: .rule.level, desc: .rule.description}"'
             예상 출력 `{ts: <date>, agent: web, rule_id: 31151, level: 5, desc: "Apache: 4xx response"}`.
             운영 해석: alerts.json 에 적재 = analysisd 정상 + agent 통신 정상.
           - |
             **[OSS] Wazuh API + JWT** — 외부 진단.
-              docker exec el34-siem sh -c 'TOKEN=$(sudo curl -sk -u wazuh-wui:MyS3cr37P450r.*- -X POST https://localhost:55000/security/user/authenticate | jq -r .data.token); sudo curl -sk -H "Authorization: Bearer $TOKEN" https://localhost:55000/agents | jq ".data.affected_items | length"'
+              ssh ccc@10.20.32.100 'TOKEN=$(sudo curl -sk -u wazuh-wui:MyS3cr37P450r.*- -X POST https://localhost:55000/security/user/authenticate | jq -r .data.token); sudo curl -sk -H "Authorization: Bearer $TOKEN" https://localhost:55000/agents | jq ".data.affected_items | length"'
             예상 출력 `3` (server + 2 agent).
             운영 해석: API 정상 → dashboard 도 정상. 401 이면 internal_users 점검.
           - |
             **[OSS] /var/ossec/etc/client.keys** — agent 등록.
-              docker exec el34-siem sh -c 'sudo cat /var/ossec/etc/client.keys 2>/dev/null | head'
+              ssh ccc@10.20.32.100 'sudo cat /var/ossec/etc/client.keys 2>/dev/null | head'
             예상 출력 `003 ips <ip> <key> / 004 web ...`.
             운영 해석: client.keys = enrollment 의 source of truth. 0 라인이면 enrollment
             전체 실패.
           - |
             **[OSS] _cat/indices — wazuh-* 인덱스** — 색인.
-              docker exec el34-bastion sh -c 'docker exec el34-wazuh-indexer curl -sk -u admin:SecretPassword "https://localhost:9200/_cat/indices?v&s=index" | head -10'
+              ssh ccc@10.20.32.100 'curl -sk -u admin:SecretPassword "https://10.20.32.110:9200/_cat/indices?v&s=index" | head -10'
             예상 출력 `wazuh-alerts-4.x-<date> open / wazuh-monitoring-... / wazuh-statistics-...`.
             운영 해석: 3 핵심 인덱스. 없으면 filebeat → indexer 통신 실패.
         negative_signs:
@@ -802,7 +802,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **공격 VM:** `ssh att@192.168.0.202`(비번 `1`)로 접속해 실행한다(자연 URL).
 
       ```bash
       # Red 공격 — sqlmap UA + XSS + SQLi UNION SELECT 결합. 대상 vhost = dvwa
@@ -810,8 +810,7 @@ steps:
       # → W02 SQLi / W03 XSS 학생 학습용. W01 의 차단 검증은 dvwa/neobank 등 사용.
       curl -s -o /dev/null -w "응답: %{http_code} 시간: %{time_total}s\n" \
           -A "sqlmap/1.5" \
-          -H "Host: dvwa.el34.lab" \
-          "http://10.20.30.1/?q=<script>alert(1)</script>&id=1+UNION+SELECT"
+          "http://dvwa.el34.lab/?q=<script>alert(1)</script>&id=1+UNION+SELECT"
 
       # 공격 시각 기록 (Blue/Purple step 에서 timestamp 매칭에 사용)
       ATTACK_TS=$(date -u +%Y-%m-%dT%H:%M:%S)
@@ -837,14 +836,14 @@ steps:
       - **비정상 2**: 응답 `5xx` → backend(web) 다운 또는 라우팅 오류 → STEP 3 재점검
       - **비정상 3**: 응답 `000` (timeout) → fw 의 input chain drop 또는 attacker 컨테이너
         다운
-    hint: 'el34-attacker 접속 후 — curl -A "sqlmap/1.5" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>"  # juice 는 DetectionOnly (W02 용), 차단 검증은 dvwa/neobank/...'
+    hint: 'el34-attacker 접속 후 — curl -A "sqlmap/1.5" "http://dvwa.el34.lab/?q=<script>"  # juice 는 DetectionOnly (W02 용), 차단 검증은 dvwa/neobank/...'
     category: redteam
     points: 8
     answer: |
       echo "=== Red Team: 공격 발생 (sqlmap UA + XSS + SQLi 결합) ==="
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "응답: %{http_code} / 시간: %{time_total}s\n" -A "sqlmap/1.5" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>&id=1+UNION+SELECT"'
+      ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code} / 시간: %{time_total}s\n" -A "sqlmap/1.5" "http://dvwa.el34.lab/?q=<script>alert(1)</script>&id=1+UNION+SELECT"'
       echo "=== 공격 시각 기록 ==="
-      ATTACK_TS=$(docker exec el34-attacker sh -c 'date -u +%Y-%m-%dT%H:%M:%S')
+      ATTACK_TS=$(ssh att@192.168.0.202 'date -u +%Y-%m-%dT%H:%M:%S')
       echo "ATTACK_TS=$ATTACK_TS"
       echo "이 시각 이후의 로그가 Blue/Purple step 에서 추적 대상"
     answer_detail: |
@@ -866,27 +865,27 @@ steps:
         acceptable_methods:
           - |
             **[OSS] curl 종합 페이로드** — 표준.
-              docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "%{http_code}\n" -A "sqlmap/1.5" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>&id=1+UNION+SELECT"'
+              ssh att@192.168.0.202 'curl -s -o /dev/null -w "%{http_code}\n" -A "sqlmap/1.5" "http://dvwa.el34.lab/?q=<script>alert(1)</script>&id=1+UNION+SELECT"'
             예상 출력 `403`.
             운영 해석: 다중 페이로드로 4 도구 동시 검증.
           - |
             **[OSS] 페이로드 변형 — XSS only** — 단순.
-              docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "%{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=<script>alert(1)</script>"'
+              ssh att@192.168.0.202 'curl -s -o /dev/null -w "%{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
             예상 출력 `403`.
             운영 해석: XSS 단독으로도 941 매치 → 403.
           - |
             **[OSS] 페이로드 변형 — SQLi only** — 단순.
-              docker exec el34-attacker sh -c "curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1' OR '1'='1\""
+              ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}\n' \"http://dvwa.el34.lab/?id=1' OR '1'='1\""
             예상 출력 `403`.
             운영 해석: SQLi 단독으로도 942 매치 → 403.
           - |
             **[OSS] User-Agent only** — scanner detection.
-              docker exec el34-attacker sh -c 'curl -s -o /dev/null -w "%{http_code}\n" -A "sqlmap/1.5" -H "Host: juice.el34.lab" "http://10.20.30.1/"'
+              ssh att@192.168.0.202 'curl -s -o /dev/null -w "%{http_code}\n" -A "sqlmap/1.5" "http://juice.el34.lab/"'
             예상 출력 `403`.
             운영 해석: 913 (Scanner Detection) 룰셋 매치.
           - |
             **[OSS] 연속 5회 — Wazuh 룰 발화 빈도** — burst.
-              docker exec el34-attacker sh -c 'for i in 1 2 3 4 5; do curl -s -o /dev/null -w "%{http_code}\n" -A "sqlmap" -H "Host: juice.el34.lab" "http://10.20.30.1/?q=<script>"; done'
+              ssh att@192.168.0.202 'for i in 1 2 3 4 5; do curl -s -o /dev/null -w "%{http_code}\n" -A "sqlmap" "http://juice.el34.lab/?q=<script>"; done'
             예상 출력 `403 / 403 / 403 / 403 / 403`.
             운영 해석: 5회 burst → Wazuh 의 rule frequency 매칭 가능 (W09 학습).
           - |
@@ -903,7 +902,7 @@ steps:
             운영 해석: Blue/Purple step 에서 timestamp 매칭으로 정확한 transaction 추출.
           - |
             **[OSS] tcpdump 동시 캡처** — 패킷 증거.
-              # 별 터미널: docker exec el34-fw sh -c 'sudo tcpdump -ni eth0 host 10.20.30.202 and tcp port 80 -c 10 -w /tmp/attack.pcap'
+              # 별 터미널: ssh ccc@10.20.30.1 'sudo tcpdump -ni eth0 host 10.20.30.202 and tcp port 80 -c 10 -w /tmp/attack.pcap'
               echo "tcpdump 로 패킷 증거 보존"
             예상 출력 `(절차)`.
             운영 해석: 침해 후 분석 자료.
@@ -925,7 +924,7 @@ steps:
       ## 💻 실행 명령
 
       **실습 컨테이너:** L3/L4 흐름은 `el34-fw`, L7 event 는 `el34-ips`. 각 컨테이너에
-      `docker exec -it el34-<name> bash` 로 접속해 실행한다.
+      각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
       # ── el34-fw 에서: conntrack (L3/L4 흐름, payload 는 못 봄) ──
@@ -958,9 +957,9 @@ steps:
     points: 12
     answer: |
       echo "=== Blue: fw conntrack (L3/L4 흐름) ==="
-      docker exec el34-fw sh -c 'conntrack -L 2>/dev/null | grep -E "dport=80|10.20.32.80" | tail -3'
+      ssh ccc@10.20.30.1 'conntrack -L 2>/dev/null | grep -E "dport=80|10.20.32.80" | tail -3'
       echo "=== Blue: ips Suricata eve.json (HTTP event) ==="
-      docker exec el34-ips sh -c 'tail -5000 /var/log/suricata/eve.json | jq -c "select(.event_type==\"http\" and .http.hostname==\"dvwa.el34.lab\")" | tail -1'
+      ssh ccc@10.20.31.2 'tail -5000 /var/log/suricata/eve.json | jq -c "select(.event_type==\"http\" and .http.hostname==\"dvwa.el34.lab\")" | tail -1'
     answer_detail: |
       conntrack 항목 = `tcp ... src=10.20.30.202 dst=10.20.30.1 dport=80 ... dst=10.20.32.80`
       (DNAT 으로 web 으로 향함). fw 는 L3/L4 만 보므로 payload 는 안 보인다. ips eve.json 의
@@ -979,33 +978,33 @@ steps:
         acceptable_methods:
           - |
             **[OSS] fw conntrack — L3/L4 흐름** — 표준.
-              docker exec el34-fw sh -c 'conntrack -L 2>/dev/null | grep -E "dport=80|10.20.32.80" | tail -3'
+              ssh ccc@10.20.30.1 'conntrack -L 2>/dev/null | grep -E "dport=80|10.20.32.80" | tail -3'
             예상 출력 `tcp 6 ... src=10.20.30.202 ... dport=80 ... dst=10.20.32.80 ...`.
             운영 해석: fw 는 연결의 IP/port/state 만 본다. payload 는 다음 hop(ips/web)의 몫.
           - |
             **[OSS] fw nft 카운터** — 룰 히트.
-              docker exec el34-fw sh -c 'nft list table inet six_filter | grep -A3 "chain forward"'
+              ssh ccc@10.20.30.1 'nft list table inet six_filter | grep -A3 "chain forward"'
             예상 출력 `chain forward { ... } (정책/룰 카운터)`.
             운영 해석: forward chain 통과로 트래픽이 fw 를 지났음을 확인.
           - |
             **[OSS] Suricata eve.json HTTP event** — 표준.
-              docker exec el34-ips sh -c 'tail -5000 /var/log/suricata/eve.json | jq -c "select(.event_type==\"http\" and .http.hostname==\"dvwa.el34.lab\")" | tail -1'
+              ssh ccc@10.20.31.2 'tail -5000 /var/log/suricata/eve.json | jq -c "select(.event_type==\"http\" and .http.hostname==\"dvwa.el34.lab\")" | tail -1'
             예상 출력 `{"event_type":"http","src_ip":"10.20.30.202","http":{"hostname":"dvwa.el34.lab","url":"/?q=<script>...","status":403}}`.
             운영 해석: 같은 transaction 의 ips 측 view. status 403 인 이유 — ips 는 sniff 만이고 응답은 web 측 결정.
           - |
             **[OSS] flow_id 매칭** — 추적.
-              FLOW_ID=$(docker exec el34-ips sh -c 'tail -5000 /var/log/suricata/eve.json | jq -r "select(.event_type==\"http\" and .http.hostname==\"dvwa.el34.lab\") | .flow_id" | tail -1')
-              docker exec el34-ips sh -c "tail -1000 /var/log/suricata/eve.json | jq -r 'select(.flow_id==$FLOW_ID) | .event_type'"
+              FLOW_ID=$(ssh ccc@10.20.31.2 'tail -5000 /var/log/suricata/eve.json | jq -r "select(.event_type==\"http\" and .http.hostname==\"dvwa.el34.lab\") | .flow_id" | tail -1')
+              ssh ccc@10.20.31.2 "tail -1000 /var/log/suricata/eve.json | jq -r 'select(.flow_id==$FLOW_ID) | .event_type'"
             예상 출력 `flow / http / alert / fileinfo` (같은 flow_id 의 모든 event).
             운영 해석: flow_id 로 conn 의 모든 event 추적 — 한 페이로드의 모든 흔적.
           - |
             **[OSS] 출처 IP 분포 — el34 보존 특성** — 분석.
-              docker exec el34-ips sh -c 'tail -300 /var/log/suricata/eve.json | jq -r "select(.event_type==\"http\") | .src_ip" | sort | uniq -c | tail'
+              ssh ccc@10.20.31.2 'tail -300 /var/log/suricata/eve.json | jq -r "select(.event_type==\"http\") | .src_ip" | sort | uniq -c | tail'
             예상 출력 `내부 attacker 는 10.20.31.1/10.20.32.1(hop), 외부 .202 공격은 {{ATTACKER_IP}}`.
             운영 해석: el34 는 외부 공격자(.202)의 출처 IP 를 ips·web·siem 에 보존(구 6v6 의 gateway-src 문제 개선).
           - |
             **[OSS] event_type 별 매트릭스** — 종합.
-              docker exec el34-ips sh -c 'tail -200 /var/log/suricata/eve.json | jq -r .event_type | sort | uniq -c | sort -rn'
+              ssh ccc@10.20.31.2 'tail -200 /var/log/suricata/eve.json | jq -r .event_type | sort | uniq -c | sort -rn'
             예상 출력 `flow / http / tls / alert / stats / fileinfo` 분포.
             운영 해석: 공격 발생 시 alert 증가 + http 증가 동시.
         negative_signs:
@@ -1025,7 +1024,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-web` — `docker exec -it el34-web bash` 로 접속해 실행한다.
+      **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
       # 1. ModSec audit log 의 dvwa 403 transaction (audit JSON: status / client / UA)
@@ -1061,11 +1060,11 @@ steps:
     points: 12
     answer: |
       echo "=== Blue: web ModSec audit log (dvwa 403 transaction) ==="
-      docker exec el34-web sh -c 'tail -500 /var/log/apache2/modsec_audit.log | jq -c "select(.response.status==403 and .request.headers.Host==\"dvwa.el34.lab\") | {client:.transaction.remote_address, status:.response.status, ua:.request.headers.\"User-Agent\"}" | tail -1'
+      ssh ccc@10.20.32.80 'tail -500 /var/log/apache2/modsec_audit.log | jq -c "select(.response.status==403 and .request.headers.Host==\"dvwa.el34.lab\") | {client:.transaction.remote_address, status:.response.status, ua:.request.headers.\"User-Agent\"}" | tail -1'
       echo "=== Blue: web Apache dvwa_access.log (403 흔적) ==="
-      docker exec el34-web sh -c 'grep " 403 " /var/log/apache2/dvwa_access.log | tail -3'
+      ssh ccc@10.20.32.80 'grep " 403 " /var/log/apache2/dvwa_access.log | tail -3'
       echo "=== Blue: web Apache dvwa_error.log (매치 룰 ID) ==="
-      docker exec el34-web sh -c 'grep -oE "id \"[0-9]{6}\"" /var/log/apache2/dvwa_error.log 2>/dev/null | tail -6'
+      ssh ccc@10.20.32.80 'grep -oE "id \"[0-9]{6}\"" /var/log/apache2/dvwa_error.log 2>/dev/null | tail -6'
     answer_detail: |
       audit log 의 한 transaction. messages 배열에 매치된 룰 ID. 941100 + 941160 (XSS)
       + 942100 (SQLi) + 949110 (anomaly threshold 5+ 도달 → 차단). access log 의
@@ -1086,43 +1085,43 @@ steps:
         acceptable_methods:
           - |
             **[OSS] modsec_audit.log JSON 분석** — 표준.
-              docker exec el34-web sh -c 'tail -500 /var/log/apache2/modsec_audit.log | jq -c "select(.request.headers.Host==\"dvwa.el34.lab\")" | tail -1'
+              ssh ccc@10.20.32.80 'tail -500 /var/log/apache2/modsec_audit.log | jq -c "select(.request.headers.Host==\"dvwa.el34.lab\")" | tail -1'
             예상 출력 `{"transaction":{"remote_address":"10.20.30.202",...},"request":{"request_line":"GET /?q=...","headers":{"Host":"dvwa.el34.lab","User-Agent":"sqlmap/1.5"}},"response":{"status":403,...}}`.
             운영 해석: audit JSON 은 transaction/request/response 구조. 매치 룰 ID 는
             dvwa_error.log 에서 별도 확인 (941 XSS, 942 SQLi).
           - |
             **[OSS] 매치 룰 통계** — 분류 (error.log).
-              docker exec el34-web sh -c 'grep -oE "id \"[0-9]{6}\"" /var/log/apache2/dvwa_error.log | sort | uniq -c | sort -rn | head'
+              ssh ccc@10.20.32.80 'grep -oE "id \"[0-9]{6}\"" /var/log/apache2/dvwa_error.log | sort | uniq -c | sort -rn | head'
             예상 출력 `... id "941160" / ... id "942100" / ... id "949110" / ...`.
             운영 해석: 941 (XSS) / 942 (SQLi) 매치 빈도. 949110 anomaly threshold 도달 → 차단.
           - |
             **[OSS] Apache access.log + grep** — 표준.
-              docker exec el34-web sh -c 'grep -E "sqlmap|10.20.30.202" /var/log/apache2/dvwa_access.log | tail -3'
+              ssh ccc@10.20.32.80 'grep -E "sqlmap|10.20.30.202" /var/log/apache2/dvwa_access.log | tail -3'
             예상 출력 `10.20.30.202 - - [<date>] "GET /?q=<script>... HTTP/1.1" 403 ... "sqlmap/1.5"`.
             운영 해석: client IP 가 실제 공격자(보존). UA 가 sqlmap 으로 가시화.
           - |
             **[OSS] 출처 IP 보존 확인** — el34 특성.
-              docker exec el34-web sh -c 'tail -20 /var/log/apache2/dvwa_access.log | awk "{print \$1}" | sort | uniq -c'
+              ssh ccc@10.20.32.80 'tail -20 /var/log/apache2/dvwa_access.log | awk "{print \$1}" | sort | uniq -c'
             예상 출력 `내부 공격자 10.20.30.202 / 외부 공격자 {{ATTACKER_IP}}` (둘 다 실제 IP).
             운영 해석: el34 는 fw 가 SNAT 하지 않아 내부·외부 공격자 출처 IP 가 web 까지 보존(구 6v6 의 gateway-src/forwardfor 의존 문제 제거).
           - |
             **[OSS] response.http_code 분포** — WAF 효과.
-              docker exec el34-web sh -c 'tail -1000 /var/log/apache2/modsec_audit.log | jq -r ".response.status" 2>/dev/null | sort | uniq -c'
+              ssh ccc@10.20.32.80 'tail -1000 /var/log/apache2/modsec_audit.log | jq -r ".response.status" 2>/dev/null | sort | uniq -c'
             예상 출력 `... 200 / ... 403 / ... 502`.
             운영 해석: 403 비율 = WAF 차단 효과. 100% 면 모든 트래픽 차단 = 운영 위험.
           - |
             **[OSS] Apache error.log 의 ModSec 메시지** — 보조.
-              docker exec el34-web sh -c 'grep -i modsec /var/log/apache2/dvwa_error.log | tail -3'
+              ssh ccc@10.20.32.80 'grep -i modsec /var/log/apache2/dvwa_error.log | tail -3'
             예상 출력 `[client 10.20.30.202] ModSecurity: Warning. ... XSS ...`.
             운영 해석: error.log 가 audit log 의 인덱스 — 빠른 시각 검색.
           - |
             **[OSS] severity 분석** — 우선순위.
-              docker exec el34-web sh -c 'grep -oE "severity \"[A-Z]+\"" /var/log/apache2/dvwa_error.log | sort | uniq -c'
+              ssh ccc@10.20.32.80 'grep -oE "severity \"[A-Z]+\"" /var/log/apache2/dvwa_error.log | sort | uniq -c'
             예상 출력 `CRITICAL / WARNING ...`.
             운영 해석: CRITICAL 매치가 confirmed attack.
           - |
             **[OSS] payload 의 정확한 매치 데이터** — 정밀.
-              docker exec el34-web sh -c 'grep -oE "Matched Data: .* found within [^ ]+" /var/log/apache2/dvwa_error.log | tail -3'
+              ssh ccc@10.20.32.80 'grep -oE "Matched Data: .* found within [^ ]+" /var/log/apache2/dvwa_error.log | tail -3'
             예상 출력 `Matched Data: <script> found within ARGS:q ...`.
             운영 해석: 매치된 정확한 페이로드 → false-positive 판단.
         negative_signs:
@@ -1142,7 +1141,7 @@ steps:
 
       ## 💻 실행 명령
 
-      **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
+      **SIEM 장비:** `ssh ccc@10.20.32.100`(비번 `1`)로 접속해 실행한다.
       siem 컨테이너엔 jq 가 없어 python3 으로 파싱한다.
 
       ```bash
@@ -1179,7 +1178,7 @@ steps:
     points: 10
     answer: |
       echo "=== Blue: siem Wazuh alerts.json (통합 alert) ==="
-      docker exec el34-siem sh -c 'sudo tail -500 /var/ossec/logs/alerts/alerts.json | grep -E "sqlmap|941|942|10.20.30.202" | tail -3 | head -1 | jq "{ts: .timestamp, agent: .agent.name, rule_id: .rule.id, level: .rule.level, desc: .rule.description, data: .data}"' || echo "(no alert — decoder 미정의 가능, W09 학습)"
+      ssh ccc@10.20.32.100 'sudo tail -500 /var/ossec/logs/alerts/alerts.json | grep -E "sqlmap|941|942|10.20.30.202" | tail -3 | head -1 | jq "{ts: .timestamp, agent: .agent.name, rule_id: .rule.id, level: .rule.level, desc: .rule.description, data: .data}"' || echo "(no alert — decoder 미정의 가능, W09 학습)"
     answer_detail: |
       예상 alert 구조: `{ts: <date>, agent: web, rule_id: 31100 (Apache 4xx),
       level: 5, desc: "Apache: Attempt to access forbidden file", data: {srcip:
@@ -1200,7 +1199,7 @@ steps:
         acceptable_methods:
           - |
             **[OSS] alerts.json + jq** — 표준.
-              docker exec el34-siem sh -c 'sudo tail -500 /var/ossec/logs/alerts/alerts.json | grep -E "web|sqlmap" | tail -3 | head -1 | jq'
+              ssh ccc@10.20.32.100 'sudo tail -500 /var/ossec/logs/alerts/alerts.json | grep -E "web|sqlmap" | tail -3 | head -1 | jq'
             예상 출력 `{"agent":{"name":"web",..},"rule":{"id":"31100",..,"description":"..."},"data":{"srcip":"10.20.30.202",..}}`.
             운영 해석: agent.name=web, rule.id=Apache 룰. data.srcip = 원래 attacker.
           - |
@@ -1212,32 +1211,32 @@ steps:
             운영 해석: dashboard 가 alerts.json 의 시각화 + 필터 + drill-down.
           - |
             **[OSS] Wazuh API /agents/{id}/stats** — agent 통신.
-              docker exec el34-siem sh -c 'TOKEN=$(sudo curl -sk -u wazuh-wui:MyS3cr37P450r.*- -X POST https://localhost:55000/security/user/authenticate | jq -r .data.token); sudo curl -sk -H "Authorization: Bearer $TOKEN" "https://localhost:55000/agents/001/stats/logcollector" 2>&1 | head'
+              ssh ccc@10.20.32.100 'TOKEN=$(sudo curl -sk -u wazuh-wui:MyS3cr37P450r.*- -X POST https://localhost:55000/security/user/authenticate | jq -r .data.token); sudo curl -sk -H "Authorization: Bearer $TOKEN" "https://localhost:55000/agents/001/stats/logcollector" 2>&1 | head'
             예상 출력 `{"data":{"events":1234,"bytes":..}}` 또는 다음 endpoint.
             운영 해석: agent 의 log 수집 통계.
           - |
             **[OSS] rule.id 별 분포** — 트렌드.
-              docker exec el34-siem sh -c 'sudo tail -500 /var/ossec/logs/alerts/alerts.json | jq -r .rule.id 2>/dev/null | sort | uniq -c | sort -rn | head'
+              ssh ccc@10.20.32.100 'sudo tail -500 /var/ossec/logs/alerts/alerts.json | jq -r .rule.id 2>/dev/null | sort | uniq -c | sort -rn | head'
             예상 출력 `50 31100 / 30 31115 / 25 31151 / ...`.
             운영 해석: 31100 = Apache 4xx, 31115 = unknown UA, 31151 = path 매치.
           - |
             **[OSS] level 별 분포** — 우선순위.
-              docker exec el34-siem sh -c 'sudo tail -500 /var/ossec/logs/alerts/alerts.json | jq -r .rule.level | sort | uniq -c | sort -rn'
+              ssh ccc@10.20.32.100 'sudo tail -500 /var/ossec/logs/alerts/alerts.json | jq -r .rule.level | sort | uniq -c | sort -rn'
             예상 출력 `200 3 / 100 5 / 30 7 / 5 12 / ...`.
             운영 해석: level >= 7 (medium+) 가 분석 대상.
           - |
             **[OSS] _cat/indices + wazuh-alerts-* 인덱스** — indexer 측.
-              docker exec el34-bastion sh -c 'docker exec el34-wazuh-indexer curl -sk -u admin:SecretPassword "https://localhost:9200/wazuh-alerts-*/_count?pretty"'
+              ssh ccc@10.20.32.100 'curl -sk -u admin:SecretPassword "https://10.20.32.110:9200/wazuh-alerts-*/_count?pretty"'
             예상 출력 `{"count":1234,..}`.
             운영 해석: indexer 에 적재된 총 alert 수.
           - |
             **[OSS] _search 쿼리 — 정밀** — analyst.
-              docker exec el34-bastion sh -c 'docker exec el34-wazuh-indexer curl -sk -u admin:SecretPassword "https://localhost:9200/wazuh-alerts-*/_search?q=data.srcip:10.20.30.202&size=2&pretty"'
+              ssh ccc@10.20.32.100 'curl -sk -u admin:SecretPassword "https://10.20.32.110:9200/wazuh-alerts-*/_search?q=data.srcip:10.20.30.202&size=2&pretty"'
             예상 출력 `{"hits":{"total":{"value":N,..},"hits":[..attacker IP 매칭..]}}`.
             운영 해석: indexer DSL 로 attacker IP 별 분석.
           - |
             **[OSS] decoder 매핑 점검 (gap)** — W09 예고.
-              docker exec el34-siem sh -c 'sudo grep -l "modsec\|apache.*audit" /var/ossec/ruleset/decoders/*.xml 2>/dev/null | head'
+              ssh ccc@10.20.32.100 'sudo grep -l "modsec\|apache.*audit" /var/ossec/ruleset/decoders/*.xml 2>/dev/null | head'
             예상 출력 `(decoder 파일) 또는 빈 결과 (decoder 미정의)`.
             운영 해석: 빈 결과면 W09 에서 사용자 정의 decoder 추가.
         negative_signs:
@@ -1477,7 +1476,7 @@ steps:
       | Step | 영역 | 결과 | 근거 |
       |------|------|------|------|
       | 1 | bastion + 보안 핵심 16 컨테이너 | pass | docker ps 핵심 16건 Up(전체 40여 개) |
-      | 2 | 접근 4 노드 (docker exec) | pass | fw/ips/web/siem hostname 응답 |
+      | 2 | 접근 4 노드 (ssh ccc@IP) | pass | fw/ips/web/siem hostname 응답 |
       | 3 | fw nft + six_nat | pass | 3 table + DNAT + 4 라우팅 |
       | 4 | ips Suricata 2 NIC | pass | -i eth0 -i eth1 + drops 0 |
       | 5 | web Apache + ModSec | pass | security2 + SecRuleEngine On + 403 차단 |
