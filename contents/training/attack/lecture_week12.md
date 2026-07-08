@@ -454,10 +454,10 @@ el34 에서 이를 떠받치는 세 장치는 다음과 같다.
 
 ```bash
 # 전수 헌팅(osquery): 모든 persistence 벡터를 한 번에
-docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE uid>=1000;'
-docker exec el34-web osqueryi --json 'SELECT command,path FROM crontab;'
-docker exec el34-web osqueryi --json 'SELECT * FROM authorized_keys LIMIT 5;' 2>/dev/null
-docker exec el34-web osqueryi --json 'SELECT path FROM suid_bin;'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT username,uid FROM users WHERE uid>=1000;"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT command,path FROM crontab;"'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT * FROM authorized_keys LIMIT 5;" 2>/dev/null'
+ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT path FROM suid_bin;"'
 ```
 
 위 질의들이 보여주는 것을 해석하면 — 첫 줄은 일반 사용자 계정(uid≥1000) 목록에서 baseline 에 없던
@@ -547,7 +547,7 @@ graph TD
 (헌팅·무결성·제거)** 가 오도록 흐른다.
 
 > **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서
-> `docker exec el34-<comp>` 로 실행한다. **인가된 실습 환경(el34)에서만** 수행한다. 심은 발판
+> 표적 web 셸 `ssh ccc@10.20.32.80`(root 작업 sudo) / SIEM `ssh ccc@10.20.32.100` 로 실행한다. **인가된 실습 환경(el34)에서만** 수행한다. 심은 발판
 > (계정·cron·키)은 lab 6 에서 전수 제거하고 lab 8 에서 잔재 0 을 확인한다(self-clean). SSH 키·계정은
 > 실제 접속용이 아닌 가짜 마커다. 합격 임계값은 0.7 이다.
 
