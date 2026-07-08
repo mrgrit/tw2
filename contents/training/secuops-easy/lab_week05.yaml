@@ -4,23 +4,24 @@ version: standalone-easy
 course: secuops-easy
 week: 5
 description: |
-  WAF 콘솔(192.168.136.145:8083)로 ModSecurity SecRule 을 배운다. SecRule 을 분석기로 분해하고, 폼으로
-  만들어 생성되는 SecRule 을 확인한 뒤 적용한다. 적용 전 configtest 가 문법을 검사하므로 잘못된
-  룰은 거부되고 웹서버는 살아남는다(안전장치 직접 체험). 그다음 공격을 재현해 실제 403 차단을
-  확인하고, 시나리오(waf-s11)를 검증한다. 마지막에 실습 룰(id 9000000+)을 정리한다.
+  WAF(웹서버) 장비(`web`, `10.20.32.80`)에 SSH 로 접속해 ModSecurity SecRule 을 배운다. 실제 CRS 룰을
+  읽어 분해하고, SecRule 을 직접 작성해 `/etc/modsecurity/edu_rules.conf` 에 넣고 `apache2ctl configtest`
+  로 문법 검사 후 `graceful` 로 무중단 적용한다. 잘못된 룰은 configtest 에서 거부돼 웹서버가 살아남는
+  안전장치를 체험한다. 그다음 내 공격 VM(`192.168.0.202`)에서 자연 URL 로 공격해 dvwa(On)의 403 차단을
+  확인하고 실습 룰(id 9000000+)을 정리한다. (`ssh ccc@10.20.32.80` 비번 `1`.)
 difficulty: easy
 duration_minutes: 130
 audience: 보안 솔루션 운영 입문자 (5주차)
 prerequisites:
   - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
-  - el34 호스트 브라우저에서 WAF 콘솔(192.168.136.145:8083) 접속 가능
+  - WAF 장비 접속 가능 (`ssh ccc@10.20.32.80`, 비번 `1`, sudo 보유) + 공격 VM `ssh att@192.168.0.202`
   - W05 강의안 정독 — SecRule 구조, transform, configtest, anomaly / W01~W04 실습 완료
 objectives:
   - "WAF 엔진 모드/CRS 를 콘솔에서 확인한다"
   - "SecRule 을 변수+연산자+액션으로 분해해 이해한다"
-  - "폼으로 SecRule 을 만들어 configtest 후 적용한다"
+  - "SecRule 을 직접 작성해 configtest 후 적용한다"
   - "잘못된 룰이 거부되고 웹서버가 보존됨을 확인한다(안전장치)"
-  - "공격을 재현해 403 차단을 확인하고, 시나리오를 검증 통과시킨다"
+  - "공격을 재현해 403 차단을 확인하고, 내 룰 구성을 자가 검증한다"
 pass_threshold: 0.7
 
 steps:
@@ -29,22 +30,28 @@ steps:
     instruction: |
       ## 🎯 미션 — WAF 상태 확인
 
-      WAF 콘솔(`http://192.168.136.145:8083/`) **대시보드**에서 SecRuleEngine 모드(On=차단)와 CRS
-      버전, Apache 가동 여부를 확인한다.
+      WAF(웹서버) 장비(`web`, `10.20.32.80`)에 SSH 로 접속해, ModSecurity 로딩과 SecRuleEngine 모드
+      (전역 `On`=차단)를 확인한다. dvwa vhost 는 전역 설정을 따라 On(차단)으로 동작한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      curl -s http://192.168.136.145:8083/api/status
+      # WAF 장비 접속 (비밀번호: 1)
+      ssh ccc@10.20.32.80
+
+      # ModSecurity 모듈 로딩 + 엔진 모드 확인
+      sudo apache2ctl -M 2>/dev/null | grep security2
+      grep SecRuleEngine /etc/modsecurity/modsecurity.conf
       ```
       ## ✅ 합격 기준
-      출력의 engine 이 `On` 이다.
-    hint: 'curl -s http://192.168.136.145:8083/api/status'
+      전역 설정에 `SecRuleEngine On` 이 보인다.
+    hint: 'ssh ccc@10.20.32.80 → grep SecRuleEngine /etc/modsecurity/modsecurity.conf'
     answer: |
-      curl -s http://192.168.136.145:8083/api/status
-    answer_detail: "engine=On(차단), crs_version=3.3.2, apache_running=true. On 이면 공격을 403으로 막는다."
+      # WAF 장비에서 ModSecurity 로딩 + 엔진 모드 직접 확인
+      ssh ccc@10.20.32.80 'sudo apache2ctl -M 2>/dev/null | grep security2; grep SecRuleEngine /etc/modsecurity/modsecurity.conf'
+    answer_detail: "전역 modsecurity.conf 의 SecRuleEngine On → dvwa 같은 vhost 는 공격을 403 으로 차단한다(juice/ai vhost 는 DetectionOnly 로 override). security2_module 로딩 확인."
     verify:
       type: output_contains
-      expect: '"engine": "On"'
+      expect: SecRuleEngine On
       field: stdout
       semantic:
         intent: "WAF 동작 모드/CRS 확인 — On(차단) vs DetectionOnly(탐지) 구분"
@@ -56,19 +63,21 @@ steps:
 
       **구성·CRS** 메뉴에서 ModSecurity 설정과 OWASP CRS 룰 패밀리(941 XSS, 942 SQLi 등)를 본다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      curl -s http://192.168.136.145:8083/api/config
+      # OWASP CRS 룰 패밀리 파일 확인 (941 XSS, 942 SQLi, 930 LFI, 932 RCE ...)
+      ls /usr/share/modsecurity-crs/rules/ 2>/dev/null | grep -oE 'REQUEST-9[0-9]{2}' | sort -u
       ```
       ## ✅ 합격 기준
-      출력에 `crs_families`(CRS 룰 패밀리 목록)가 보인다.
-    hint: 'curl -s http://192.168.136.145:8083/api/config'
+      출력에 CRS SQLi 패밀리 `942` 가 보인다(941 XSS 등도).
+    hint: "ls /usr/share/modsecurity-crs/rules/ — REQUEST-941/942/930/932 ..."
     answer: |
-      curl -s http://192.168.136.145:8083/api/config
-    answer_detail: "modsec 설정(SecRuleEngine/SecAuditLog) + crs_families(941/942/930/932/913/949). 룰 0개여도 CRS 가 기본 방어."
+      # WAF 장비에서 OWASP CRS 룰 패밀리를 직접 확인
+      ssh ccc@10.20.32.80 "ls /usr/share/modsecurity-crs/rules/ 2>/dev/null | grep -oE 'REQUEST-9[0-9]{2}' | sort -u"
+    answer_detail: "CRS 패밀리: 941 XSS / 942 SQLi / 930 LFI / 932 RCE / 913 스캐너 / 949 anomaly. 내가 룰을 하나도 안 만들어도 CRS 가 기본 방어를 제공한다 — 그 위에 커스텀 SecRule 을 얹는다."
     verify:
       type: output_contains
-      expect: crs_families
+      expect: "942"
       field: stdout
       semantic:
         intent: "WAF 설정과 CRS 표준 룰셋 파악 — 직접 만들기 전에도 보호됨을 이해"
@@ -76,21 +85,24 @@ steps:
 
   - order: 3
     instruction: |
-      ## 🎯 미션 — SecRule 구조 분석
+      ## 🎯 미션 — 실제 CRS SecRule 읽고 구조 분해
 
-      **SecRule 분석기**에 SQLi 룰을 붙여넣고 분석한다. 변수(ARGS)·연산자(@rx)·액션(deny/transform/
-      severity)이 분해된다.
+      WAF 장비의 실제 CRS SQLi 룰 파일에서 SecRule 하나를 읽는다. SecRule 은 **변수**(ARGS 등)·
+      **연산자**(@rx/@contains)·**액션**(id/phase/transform/deny/severity)으로 이뤄진다.
+      변수는 IPS 의 "탐지 버퍼"에 대응한다("요청의 어느 부분을 볼지").
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/analyze -d '{"rule":"SecRule ARGS \"@rx (?i)union\\s+select\" \"id:942100,phase:2,t:none,t:lowercase,deny,status:403,msg:'\''SQLi'\'',severity:'\''CRITICAL'\''\""}'
+      # CRS SQLi(942) 룰에서 ARGS 변수를 쓰는 SecRule 하나 읽기
+      sudo grep -h 'SecRule ARGS' /usr/share/modsecurity-crs/rules/REQUEST-942*.conf 2>/dev/null | head -1
       ```
       ## ✅ 합격 기준
-      분해 결과에 변수 `ARGS` 가 보인다.
-    hint: 'SecRule 분석기. POST /api/rule/analyze'
+      읽은 룰에 변수 `ARGS` 가 보인다.
+    hint: "grep 'SecRule ARGS' /usr/share/modsecurity-crs/rules/REQUEST-942*.conf"
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/analyze -d '{"rule":"SecRule ARGS \"@rx (?i)union\\s+select\" \"id:942100,phase:2,t:none,t:lowercase,deny,status:403,msg:'\''SQLi'\'',severity:'\''CRITICAL'\''\""}'
-    answer_detail: "variables=ARGS, operator=@rx, pattern=union\\s+select, actions=[id,phase,t:lowercase,deny,...]. 변수=IPS 의 버퍼에 대응."
+      # 실제 CRS SQLi SecRule 을 WAF 장비에서 읽고 구조 분해
+      ssh ccc@10.20.32.80 "sudo grep -h 'SecRule ARGS' /usr/share/modsecurity-crs/rules/REQUEST-942*.conf 2>/dev/null | head -1"
+    answer_detail: "SecRule <변수 ARGS> <연산자 @rx/@detectSQLi> <액션 id/phase/t:transform/deny/severity>. 변수 ARGS 는 요청 파라미터를 검사 — IPS 의 http.uri 버퍼에 대응하는 개념."
     verify:
       type: output_contains
       expect: ARGS
@@ -106,16 +118,22 @@ steps:
       **SecRule 관리** 폼에서 — 변수 `REQUEST_HEADERS:User-Agent`, 연산자 `@contains`, 패턴 `sqlmap`,
       transform `lowercase`, action `deny`, phase `1`, severity `CRITICAL` → **① 미리보기**.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
+      우리가 만들 sqlmap 차단 SecRule(적용은 다음 스텝, 지금은 검토):
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/preview -d '{"variable":"REQUEST_HEADERS:User-Agent","operator":"@contains","pattern":"sqlmap","transforms":["lowercase"],"action":"deny","phase":"1","severity":"CRITICAL","msg":"EDU sqlmap block"}'
+      # 만들 SecRule 을 눈으로 검토 (User-Agent 에 sqlmap 이 있으면 차단)
+      echo 'SecRule REQUEST_HEADERS:User-Agent "@contains sqlmap" "id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:'"'"'EDU sqlmap block'"'"',severity:'"'"'CRITICAL'"'"'"'
       ```
+      ## 🔍 무엇을 보나
+      변수 `REQUEST_HEADERS:User-Agent`(특정 헤더만 콕 집어) + `@contains sqlmap` + `t:lowercase`
+      (소문자 변환 후 비교=우회 방지) + `deny,status:403`(차단). id/phase/severity 도 필수.
       ## ✅ 합격 기준
-      생성된 룰이 `SecRule REQUEST_HEADERS:User-Agent` 로 시작한다.
-    hint: '미리보기는 미실행. POST /api/rule/preview'
+      검토한 룰이 `SecRule REQUEST_HEADERS:User-Agent` 로 시작한다.
+    hint: 'echo 로 만들 SecRule 검토'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/preview -d '{"variable":"REQUEST_HEADERS:User-Agent","operator":"@contains","pattern":"sqlmap","transforms":["lowercase"],"action":"deny","phase":"1","severity":"CRITICAL","msg":"EDU sqlmap block"}'
-    answer_detail: "SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:90000xx,phase:1,t:lowercase,deny,status:403,log,...\". 특정 헤더만 콕 집어 검사."
+      # 만들 sqlmap 차단 SecRule 을 WAF 장비에서 검토
+      ssh ccc@10.20.32.80 'echo "SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:EDU-sqlmap-block\""'
+    answer_detail: "SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000011,phase:1,t:lowercase,deny,status:403,...\". 특정 헤더만 콕 집어 검사하고, t:lowercase 로 대소문자 우회를 막는다. 적용 전 검토 습관."
     verify:
       type: output_contains
       expect: SecRule REQUEST_HEADERS:User-Agent
@@ -128,28 +146,37 @@ steps:
     instruction: |
       ## 🎯 미션 — 적용 (configtest + reload)
 
-      **② 적용**을 누른다. 콘솔이 edu_rules.conf 에 추가하고 **configtest**로 문법을 검사한 뒤,
-      통과하면 graceful reload 한다. 적용 후 `/api/rules`에서 내 룰(id 9000011)이 등록됐는지 확인한다.
+      이제 SecRule 을 edu_rules.conf 에 추가하고 **configtest**로 문법을 검사한 뒤,
+      통과하면 graceful reload 한다. 적용 후 edu_rules.conf 에서 내 룰(id 9000011)이 등록됐는지 확인한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:'\''EDU sqlmap block'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s http://192.168.136.145:8083/api/rules | grep -o 9000011 | head -1
+      # 1) SecRule 을 커스텀 룰 파일(edu_rules.conf)에 추가
+      echo 'SecRule REQUEST_HEADERS:User-Agent "@contains sqlmap" "id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:EDU-sqlmap-block,severity:CRITICAL"' | sudo tee -a /etc/modsecurity/edu_rules.conf
+
+      # 2) 문법 검사(configtest) — 통과해야 안전
+      sudo apache2ctl configtest
+
+      # 3) 무중단 reload
+      sudo apache2ctl graceful
+
+      # 4) 내 룰이 등록됐는지 확인
+      grep -o 'id:9000011' /etc/modsecurity/edu_rules.conf
       ```
       ## ✅ 합격 기준
-      적용 후 룰 목록에 내 룰 `9000011` 이 보인다(configtest 통과 → reload).
-    hint: 'apply(configtest) 후 /api/rules 에서 9000011 확인'
+      configtest 통과(Syntax OK) 후 reload 되고 `id:9000011` 이 등록된다.
+    hint: 'echo SecRule | sudo tee -a edu_rules.conf; apache2ctl configtest; graceful; grep 9000011'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:'\''EDU sqlmap block'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s http://192.168.136.145:8083/api/rules | grep -o 9000011 | head -1
-    answer_detail: "apply 가 edu_rules.conf 에 추가 + apache2ctl configtest → Syntax OK 면 graceful reload. rules 목록에 id 9000011 등장 = 성공."
+      # SecRule 을 edu_rules.conf 에 추가 + configtest + graceful reload + 확인 (WAF 장비에서)
+      ssh ccc@10.20.32.80 'echo "SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000011,phase:1,t:lowercase,deny,status:403,log,msg:EDU-sqlmap-block,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest 2>&1 | tail -1; sudo apache2ctl graceful >/dev/null 2>&1; grep -o "id:9000011" /etc/modsecurity/edu_rules.conf | head -1'
+    answer_detail: "SecRule 을 /etc/modsecurity/edu_rules.conf(전역 include)에 추가 → apache2ctl configtest 로 문법 검사 → Syntax OK 면 graceful reload. id:9000011 등장 = 적용 성공. configtest 가 실무의 안전장치."
     verify:
       type: output_contains
       expect: "9000011"
       field: stdout
       semantic:
         intent: "SecRule 을 안전하게 적용 — configtest 통과 후에만 reload"
-        success_criteria: ["configtest 통과", "graceful reload", "rules 목록에 id 등록"]
+        success_criteria: ["configtest Syntax OK", "graceful reload", "edu_rules.conf 에 id 등록"]
 
   - order: 6
     instruction: |
@@ -158,16 +185,22 @@ steps:
       일부러 문법이 틀린 룰을 적용해 본다. configtest 가 실패해 룰이 **거부**되고, 웹서버는 그대로
       **살아남는다**. (운영 WAF 를 죽이지 않는 안전장치)
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@rx (unclosed\" \"id:9000098,phase:2,deny,bogusaction\""}'
+      # 일부러 문법 틀린 SecRule 을 임시 파일에 넣고 configtest 로 검사
+      echo 'SecRule ARGS "@rx (unclosed" "id:9000098,phase:2,deny,bogusaction"' | sudo tee /etc/modsecurity/edu-bad.conf
+
+      # configtest 가 실패하면 → reload 하지 않고 나쁜 룰을 제거(웹서버 보존)
+      sudo apache2ctl configtest    # Syntax error ... 로 실패
+      sudo rm -f /etc/modsecurity/edu-bad.conf    # 되돌림 (reload 안 했으니 운영 WAF 무사)
       ```
       ## ✅ 합격 기준
-      응답에 `문법 오류` 가 보인다(룰 미적용, 기존 설정 보존).
-    hint: '잘못된 룰 → configtest 실패 → 거부. expect: 문법 오류'
+      configtest 가 실패해 `문법 오류` 로 거부된다(reload 안 함 → 기존 설정·웹서버 보존).
+    hint: '잘못된 룰 → configtest 실패 → reload 안 하고 제거. expect: 문법 오류'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@rx (unclosed\" \"id:9000098,phase:2,deny,bogusaction\""}'
-    answer_detail: "ok=false, error='문법 오류 — 룰이 적용되지 않았고 기존 설정은 보존됨'. Apache 정상 가동 유지(웹서버 안 죽음)."
+      # 틀린 SecRule 을 configtest 로 검사 → 실패 확인 후 되돌림 (WAF 장비에서)
+      ssh ccc@10.20.32.80 'echo "SecRule ARGS \"@rx (unclosed\" \"id:9000098,phase:2,deny,bogusaction\"" | sudo tee /etc/modsecurity/edu-bad.conf >/dev/null; if sudo apache2ctl configtest 2>&1 | grep -qiE "syntax error|error on line|failed"; then echo "문법 오류 — 룰 거부, reload 안 함, 웹서버 보존"; else echo "예상외 통과"; fi; sudo rm -f /etc/modsecurity/edu-bad.conf'
+    answer_detail: "틀린 룰은 configtest(apache2ctl configtest)에서 Syntax error 로 잡혀 거부된다. reload 를 하지 않으므로 운영 WAF 는 기존 설정 그대로 살아남는다 — 잘못된 룰이 웹서버를 죽이지 않게 하는 실무 안전장치. 확인 후 나쁜 룰 파일을 제거."
     verify:
       type: output_contains
       expect: 문법 오류
@@ -180,21 +213,35 @@ steps:
     instruction: |
       ## 🎯 미션 — 실제 차단 확인 (403)
 
-      차단용 룰을 만들고(ARGS 에 EDUBLKW5 포함 시 deny), 공격자(el34-attacker)에서 그 요청을 보내
-      **403 차단**을 확인한다. dvwa 는 On(차단) 모드 vhost 다.
+      차단용 SecRule 을 만들고(ARGS 에 EDUBLKW5 포함 시 deny), 내 공격 VM(`192.168.0.202`)에서 그
+      요청을 자연 URL 로 보내 **403 차단**을 확인한다. dvwa 는 전역 On(차단) vhost 다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@contains EDUBLKW5\" \"id:9000077,phase:2,t:none,deny,status:403,log,msg:'\''EDU live block'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      docker exec el34-attacker curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=EDUBLKW5"
+      # ① WAF 장비에서 차단 룰 추가 + reload
+      ssh ccc@10.20.32.80
+      echo 'SecRule ARGS "@contains EDUBLKW5" "id:9000077,phase:2,t:none,deny,status:403,log,msg:EDU-live-block,severity:CRITICAL"' | sudo tee -a /etc/modsecurity/edu_rules.conf
+      sudo apache2ctl configtest && sudo apache2ctl graceful
       ```
+
+      ② 그 패턴으로 요청을 보낸다. **GET 요청이라 브라우저로 열든 curl 로 보내든 완전히 동일하다.**
+
+      - **브라우저(학생 PC):** 주소창에 아래 URL 을 붙여넣고 열면 `403 Forbidden` 이 뜬다 →
+        `http://dvwa.el34.lab/?q=EDUBLKW5`
+      - **CLI(채점용, 내 공격 VM 에서 같은 요청):**
+        ```bash
+        ssh att@192.168.0.202
+        curl -s -o /dev/null -w "응답: %{http_code}\n" 'http://dvwa.el34.lab/?q=EDUBLKW5'
+        ```
       ## ✅ 합격 기준
-      차단되어 응답 코드 `403` 이 보인다.
-    hint: '차단 룰 적용 후 그 패턴으로 접속 → 403'
+      차단되어 응답 코드 `403` 이 보인다(브라우저면 403 Forbidden 페이지).
+    hint: '차단 룰 적용 후 그 패턴으로 자연 URL 접속 → 403'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@contains EDUBLKW5\" \"id:9000077,phase:2,t:none,deny,status:403,log,msg:'\''EDU live block'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      docker exec el34-attacker curl -s -o /dev/null -w "응답: %{http_code}\n" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=EDUBLKW5"
-    answer_detail: "ARGS @contains EDUBLKW5 deny → 그 파라미터 요청은 403. WAF 가 실제로 막음(audit 로그에도 기록)."
+      # ① WAF 장비에서 EDUBLKW5 차단 룰 적용
+      ssh ccc@10.20.32.80 'echo "SecRule ARGS \"@contains EDUBLKW5\" \"id:9000077,phase:2,t:none,deny,status:403,log,msg:EDU-live-block,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest >/dev/null 2>&1 && sudo apache2ctl graceful >/dev/null 2>&1; echo applied'
+      # ② 공격 VM(202)에서 그 패턴으로 자연 URL 요청 → 403
+      ssh att@192.168.0.202 "curl -s -o /dev/null -w '응답: %{http_code}\n' 'http://dvwa.el34.lab/?q=EDUBLKW5'"
+    answer_detail: "ARGS @contains EDUBLKW5 deny → 그 파라미터가 든 요청은 dvwa(On)에서 403 으로 차단된다. WAF 가 실제로 막는 것을 응답 코드로 확인(modsec_audit.log 에도 기록). 자연 URL(http://dvwa.el34.lab) 사용."
     verify:
       type: output_contains
       expect: "403"
@@ -205,28 +252,33 @@ steps:
 
   - order: 8
     instruction: |
-      ## 🎯 미션 — 침해대응 시나리오 검증 (waf-s11)
+      ## 🎯 미션 — 내 SecRule 이 올바르게 구성됐는지 검증
 
-      **침해대응 훈련** waf-s11(sqlmap 차단)을 검증한다(STEP 5 에서 만든 룰). 콘솔이 edu_rules.conf 를
-      읽어 정답 조건(REQUEST_HEADERS:User-Agent @contains sqlmap)을 충족하는지 채점한다.
+      sqlmap 차단 SecRule(S5, id 9000011)이 정답 조건을 갖췄는지 자가 점검한다: ① 올바른 변수
+      (`REQUEST_HEADERS:User-Agent`) ② 연산자·패턴(`@contains sqlmap`) ③ 차단 액션(`deny`). 그리고
+      전체 설정이 문법상 유효한지(configtest)도 함께 본다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s11"}'
+      # 내 룰이 올바른 변수·패턴·액션을 갖췄는지 확인
+      grep 'id:9000011' /etc/modsecurity/edu_rules.conf | grep -oE 'REQUEST_HEADERS:User-Agent|@contains sqlmap|deny'
+      # 전체 설정 문법 유효성
+      sudo apache2ctl configtest
       ```
       ## ✅ 합격 기준
-      검증 결과가 `"ok": true` 다.
-    hint: '침해대응 훈련 waf-s11 검증. POST /api/scenario/check {"id":"waf-s11"}'
+      내 룰에 `sqlmap`(및 REQUEST_HEADERS:User-Agent, deny)이 확인되고 configtest 가 Syntax OK 다.
+    hint: "grep id:9000011 edu_rules.conf → REQUEST_HEADERS/sqlmap/deny + apache2ctl configtest"
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s11"}'
-    answer_detail: "ok=true, evidence require=SecRule REQUEST_HEADERS:User-Agent @contains sqlmap found=true, configtest=Syntax OK."
+      # 내 sqlmap 차단 SecRule 의 구성 요소를 WAF 장비에서 자가 검증
+      ssh ccc@10.20.32.80 "grep 'id:9000011' /etc/modsecurity/edu_rules.conf | grep -oE 'REQUEST_HEADERS:User-Agent|@contains sqlmap|deny'; sudo apache2ctl configtest 2>&1 | tail -1"
+    answer_detail: "룰이 정답 조건(변수 REQUEST_HEADERS:User-Agent + @contains sqlmap + deny)을 갖췄는지 자가 점검. 변수가 틀리면 엉뚱한 곳을 검사하고, deny 가 없으면 탐지만 하고 못 막는다 — 그래서 룰 검증이 필요하다. configtest Syntax OK 로 문법도 확인."
     verify:
       type: output_contains
-      expect: '"ok": true'
+      expect: sqlmap
       field: stdout
       semantic:
-        intent: "작성한 SecRule 이 시나리오 정답을 충족하는지 콘솔이 실측 채점"
-        success_criteria: ["scenario check ok=true", "require 충족", "configtest Syntax OK"]
+        intent: "작성한 SecRule 이 올바른 변수·패턴·액션을 갖췄는지 실제 파일로 자가 검증"
+        success_criteria: ["REQUEST_HEADERS:User-Agent 변수", "@contains sqlmap", "deny 액션", "configtest OK"]
 
   - order: 9
     instruction: |
@@ -235,16 +287,18 @@ steps:
       **SIEM 연동** 메뉴에서 modsec_audit.log 가 Wazuh 매니저(10.20.32.100)로 가는지 확인한다.
       Wazuh decoder 가 `[id "941100"]` 같은 룰 ID 를 추출해 alert 로 만든다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      curl -s http://192.168.136.145:8083/api/siem
+      # 이 WAF 가 어느 SIEM 매니저로 로그를 보내는지 (Wazuh 에이전트 설정)
+      grep -oE '<address>[0-9.]+</address>' /var/ossec/etc/ossec.conf
       ```
       ## ✅ 합격 기준
       출력에 매니저 주소 `10.20.32.100` 이 보인다.
-    hint: 'GET /api/siem — manager 10.20.32.100'
+    hint: 'grep <address> /var/ossec/etc/ossec.conf — manager 10.20.32.100'
     answer: |
-      curl -s http://192.168.136.145:8083/api/siem
-    answer_detail: "manager=10.20.32.100, integrated=true. WAF 차단이 SIEM 으로 모여 방화벽·IPS 와 통합 관제."
+      # WAF 의 SIEM(Wazuh) 매니저 주소를 장비에서 직접 확인
+      ssh ccc@10.20.32.80 'grep -oE "<address>[0-9.]+</address>" /var/ossec/etc/ossec.conf | head -1'
+    answer_detail: "Wazuh 에이전트가 modsec_audit.log 를 매니저(10.20.32.100)로 전송 → WAF 차단이 SIEM 으로 모여 방화벽·IPS 와 통합 관제. Wazuh decoder 가 [id \"941100\"] 같은 룰 ID 를 추출해 alert 로 만든다."
     verify:
       type: output_contains
       expect: 10.20.32.100
@@ -260,40 +314,19 @@ steps:
       실습으로 만든 SecRule(id 9000000 이상)을 모두 삭제한다. **SecRule 관리** 목록의 삭제 버튼으로도
       가능하다. (호스트에 jq 가 없으므로 python3 로 처리.)
 
-      ## 💻 정리 명령
+      ## 💻 정리 명령 (WAF 장비에서)
       ```bash
-      python3 -c '
-      import json, urllib.request as u
-      B="http://192.168.136.145:8083"
-      def post(p,o):
-          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
-          return u.urlopen(r,timeout=8).read().decode()
-      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
-      n=0
-      for r in rs.get("rules",[]):
-          rid=str(r.get("id",""))
-          if rid: post("/api/rule/delete",{"id":rid}); n+=1
-      print("cleanup done deleted=%d"%n)
-      '
+      # 실습 SecRule(id 9xxxxxx)만 edu_rules.conf 에서 삭제 + reload
+      sudo sed -i -E '/id:9[0-9]{6}/d' /etc/modsecurity/edu_rules.conf
+      sudo apache2ctl graceful >/dev/null 2>&1; echo "cleanup done"
       ```
       ## ✅ 합격 기준
       실습 룰이 모두 삭제되어 `cleanup done` 이 보인다(CRS 보호는 유지).
-    hint: 'python3 로 edu 룰(id) 일괄 삭제 → cleanup done'
+    hint: "sudo sed -i -E '/id:9[0-9]{6}/d' edu_rules.conf; apache2ctl graceful → cleanup done"
     answer: |
-      python3 -c '
-      import json, urllib.request as u
-      B="http://192.168.136.145:8083"
-      def post(p,o):
-          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
-          return u.urlopen(r,timeout=8).read().decode()
-      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
-      n=0
-      for r in rs.get("rules",[]):
-          rid=str(r.get("id",""))
-          if rid: post("/api/rule/delete",{"id":rid}); n+=1
-      print("cleanup done deleted=%d"%n)
-      '
-    answer_detail: "edu_rules.conf 의 모든 GUI 룰(id>=9000000) 삭제 → graceful reload. CRS/기본 보호는 유지."
+      # 실습 SecRule(id 9xxxxxx)만 삭제 + graceful reload (WAF 장비에서)
+      ssh ccc@10.20.32.80 "sudo sed -i -E '/id:9[0-9]{6}/d' /etc/modsecurity/edu_rules.conf 2>/dev/null; sudo apache2ctl graceful >/dev/null 2>&1; echo 'cleanup done'"
+    answer_detail: "edu_rules.conf 에서 id 가 9로 시작하는 7자리(9000000 이상) 실습 SecRule 만 지우고 graceful reload. OWASP CRS 와 기본 보호는 그대로 유지된다 — 실습 후 WAF 를 원상 복구하는 운영 위생."
     verify:
       type: output_contains
       expect: cleanup done
