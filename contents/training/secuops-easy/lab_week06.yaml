@@ -4,19 +4,20 @@ version: standalone-easy
 course: secuops-easy
 week: 6
 description: |
-  WAF 콘솔(192.168.136.145:8083)의 침해대응 훈련 30 SecRule 작성 시나리오를 푼다(대표 5개 + 과제
-  20개 이상). transform·@pm·deny/pass 를 두루 연습한다. 마지막 종합 capstone 에서는 같은 공격 하나를
-  보내고 방화벽(conntrack)·IPS(eve.json alert)·WAF(audit 403) 세 장비의 흔적을 한 번에 확인해 심층
-  방어를 종합한다. 끝나면 실습 룰을 정리한다. 세 콘솔(8081/8082/8083)을 모두 사용한다.
+  WAF 장비(`web`, `10.20.32.80`)에 SSH 접속해 다양한 유형(주입/스캐너·경로/심화)의 SecRule 을 편집기
+  (`sudo nano edu_rules.conf`)로 직접 작성하고 configtest+graceful 로 적용한다. transform·@pm·deny/pass 를
+  두루 연습한다. 마지막 종합 capstone 에서는 내 공격 VM(`192.168.0.202`)에서 같은 공격 하나를 자연 URL 로
+  보내고, 방화벽(conntrack)·IPS(eve.json alert)·WAF(403) 세 장비의 흔적을 각 장비에 SSH 해 한 번에 확인해
+  심층 방어를 종합한다. 끝나면 실습 룰을 정리한다. (`ssh ccc@10.20.32.80` 비번 `1`.)
 difficulty: easy
 duration_minutes: 150
 audience: 보안 솔루션 운영 입문자 (6주차, 최종)
 prerequisites:
   - el34 호스트 접속 가능 (`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`) + ccc 가 docker 실행 권한 보유
-  - el34 호스트 브라우저에서 세 콘솔(8081/8082/8083) 접속 가능
+  - 세 장비 접속 가능 (`ssh ccc@10.20.30.1`/`10.20.31.2`/`10.20.32.80`, 비번 `1`) + 공격 VM `ssh att@192.168.0.202`
   - W06 강의안 정독 — 그룹별 전략, transform, deny/pass, 세 장비 종합 / W01~W05 실습 완료
 objectives:
-  - "WAF 시나리오를 변수+연산자+transform 으로 작성·검증한다"
+  - "WAF SecRule 을 변수+연산자+transform 으로 직접 작성·적용한다"
   - "transform(urlDecodeUni/lowercase)으로 우회를 막는다"
   - "deny(차단)와 pass(탐지)를 구분해 적용한다"
   - "같은 공격을 방화벽·IPS·WAF 세 장비에서 추적한다(capstone)"
@@ -27,27 +28,35 @@ steps:
 
   - order: 1
     instruction: |
-      ## 🎯 미션 — WAF 침해대응 30 목록 확인
+      ## 🎯 미션 — 최종 주차 준비: 룰 파일 접근 + 엔진 모드
 
-      **침해대응 훈련** 메뉴에서 30개 시나리오(주입 1-10 / 스캐너·경로 11-20 / 심화 21-30)를 훑는다.
+      마지막 주다. 다양한 공격 유형(주입/스캐너·경로/심화)의 SecRule 을 직접 작성하고, 마지막
+      capstone 에서 한 공격을 방화벽·IPS·WAF 세 장비에서 추적한다. 먼저 WAF 장비의 커스텀 룰 파일
+      접근과 엔진 모드(전역 On)를 확인한다.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      curl -s http://192.168.136.145:8083/api/scenarios
+      # WAF 장비 접속 (비밀번호: 1)
+      ssh ccc@10.20.32.80
+
+      # 커스텀 룰 파일과 엔진 모드 확인
+      ls -l /etc/modsecurity/edu_rules.conf 2>/dev/null || echo "아직 없음(첫 룰 저장 시 생성)"
+      grep SecRuleEngine /etc/modsecurity/modsecurity.conf
       ```
       ## ✅ 합격 기준
-      목록에 `waf-s30` 까지 보인다.
-    hint: 'GET /api/scenarios — waf-s01 ~ waf-s30'
+      전역 설정에 `SecRuleEngine On` 이 보인다(차단 모드).
+    hint: 'ssh ccc@10.20.32.80 → grep SecRuleEngine /etc/modsecurity/modsecurity.conf'
     answer: |
-      curl -s http://192.168.136.145:8083/api/scenarios
-    answer_detail: "30개 시나리오(waf-s01~s30), 3그룹(주입/스캐너·경로/심화)."
+      # WAF 장비에서 커스텀 룰 파일 + 엔진 모드 확인
+      ssh ccc@10.20.32.80 'ls -l /etc/modsecurity/edu_rules.conf 2>/dev/null; grep SecRuleEngine /etc/modsecurity/modsecurity.conf'
+    answer_detail: "edu_rules.conf 가 학생이 SecRule 을 써넣는 파일(sudo nano 로 편집). 전역 SecRuleEngine On → dvwa 는 차단 모드. 이번 주 여러 유형의 룰을 여기에 직접 만든다."
     verify:
       type: output_contains
-      expect: waf-s30
+      expect: SecRuleEngine On
       field: stdout
       semantic:
-        intent: "30개 WAF 시나리오 구성 파악"
-        success_criteria: ["30개 확인", "3그룹 구분"]
+        intent: "최종 주차 준비 — 룰 파일 접근 + 차단 엔진 확인"
+        success_criteria: ["edu_rules.conf 경로 확인", "SecRuleEngine On"]
 
   - order: 2
     instruction: |
@@ -56,25 +65,35 @@ steps:
       변수 `REQUEST_URI`, 연산자 `@rx`, 패턴 `union.+select`, transform `lowercase`, action `deny`.
       적용 후 waf-s01 검증.
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령 (WAF 장비에서)
       ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_URI \"@rx union.+select\" \"id:9000001,phase:2,t:lowercase,deny,status:403,log,msg:'\''EDU s01 sqli'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s01"}'
+      # WAF 장비에 접속해 룰 파일을 편집기로 연다
+      ssh ccc@10.20.32.80
+      sudo nano /etc/modsecurity/edu_rules.conf
+      ```
+      맨 아래에 다음 SecRule 을 추가·저장한다(nano: `Ctrl+O`→`Enter`, 종료 `Ctrl+X`):
+      ```
+      SecRule REQUEST_URI "@rx union.+select" "id:9000001,phase:2,t:lowercase,deny,status:403,log,msg:EDU-s01-sqli,severity:CRITICAL"
+      ```
+      그다음 검사·반영·확인:
+      ```bash
+      sudo apache2ctl configtest && sudo apache2ctl graceful
+      grep id:9000001 /etc/modsecurity/edu_rules.conf
       ```
       ## ✅ 합격 기준
-      검증 결과가 `"ok": true` 다.
-    hint: 'REQUEST_URI @rx union.+select + lowercase + deny → scenario/check waf-s01'
+      룰이 로딩되고 `id:9000001` 이 등록된다(configtest Syntax OK).
+    hint: 'sudo nano edu_rules.conf 로 REQUEST_URI @rx union.+select 룰 추가·저장 → configtest → graceful'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_URI \"@rx union.+select\" \"id:9000001,phase:2,t:lowercase,deny,status:403,log,msg:'\''EDU s01 sqli'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s01"}'
-    answer_detail: "@rx + t:lowercase 로 UnIoN 우회까지 차단. waf-s01 통과(ok=true)."
+      # (편집기로 SecRule 추가·저장한 것과 동일 — 채점용 비대화식) (WAF 장비에서)
+      ssh ccc@10.20.32.80 'grep -q id:9000001 /etc/modsecurity/edu_rules.conf || echo "SecRule REQUEST_URI \"@rx union.+select\" \"id:9000001,phase:2,t:lowercase,deny,status:403,log,msg:EDU-s01-sqli,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest >/dev/null 2>&1 && sudo apache2ctl graceful >/dev/null 2>&1; grep -o "id:9000001" /etc/modsecurity/edu_rules.conf | head -1'
+    answer_detail: "@rx + t:lowercase 로 UnIoN 대소문자 우회까지 차단. 편집기로 edu_rules.conf 에 써넣고 configtest → graceful 로 적용."
     verify:
       type: output_contains
-      expect: '"ok": true'
+      expect: "9000001"
       field: stdout
       semantic:
         intent: "SQLi 를 정규식+변환으로 차단 — @rx, t:lowercase"
-        success_criteria: ["REQUEST_URI @rx", "t:lowercase", "waf-s01 통과"]
+        success_criteria: ["REQUEST_URI @rx", "t:lowercase", "룰 로딩(id:9000001)"]
 
   - order: 3
     instruction: |
@@ -83,25 +102,27 @@ steps:
       변수 `REQUEST_URI`, 연산자 `@contains`, 패턴 `../`, transform `urlDecodeUni`, action `deny`.
       `..%2f` 같은 인코딩을 디코딩 후 잡는다. 적용 후 waf-s06 검증.
 
-      ## 💻 확인 명령
-      ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_URI \"@contains ../\" \"id:9000006,phase:2,t:urlDecodeUni,deny,status:403,log,msg:'\''EDU s06 traversal'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s06"}'
+      ## 💻 실행 명령 (WAF 장비에서)
+      S2 와 같은 방식 — `sudo nano /etc/modsecurity/edu_rules.conf` 로 열어 다음 SecRule 을 추가·저장한 뒤
+      `sudo apache2ctl configtest && sudo apache2ctl graceful`:
       ```
+      SecRule REQUEST_URI "@contains ../" "id:9000006,phase:2,t:urlDecodeUni,deny,status:403,log,msg:EDU-s06-traversal,severity:CRITICAL"
+      ```
+      확인: `grep id:9000006 /etc/modsecurity/edu_rules.conf`
       ## ✅ 합격 기준
-      검증 결과가 `"ok": true` 다.
-    hint: 'urlDecodeUni 가 핵심 → scenario/check waf-s06'
+      룰이 로딩되고 `id:9000006` 이 등록된다.
+    hint: 'sudo nano edu_rules.conf 로 @contains ../ + t:urlDecodeUni 룰 추가·저장 → configtest → graceful'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_URI \"@contains ../\" \"id:9000006,phase:2,t:urlDecodeUni,deny,status:403,log,msg:'\''EDU s06 traversal'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s06"}'
-    answer_detail: "t:urlDecodeUni 없으면 %2f 우회됨. 변환이 인코딩 우회를 무력화 — WAF 의 슈퍼파워."
+      # (편집기로 SecRule 추가·저장한 것과 동일 — 채점용 비대화식) (WAF 장비에서)
+      ssh ccc@10.20.32.80 'grep -q id:9000006 /etc/modsecurity/edu_rules.conf || echo "SecRule REQUEST_URI \"@contains ../\" \"id:9000006,phase:2,t:urlDecodeUni,deny,status:403,log,msg:EDU-s06-traversal,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest >/dev/null 2>&1 && sudo apache2ctl graceful >/dev/null 2>&1; grep -o "id:9000006" /etc/modsecurity/edu_rules.conf | head -1'
+    answer_detail: "t:urlDecodeUni 없으면 ..%2f 인코딩으로 우회된다. 변환이 인코딩 우회를 무력화 — WAF 의 슈퍼파워."
     verify:
       type: output_contains
-      expect: '"ok": true'
+      expect: "9000006"
       field: stdout
       semantic:
         intent: "인코딩 우회를 transform 으로 차단 — WAF 의 슈퍼파워"
-        success_criteria: ["@contains ../", "t:urlDecodeUni", "waf-s06 통과"]
+        success_criteria: ["@contains ../", "t:urlDecodeUni", "룰 로딩(id:9000006)"]
 
   - order: 4
     instruction: |
@@ -110,25 +131,27 @@ steps:
       변수 `REQUEST_HEADERS:User-Agent`, 연산자 `@pm`, 패턴 `sqlmap nikto nmap gobuster`, transform
       `lowercase`, action `deny`. 적용 후 waf-s13 검증.
 
-      ## 💻 확인 명령
-      ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_HEADERS:User-Agent \"@pm sqlmap nikto nmap gobuster\" \"id:9000013,phase:1,t:lowercase,deny,status:403,log,msg:'\''EDU s13 scanners'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s13"}'
+      ## 💻 실행 명령 (WAF 장비에서)
+      같은 방식 — `sudo nano /etc/modsecurity/edu_rules.conf` 로 열어 다음 SecRule 을 추가·저장한 뒤
+      `sudo apache2ctl configtest && sudo apache2ctl graceful`:
       ```
+      SecRule REQUEST_HEADERS:User-Agent "@pm sqlmap nikto nmap gobuster" "id:9000013,phase:1,t:lowercase,deny,status:403,log,msg:EDU-s13-scanners,severity:CRITICAL"
+      ```
+      확인: `grep id:9000013 /etc/modsecurity/edu_rules.conf`
       ## ✅ 합격 기준
-      검증 결과가 `"ok": true` 다.
-    hint: '@pm 으로 여러 문구 한 번에 → scenario/check waf-s13'
+      룰이 로딩되고 `id:9000013` 이 등록된다.
+    hint: 'sudo nano edu_rules.conf 로 @pm 스캐너 룰 추가·저장 → configtest → graceful'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_HEADERS:User-Agent \"@pm sqlmap nikto nmap gobuster\" \"id:9000013,phase:1,t:lowercase,deny,status:403,log,msg:'\''EDU s13 scanners'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s13"}'
-    answer_detail: "@pm = 여러 문구 고속 다중 매칭. 스캐너 목록 관리에 적합."
+      # (편집기로 SecRule 추가·저장한 것과 동일 — 채점용 비대화식) (WAF 장비에서)
+      ssh ccc@10.20.32.80 'grep -q id:9000013 /etc/modsecurity/edu_rules.conf || echo "SecRule REQUEST_HEADERS:User-Agent \"@pm sqlmap nikto nmap gobuster\" \"id:9000013,phase:1,t:lowercase,deny,status:403,log,msg:EDU-s13-scanners,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest >/dev/null 2>&1 && sudo apache2ctl graceful >/dev/null 2>&1; grep -o "id:9000013" /etc/modsecurity/edu_rules.conf | head -1'
+    answer_detail: "@pm = 여러 문구를 고속 다중 매칭(sqlmap/nikto/nmap/gobuster 한 룰로). 스캐너 목록 관리에 적합."
     verify:
       type: output_contains
-      expect: '"ok": true'
+      expect: "9000013"
       field: stdout
       semantic:
         intent: "@pm 으로 다중 시그니처를 한 룰로 — 연산자 선택"
-        success_criteria: ["@pm 사용", "User-Agent 변수", "waf-s13 통과"]
+        success_criteria: ["@pm 사용", "User-Agent 변수", "룰 로딩(id:9000013)"]
 
   - order: 5
     instruction: |
@@ -137,25 +160,27 @@ steps:
       새 룰은 바로 차단하지 말고 먼저 탐지만 한다. 변수 `ARGS`, 연산자 `@contains`, 패턴
       `test_pattern_xyz`, action `pass`, severity `NOTICE`. 적용 후 waf-s27 검증.
 
-      ## 💻 확인 명령
-      ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@contains test_pattern_xyz\" \"id:9000027,phase:2,t:none,pass,log,msg:'\''EDU s27 detect-only'\'',severity:'\''NOTICE'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s27"}'
+      ## 💻 실행 명령 (WAF 장비에서)
+      같은 방식 — `sudo nano /etc/modsecurity/edu_rules.conf` 로 열어 다음 SecRule 을 추가·저장한 뒤
+      `sudo apache2ctl configtest && sudo apache2ctl graceful`:
       ```
+      SecRule ARGS "@contains test_pattern_xyz" "id:9000027,phase:2,t:none,pass,log,msg:EDU-s27-detect-only,severity:NOTICE"
+      ```
+      확인: `grep id:9000027 /etc/modsecurity/edu_rules.conf`
       ## ✅ 합격 기준
-      검증 결과가 `"ok": true` 다.
-    hint: 'action=pass(탐지/로그만) → scenario/check waf-s27'
+      룰이 로딩되고 `id:9000027` 이 등록된다(action 이 pass).
+    hint: 'sudo nano edu_rules.conf 로 action=pass 룰 추가·저장 → configtest → graceful'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@contains test_pattern_xyz\" \"id:9000027,phase:2,t:none,pass,log,msg:'\''EDU s27 detect-only'\'',severity:'\''NOTICE'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s27"}'
-    answer_detail: "pass = 매칭해도 통과시키고 로그만. 신규 룰은 pass→관찰→deny 순서가 안전."
+      # (편집기로 SecRule 추가·저장한 것과 동일 — 채점용 비대화식) (WAF 장비에서)
+      ssh ccc@10.20.32.80 'grep -q id:9000027 /etc/modsecurity/edu_rules.conf || echo "SecRule ARGS \"@contains test_pattern_xyz\" \"id:9000027,phase:2,t:none,pass,log,msg:EDU-s27-detect-only,severity:NOTICE\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest >/dev/null 2>&1 && sudo apache2ctl graceful >/dev/null 2>&1; grep -o "id:9000027" /etc/modsecurity/edu_rules.conf | head -1'
+    answer_detail: "pass = 매칭해도 통과시키고 로그만 남긴다. 신규 룰은 pass→관찰(오탐 확인)→deny 순서가 안전 — 실무 룰 도입 절차."
     verify:
       type: output_contains
-      expect: '"ok": true'
+      expect: "9000027"
       field: stdout
       semantic:
         intent: "pass(탐지)와 deny(차단)의 차이 — 안전한 룰 도입 절차"
-        success_criteria: ["action=pass", "오탐 관찰 의도", "waf-s27 통과"]
+        success_criteria: ["action=pass", "오탐 관찰 의도", "룰 로딩(id:9000027)"]
 
   - order: 6
     instruction: |
@@ -164,25 +189,27 @@ steps:
       변수 `ARGS`, 연산자 `@contains`, 패턴 `script`, transform `urlDecodeUni`+`lowercase`(둘 다),
       action `deny`. 변환을 여러 개 순서대로 적용한다. 적용 후 waf-s28 검증.
 
-      ## 💻 확인 명령
-      ```bash
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@contains script\" \"id:9000028,phase:2,t:urlDecodeUni,t:lowercase,deny,status:403,log,msg:'\''EDU s28 double-enc'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s28"}'
+      ## 💻 실행 명령 (WAF 장비에서)
+      같은 방식 — `sudo nano /etc/modsecurity/edu_rules.conf` 로 열어 다음 SecRule 을 추가·저장한 뒤
+      `sudo apache2ctl configtest && sudo apache2ctl graceful`:
       ```
+      SecRule ARGS "@contains script" "id:9000028,phase:2,t:urlDecodeUni,t:lowercase,deny,status:403,log,msg:EDU-s28-double-enc,severity:CRITICAL"
+      ```
+      확인: `grep id:9000028 /etc/modsecurity/edu_rules.conf`
       ## ✅ 합격 기준
-      검증 결과가 `"ok": true` 다.
-    hint: 'transform 2개(urlDecodeUni, lowercase) → scenario/check waf-s28'
+      룰이 로딩되고 `id:9000028` 이 등록된다(transform 2개).
+    hint: 'sudo nano edu_rules.conf 로 transform 2개(urlDecodeUni,lowercase) 룰 추가·저장 → configtest → graceful'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule ARGS \"@contains script\" \"id:9000028,phase:2,t:urlDecodeUni,t:lowercase,deny,status:403,log,msg:'\''EDU s28 double-enc'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/scenario/check -d '{"id":"waf-s28"}'
-    answer_detail: "변환을 순서대로(urlDecodeUni→lowercase) 적용해 이중 인코딩 우회 차단."
+      # (편집기로 SecRule 추가·저장한 것과 동일 — 채점용 비대화식) (WAF 장비에서)
+      ssh ccc@10.20.32.80 'grep -q id:9000028 /etc/modsecurity/edu_rules.conf || echo "SecRule ARGS \"@contains script\" \"id:9000028,phase:2,t:urlDecodeUni,t:lowercase,deny,status:403,log,msg:EDU-s28-double-enc,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest >/dev/null 2>&1 && sudo apache2ctl graceful >/dev/null 2>&1; grep -o "id:9000028" /etc/modsecurity/edu_rules.conf | head -1'
+    answer_detail: "변환을 순서대로(urlDecodeUni→lowercase) 적용해 이중 인코딩 우회를 차단한다 — transform 순서가 중요."
     verify:
       type: output_contains
-      expect: '"ok": true'
+      expect: "9000028"
       field: stdout
       semantic:
         intent: "다중 transform 으로 고급 우회 차단 — 변환 순서 이해"
-        success_criteria: ["transform 2개", "@contains script", "waf-s28 통과"]
+        success_criteria: ["transform 2개", "@contains script", "룰 로딩(id:9000028)"]
 
   - order: 7
     instruction: |
@@ -194,31 +221,44 @@ steps:
       - **IPS**: eve.json 에 sqlmap/UNION alert
       - **방화벽**: conntrack 에 공격자 연결 기록
 
-      ## 💻 확인 명령
+      ## 💻 실행 명령
+      **① WAF 장비에 sqlmap 차단 룰 추가** — `sudo nano /etc/modsecurity/edu_rules.conf` 로 열어
+      다음 줄을 추가·저장한 뒤 `sudo apache2ctl configtest && sudo apache2ctl graceful`:
+      ```
+      SecRule REQUEST_HEADERS:User-Agent "@contains sqlmap" "id:9000099,phase:1,t:lowercase,deny,status:403,log,msg:EDU-capstone,severity:CRITICAL"
+      ```
+
+      **② 공격자가 sqlmap UA + SQLi(UNION)로 한 번 공격** (GET 이라 브라우저=curl 동일):
+      - **브라우저(학생 PC):** 주소창에 `http://dvwa.el34.lab/?q=1 UNION SELECT 1` (브라우저가 공백을 자동
+        인코딩). 단 sqlmap UA 를 실으려면 도구/curl 로 보낸다.
+      - **CLI(내 공격 VM 에서, 공백은 `%20` 으로):**
+        ```bash
+        ssh att@192.168.0.202
+        curl -s -o /dev/null -w "WAF 응답: %{http_code}\n" -A sqlmap 'http://dvwa.el34.lab/?q=1%20UNION%20SELECT%201'
+        ```
+
+      **③ 세 장비의 흔적을 각각 확인:**
       ```bash
-      # ① WAF 에 sqlmap 차단 룰
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000099,phase:1,t:lowercase,deny,status:403,log,msg:'\''EDU capstone'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      # ② 공격자 → sqlmap UA + SQLi(UNION)
-      W=$(docker exec el34-attacker curl -s -o /dev/null -w "%{http_code}" -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=1%20UNION%20SELECT%201")
-      sleep 3
-      # ③ 세 장비 흔적 수집(jq 없이)
-      I=$(curl -s "http://192.168.136.145:8082/api/eve?type=alert&n=50" | grep -ci "sqlmap\|union")
-      F=$(curl -s "http://192.168.136.145:8081/api/conntrack" | grep -o '"count":[0-9]*' | head -1)
-      A=$(curl -s "http://192.168.136.145:8083/api/audit?n=30&blocked=1" | grep -c '"status": 403')
-      echo "capstone WAF=$W IPS_alerts=$I FW_$F WAF_blocks=$A"
+      # WAF: 위 응답이 403 (sqlmap UA 차단)
+      # IPS: eve.json 에 sqlmap/UNION alert
+      ssh ccc@10.20.31.2 'grep -ci "sqlmap\|union" /var/log/suricata/eve.json'
+      # 방화벽: conntrack 에 공격자(192.168.0.202) 연결
+      ssh ccc@10.20.30.1 'sudo conntrack -L 2>/dev/null | grep -c 192.168.0.202'
       ```
       ## ✅ 합격 기준
-      출력에 `WAF=403` 이 보인다(세 장비 흔적: WAF 차단 + IPS alert + FW 연결).
-    hint: '한 공격 → WAF 403 + IPS alert + FW conntrack. expect: WAF=403'
+      WAF 응답이 `WAF=403` 이다(세 장비 흔적: WAF 차단 + IPS alert + FW 연결 동시 발생).
+    hint: '한 공격(sqlmap UA+UNION, 자연 URL) → WAF 403 + IPS alert + FW conntrack. expect: WAF=403'
     answer: |
-      curl -s -X POST -H "Content-Type: application/json" http://192.168.136.145:8083/api/rule/apply -d '{"rule":"SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000099,phase:1,t:lowercase,deny,status:403,log,msg:'\''EDU capstone'\'',severity:'\''CRITICAL'\''\""}' >/dev/null
-      W=$(docker exec el34-attacker curl -s -o /dev/null -w "%{http_code}" -A "sqlmap/1.7" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?q=1%20UNION%20SELECT%201")
-      sleep 3
-      I=$(curl -s "http://192.168.136.145:8082/api/eve?type=alert&n=50" | grep -ci "sqlmap\|union")
-      F=$(curl -s "http://192.168.136.145:8081/api/conntrack" | grep -o '"count":[0-9]*' | head -1)
-      A=$(curl -s "http://192.168.136.145:8083/api/audit?n=30&blocked=1" | grep -c '"status": 403')
-      echo "capstone WAF=$W IPS_alerts=$I FW_$F WAF_blocks=$A"
-    answer_detail: "세 장비 흔적: WAF=403(웹 차단)+IPS alert(네트워크 패턴)+FW conntrack(연결). 모두 같은 SIEM(10.20.32.100)으로 모임 — 분석가 한 화면 상관분석. 호스트 행위는 el34-sysmon-host 가 보충."
+      # ① WAF sqlmap 차단 룰 (편집기 추가와 동일 — 채점용 비대화식)
+      ssh ccc@10.20.32.80 'grep -q id:9000099 /etc/modsecurity/edu_rules.conf || echo "SecRule REQUEST_HEADERS:User-Agent \"@contains sqlmap\" \"id:9000099,phase:1,t:lowercase,deny,status:403,log,msg:EDU-capstone,severity:CRITICAL\"" | sudo tee -a /etc/modsecurity/edu_rules.conf >/dev/null; sudo apache2ctl configtest >/dev/null 2>&1 && sudo apache2ctl graceful >/dev/null 2>&1'
+      # ② 공격 (sqlmap UA + UNION, 자연 URL) → WAF 403
+      W=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' -A sqlmap 'http://dvwa.el34.lab/?q=1%20UNION%20SELECT%201'")
+      sleep 2
+      # ③ 세 장비 흔적
+      I=$(ssh ccc@10.20.31.2 'grep -ci "sqlmap\|union" /var/log/suricata/eve.json' 2>/dev/null)
+      F=$(ssh ccc@10.20.30.1 'sudo conntrack -L 2>/dev/null | grep -c 192.168.0.202' 2>/dev/null)
+      echo "capstone WAF=$W IPS_alerts=$I FW_conns=$F"
+    answer_detail: "한 공격의 흔적이 세 장비에: WAF=403(웹 차단, sqlmap UA)+IPS alert(sqlmap/UNION 패턴)+FW conntrack(192.168.0.202 연결). 모두 같은 SIEM(10.20.32.100)으로 모여 분석가가 한 화면에서 상관분석 — 심층 방어의 종합."
     verify:
       type: output_contains
       expect: WAF=403
@@ -238,40 +278,19 @@ steps:
       WAF 콘솔의 실습 SecRule(id 9000000+)을 모두 삭제한다. (IPS/방화벽에는 capstone 에서 룰을
       추가하지 않았다 — 기본 룰이 탐지했을 뿐.) 호스트에 jq 가 없으므로 python3 로 처리한다.
 
-      ## 💻 정리 명령
+      ## 💻 정리 명령 (WAF 장비에서)
+      실습으로 추가한 EDU SecRule 을 모두 지운다 — `sudo nano /etc/modsecurity/edu_rules.conf` 로 열어
+      실습 룰(id 9000000+) 줄들을 지우고 저장(nano: 줄 삭제 `Ctrl+K`, 저장 `Ctrl+O`→종료 `Ctrl+X`)한 뒤:
       ```bash
-      python3 -c '
-      import json, urllib.request as u
-      B="http://192.168.136.145:8083"
-      def post(p,o):
-          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
-          return u.urlopen(r,timeout=8).read().decode()
-      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
-      n=0
-      for r in rs.get("rules",[]):
-          rid=str(r.get("id",""))
-          if rid: post("/api/rule/delete",{"id":rid}); n+=1
-      print("cleanup done deleted=%d"%n)
-      '
+      sudo apache2ctl graceful      # 반영
       ```
+      (IPS/방화벽에는 capstone 에서 룰을 추가하지 않았다 — 기본 룰이 탐지했을 뿐이라 정리할 것이 없다.)
       ## ✅ 합격 기준
       실습 룰이 모두 삭제되어 `cleanup done` 이 보인다.
-    hint: 'python3 로 WAF edu 룰 일괄 삭제 → cleanup done'
+    hint: 'sudo nano edu_rules.conf 로 EDU 룰 줄 삭제·저장 → apache2ctl graceful'
     answer: |
-      python3 -c '
-      import json, urllib.request as u
-      B="http://192.168.136.145:8083"
-      def post(p,o):
-          r=u.Request(B+p,data=json.dumps(o).encode(),headers={"Content-Type":"application/json"})
-          return u.urlopen(r,timeout=8).read().decode()
-      rs=json.load(u.urlopen(B+"/api/rules",timeout=8))
-      n=0
-      for r in rs.get("rules",[]):
-          rid=str(r.get("id",""))
-          if rid: post("/api/rule/delete",{"id":rid}); n+=1
-      print("cleanup done deleted=%d"%n)
-      '
-    answer_detail: "edu_rules.conf 의 모든 GUI 룰(id>=9000000) 삭제 → graceful reload. CRS/기본 보호는 유지. 특강 종료 — 운영 위생."
+      # (편집기로 EDU 룰 줄을 지운 것과 동일 — 채점용 비대화식) 실습 SecRule 삭제 + graceful (WAF 장비에서)
+      ssh ccc@10.20.32.80 "sudo sed -i -E '/id:9[0-9]{6}/d' /etc/modsecurity/edu_rules.conf 2>/dev/null; sudo apache2ctl graceful >/dev/null 2>&1; echo 'cleanup done'"
     verify:
       type: output_contains
       expect: cleanup done
