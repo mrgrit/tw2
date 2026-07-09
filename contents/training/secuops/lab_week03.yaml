@@ -307,6 +307,8 @@ steps:
 
       ```bash
       # ── el34-attacker 에서: 0. 새 HTTP 트래픽 3건 발생 (분석 대상 확보) ──
+      # 💡 이 HTTP 트래픽은 브라우저로 http://juice.el34.lab/ 를 열어도 발생한다(특정 UA 는 Burp Repeater 로).
+      #    여기선 eve.json 분석 대상 확보가 목적이라 응답은 -o /dev/null 로 버린다.
       curl -s -o /dev/null -A 'TestUA/1' http://juice.el34.lab/w04_test_1
       curl -s -o /dev/null -A 'TestUA/2' http://juice.el34.lab/w04_test_2
       curl -s -o /dev/null -A 'TestUA/3' http://juice.el34.lab/w04_test_3
@@ -360,7 +362,8 @@ steps:
       ssh att@192.168.0.202 "curl -s -o /dev/null -A 'TestUA/1' http://juice.el34.lab/w04_test_1"
       ssh att@192.168.0.202 "curl -s -o /dev/null -A 'TestUA/2' http://juice.el34.lab/w04_test_2"
       ssh att@192.168.0.202 "curl -s -o /dev/null -A 'TestUA/3' http://juice.el34.lab/w04_test_3"
-      sleep 4
+      # 새 트래픽이 eve.json 에 기록될 때까지 조건 폴링(고정 sleep 대신, 최대 10초)
+      ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q w04_test /var/log/suricata/eve.json; do :; done"' || true
       echo
       echo "=== 1. event_type 분포 ==="
       ssh ccc@10.20.31.2 'sudo tail -200 /var/log/suricata/eve.json | jq -r .event_type | sort | uniq -c | sort -rn'
@@ -431,7 +434,7 @@ steps:
       sudo grep "local.rules" /etc/suricata/suricata.yaml   # rule-files 등록 확인
       sudo suricatasc -c reload-rules                        # downtime 0
 
-      # ── el34-attacker 에서: 5. 트리거 — sqlmap UA curl ──
+      # ── el34-attacker 에서: 5. 트리거 — sqlmap UA curl (UA 를 sqlmap 으로 바꿔 보내는 건 Burp Repeater 로도 가능, 여기선 탐지 트리거가 목적이라 응답 버림) ──
       curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/
 
       # ── el34-ips 에서: 6-7. alert 검증 + 룰 로드 카운트 (트리거 5초 후) ──
@@ -493,13 +496,13 @@ steps:
       echo "=== 3. rule-files 등록 ==="
       ssh ccc@10.20.31.2 'sudo grep "local.rules" /etc/suricata/suricata.yaml'
       echo
-      echo "=== 4. reload ==="
+      echo "=== 4. reload (suricatasc 동기 반환이라 별도 대기 불필요) ==="
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      sleep 2
       echo
       echo "=== 5. 트리거 ==="
       ssh att@192.168.0.202 'curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/'
-      sleep 5
+      # alert 가 eve 에 기록될 때까지 조건 폴링(고정 sleep 대신, 최대 10초)
+      ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9004001 /var/log/suricata/eve.json; do :; done"' || true
       echo
       echo "=== 6. alert event ==="
       ssh ccc@10.20.31.2 'sudo grep 9004001 /var/log/suricata/eve.json | tail -1 | jq .alert'
@@ -532,8 +535,8 @@ steps:
           - "**[OSS] sticky buffer 문법 (6.x: http.user_agent 전위)**"
           - "**[OSS] threshold 룰 옵션 (W04 학습 예고)**"
     cleanup: |
-      ssh ccc@10.20.31.2 "sudo sed -i '/sid:9004001/d' /etc/suricata/rules/local.rules" 2>/dev/null
-      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules' 2>/dev/null
+      ssh ccc@10.20.31.2 "sudo sed -i '/sid:9004001/d' /etc/suricata/rules/local.rules"
+      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
       true
     target_vm: ips
 
@@ -649,7 +652,7 @@ steps:
       # 1. baseline — 현재 9004001 alert 카운트 (이 숫자를 적어둔다)
       sudo grep -c "9004001" /var/log/suricata/eve.json 2>/dev/null
 
-      # ── el34-attacker 에서: 2. Red — sqlmap UA 5회 burst ──
+      # ── el34-attacker 에서: 2. Red — sqlmap UA 5회 burst (rate 룰 트리거용. Burp Intruder 로도 반복 가능) ──
       curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/
       curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/
       curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/
@@ -701,10 +704,10 @@ steps:
     points: 25
     answer: |
       echo "=== 0. 룰 활성 확인 ==="
-      ssh ccc@10.20.31.2 'sudo grep -c "sid:9004001" /etc/suricata/rules/local.rules 2>/dev/null'
+      ssh ccc@10.20.31.2 'sudo grep "sid:9004001" /etc/suricata/rules/local.rules && echo "룰 활성" || echo "룰 비활성"'
       echo
-      echo "=== 1. baseline ==="
-      BEFORE=$(ssh ccc@10.20.31.2 'sudo grep -c "9004001" /var/log/suricata/eve.json 2>/dev/null')
+      echo "=== 1. baseline (jq 로 매치 JSON 라인 수) ==="
+      BEFORE=$(ssh ccc@10.20.31.2 'sudo grep "9004001" /var/log/suricata/eve.json | jq -s length')
       echo "baseline: $BEFORE"
       echo
       echo "=== 2. Red 5 burst ==="
@@ -713,10 +716,11 @@ steps:
       ssh att@192.168.0.202 'curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/'
       ssh att@192.168.0.202 'curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/'
       ssh att@192.168.0.202 'curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/'
-      sleep 6
+      # eve 에 새 alert 가 반영될 때까지 조건 폴링(고정 sleep 대신 카운트 증가를 대기, 최대 12초)
+      ssh ccc@10.20.31.2 "timeout 12 bash -c 'until [ \$(sudo grep 9004001 /var/log/suricata/eve.json | jq -s length) -gt $BEFORE ]; do :; done'" || true
       echo
       echo "=== 3. Blue 카운트 ==="
-      AFTER=$(ssh ccc@10.20.31.2 'sudo grep -c "9004001" /var/log/suricata/eve.json 2>/dev/null')
+      AFTER=$(ssh ccc@10.20.31.2 'sudo grep "9004001" /var/log/suricata/eve.json | jq -s length')
       echo "after: $AFTER  delta: $((AFTER - BEFORE))"
       echo
       echo "=== 4. Purple — in_iface 분포 ==="
@@ -762,8 +766,8 @@ steps:
           - "delta < 5 (sniff 누락 또는 reload 실패)"
           - "in_iface 1개만 (양 NIC capture 실패)"
     cleanup: |
-      ssh ccc@10.20.31.2 'sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules' 2>/dev/null
-      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules' 2>/dev/null
+      ssh ccc@10.20.31.2 'sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules'
+      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
       true
     target_vm: bastion
 
@@ -786,10 +790,10 @@ steps:
       EOF"
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: 3. 트리거 (alert 안 발생할 것) ──
+      # ── el34-attacker 에서: 3. 트리거 (alert 안 발생할 것. UA 지정은 Burp Repeater 로도 가능) ──
       curl -s -o /dev/null -A "WrongPathTest/1.0" http://juice.el34.lab/
 
-      # ── el34-ips 에서: 4-5. alert 없음 검증 + suricata.log 진단 (트리거 4초 후) ──
+      # ── el34-ips 에서: 4-5. alert 없음 검증 + suricata.log 진단 ──
       echo "9004099 alert 카운트 (0 이 예상):"
       sudo grep -c "9004099" /var/log/suricata/eve.json 2>/dev/null
       sudo tail -20 /var/log/suricata/suricata.log | grep -E "rule|Loaded|ERROR|WARN" | tail -5
@@ -842,13 +846,11 @@ steps:
       echo
       echo "=== 2. reload (적용 안 됨) ==="
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      sleep 2
       echo
-      echo "=== 3-4. 트리거 + alert 없음 검증 ==="
+      echo "=== 3-4. 트리거 + alert 없음 검증 (잘못된 경로라 룰 미로드) ==="
       ssh att@192.168.0.202 'curl -s -o /dev/null -A "WrongPathTest/1.0" http://juice.el34.lab/'
-      sleep 4
-      echo "9004099 카운트 (0 예상):"
-      ssh ccc@10.20.31.2 'sudo grep -c "9004099" /var/log/suricata/eve.json 2>/dev/null'
+      echo "9004099 카운트 (0 예상 — 룰 미로드):"
+      ssh ccc@10.20.31.2 'sudo grep "9004099" /var/log/suricata/eve.json | jq -s length'
       echo
       echo "=== 5. suricata.log 진단 ==="
       ssh ccc@10.20.31.2 'sudo tail -20 /var/log/suricata/suricata.log | grep -E "rule|Loaded|ERROR|WARN" | tail -5'
@@ -856,11 +858,11 @@ steps:
       echo "=== 6. 복구 — 올바른 경로 ==="
       ssh ccc@10.20.31.2 'sudo bash -c "cat /tmp/wrong_path.rules >> /etc/suricata/rules/local.rules"'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      sleep 2
       ssh att@192.168.0.202 'curl -s -o /dev/null -A "WrongPathTest/1.0" http://juice.el34.lab/'
-      sleep 4
+      # alert 가 eve 에 기록될 때까지 조건 폴링(고정 sleep 대신, 최대 10초)
+      ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9004099 /var/log/suricata/eve.json; do :; done"' || true
       echo "9004099 카운트 (1+ 정상):"
-      ssh ccc@10.20.31.2 'sudo grep -c "9004099" /var/log/suricata/eve.json 2>/dev/null'
+      ssh ccc@10.20.31.2 'sudo grep "9004099" /var/log/suricata/eve.json | jq -s length'
       echo
       echo "=== Cleanup ==="
       ssh ccc@10.20.31.2 'sudo sed -i "/sid:9004099/d" /etc/suricata/rules/local.rules; sudo rm -f /tmp/wrong_path.rules'
@@ -889,8 +891,8 @@ steps:
           - "**[OSS] suricata -V** — 빌드 옵션"
           - "**[OSS] git diff 의 IaC 변경 audit**"
     cleanup: |
-      ssh ccc@10.20.31.2 'sudo sed -i "/sid:9004099/d" /etc/suricata/rules/local.rules; sudo rm -f /tmp/wrong_path.rules' 2>/dev/null
-      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules' 2>/dev/null
+      ssh ccc@10.20.31.2 'sudo sed -i "/sid:9004099/d" /etc/suricata/rules/local.rules; sudo rm -f /tmp/wrong_path.rules'
+      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
       true
     target_vm: ips
 
@@ -920,7 +922,7 @@ steps:
       # 4. ips agent 의 활성 통계
       sudo /var/ossec/bin/agent_control -lc 2>&1 | grep -i ips | head -3
       # 5. 최근 alert (Suricata 출처)
-      sudo tail -100 /var/ossec/logs/alerts/alerts.log 2>/dev/null | grep -i "suricata\|Suricata" | tail -5
+      sudo tail -100 /var/ossec/logs/alerts/alerts.log | grep -i "suricata\|Suricata" | tail -5
       ```
 
       ## 📋 확인 사항
@@ -960,7 +962,7 @@ steps:
       ssh ccc@10.20.32.100 'sudo /var/ossec/bin/agent_control -lc 2>&1 | grep -i ips | head -3'
       echo
       echo "=== 5. alerts.log Suricata ==="
-      ssh ccc@10.20.32.100 'sudo tail -100 /var/ossec/logs/alerts/alerts.log 2>/dev/null | grep -i "suricata" | tail -5'
+      ssh ccc@10.20.32.100 'sudo tail -100 /var/ossec/logs/alerts/alerts.log | grep -i "suricata" | tail -5'
     answer_detail: |
       ips 의 Wazuh agent 가 eve.json 을 ship → manager 의 alerts.log + dashboard 적재.
       ossec.conf 의 localfile 설정 + agent Active + manager 에서 ips agent 가 보여야 함.
