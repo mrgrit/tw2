@@ -36,12 +36,28 @@ CATS = [
  ('M-for seq 반복요청(도구 대체?)','★', lambda ln: re.search(r'for .*seq 1 \d+.*curl', ln)),
 ]
 
+# 병기(사람방식)가 있으면 curl/-o/dev/null 계열은 '해결'로 간주하는 카테고리
+BYEONG_RESOLVABLE = ('M-curl 리버스프록시','M-공격인데 -o /dev/null')
+def _steps(lines):
+    """(start,end) 스텝 경계 목록 — '- order:' 기준."""
+    idx=[i for i,l in enumerate(lines) if l.lstrip().startswith('- order:')]
+    idx.append(len(lines)); return [(idx[k],idx[k+1]) for k in range(len(idx)-1)] or [(0,len(lines))]
 def scan_file(f):
-    hits={}
-    for n,ln in enumerate(open(f,encoding='utf-8').read().split('\n'),1):
+    lines=open(f,encoding='utf-8').read().split('\n'); hits={}
+    steps=_steps(lines)
+    def step_has_byeong(n):
+        for a,b in steps:
+            if a<=n-1<b:
+                blk='\n'.join(lines[a:b])
+                return ('브라우저' in blk) or ('Burp' in blk) or ('Postman' in blk)
+        return False
+    for n,ln in enumerate(lines,1):
         for name,sev,fn in CATS:
             try:
-                if fn(ln): hits.setdefault(name,[]).append((n,ln.strip()))
+                if fn(ln):
+                    if any(name.startswith(k) for k in BYEONG_RESOLVABLE) and step_has_byeong(n):
+                        continue  # 병기 있음 → 해결
+                    hits.setdefault(name,[]).append((n,ln.strip()))
             except: pass
     return hits
 
