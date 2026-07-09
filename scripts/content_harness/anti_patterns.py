@@ -18,6 +18,8 @@ def _attacker_internal(ln):
 
 CATS = [
  # ── 기능 버그 (라이브 실행으로도 잡히지만 정적으로도) ──
+ ('F-병합 YAML키(verify/answer_detail 흡수)','★★★', lambda ln: any(ln.find('    '+k)>0 and ln[:ln.find('    '+k)].strip() and not ln.lstrip().startswith(k) for k in ('answer_detail:','verify:','expected_output:','hint:'))),
+ ('F-깨진 코드펜스(``` 병합)','★★★', lambda ln: ln.rstrip().endswith('```') and ln.strip()!='```' and not ln.strip().startswith('```')),
  ('F-도달불가(attacker→내부IP)','★★★', lambda ln: _attacker_internal(ln)),
  ('F-구IP 10.20.30.202(→192.168.0.202)','★★', lambda ln: '10.20.30.202' in ln and 'ssh' in ln),
  ('F-sudo 없는 root명령','★★', lambda ln: re.search(r"ssh ccc@[0-9.]+ ['\"]?(nft |suricatasc|apache2ctl|wazuh-control|agent_control|conntrack |osqueryi|tail /var/log|/var/ossec)", ln) and 'sudo' not in ln.split('ssh ccc@')[1] if 'ssh ccc@' in ln else False),
