@@ -28,7 +28,7 @@ CATS = [
  ('M-curl 리버스프록시=사람방식(브라우저/Burp) 병기필요','★★', lambda ln: re.search(r'curl\b', ln) and re.search('http://'+VHOSTS, ln) and 'sqlmap' not in ln and 'dalfox' not in ln),
  ('M-python -c (scapy·정당사유 외)','★★', lambda ln: re.search(r'python3? -c ', ln) and 'scapy' not in ln),
  ('M-cat<<EOF 보고서 텍스트 출력','★★', lambda ln: re.search(r"cat\s+<<'?EOF'?", ln)),
- ('M-echo 캔드 해석/결론(분석 박스체크)','★★★', lambda ln: re.search(r'echo "(→|해석|결론|정리|보고서|리포트)', ln)),
+ ('M-echo 캔드 해석/결론(분석 박스체크)','★★★', lambda ln: re.search(r'echo "(→|해석|결론|정리)', ln) and '$' not in ln),
  ('M-공격인데 -o /dev/null(응답 안 봄)','★★', lambda ln: '-o /dev/null' in ln and re.search(r"\?(id|q|search|cat|x)=|UNION|<script|onerror|%27|/etc/passwd|/admin|/rest/user/login", ln)),
  ('M-2>/dev/null 에러 숨김','★', lambda ln: '2>/dev/null' in ln and re.search(r'\b(ssh|curl|nft|suricatasc|apache2ctl)\b', ln)),
  ('M-sleep 인위적 대기','★', lambda ln: re.search(r'\bsleep \d', ln)),
