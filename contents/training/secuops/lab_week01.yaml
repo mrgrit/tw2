@@ -156,7 +156,7 @@ steps:
           - |
             **[OSS] sudo NOPASSWD 검증** — 학습 환경 전제.
               ssh ccc@10.20.30.1 'sudo -n nft list tables 2>&1 | head -3'
-              ssh ccc@10.20.30.1 'cat /etc/sudoers.d/ccc 2>/dev/null'
+              ssh ccc@10.20.30.1 'sudo cat /etc/sudoers.d/ccc'
             예상 출력 `table inet six_filter / ccc ALL=(ALL) NOPASSWD: ALL`.
             운영 해석: 학습 환경만 NOPASSWD. production 절대 금지.
         negative_signs:
@@ -310,6 +310,9 @@ steps:
       curl -sk -o /dev/null -w 'portal.el34.lab: %{http_code}\n' http://portal.el34.lab/
       curl -sk -o /dev/null -w 'bastion.el34.lab: %{http_code}\n' http://bastion.el34.lab/
       ```
+      > 💡 **브라우저로도 확인:** 학생 PC 브라우저에서 `http://juice.el34.lab/`·`http://portal.el34.lab/` 를
+      > 열면 각 vhost 화면이 실제로 뜬다(host header 라우팅 육안 확인). 여기선 4 vhost 라우팅 응답코드만
+      > 한눈에 보려고 `-o /dev/null -w '%{http_code}'`(본문 버리고 코드만)로 확인한다.
 
       ## 📋 확인 사항
 
@@ -511,9 +514,9 @@ steps:
             예상 출력 `af-packet: / - interface: eth0 / - interface: eth1 / ...`.
             운영 해석: 2 interface 정의. cluster-id / cluster-type / threads 옵션도.
           - |
-            **[OSS] 룰셋 카운트** — 활성.
-              ssh ccc@10.20.31.2 'sudo wc -l /var/lib/suricata/rules/suricata.rules 2>/dev/null || sudo wc -l /etc/suricata/rules/*.rules 2>&1 | tail -1'
-            예상 출력 `30000+ /var/lib/suricata/rules/suricata.rules`.
+            **[OSS] 룰셋 파일 크기** — 활성.
+              ssh ccc@10.20.31.2 'sudo ls -la /var/lib/suricata/rules/suricata.rules || sudo ls -la /etc/suricata/rules/*.rules | tail -1'
+            예상 출력 `-rw-r--r-- 1 root root 15M ... /var/lib/suricata/rules/suricata.rules` (수 MB = 활성 룰셋).
             운영 해석: ETOpen 통합 30,000+ 라인 = 활성 룰 25,000+ (주석 제외).
           - |
             **[OSS] /var/log/suricata/stats.log — 10초 주기** — 시계열.
@@ -556,6 +559,9 @@ steps:
       # 4. error.log 의 매치 룰 ID 941/942 (audit JSON엔 룰 배열 없어 error.log 사용)
       grep -oE 'id "94[0-9]{4}"' /var/log/apache2/dvwa_error.log | sort -u | head
       ```
+      > 💡 **화면으로 확인:** 브라우저에서 `http://dvwa.el34.lab/?q=<script>alert(1)</script>` 를 열면 ModSec 이
+      > 막은 **403 Forbidden 페이지**가 실제로 뜬다(WAF 차단 육안 확인). 여기선 차단 응답코드만 보려고
+      > `-o /dev/null -w '%{http_code}'` 로 확인하고, 매치 룰 ID(941xxx)는 error.log 에서 본다.
 
       ## 📋 확인 사항
 
@@ -587,8 +593,8 @@ steps:
       ssh ccc@10.20.32.80 'sudo ls /etc/apache2/sites-enabled/'
       echo "=== XSS 페이로드 → 403 (dvwa = 차단형 vhost) ==="
       ssh att@192.168.0.202 'curl -s -o /dev/null -w "%{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
-      sleep 1
-      ssh ccc@10.20.32.80 'grep -oE "id \"94[0-9]{4}\"" /var/log/apache2/dvwa_error.log | tail -3'
+      # ModSec 은 응답 전에 error.log 를 쓰므로(요청 처리 중 로깅) 별도 대기 없이 바로 매치 룰 ID 확인
+      ssh ccc@10.20.32.80 'sudo grep -oE "id \"94[0-9]{4}\"" /var/log/apache2/dvwa_error.log | tail -3'
     answer_detail: |
       mod_security2 + proxy + ssl 모듈 로드 + SecRuleEngine On + JSON 형식 audit
       log. 11 vhost (랜딩 + 8 vuln + portal/siem/bastion 3 운영). 차단형 vhost(dvwa)에
@@ -617,15 +623,15 @@ steps:
             예상 출력 `SecRuleEngine On / SecAuditEngine RelevantOnly / SecAuditLogFormat JSON / SecAuditLog /var/log/apache2/modsec_audit.log / SecRequestBodyAccess On / SecResponseBodyAccess On / SecDefaultAction "phase:2,log,auditlog,deny,status:403"`.
             운영 해석: On + JSON + RelevantOnly = Wazuh decoder 친화 + 디스크 효율.
           - |
-            **[OSS] CRS 룰셋 파일 수** — 룰셋 활성.
-              ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/ | wc -l'
+            **[OSS] CRS 룰셋 파일 목록** — 룰셋 활성.
+              ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/ | head'
               ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/REQUEST-9*.conf | head'
-            예상 출력 `31 / REQUEST-901-INITIALIZATION.conf / REQUEST-941-...-XSS.conf / REQUEST-942-...-SQLI.conf`.
+            예상 출력 `REQUEST-901-INITIALIZATION.conf / REQUEST-941-...-XSS.conf / REQUEST-942-...-SQLI.conf`(9xx 시리즈가 핵심 공격 룰).
             운영 해석: 31 룰 파일. 941 (XSS), 942 (SQLi), 930 (LFI), 932 (RCE) 핵심.
           - |
             **[OSS] curl XSS → 403 응답** — 동작 검증.
               ssh att@192.168.0.202 'curl -s -o /dev/null -w "XSS: %{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
-              sleep 2
+              # ModSec 은 요청 처리 중 audit.log 를 쓰므로 별도 대기 없이 최근 transaction 확인
               ssh ccc@10.20.32.80 'sudo tail -3 /var/log/apache2/modsec_audit.log | head -1 | jq "{code: .transaction.response.http_code, msgs: [.transaction.messages[]? | select(.id | startswith(\"941\")) | .id]}"'
             예상 출력 `XSS: 403 / {"code":403,"msgs":["941100","941160"]}`.
             운영 해석: 941100 = libinjection 매칭. 403 차단.
@@ -637,10 +643,10 @@ steps:
             예상 출력 `000-landing.conf / 010-juice.conf / 020-dvwa.conf / … / 12 파일` + `ProxyPass / http://juiceshop:3000/ / ProxyPass / http://dvwa:80/ …`(대상은 IP 가 아니라 컨테이너 **hostname**; juiceshop→10.20.40.81, dvwa→10.20.40.82 으로 resolve).
             운영 해석: 각 vhost 가 int 백엔드 컨테이너로 reverse proxy(ProxyPass)→ WAF 검사 후 전달. 8 vuln + 랜딩 + 운영 vhost.
           - |
-            **[OSS] modsec_audit.log JSON 라인 수** — 활성.
-              ssh ccc@10.20.32.80 'sudo wc -l /var/log/apache2/modsec_audit.log'
+            **[OSS] modsec_audit.log 크기 + 룰 ID 분포** — 활성.
+              ssh ccc@10.20.32.80 'sudo ls -la /var/log/apache2/modsec_audit.log'
               ssh ccc@10.20.32.80 'sudo grep -oE ''"id":"[0-9]+"'' /var/log/apache2/modsec_audit.log | sort | uniq -c | sort -rn | head'
-            예상 출력 `600+ / 30 "id":"941100" / 25 "id":"942100" / ...`.
+            예상 출력 `-rw-r----- ... 1.2M ... modsec_audit.log / 30 "id":"941100" / 25 "id":"942100" / ...`.
             운영 해석: 600+ transaction 기록. 941 (XSS) 가 가장 자주.
           - |
             **[OSS] CRS paranoia + anomaly** — 룰 강도.
@@ -650,7 +656,7 @@ steps:
           - |
             **[OSS] Apache access.log + error.log** — 보조.
               ssh ccc@10.20.32.80 'sudo tail -3 /var/log/apache2/access.log'
-              ssh ccc@10.20.32.80 'sudo grep -i modsec /var/log/apache2/error.log 2>/dev/null | tail -3'
+              ssh ccc@10.20.32.80 'sudo grep -i modsec /var/log/apache2/error.log | tail -3'
             예상 출력 `<ip> - - [<date>] "GET /?q=<script>..." 403 / [client ...] ModSecurity: Warning. ...`.
             운영 해석: error.log 의 ModSec 메시지 = audit log 의 index.
         negative_signs:
@@ -774,7 +780,7 @@ steps:
             운영 해석: API 정상 → dashboard 도 정상. 401 이면 internal_users 점검.
           - |
             **[OSS] /var/ossec/etc/client.keys** — agent 등록.
-              ssh ccc@10.20.32.100 'sudo cat /var/ossec/etc/client.keys 2>/dev/null | head'
+              ssh ccc@10.20.32.100 'sudo cat /var/ossec/etc/client.keys | head'
             예상 출력 `003 ips <ip> <key> / 004 web ...`.
             운영 해석: client.keys = enrollment 의 source of truth. 0 라인이면 enrollment
             전체 실패.
@@ -1064,7 +1070,7 @@ steps:
       echo "=== Blue: web Apache dvwa_access.log (403 흔적) ==="
       ssh ccc@10.20.32.80 'grep " 403 " /var/log/apache2/dvwa_access.log | tail -3'
       echo "=== Blue: web Apache dvwa_error.log (매치 룰 ID) ==="
-      ssh ccc@10.20.32.80 'grep -oE "id \"[0-9]{6}\"" /var/log/apache2/dvwa_error.log 2>/dev/null | tail -6'
+      ssh ccc@10.20.32.80 'sudo grep -oE "id \"[0-9]{6}\"" /var/log/apache2/dvwa_error.log | tail -6'
     answer_detail: |
       audit log 의 한 transaction. messages 배열에 매치된 룰 ID. 941100 + 941160 (XSS)
       + 942100 (SQLi) + 949110 (anomaly threshold 5+ 도달 → 차단). access log 의
@@ -1141,16 +1147,11 @@ steps:
 
       ## 💻 실행 명령
 
-      **SIEM 장비:** `ssh ccc@10.20.32.100`(비번 `1`)로 접속해 실행한다.
-      siem 컨테이너엔 jq 가 없어 python3 으로 파싱한다.
+      **SIEM 장비:** `ssh ccc@10.20.32.100`(비번 `1`)로 접속해 실행한다(/var/ossec 는 sudo).
 
       ```bash
-      tail -500 /var/ossec/logs/alerts/alerts.json | grep -E "web|192.168.0.202" | tail -2 | head -1 \
-        | python3 -c "import json,sys; d=json.loads(sys.stdin.read()); \
-          print(json.dumps({'agent':d.get('agent',{}).get('name'), \
-                            'rule_id':d.get('rule',{}).get('id'), \
-                            'level':d.get('rule',{}).get('level'), \
-                            'desc':d.get('rule',{}).get('description')}, ensure_ascii=False))"
+      sudo tail -500 /var/ossec/logs/alerts/alerts.json | grep -E "web|192.168.0.202" | tail -2 | head -1 \
+        | jq '{agent:.agent.name, rule_id:.rule.id, level:.rule.level, desc:.rule.description}'
       ```
 
       ## 📋 확인 사항
@@ -1236,7 +1237,7 @@ steps:
             운영 해석: indexer DSL 로 attacker IP 별 분석.
           - |
             **[OSS] decoder 매핑 점검 (gap)** — W09 예고.
-              ssh ccc@10.20.32.100 'sudo grep -l "modsec\|apache.*audit" /var/ossec/ruleset/decoders/*.xml 2>/dev/null | head'
+              ssh ccc@10.20.32.100 'sudo grep -lr "modsec" /var/ossec/ruleset/decoders/ | head || echo "(decoder 미정의 — W09 학습)"'
             예상 출력 `(decoder 파일) 또는 빈 결과 (decoder 미정의)`.
             운영 해석: 빈 결과면 W09 에서 사용자 정의 decoder 추가.
         negative_signs:
@@ -1302,8 +1303,9 @@ steps:
     category: purpleteam
     points: 14
     answer: |
-      echo "=== Purple Team Coverage Matrix ==="
-      cat <<'EOF'
+      # Coverage Matrix 는 편집기로 ~/w01_coverage.md 에 직접 작성한다(아래는 채점용 작성 결과)
+      cat > ~/w01_coverage.md <<'EOF'
+      # W01 Purple Team — Coverage Matrix
       | 도구                   | 흔적 | 매치 키                      | 기록 형식         |
       |-----------------------|------|-----------------------------|------------------|
       | fw conntrack           | ✓    | src/dst IP + port           | conntrack table  |
@@ -1312,6 +1314,7 @@ steps:
       | web Apache access.log  | ✓    | client(hop) IP + UA         | text (combined)  |
       | siem Wazuh alerts.json | ?    | agent + rule.id              | JSON line        |
       EOF
+      cat ~/w01_coverage.md
       echo ""
       echo "=== Gap 분석 ==="
       echo "1. Wazuh 의 ModSec decoder 가 941/942 룰 ID 를 자체 룰로 격상하지 않으면"
@@ -1469,7 +1472,8 @@ steps:
     category: synthesis
     points: 14
     answer: |
-      cat <<'EOF'
+      # 종합 보고서는 편집기로 ~/w01_report.md 에 직접 작성한다(아래는 채점용 작성 결과)
+      cat > ~/w01_report.md <<'EOF'
       # el34 W01 헬스체크 + R/B/P 보고서
 
       ## 1. 인프라 헬스 표
@@ -1507,6 +1511,7 @@ steps:
       2. W13: CDB list 자동 갱신 (AbuseIPDB / OpenCTI)
       3. W14: Purple Team 분기별 정기 cycle
       EOF
+      cat ~/w01_report.md
     answer_detail: |
       1페이지 보고서. 6 step 헬스 + 5 step R/B/P + 본인 발견 1건 + W02 준비도 +
       운영 권장 3+. 모든 항목 명시.
