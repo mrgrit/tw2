@@ -37,3 +37,16 @@ python3 scripts/content_harness/verify_commands.py 'contents/training/attack/lab
 맹목 삭제 금지 — **문맥**을 본다. 도달성 점검의 `-o /dev/null`은 정당, 익스플로잇의 것은 아님.
 verify가 echo 키워드를 채점하면 박스체크(나쁨), 순수 주석이면 봐줄 만함. 규칙은 **후보를 플래그**할 뿐, 고칠지는 사람이 문맥으로 판정한다.
 **★고침 방식 = 병기(annotate), 삭제 아님.** 이미 있는 명령(curl 등)은 두고, 사람이 하는 방식을 옆에 더한다.
+
+## ★고침 워크플로 (사람이 하듯 — 스크립트/병렬/샘플링 전부 금지)
+메인 콘텐츠 고침은 **자동화 스크립트(sed/python 벌크)·병렬 금지.** 편집기로 사람이 하듯 **한 번에 하나씩, 순서대로.**
+하네스는 고쳐주지 않는다 — **작업큐를 주고 진행을 검증**할 뿐.
+```bash
+# 1) 작업큐 뽑기 (파일 하나, 위→아래 순서)
+python3 scripts/content_harness/worklist.py 'contents/training/attack/lab_week04.yaml'
+# 2) 큐 1번부터 손으로(Edit) 고친다 — 한 스텝씩. 스크립트로 여러 개 한꺼번에 = 금지.
+# 3) 한 항목/스텝 고칠 때마다 재스캔해 카운트가 주는지 확인 (거짓완료 방지)
+python3 scripts/content_harness/anti_patterns.py 'contents/training/attack/lab_week04.yaml'
+# 4) 라이브 검증 (명령이 실제 동작하는지)
+```
+"완료"는 **재스캔 카운트 감소 + 라이브 pass** 로만. 말로 "다 했다" 금지.
