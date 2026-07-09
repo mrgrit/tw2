@@ -215,19 +215,8 @@ steps:
       **IPS 장비:** `ssh ccc@10.20.31.2`(비번 `1`)로 접속해 실행한다.
 
       ```bash
-      # 1. 핵심 counter (drop / pkts / bytes)
-      sudo suricatasc -c dump-counters 2>&1 | python3 -c "
-      import json,sys
-      d=json.load(sys.stdin)
-      m=d.get(\"message\",{})
-      keys=[\"decoder.pkts\",\"decoder.bytes\",\"capture.kernel_packets\",\"capture.kernel_drops\",\"capture.kernel_ifdrops\",\"detect.alert\",\"flow.total\"]
-      for k in keys:
-        v=m.get(k,0)
-        print(f\"{k:35} {v}\")
-      pkts=m.get(\"decoder.pkts\",1)
-      drops=m.get(\"capture.kernel_drops\",0)
-      print(f\"\\ndrop_rate = {100*drops/max(pkts,1):.4f} %\")
-      "
+      # 1. 핵심 counter (drop / pkts / bytes) + drop_rate 계산 — jq 로 파싱
+      sudo suricatasc -c dump-counters 2>&1 | jq '.message | {pkts:.decoder.pkts, bytes:.decoder.bytes, kpkts:.capture.kernel_packets, drops:.capture.kernel_drops, alert:.detect.alert, flow:.flow.total, drop_rate_pct: (100*(.capture.kernel_drops//0)/(.decoder.pkts//1))}'
 
       # 2. stats.log 의 8초 주기 self-check
       sudo tail -30 /var/log/suricata/stats.log 2>/dev/null | tail -20
@@ -271,21 +260,10 @@ steps:
     category: monitoring
     points: 15
     answer: |
-      ssh ccc@10.20.31.2 'sudo suricatasc -c dump-counters 2>&1 | python3 -c "
-      import json,sys
-      d=json.load(sys.stdin)
-      m=d.get(\"message\",{})
-      keys=[\"decoder.pkts\",\"decoder.bytes\",\"capture.kernel_packets\",\"capture.kernel_drops\",\"capture.kernel_ifdrops\",\"detect.alert\",\"flow.total\"]
-      for k in keys:
-        v=m.get(k,0)
-        print(f\"{k:35} {v}\")
-      pkts=m.get(\"decoder.pkts\",1)
-      drops=m.get(\"capture.kernel_drops\",0)
-      print(f\"\\ndrop_rate = {100*drops/max(pkts,1):.4f} %\")
-      "'
+      ssh ccc@10.20.31.2 'sudo suricatasc -c dump-counters 2>&1 | jq "{pkts:.message.decoder.pkts, bytes:.message.decoder.bytes, kpkts:.message.capture.kernel_packets, drops:.message.capture.kernel_drops, alert:.message.detect.alert, flow:.message.flow.total, drop_rate_pct: (100*(.message.capture.kernel_drops//0)/(.message.decoder.pkts//1))}"'
       echo
       echo "=== stats.log ==="
-      ssh ccc@10.20.31.2 'sudo tail -30 /var/log/suricata/stats.log 2>/dev/null | tail -15'
+      ssh ccc@10.20.31.2 'sudo tail -30 /var/log/suricata/stats.log | tail -15'
       echo
       echo "=== memcap-show ==="
       ssh ccc@10.20.31.2 'sudo suricatasc -c memcap-show 2>&1 | head'
@@ -687,11 +665,12 @@ steps:
       sudo grep "9004001" /var/log/suricata/eve.json | tail -1 | \
           jq '{ts:.timestamp, src:.src_ip, url:.http.url, ua:.http.http_user_agent, severity:.alert.severity}'
 
-      # 6. Purple — threshold 권장 (실제 적용 안 함, 시뮬만)
-      cat <<'EOF'
+      # 6. Purple — threshold 권장 (편집기로 threshold.config 작성, 실제 적용은 시뮬)
+      cat > ~/w03_threshold.config <<'EOF'
       # /etc/suricata/threshold.config (60초 안 5건만)
       event_filter gen_id 1, sig_id 9004001, type rate_filter, track by_src, count 5, seconds 60
       EOF
+      cat ~/w03_threshold.config
 
       # ── el34-ips 에서: Cleanup (STEP 5 의 local.rules 룰 제거 + reload) ──
       sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules
@@ -746,11 +725,12 @@ steps:
       echo "=== 5. Purple — alert context ==="
       ssh ccc@10.20.31.2 'sudo grep "9004001" /var/log/suricata/eve.json | tail -1 | jq "{ts:.timestamp, src:.src_ip, url:.http.url, src:.src_ip,ua:.http.http_user_agent, severity:.alert.severity}"'
       echo
-      echo "=== 6. Purple — threshold 권장 (시뮬) ==="
-      cat <<'EOF'
+      echo "=== 6. Purple — threshold 권장 (편집기로 threshold.config 작성) ==="
+      cat > ~/w03_threshold.config <<'EOF'
       # /etc/suricata/threshold.config
       event_filter gen_id 1, sig_id 9004001, type rate_filter, track by_src, count 5, seconds 60
       EOF
+      cat ~/w03_threshold.config
       echo
       echo "=== Cleanup ==="
       ssh ccc@10.20.31.2 'sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules'
@@ -1078,7 +1058,8 @@ steps:
     category: synthesis
     points: 10
     answer: |
-      cat <<'EOF'
+      # 보고서는 편집기로 ~/w03_report.md 에 작성한다(아래는 채점용 작성 결과)
+      cat > ~/w03_report.md <<'EOF'
       # el34 W03 Suricata IDS 보고서
 
       ## 1. STEP 1-9 결과
@@ -1095,6 +1076,7 @@ steps:
 
       ## 5. W05 준비도 + 6. gap
       EOF
+      cat ~/w03_report.md
     answer_detail: 1페이지 종합 보고서
     verify:
       type: output_contains
