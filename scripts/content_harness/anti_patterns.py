@@ -32,7 +32,7 @@ CATS = [
  ('M-cat<<EOF 보고서 텍스트 출력','★★', lambda ln: re.search(r"cat\s+<<'?EOF'?", ln)),
  ('M-echo 캔드 해석/결론(분석 박스체크)','★★★', lambda ln: re.search(r'echo "(→|해석|결론|정리)', ln) and '$' not in ln),
  ('M-공격인데 -o /dev/null(응답 안 봄)','★★', lambda ln: '-o /dev/null' in ln and re.search(r"\?(id|q|search|cat|x)=|UNION|<script|onerror|%27|/etc/passwd|/admin|/rest/user/login", ln)),
- ('M-2>/dev/null 에러 숨김','★', lambda ln: '2>/dev/null' in ln and re.search(r'\bssh ccc@', ln) and not re.search(r'\b(nmap|ffuf|gobuster|sqlmap|nikto|osqueryi|conntrack)\b', ln)),
+ ('M-2>/dev/null 에러 숨김','★', lambda ln: '2>/dev/null' in ln and re.search(r'\bssh ccc@', ln) and not re.search(r'\b(nmap|ffuf|gobuster|sqlmap|nikto|osqueryi|conntrack|find)\b', ln)),
  ('M-sleep 인위적 대기','★', lambda ln: re.search(r'\bsleep \d', ln)),
  ('M-grep -c/wc -l 숫자축소(verify 박스체크)','★', lambda ln: re.search(r'(grep -c |wc -l)', ln) and 'ssh ' in ln),
  ('M-for seq 반복요청(도구 대체?)','★', lambda ln: re.search(r'for .*seq 1 \d+.*curl', ln)),
