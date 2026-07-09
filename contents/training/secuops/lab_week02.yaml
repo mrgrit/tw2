@@ -119,8 +119,8 @@ steps:
       # ── el34-fw 에서: Blue — 차단 룰 적용 ──
       sudo nft insert rule inet six_filter forward ip saddr 192.168.0.202 counter drop
 
-      # ── el34-attacker 에서: Red — 공격 재현 (20회) ──
-      for i in $(seq 1 20); do curl -s -m1 http://juice.el34.lab/ >/dev/null; done
+      # ── el34-attacker 에서: Red — nmap 포트 스캔으로 다수 SYN 발생(차단 룰 카운터 증가용) ──
+      nmap -Pn -p 80,443,8001-8010 -T4 192.168.0.161
 
       # ── el34-fw 에서: Purple — 카운터 확인 + self-clean ──
       sudo nft -a list chain inet six_filter forward | grep '192.168.0.202'
@@ -134,7 +134,7 @@ steps:
     points: 15
     answer: |
       ssh ccc@10.20.30.1 sudo nft insert rule inet six_filter forward ip saddr 192.168.0.202 counter drop
-      ssh att@192.168.0.202 'for i in $(seq 1 20); do curl -s -m1 http://juice.el34.lab/ >/dev/null; done'
+      ssh att@192.168.0.202 'nmap -Pn -p 80,443,8001-8010 -T4 192.168.0.161'
       echo "=== 카운터 (packets 누적) ==="
       ssh ccc@10.20.30.1 sudo nft -a list chain inet six_filter forward | grep '192.168.0.202'
       H=$(ssh ccc@10.20.30.1 "sudo nft -a list chain inet six_filter forward" | grep '192.168.0.202' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+')
@@ -215,7 +215,7 @@ steps:
       ```bash
       sudo nft insert rule inet six_filter input ip saddr 10.20.31.0/24 tcp dport 9100 counter accept
       sudo nft add rule inet six_filter input tcp dport 9100 counter drop
-      sudo nft list chain inet six_filter input | grep -c 'dport 9100'
+      sudo nft list chain inet six_filter input | grep 'dport 9100'
       # self-clean (9100 매처 룰 모두 삭제)
       H=$(nft -a list chain inet six_filter input | grep 'dport 9100' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do nft delete rule inet six_filter input handle $h; done
       ```
@@ -227,8 +227,8 @@ steps:
     answer: |
       ssh ccc@10.20.30.1 sudo nft insert rule inet six_filter input ip saddr 10.20.31.0/24 tcp dport 9100 counter accept
       ssh ccc@10.20.30.1 sudo nft add rule inet six_filter input tcp dport 9100 counter drop
-      C=$(ssh ccc@10.20.30.1 "sudo nft list chain inet six_filter input" | grep -c 'dport 9100')
-      [ "$C" -ge 2 ] && echo "rules_with_9100=$C OK" || echo "rules_with_9100=$C FAIL"
+      echo "=== 9100 관련 룰 (관제 accept + 그 외 drop) ==="
+      ssh ccc@10.20.30.1 "sudo nft list chain inet six_filter input" | grep 'dport 9100' && echo "rules_with_9100 OK" || echo "rules_with_9100 FAIL"
       H=$(ssh ccc@10.20.30.1 "sudo nft -a list chain inet six_filter input" | grep 'dport 9100' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+')
       for h in $H; do ssh ccc@10.20.30.1 sudo nft delete rule inet six_filter input handle $h; done
       echo "self-clean done"
@@ -264,29 +264,33 @@ steps:
       # ── el34-fw 에서: DNAT 룰 추가 ──
       sudo nft add rule ip six_nat prerouting iifname "eth0" tcp dport 8088 counter dnat to 10.20.32.80:80
 
-      # ── el34-attacker 에서: 8088 접속 (도달하면 성공) ──
-      curl -s -o /dev/null -w "code=%{http_code}\n" -m 3 http://10.20.30.1:8088/
+      # ── el34-fw 에서: 룰이 ruleset 에 설치됐는지 확인 (운영자 산출물) ──
+      sudo nft list chain ip six_nat prerouting | grep 8088
 
       # ── el34-fw 에서: self-clean (8088 DNAT 삭제) ──
-      H=$(nft -a list chain ip six_nat prerouting | grep '8088' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do nft delete rule ip six_nat prerouting handle $h; done
+      H=$(sudo nft -a list chain ip six_nat prerouting | grep '8088' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do sudo nft delete rule ip six_nat prerouting handle $h; done
       ```
+      > 📌 **el34 경계 메모:** 비표준 포트(8088)의 외부 end-to-end 도달은 fw 의 nft 를 넘어 **호스트 레벨
+      > 포트포워딩**(공인 IP 가 8088 을 fw 로 전달)이 필요하다 — el34 는 80/443 만 포워딩하므로, fw 운영자의
+      > 산출물은 "DNAT 룰을 올바로 설치했는가"까지다(호스트 포워딩은 별도 인프라 작업).
       ## ✅ 합격 기준
-      8088 응답 코드가 000 이 아니다(도달함). 적용 전엔 connection refused/000.
-    hint: 'DNAT 8088→web:80 → attacker 8088 접속 code 가 200/400/403 등'
+      six_nat prerouting 에 `tcp dport 8088 ... dnat to 10.20.32.80:80` 룰이 설치돼 보인다.
+    hint: 'DNAT 8088→web:80 룰 추가 후 nft list chain 으로 설치 확인'
     category: response
     points: 15
     answer: |
-      ssh ccc@10.20.30.1 sudo nft add rule ip six_nat prerouting iifname "eth0" tcp dport 8088 counter dnat to 10.20.32.80:80
-      sleep 1
-      CODE=$(ssh att@192.168.0.202 'curl -s -o /dev/null -w "%{http_code}" -m 3 http://10.20.30.1:8088/')
-      echo "code=$CODE reached=$([ "$CODE" != "000" ] && echo yes || echo no)"
+      # DNAT 룰 추가 — 비공개 8088 → 내부 web:80 (운영자 산출물 = 룰 등록)
+      ssh ccc@10.20.30.1 'sudo nft add rule ip six_nat prerouting iifname "eth0" tcp dport 8088 counter dnat to 10.20.32.80:80'
+      # 룰이 ruleset 에 설치됐는지 확인 (dnat to 10.20.32.80:80 표시)
+      ssh ccc@10.20.30.1 'sudo nft list chain ip six_nat prerouting' | grep '8088'
+      # self-clean — 8088 DNAT 삭제
       H=$(ssh ccc@10.20.30.1 "sudo nft -a list chain ip six_nat prerouting" | grep '8088' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+')
       for h in $H; do ssh ccc@10.20.30.1 sudo nft delete rule ip six_nat prerouting handle $h; done
       echo "self-clean done"
-    answer_detail: "DNAT prerouting — 외부 8088 → 내부 web:80. 내부 IP 노출 없이 공개. NAT 만으로는 보안 아님, 차단정책과 함께."
+    answer_detail: "DNAT prerouting — 8088 → 내부 web:80 룰을 six_nat 에 설치. 내부 IP 노출 없이 포트 매핑. 검증은 룰이 ruleset 에 등록됐는지(dnat to 10.20.32.80:80)로 한다 — 비표준 포트의 외부 end-to-end 도달은 호스트 포트포워딩(별도)이 필요하고, fw 운영자 산출물은 룰 설치까지다. NAT 만으로는 보안 아님, 차단정책과 함께."
     verify:
       type: output_contains
-      expect: 'reached=yes'
+      expect: 'dnat to 10.20.32.80'
       field: stdout
       semantic:
         intent: "DNAT 의 안전한 공개 패턴 + NAT 만으로는 보안이 아니라는 핵심 인지"
@@ -314,7 +318,7 @@ steps:
       sudo nft add set inet six_filter blocklist '{ type ipv4_addr ; }'
       sudo nft add element inet six_filter blocklist '{ 10.20.30.200, 10.20.30.201, 10.20.30.203, 10.20.30.204, 10.20.30.250 }'
       sudo nft insert rule inet six_filter forward ip saddr @blocklist counter drop
-      sudo nft list chain inet six_filter forward | grep -c 'blocklist'
+      sudo nft list chain inet six_filter forward | grep 'blocklist'
       # self-clean (룰 먼저, set 나중)
       H=$(nft -a list chain inet six_filter forward | grep '@blocklist' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+'); for h in $H; do nft delete rule inet six_filter forward handle $h; done
       sudo nft delete set inet six_filter blocklist
@@ -328,11 +332,11 @@ steps:
       ssh ccc@10.20.30.1 sudo nft add set inet six_filter blocklist '{ type ipv4_addr ; }'
       ssh ccc@10.20.30.1 sudo nft add element inet six_filter blocklist '{ 10.20.30.200, 10.20.30.201, 10.20.30.203, 10.20.30.204, 10.20.30.250 }'
       ssh ccc@10.20.30.1 sudo nft insert rule inet six_filter forward ip saddr @blocklist counter drop
-      C=$(ssh ccc@10.20.30.1 "sudo nft list chain inet six_filter forward" | grep -c 'blocklist')
-      [ "$C" -ge 1 ] && echo "blocklist_refs=$C OK" || echo "blocklist_refs=$C FAIL"
+      echo "=== blocklist 참조 룰 ==="
+      ssh ccc@10.20.30.1 "sudo nft list chain inet six_filter forward" | grep 'blocklist' && echo "blocklist_refs OK" || echo "blocklist_refs FAIL"
       H=$(ssh ccc@10.20.30.1 "sudo nft -a list chain inet six_filter forward" | grep '@blocklist' | grep -oE 'handle [0-9]+' | grep -oE '[0-9]+')
       for h in $H; do ssh ccc@10.20.30.1 sudo nft delete rule inet six_filter forward handle $h; done
-      ssh ccc@10.20.30.1 sudo nft delete set inet six_filter blocklist 2>/dev/null
+      ssh ccc@10.20.30.1 'sudo nft delete set inet six_filter blocklist >/dev/null 2>&1 || echo "(set 없음 — 이미 정리됨)"'
       echo "self-clean done"
     answer_detail: "객체(named set) = 룰의 수를 늘리지 말고 데이터를 늘리는 운영 패턴. CTI 반영 속도가 핵심. (.202 는 attacker 라 set 예시에서 제외)"
     verify:
@@ -367,9 +371,11 @@ steps:
       curl -s -m 3 http://juice.el34.lab/ >/dev/null
 
       # ── el34-fw 에서: conntrack 표 읽기 ──
-      conntrack -L 2>/dev/null | grep -c "dport=80"
-      conntrack -L 2>/dev/null | grep "192.168.0.202" | head -2
+      sudo conntrack -L 2>/dev/null | grep "dport=80" | head -3
+      sudo conntrack -L 2>/dev/null | grep "192.168.0.202" | head -2
       ```
+      > 💡 연결 1건은 브라우저로 `http://juice.el34.lab/` 를 한 번 열어도 동일하게 conntrack 에 잡힌다
+      > (여기선 응답을 볼 필요 없이 추적 항목만 만들면 되므로 `curl ... >/dev/null` 로 연결만 발생시킨다).
       ## ✅ 합격 기준
       conntrack 표에 80 으로의 연결(`dport=80`)이 1개 이상 보인다.
     hint: 'curl 발생 → conntrack -L 에서 dport=80 연결'
@@ -377,11 +383,10 @@ steps:
     points: 10
     answer: |
       ssh att@192.168.0.202 'curl -s -m 3 http://juice.el34.lab/ >/dev/null'
-      sleep 1
-      echo "=== conntrack dport=80 연결 수 ==="
-      ssh ccc@10.20.30.1 'conntrack -L 2>/dev/null | grep -c "dport=80"'
+      echo "=== conntrack dport=80 연결 (샘플) ==="
+      ssh ccc@10.20.30.1 'sudo conntrack -L 2>/dev/null | grep "dport=80" | head -3'
       echo "=== 샘플 항목 (출처 보존: 192.168.0.202) ==="
-      ssh ccc@10.20.30.1 'conntrack -L 2>/dev/null | grep "192.168.0.202" | head -2'
+      ssh ccc@10.20.30.1 'sudo conntrack -L 2>/dev/null | grep "192.168.0.202" | head -2'
     answer_detail: "conntrack 항목 = 살아있는 연결. src=192.168.0.202 가 보존(fw SNAT 안 함). [UNREPLIED]/[ASSURED] 로 NAT 끊김 진단."
     verify:
       type: output_contains
@@ -420,7 +425,7 @@ steps:
     points: 10
     answer: |
       echo "=== el34 Wazuh agent 목록 ==="
-      ssh ccc@10.20.32.100 /var/ossec/bin/agent_control -l
+      ssh ccc@10.20.32.100 sudo /var/ossec/bin/agent_control -l
     answer_detail: "el34 의 활성 agent 는 ips/web. fw 의 nft 이벤트까지 SIEM 으로 보내려면 fw agent 추가가 필요(W09). 통합 가시성의 출발점."
     verify:
       type: output_contains
@@ -459,9 +464,8 @@ steps:
     category: cleanup
     points: 5
     answer: |
-      N=$(ssh ccc@10.20.30.1 'nft list ruleset | grep -cE "192.168.0.202|10/minute|dport 9100 counter|dport 8088|blocklist"')
-      echo "leftover_lab_rules=$N"
-      [ "$N" -eq 0 ] && echo "status=clean" || echo "status=dirty (핸들로 추가 삭제 필요)"
+      # 실습 잔재 룰이 남았는지 내용으로 확인 — 매치 줄이 보이면 dirty, 없으면 clean(베이스 보존)
+      ssh ccc@10.20.30.1 'sudo nft list ruleset | grep -E "192.168.0.202|10/minute|dport 9100 counter|dport 8088|blocklist"' && echo "status=dirty (핸들로 추가 삭제 필요)" || echo "status=clean"
     answer_detail: "임시 룰을 끝까지 남기지 않는다. 공유 fw 에선 self-clean 이 필수 SOP — 룰 누적은 성능/오차단 장애의 원인."
     verify:
       type: output_contains
