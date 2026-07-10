@@ -2,7 +2,7 @@
 
 > **본 주차의 한 줄 요약**
 >
-> el34 의 **4 호스트 (bastion / fw / ips / web)** 에 설치된 **osquery 5.23.0** 으로 OS 를
+> el34 의 **4 호스트 (bastion / fw / ips / web)** 에 설치된 **osquery 5.23.x** 으로 OS 를
 > SQL 테이블로 추상화하여 가시화. 158 테이블 (processes / users / file / listening_ports
 > / authorized_keys / crontab / suid_bin / file_events / 등) + SQL join + scheduled
 > query + FIM (File Integrity Monitoring) + Wazuh agent ship 까지. 학습 마지막에 R/B/P
@@ -118,7 +118,7 @@ SQL 의 모든 표현력 활용.
 - 2014 — Facebook 출시 (BSD 라이선스)
 - 2016 — Linux Foundation 산하로 이관
 - 2024 — 5.x 안정, Meta + Linux Foundation 공동 운영
-- 2026 — el34 사용 버전: **5.23.0**
+- 2026 — el34 사용 버전: **5.23.x**
 
 ---
 
@@ -153,7 +153,7 @@ graph TB
 ### 3.1 el34 의 현재 운영 — osqueryi only
 
 el34 의 4 호스트 (bastion / fw / ips / web) 의 osquery 운영 상태 (실측 2026-05-12):
-- osquery **5.23.0** 4 호스트 모두 설치 ✓
+- osquery **5.23.x** 4 호스트 모두 설치 ✓
 - `osqueryi` 가 ad-hoc 쿼리 도구로만 사용
 - **`osqueryd` daemon 미운영** — 스케줄 쿼리 없음
 - `/etc/osquery/osquery.conf` **미존재** — 설정 없음
@@ -1344,7 +1344,7 @@ T+15m  Purple AAR + 헌팅 쿼리 자산화
 ## 18. 핵심 정리 (8 줄)
 
 1. **호스트 가시화 = Defense in Depth L4** — 마지막 안전망
-2. **osquery 5.23.0** — 4 호스트 (bastion/fw/ips/web), 158 테이블, 6 핵심 (processes / users / file / listening_ports / authorized_keys / crontab)
+2. **osquery 5.23.x** — 4 호스트 (bastion/fw/ips/web), 158 테이블, 6 핵심 (processes / users / file / listening_ports / authorized_keys / crontab)
 3. **osqueryi (ad-hoc) vs osqueryd (scheduled)** — el34 현재 osqueryi only, W10 의 daemon 본격
 4. **SQL JOIN** — processes + listening_ports + process_open_sockets + authorized_keys
 5. **헌팅 10 패턴** — on_disk=0 / 새 user / SSH key / cron / 비표준 shell / 외부 outbound 443 / world-writable / hidden / chrome ext / SUID
