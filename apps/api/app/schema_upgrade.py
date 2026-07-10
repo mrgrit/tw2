@@ -29,6 +29,9 @@ _ADDED_COLUMNS: list[tuple[str, str, str]] = [
     # 인프라 역할/웹진입 — 미션 IP 런타임 치환.
     ("infras", "kind", "VARCHAR(16) DEFAULT 'target' NOT NULL"),
     ("infras", "web_entry_ip", "VARCHAR(45)"),
+    # attacker VM 자동 설정 결과 (vhost/도구 provision).
+    ("infras", "last_provision_at", "DATETIME"),
+    ("infras", "last_provision_result", "JSON"),
 ]
 
 

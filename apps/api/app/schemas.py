@@ -66,6 +66,8 @@ class InfraOut(BaseModel):
     status: str
     last_smoke_at: dt.datetime | None
     last_smoke_result: dict[str, Any] | None
+    last_provision_at: dt.datetime | None = None
+    last_provision_result: dict[str, Any] | None = None
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}
@@ -75,6 +77,16 @@ class SmokeResult(BaseModel):
     ok: bool
     checks: list[dict[str, Any]]
     summary: str
+
+
+class ProvisionResult(BaseModel):
+    """attacker VM 자동 설정 결과 (vhost 매핑 + 펜테스트 도구)."""
+    ok: bool
+    web_entry: str | None = None
+    hosts: dict[str, str] = {}
+    tools: dict[str, str] = {}
+    missing_tools: list[str] = []
+    summary: str = ""
 
 
 # ── Cohort (위계 트리) ───────────────────────────────

@@ -61,6 +61,9 @@ class Infra(Base):
     status: Mapped[str] = mapped_column(String(24), default="registered", nullable=False)
     last_smoke_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_smoke_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # attacker VM 자동 설정(vhost/etc·hosts + 펜테스트 도구) 결과. kind=attacker 에서만 채워짐.
+    last_provision_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_provision_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

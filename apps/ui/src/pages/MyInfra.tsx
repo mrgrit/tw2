@@ -13,6 +13,8 @@ interface Infra {
   status: string
   last_smoke_at: string | null
   last_smoke_result: any | null
+  last_provision_at: string | null
+  last_provision_result: any | null
   created_at: string
 }
 
@@ -28,13 +30,14 @@ const PORT_HINTS = [
 ]
 
 const statusColor: Record<string, string> = {
-  healthy: 'green', registered: 'yellow', degraded: 'red', error: 'red',
+  healthy: 'green', provisioned: 'green', registered: 'yellow', degraded: 'red', error: 'red',
 }
 
 export default function MyInfra() {
   const [infras, setInfras] = useState<Infra[]>([])
   const [loading, setLoading] = useState(true)
   const [smokingId, setSmokingId] = useState<number | null>(null)
+  const [provisioningId, setProvisioningId] = useState<number | null>(null)
   const [showPorts, setShowPorts] = useState(false)
   const [form, setForm] = useState<{
     name: string; kind: string; vm_ip: string; web_entry_ip: string;
@@ -79,6 +82,19 @@ export default function MyInfra() {
       setErr(e.message)
     } finally {
       setSmokingId(null)
+    }
+  }
+
+  async function provision(id: number) {
+    setProvisioningId(id)
+    setErr(null)
+    try {
+      await api(`/infras/${id}/provision`, { method: 'POST' })
+      await refresh()
+    } catch (e: any) {
+      setErr(e.message)
+    } finally {
+      setProvisioningId(null)
     }
   }
 
@@ -195,6 +211,12 @@ export default function MyInfra() {
             <span className="badge">{i.kind === 'attacker' ? '공격자' : '타깃'}</span>
             <span className={`badge ${statusColor[i.status] || 'yellow'}`}>{i.status}</span>
             <div style={{ flex: 1 }} />
+            {i.kind === 'attacker' && (
+              <button onClick={() => provision(i.id)} disabled={provisioningId === i.id}
+                title="vhost(*.el34.lab) 매핑 + 펜테스트 도구 자동 설정 (멱등)">
+                {provisioningId === i.id ? '설정 중...' : '설정(provision)'}
+              </button>
+            )}
             <button onClick={() => smoke(i.id)} disabled={smokingId === i.id}>
               {smokingId === i.id ? 'smoke 중...' : 'smoke 테스트'}
             </button>
@@ -203,7 +225,36 @@ export default function MyInfra() {
           <div style={{ marginTop: 8, color: 'var(--fg-dim)', fontSize: 13 }}>
             IP <code>{i.vm_ip}</code>{i.web_entry_ip && <> · 웹진입 <code>{i.web_entry_ip}</code></>} · SSH <code>{i.ssh_user}@…</code>
             {i.last_smoke_at && <> · 마지막 검증 {fmtTime(i.last_smoke_at, true)}</>}
+            {i.last_provision_at && <> · 마지막 설정 {fmtTime(i.last_provision_at, true)}</>}
           </div>
+
+          {i.kind === 'attacker' && i.last_provision_result && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 13 }}>
+                <span className={`badge ${i.last_provision_result.ok ? 'green' : 'red'}`}>
+                  {i.last_provision_result.ok ? 'PROVISIONED' : 'FAILED'}
+                </span>{' '}
+                <span style={{ color: 'var(--fg-dim)' }}>{i.last_provision_result.summary}</span>
+              </div>
+              {(i.last_provision_result.missing_tools?.length > 0) && (
+                <div style={{ fontSize: 13, color: 'var(--red)', marginTop: 6 }}>
+                  미설치 도구: {i.last_provision_result.missing_tools.join(', ')} — 공격 VM 에서 수동 설치 필요
+                </div>
+              )}
+              {i.last_provision_result.hosts && (
+                <details style={{ marginTop: 6 }}>
+                  <summary style={{ fontSize: 13, cursor: 'pointer', color: 'var(--fg-dim)' }}>
+                    vhost 매핑 {Object.keys(i.last_provision_result.hosts).length}개 → {i.last_provision_result.web_entry}
+                  </summary>
+                  <div style={{ fontSize: 12, color: 'var(--fg-dim)', marginTop: 6, fontFamily: 'monospace', lineHeight: 1.6 }}>
+                    {Object.entries(i.last_provision_result.hosts as Record<string, string>).map(([h, ip]) => (
+                      <div key={h}>{h} → {ip || '(해석 실패)'}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
 
           {i.last_smoke_result && (
             <div style={{ marginTop: 12 }}>
