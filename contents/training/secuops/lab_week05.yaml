@@ -43,8 +43,8 @@ steps:
       sudo apache2ctl -M 2>&1 | grep -i security
       sudo dpkg -l | grep -E "modsec|crs"
       sudo grep -E "^SecRuleEngine|^SecRequestBodyAccess|^SecResponseBodyAccess|^SecAuditLog|^SecAuditLogFormat|^SecAuditLogParts|^SecAuditLogType" /etc/modsecurity/modsecurity.conf
-      sudo ls /usr/share/modsecurity-crs/rules/ | wc -l
-      sudo wc -l /usr/share/modsecurity-crs/rules/REQUEST-941-APPLICATION-ATTACK-XSS.conf
+      sudo ls /usr/share/modsecurity-crs/rules/            # 30+ 룰 파일 목록을 눈으로 확인(REQUEST-9xx/RESPONSE-9xx)
+      sudo grep -oE 'id:[0-9]+' /usr/share/modsecurity-crs/rules/REQUEST-941-APPLICATION-ATTACK-XSS.conf | head   # 941xxx XSS 룰 ID 실물
       sudo ls /etc/apache2/sites-enabled/
       sudo ls -la /var/log/apache2/modsec_audit.log
       ```
@@ -78,8 +78,8 @@ steps:
       ssh ccc@10.20.32.80 'sudo apache2ctl -M 2>&1 | grep -i security'
       ssh ccc@10.20.32.80 'sudo dpkg -l | grep -E "modsec|crs"'
       ssh ccc@10.20.32.80 'sudo grep -E "^SecRuleEngine|^SecRequestBodyAccess|^SecResponseBodyAccess|^SecAuditLog|^SecAuditLogFormat|^SecAuditLogParts|^SecAuditLogType" /etc/modsecurity/modsecurity.conf'
-      ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/ | wc -l'
-      ssh ccc@10.20.32.80 'sudo wc -l /usr/share/modsecurity-crs/rules/REQUEST-941-APPLICATION-ATTACK-XSS.conf'
+      ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/'
+      ssh ccc@10.20.32.80 "sudo grep -oE 'id:[0-9]+' /usr/share/modsecurity-crs/rules/REQUEST-941-APPLICATION-ATTACK-XSS.conf | head"
       ssh ccc@10.20.32.80 'sudo ls /etc/apache2/sites-enabled/'
       ssh ccc@10.20.32.80 'sudo ls -la /var/log/apache2/modsec_audit.log'
     answer_detail: 'security2_module + CRS 3.3.2 + 7 핵심 키 + 30+ 룰 + 11 vhost + audit log'
@@ -103,11 +103,14 @@ steps:
 
   - order: 2
     instruction: |
-      ## 🎯 MISSION — el34 audit log 실제 형식 + error.log에서 룰 메타 추출
+      ## 🎯 MISSION — el34 audit log 실제 형식(단일라인 JSON) + 룰 메타 추출 2 경로
 
-      ⚠️ el34의 `modsec_audit.log`는 **멀티라인(pretty) JSON**이라 `tail -1 | jq`가 깨진다(한 줄이
-      JSON 조각). 룰 ID·익명점수 요약 같은 메타는 **per-vhost `error.log`의 ModSec 경고 라인**에
-      `[id "..."] [msg "... SQLI=..,XSS=.. ..."]` 형식으로 임베드된다(W01과 동일한 신뢰 소스).
+      el34의 `modsec_audit.log`는 **SecAuditLogType Serial + SecAuditLogFormat JSON**이라 **트랜잭션 1건 =
+      한 줄의 완전한 JSON 객체**다. 따라서 `tail -1 | jq`·`.audit_data.messages[]` 추출이 **정상 동작한다**
+      (실측: `tail -1 | jq -e .` = valid JSON). 다만 이 로그는 **모든 vhost·모든 요청**을 한 파일에 섞어 기록해
+      `tail -1`이 내 공격이 아닐 수 있다 → 내 요청을 **출처 IP/URI로 grep**해 고르거나, per-vhost `error.log`를
+      **라인 오프셋으로 격리**한다. error.log의 ModSec 경고 라인은 `[id "..."] [msg "... SQLI=..,XSS=.. ..."]`
+      형식(W01과 동일)이고 **W10 Wazuh decoder가 그대로 라인 파싱**한다.
 
       ## 💻 실행 명령
 
@@ -116,43 +119,57 @@ steps:
 
       ```bash
       # ── el34-attacker 에서: 1) 공격을 한 발 보내 ModSec 기록을 만든다 ──
+      # 💡 이 payload URL 은 브라우저 주소창이나 Burp Repeater 로 열어도 ModSec 403 차단 페이지가 뜬다.
+      #    여기선 응답 화면이 아니라 로그(error.log) 구조 분석이 목적이라 curl 로 한 발만 보낸다.
       curl -s -o /dev/null "http://dvwa.el34.lab/?q=<script>alert(1)</script>"
 
-      # ── el34-web 에서: error.log 분석 (공격 1초 후) ──
-      # 2) ModSec 경고 레코드(구조) — [client]에 출처(remote_address) 보존
+      # ── el34-web 에서: 방법 A — audit log(단일라인 JSON)에서 내 요청을 골라 jq ──
+      # 내 출처(192.168.0.202)의 마지막 트랜잭션 1줄 = 완전한 JSON → messages[]로 룰 ID 추출
+      sudo grep 192.168.0.202 /var/log/apache2/modsec_audit.log | tail -1 | jq -r '.audit_data.messages[]?' | grep -oE 'id "9[0-9]{5}"' | sort -u
+      sudo grep 192.168.0.202 /var/log/apache2/modsec_audit.log | tail -1 | jq '{remote:.transaction.remote_address, status:.response.status}'
+
+      # ── el34-web 에서: 방법 B — per-vhost error.log(라인 기반, W10 Wazuh 파싱과 동일) ──
+      # ModSec 경고 레코드(구조) — [client]에 출처(remote_address) 보존
       sudo tail -8 /var/log/apache2/dvwa_error.log | grep -oE "ModSecurity: [^[]+" | head -3
-      # 3) 한 레코드의 임베드 메타(룰 id + 익명점수 요약 SQLI=,XSS=)
+      # 임베드 메타(룰 id + 익명점수 요약 SQLI=,XSS=)
       sudo tail -8 /var/log/apache2/dvwa_error.log | grep -oE "id .[0-9]+.|SQLI=[0-9]+,XSS=[0-9]+[^]]*" | head
       ```
 
       ## 📋 확인 사항
 
-      - **2)**: `ModSecurity: Warning ...` / `ModSecurity: Access denied ...` 경고 라인 출력
-      - **3)**: `id "941100"` 등 룰 ID + `SQLI=0,XSS=15,...` 익명점수 요약
-      - **출처 보존**: error.log 라인의 `[client 192.168.0.202]` = 실제 attacker(el34 SNAT 없음)
-      - audit_data.messages(jq) 방식은 el34 멀티라인 JSON에서 동작하지 않음 → error.log가 표준
+      - **방법 A**: `tail -1 | jq`가 valid JSON 파싱 → `id "941100"/"941110"/"941160"/"949110"/"980130"` +
+        `{remote:"192.168.0.202", status:403}`
+      - **방법 B**: `ModSecurity: Warning ...` / `Access denied ...` 경고 라인 + 룰 ID + `SQLI=0,XSS=15,...` 요약
+      - **출처 보존**: 두 경로 모두 `192.168.0.202` = 실제 attacker(el34 SNAT 없음)
+      - **선택 기준**: audit(전체·상관·jq 파이프) vs error.log(per-vhost·라인격리·Wazuh decoder 파싱)
 
       ## 💡 왜 이걸 하는가?
 
-      audit log 분석 자동화 시 환경별 실제 포맷 인지가 필수. el34는 audit JSON이 멀티라인이라
-      줄 단위 jq가 silent fail → per-vhost error.log의 임베드 메타가 신뢰 소스(W10 Wazuh decoder도 동일 라인 파싱).
+      audit log는 단일라인 JSON이라 jq 파이프가 바로 되지만 **전 vhost를 섞어** 노이즈가 크다 — 한 공격의 룰 ID를
+      정확히 분리하려면 출처 IP grep 또는 per-vhost error.log + 라인 오프셋이 깔끔하다. W10 Wazuh decoder도
+      error.log 라인을 파싱하므로 error.log 포맷 숙지가 곧 decoder 이해로 이어진다.
 
       ## 🔍 결과 해석
 
-      - **정상**: ModSecurity 경고 라인 + 룰 id + 익명점수 요약 추출
-      - **운영 권장**: error.log grep(즉시) + Wazuh decoder(manager 측 정규화). audit log는 전체 슬러프(`jq -s`) 필요
+      - **정상**: 방법 A(audit jq messages[]) + 방법 B(error.log 경고 라인) 모두 같은 룰 ID·출처 IP 추출
+      - **운영 권장**: 실시간 IR = error.log grep(즉시)/audit grep+jq, 상관분석 = `jq -s`로 audit 전체 슬러프,
+        영속 정규화 = W10 Wazuh decoder(manager 측)
     hint: 'jq + grep -oE — messages 의 [id "X"] embedded format'
     category: analysis
     points: 15
     answer: |
-      # el34 modsec_audit.log는 멀티라인 JSON이라 tail|jq 불가 → 룰 상세는 per-vhost error.log에서 읽는다
+      # el34 modsec_audit.log는 단일라인 JSON(Serial) → audit grep+jq(방법 A)와 error.log(방법 B) 둘 다 유효
       ssh att@192.168.0.202 'curl -s -o /dev/null "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
-      sleep 1
-      echo "=== error.log의 ModSec 경고 레코드(구조) ==="
+      # sleep 대신 error.log 에 이번 공격의 ModSec 경고가 실제로 기록될 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
+      echo "=== 방법 A: audit log(단일라인 JSON) grep+jq — messages 룰 ID ==="
+      ssh ccc@10.20.32.80 "sudo grep 192.168.0.202 /var/log/apache2/modsec_audit.log | tail -1 | jq -r '.audit_data.messages[]?' | grep -oE 'id \"9[0-9]{5}\"' | sort -u"
+      ssh ccc@10.20.32.80 "sudo grep 192.168.0.202 /var/log/apache2/modsec_audit.log | tail -1 | jq '{remote:.transaction.remote_address, status:.response.status}'"
+      echo "=== 방법 B: error.log의 ModSec 경고 레코드(구조) ==="
       ssh ccc@10.20.32.80 'sudo tail -8 /var/log/apache2/dvwa_error.log | grep -oE "ModSecurity: [^[]+" | head -3'
-      echo "=== 한 레코드의 임베드 메타(id + 익명점수 요약) ==="
+      echo "=== 방법 B: 한 레코드의 임베드 메타(id + 익명점수 요약) ==="
       ssh ccc@10.20.32.80 'sudo tail -8 /var/log/apache2/dvwa_error.log | grep -oE "id .[0-9]+.|SQLI=[0-9]+,XSS=[0-9]+[^]]*" | head'
-    answer_detail: 'el34 audit log=멀티라인 JSON(tail|jq 불가). 룰 ID·익명점수 요약은 per-vhost error.log의 ModSec 경고 라인에 임베드(id/msg/SQLI=,XSS=). remote_address(출처)도 [client]에 보존.'
+    answer_detail: 'el34 audit log=단일라인 JSON(Serial). 방법 A: audit grep+jq(.audit_data.messages[], remote_address, response.status) 정상 동작. 방법 B: per-vhost error.log 라인의 id/msg/SQLI=,XSS=. 두 경로 모두 출처 192.168.0.202 보존. audit는 전 vhost 섞임→내 요청 grep 필요, error.log는 라인 격리+Wazuh 파싱.'
     verify:
       type: output_contains
       expect: ModSecurity
@@ -189,6 +206,10 @@ steps:
       B=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
 
       # ── el34-attacker 에서: XSS 페이로드 전송 ──
+      # 💡 브라우저/Burp Repeater 로 같은 URL 을 열면 403 차단 페이지를 눈으로 확인할 수 있다.
+      # 💡 다양한 도구: dalfox 로 WAF 지문 + XSS 자동 스캔 — 모든 payload 가 403 이면 WAF 효과 입증:
+      #      ssh att@192.168.0.202 "dalfox url 'http://dvwa.el34.lab/?q=FUZZ' --skip-bav --no-color"
+      #    (여기선 941xxx 매칭·anomaly score 를 정확히 보려고 curl 한 발로 페이로드를 고정한다.)
       curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"
 
       # ── el34-web 에서: 이번 요청 신규 라인만 분석 (공격 1초 후) ──
@@ -222,7 +243,8 @@ steps:
       # 공격 직전 error.log 라인 수 기록(이번 요청만 격리)
       B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
       ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
-      sleep 1
+      # 이번 요청의 신규 error.log 라인이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       echo "매치 룰(이번 요청 신규 라인만):"
       ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"9[0-9]{5}\"' | sort -u"
       echo "익명점수 요약:"
@@ -263,6 +285,10 @@ steps:
       B=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
 
       # ── el34-attacker 에서: SQLi 전송 — ' OR '1'='1 (URL 인코딩) ──
+      # 💡 브라우저/Burp Repeater 로도 같은 payload 를 보내 403 을 확인할 수 있다.
+      # 💡 다양한 도구: sqlmap 자동화 시 WAF 가 942xxx 로 전량 차단(= WAF 효과 입증):
+      #      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level 1 2>&1 | tail -5"
+      #    (여기선 libinjection fingerprint 를 정확히 보려고 curl 로 페이로드를 고정한다.)
       curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?id=1%27%20OR%20%271%27=%271"
 
       # ── el34-web 에서: 이번 요청 신규 라인만 분석 (공격 1초 후) ──
@@ -296,7 +322,8 @@ steps:
       # SQLi 페이로드 직전 error.log 라인 수 기록(이번 요청만 격리)
       B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
       ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?id=1%27%20OR%20%271%27=%271"'
-      sleep 1
+      # 이번 요청의 신규 error.log 라인이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       echo "942xxx 매치(이번 요청 신규 라인):"
       ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"942[0-9]+\"' | sort -u"
       echo "SQLI 점수:"
@@ -334,6 +361,10 @@ steps:
       (el34-web 세션을 연 채 다른 터미널에서 공격하면 B/B2/B3 변수가 유지된다.)
 
       ```bash
+      # 💡 세 payload 모두 브라우저/Burp Repeater 로 열면 403 차단을 눈으로 볼 수 있다.
+      # 💡 다양한 도구: wfuzz 로 traversal 변종을 퍼징해 어떤 변형이 930xxx 에 걸리는지 관찰 가능:
+      #      ssh att@192.168.0.202 "wfuzz -z list,'../../etc/passwd-....//....//etc/passwd' -u 'http://dvwa.el34.lab/?p=FUZZ' --hc 0"
+      #    (여기선 카테고리별 룰 ID 를 정확히 분리하려고 curl 로 한 발씩 고정한다.)
       # ── LFI → 930xxx ──
       # el34-web: 라인 수 기록
       B=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
@@ -382,17 +413,17 @@ steps:
       echo "=== LFI → 930xxx (이번 요청만 격리) ==="
       B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
       ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?p=../../../../etc/passwd"'
-      sleep 1
+      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"930[0-9]+\"' | sort -u"
       echo "=== RCE → 932xxx ==="
       B2=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
       ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?cmd=;cat%20/etc/passwd"'
-      sleep 1
+      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       ssh ccc@10.20.32.80 "sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"932[0-9]+\"' | sort -u"
       echo "=== PHP → 933xxx ==="
       B3=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
       ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?x=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"'
-      sleep 1
+      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       ssh ccc@10.20.32.80 "sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"933[0-9]+\"' | sort -u"
     answer_detail: 'LFI 930xxx + RCE 932xxx + PHP 933xxx 매치(각 요청 error.log 라인수 격리). OWASP A03 sub-type별 CRS 카테고리.'
     verify:
@@ -427,22 +458,25 @@ steps:
 
       ```bash
       # ── el34-attacker 에서: 공격 1발 ──
+      # 💡 브라우저/Burp 로 열어도 audit log 에 같은 remote_address 가 기록된다(el34 는 출처 보존).
       curl -s -o /dev/null "http://dvwa.el34.lab/?q=<script>alert(1)</script>"
 
       # ── el34-web 에서: remote_address / XFF 확인 (공격 2초 후) ──
       sudo tail -1 /var/log/apache2/modsec_audit.log | jq '{remote:.transaction.remote_address, xff:.request.headers."x-forwarded-for"}'
       sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.error_messages[0]" | grep -oE "client [0-9.]+"
 
-      # el34: remote_address 가 곧 공격자 → IP 룰 직접 작성
-      cat <<'EOF'
+      # el34: remote_address 가 곧 공격자 → IP 룰을 초안 파일로 작성해 검토·적용
+      cat > ~/w05_ipblock.conf <<'EOF'
       SecRule REMOTE_ADDR "@ipMatch 192.168.0.202" \
           "id:9006001,phase:1,deny,status:403,msg:'attacker IP block'"
       EOF
+      cat ~/w05_ipblock.conf
       # (참고) src 를 가리는 reverse-proxy 환경이라면 XFF 신뢰가 필요
-      cat <<'EOF'
+      cat > ~/w05_remoteip.conf <<'EOF'
       RemoteIPHeader X-Forwarded-For
       RemoteIPInternalProxy 10.20.31.0/24
       EOF
+      cat ~/w05_remoteip.conf
       ```
 
       ## 📋 확인 사항
@@ -466,16 +500,18 @@ steps:
     points: 12
     answer: |
       ssh att@192.168.0.202 'curl -s -o /dev/null "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
-      sleep 2
+      # audit 기록이 flush 될 때까지 error.log 의 ModSec 경고로 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
       echo "=== remote_address (el34 출처 보존) ==="
       ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{remote:.transaction.remote_address, xff:.request.headers.\"x-forwarded-for\"}"'
       echo "=== error_messages client ==="
       ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.error_messages[0]" | grep -oE "client [0-9.]+"'
       echo
       echo "=== el34: REMOTE_ADDR 직접 IP 룰 ==="
-      cat <<'EOF'
+      cat > ~/w05_ipblock.conf <<'EOF'
       SecRule REMOTE_ADDR "@ipMatch 192.168.0.202" "id:9006001,phase:1,deny,status:403"
       EOF
+      cat ~/w05_ipblock.conf
     answer_detail: 'el34 는 remote_address = 실제 공격자(192.168.0.202), xff=null. IP 룰을 REMOTE_ADDR 로 바로 작성. (src 가리는 환경만 XFF 신뢰 필요.)'
     verify:
       type: output_contains
@@ -513,11 +549,12 @@ steps:
         echo "  $f: $cnt 룰"
       done
 
-      # vhost 단위 paranoia 2 적용 (시뮬)
-      cat <<'EOF'
+      # vhost 단위 paranoia 2 적용 (시뮬) — 적용 SecAction 을 초안 파일로 작성
+      cat > ~/w05_paranoia.conf <<'EOF'
       # /etc/apache2/sites-available/010-juice.conf 의 <VirtualHost> 안:
       SecAction "id:9006020,phase:1,nolog,pass,setvar:tx.paranoia_level=2"
       EOF
+      cat ~/w05_paranoia.conf
 
       # false-positive 예상
       echo "정상: 사용자가 rich text editor 에 '<b>tag</b> 사용법'을 입력"
@@ -557,9 +594,10 @@ steps:
       done'
       echo
       echo "=== paranoia 2 적용 SecAction ==="
-      cat <<'EOF'
+      cat > ~/w05_paranoia.conf <<'EOF'
       SecAction "id:9006020,phase:1,nolog,pass,setvar:tx.paranoia_level=2"
       EOF
+      cat ~/w05_paranoia.conf
       echo
       echo "=== false-positive ==="
       echo "rich text editor 의 '<b>tag</b>' → paranoia 2 차단 가능"
@@ -597,19 +635,21 @@ steps:
 
       ```bash
       # ── el34-attacker 에서: baseline 요청 ──
+      # 💡 브라우저/Burp Repeater 로 열어 exception 전/후 응답 코드(403↔200) 변화를 눈으로 비교하면 좋다.
       curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/admin/comments?text=<b>hi</b>"
 
-      # === exception 작성 (시뮬) ===
-      cat <<'EOF'
+      # === exception 작성 (초안 파일 → 검토·적용) ===
+      cat > ~/w05_exception.conf <<'EOF'
       <LocationMatch "^/admin/comments$">
           SecRuleRemoveById 941100
           # 또는 좁게: SecRuleUpdateTargetById 941100 "!ARGS:text"
       </LocationMatch>
       EOF
+      cat ~/w05_exception.conf
 
       echo
-      echo "=== 운영 절차 6 단계 ==="
-      cat <<'EOF'
+      echo "=== 운영 절차 6 단계 (노트 파일로 남긴다) ==="
+      cat > ~/w05_procedure.md <<'EOF'
       1. /etc/apache2/conf-available/modsec-w06-exception.conf 작성
       2. sudo a2enconf modsec-w06-exception
       3. sudo apache2ctl configtest
@@ -617,16 +657,18 @@ steps:
       5. audit log 모니터 — 매치 변화
       6. git PR + 사유 주석 + ticket # + 분기 검토
       EOF
+      cat ~/w05_procedure.md
 
       echo
-      echo "=== 자가 점검 5 질문 ==="
-      cat <<'EOF'
+      echo "=== 자가 점검 5 질문 (체크리스트 파일) ==="
+      cat > ~/w05_selfcheck.md <<'EOF'
       Q1. 실 공격 차단 가림? (No 여야)
       Q2. URL/param 범위 좁은가? (Yes)
       Q3. 분기 검토 잡혔는가? (Yes)
       Q4. reproducer 확보? (Yes)
       Q5. application 측 수정 대체 가능? (No 일 때만 exception)
       EOF
+      cat ~/w05_selfcheck.md
       ```
 
       ## 📋 확인 사항
@@ -653,24 +695,26 @@ steps:
     points: 12
     answer: |
       ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/admin/comments?text=<b>hi</b>"'
-      sleep 2
-      echo "=== exception (시뮬) ==="
-      cat <<'EOF'
+      echo "=== exception (초안 파일) ==="
+      cat > ~/w05_exception.conf <<'EOF'
       <LocationMatch "^/admin/comments$">
           SecRuleRemoveById 941100
       </LocationMatch>
       EOF
+      cat ~/w05_exception.conf
       echo "=== 운영 절차 ==="
-      cat <<'EOF'
+      cat > ~/w05_procedure.md <<'EOF'
       1. /etc/apache2/conf-available/modsec-w06-exception.conf
       2. a2enconf + configtest + reload
       3. audit log 모니터
       4. git PR + ticket # + 분기 검토
       EOF
+      cat ~/w05_procedure.md
       echo "=== 자가 점검 ==="
-      cat <<'EOF'
+      cat > ~/w05_selfcheck.md <<'EOF'
       Q1-Q5 (실 공격 가림 / 범위 좁음 / 분기 검토 / reproducer / app 측 대체)
       EOF
+      cat ~/w05_selfcheck.md
     answer_detail: 'baseline + LocationMatch 시뮬 + 운영 6 단계 + 자가 점검 5 질문.'
     verify:
       type: output_contains
@@ -708,6 +752,8 @@ steps:
       sudo wc -l /var/log/apache2/modsec_audit.log | awk '{print $1}'
 
       # ── el34-attacker 에서: Red 5 공격 (XSS/SQLi/LFI/RCE/PHP) ──
+      # 💡 각 payload 는 브라우저/Burp Intruder(payload 리스트 5종) 로도 순차 전송 가능 — 5/5 403 을 눈으로 확인.
+      #    Burp Intruder 는 5 공격을 한 번에 배치로 돌려 응답 코드 표를 뽑기 좋다. 여기선 로그 상관을 위해 curl 배치로.
       curl -s -o /dev/null -w "XSS  -> %{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"
       curl -s -o /dev/null -w "SQLi -> %{http_code}\n" "http://dvwa.el34.lab/?q=1%27%20OR%20%271%27=%271"
       curl -s -o /dev/null -w "LFI  -> %{http_code}\n" "http://dvwa.el34.lab/?q=../../etc/passwd"
@@ -722,14 +768,15 @@ steps:
       # 5 차단 결과
       sudo tail -5 /var/log/apache2/modsec_audit.log | jq ".response.status"
 
-      # Purple — paranoia tuning 5 권장
-      cat <<'EOF'
+      # Purple — paranoia tuning 5 권장 (노트 파일로 남긴다)
+      cat > ~/w05_paranoia_tuning.md <<'EOF'
       1. paranoia 1 유지 (legacy 호환)
       2. vhost 별 paranoia 2 (신규 API)
       3. paranoia 3+ 금지 (production 부적합)
       4. exception 누적 분기 검토
       5. Wazuh 통합 (W10) — alert flood 통합 분석
       EOF
+      cat ~/w05_paranoia_tuning.md
       ```
 
       ## 📋 확인 사항
@@ -764,7 +811,8 @@ steps:
       code=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?q=../../etc/passwd'"); echo "  ?q=../../etc/passwd → $code"
       code=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?q=;cat%20/etc/passwd'"); echo "  ?q=;cat%20/etc/passwd → $code"
       code=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'"); echo "  ?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E → $code"
-      sleep 5
+      # 5 공격이 모두 audit/error.log 에 반영될 때까지 조건 대기(zero-sleep) — 마지막 공격의 ModSec 경고 확인
+      ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
       echo "=== Blue — 카테고리 ==="
       ssh ccc@10.20.32.80 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "\[id \"[0-9]+\"\]" | sort | uniq -c | sort -rn | head -15'
       echo "=== Blue — 980130 ==="
@@ -808,11 +856,11 @@ steps:
 
       # ── el34-siem 에서: manager 측 통신 + alert ──
       sudo /var/ossec/bin/agent_control -lc 2>&1 | grep -i web | head -3
-      sudo tail -100 /var/ossec/logs/alerts/alerts.log 2>/dev/null | grep -iE "modsec|941|942" | tail -3
+      sudo tail -100 /var/ossec/logs/alerts/alerts.log | grep -iE "modsec|941|942" | tail -3
 
       echo
-      echo "=== 종합 보고서 형식 ==="
-      cat <<'EOF'
+      echo "=== 종합 보고서 (편집기로 작성해 파일로 남긴다: nano ~/w05_report.md) ==="
+      cat > ~/w05_report.md <<'EOF'
       # el34 W05 ModSecurity 보고서
 
       ## 1. STEP 1-9 결과 표 (9 row)
@@ -840,6 +888,7 @@ steps:
       ## 4. W06 (osquery) 준비도
       ## 5. 본인 학습 gap
       EOF
+      cat ~/w05_report.md
       ```
 
       ## 📋 확인 사항
@@ -868,9 +917,9 @@ steps:
       echo "=== manager web ==="
       ssh ccc@10.20.32.100 'sudo /var/ossec/bin/agent_control -lc 2>&1 | grep -i web | head -3'
       echo "=== alerts.log ==="
-      ssh ccc@10.20.32.100 'sudo tail -100 /var/ossec/logs/alerts/alerts.log 2>/dev/null | grep -iE "modsec|941" | tail -3'
+      ssh ccc@10.20.32.100 'sudo tail -100 /var/ossec/logs/alerts/alerts.log | grep -iE "modsec|941" | tail -3'
       echo
-      cat <<'EOF'
+      cat > ~/w05_report.md <<'EOF'
       # el34 W05 ModSec 보고서
       ## 1. STEP 1-9 (9 row 표)
       ## 2. R/B/P (STEP 9) — 5/5 차단
@@ -878,6 +927,7 @@ steps:
       ## 4. W06 (osquery) 준비도
       ## 5. 본인 gap
       EOF
+      cat ~/w05_report.md
     answer_detail: 'web agent Active + ossec.conf + manager + 종합 보고서 5 섹션.'
     verify:
       type: output_contains

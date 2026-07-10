@@ -426,13 +426,15 @@ graph TD
 
 ### 5.5 ⚠️ 중요 — messages[] 의 정확한 형식
 
-> **⚠️ el34 실제 환경 주의**: el34 의 `modsec_audit.log` 는 **멀티라인(pretty) JSON** 으로 적재되어
-> `tail -1 | jq` 가 깨진다(한 줄이 JSON 조각). 따라서 el34 에서 룰 ID·익명점수 요약은 **per-vhost
-> `error.log`**(예: `/var/log/apache2/dvwa_error.log`) 의 ModSec 경고 라인에서 읽는다 — 한 줄에
-> `[id "942100"] [msg "... SQLI=..,XSS=.. ..."] [client <출처IP>] [unique_id ...]` 가 모두 임베드된다.
-> 본 주차 실습(.yaml)도 error.log 를 **요청 직전/직후 라인수로 격리**(`B=$(wc -l)` → 공격 →
-> `tail -n +$((B+1)) | grep 'id "94x"'`)해 공격별 룰을 정확히 추출한다. 아래 audit JSON 구조 설명은
-> ModSec 의 **일반 개념**(SecAuditLogParts)으로 이해하면 된다.
+> **⚠️ el34 실제 환경 주의**: el34 의 `modsec_audit.log` 는 **SecAuditLogType Serial + SecAuditLogFormat
+> JSON** 이라 **트랜잭션 1건 = 한 줄의 완전한 JSON 객체**로 적재된다 → `tail -1 | jq` 와
+> `.audit_data.messages[]` 추출이 **정상 동작한다**(실측: `tail -1 | jq -e .` = valid JSON). 다만 이 로그는
+> **모든 vhost·모든 요청**을 한 파일에 섞어 기록하므로 `tail -1` 이 내 공격이 아닐 수 있다 → 내 요청을
+> **출처 IP/URI 로 grep**(`grep <출처IP> modsec_audit.log | tail -1 | jq ...`)하거나, per-vhost
+> **`error.log`**(예: `/var/log/apache2/dvwa_error.log`) 를 **요청 직전/직후 라인수로 격리**(`B=$(wc -l)` →
+> 공격 → `tail -n +$((B+1)) | grep 'id "94x"'`)해 공격별 룰을 정확히 추출한다. error.log 한 줄엔
+> `[id "942100"] [msg "... SQLI=..,XSS=.. ..."] [client <출처IP>] [unique_id ...]` 가 모두 임베드되고,
+> **W10 Wazuh decoder 가 이 라인을 그대로 파싱**하므로 error.log 포맷 숙지가 곧 decoder 이해로 이어진다.
 
 `audit_data.messages[]` 의 각 element 는 (audit log JSON 이 한 줄일 때) **JSON object 가 아니라 단일 string** 이며,
 ModSec 의 message format 으로 `[key "value"]` 형태가 embedded.

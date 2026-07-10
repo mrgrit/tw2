@@ -34,7 +34,8 @@ CATS = [
  ('M-공격인데 -o /dev/null(응답 안 봄)','★★', lambda ln: '-o /dev/null' in ln and re.search(r"\?(id|q|search|cat|x)=|UNION|<script|onerror|%27|/etc/passwd|/admin|/rest/user/login", ln)),
  ('M-2>/dev/null 에러 숨김','★', lambda ln: '2>/dev/null' in ln and re.search(r'\bssh ccc@', ln) and not re.search(r'\b(nmap|ffuf|gobuster|sqlmap|nikto|osqueryi|conntrack|find|jq)\b', ln)),
  ('M-sleep 인위적 대기','★', lambda ln: re.search(r'\bsleep \d', ln)),
- ('M-grep -c/wc -l 숫자축소(verify 박스체크)','★', lambda ln: re.search(r'(grep -c |wc -l)', ln) and 'ssh ' in ln),
+ # 표시용 카운트만 플래그. VAR=$(…wc -l…) 는 오프셋/델타 캡처(tail -n + 격리·delta)라 계산 입력 → 제외.
+ ('M-grep -c/wc -l 숫자축소(verify 박스체크)','★', lambda ln: re.search(r'(grep -c |wc -l)', ln) and 'ssh ' in ln and not re.search(r'\w+=\$\(', ln)),
  ('M-for seq 반복요청(도구 대체?)','★', lambda ln: re.search(r'for .*seq 1 \d+.*curl', ln)),
 ]
 
