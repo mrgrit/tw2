@@ -121,7 +121,7 @@ steps:
       # ── el34-attacker 에서: 1) 공격을 한 발 보내 ModSec 기록을 만든다 ──
       # 💡 이 payload URL 은 브라우저 주소창이나 Burp Repeater 로 열어도 ModSec 403 차단 페이지가 뜬다.
       #    여기선 응답 화면이 아니라 로그(error.log) 구조 분석이 목적이라 curl 로 한 발만 보낸다.
-      curl -s -o /dev/null "http://dvwa.el34.lab/?q=<script>alert(1)</script>"
+      echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
 
       # ── el34-web 에서: 방법 A — audit log(단일라인 JSON)에서 내 요청을 골라 jq ──
       # 내 출처(192.168.0.202)의 마지막 트랜잭션 1줄 = 완전한 JSON → messages[]로 룰 ID 추출
@@ -159,7 +159,7 @@ steps:
     points: 15
     answer: |
       # el34 modsec_audit.log는 단일라인 JSON(Serial) → audit grep+jq(방법 A)와 error.log(방법 B) 둘 다 유효
-      ssh att@192.168.0.202 'curl -s -o /dev/null "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
+      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
       # sleep 대신 error.log 에 이번 공격의 ModSec 경고가 실제로 기록될 때까지 조건 대기(zero-sleep)
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
       echo "=== 방법 A: audit log(단일라인 JSON) grep+jq — messages 룰 ID ==="
@@ -210,7 +210,7 @@ steps:
       # 💡 다양한 도구: dalfox 로 WAF 지문 + XSS 자동 스캔 — 모든 payload 가 403 이면 WAF 효과 입증:
       #      ssh att@192.168.0.202 "dalfox url 'http://dvwa.el34.lab/?q=FUZZ' --skip-bav --no-color"
       #    (여기선 941xxx 매칭·anomaly score 를 정확히 보려고 curl 한 발로 페이로드를 고정한다.)
-      curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"
+      echo "응답: $(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
 
       # ── el34-web 에서: 이번 요청 신규 라인만 분석 (공격 1초 후) ──
       # 매치 룰 ID
@@ -236,13 +236,13 @@ steps:
       - **정상**: 403 + 941 3 매치 + score 15 + XSS=15
       - **누적 의미**: XSS critical 3 × 5 = 15 ≥ threshold 5 → block
       - **paranoia 2 효과**: 941180 등 추가 룰 → score 더 누적
-    hint: 'curl <script> → 403 → 941xxx + score 15'
+    hint: 'nc(<script>) → 403 → 941xxx + score 15'
     category: redblue
     points: 20
     answer: |
       # 공격 직전 error.log 라인 수 기록(이번 요청만 격리)
       B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
+      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       # 이번 요청의 신규 error.log 라인이 나타날 때까지 조건 대기(zero-sleep)
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       echo "매치 룰(이번 요청 신규 라인만):"
@@ -258,7 +258,7 @@ steps:
         intent: "XSS 차단 + 941xxx 매치 + score 15"
         success_criteria: ["403", "941100+941110+941160", "Total Score: 15", "XSS=15"]
         acceptable_methods:
-          - "**[OSS] curl <script> 페이로드**"
+          - "**[OSS] nc(<script>) 페이로드**"
           - "**[OSS] grep -oE [id \"X\"]**"
           - "**[OSS] Total Score grep**"
           - "**[OSS] 949110 block + 980130 correlation**"
@@ -289,7 +289,7 @@ steps:
       # 💡 다양한 도구: sqlmap 자동화 시 WAF 가 942xxx 로 전량 차단(= WAF 효과 입증):
       #      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level 1 2>&1 | tail -5"
       #    (여기선 libinjection fingerprint 를 정확히 보려고 curl 로 페이로드를 고정한다.)
-      curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?id=1%27%20OR%20%271%27=%271"
+      echo "응답: $(echo -en 'GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
 
       # ── el34-web 에서: 이번 요청 신규 라인만 분석 (공격 1초 후) ──
       # 942xxx(SQLi) 매치 룰
@@ -315,13 +315,13 @@ steps:
       - **정상**: 403 + 942xxx + fingerprint
       - **IR 활용**: fingerprint 가 attack vector 식별 단서
       - **paranoia 2 효과**: comment 우회 (`/*X*/UNION`) 매치
-    hint: "curl '1' OR '1'='1' → 942xxx + libinjection fingerprint"
+    hint: "nc('1' OR '1'='1') → 942xxx + libinjection fingerprint"
     category: redblue
     points: 18
     answer: |
       # SQLi 페이로드 직전 error.log 라인 수 기록(이번 요청만 격리)
       B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?id=1%27%20OR%20%271%27=%271"'
+      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       # 이번 요청의 신규 error.log 라인이 나타날 때까지 조건 대기(zero-sleep)
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       echo "942xxx 매치(이번 요청 신규 라인):"
@@ -337,7 +337,7 @@ steps:
         intent: "SQLi 차단 + libinjection fingerprint"
         success_criteria: ["403", "942xxx", "Total Score", "SQLI"]
         acceptable_methods:
-          - "**[OSS] curl '1' OR '1'='1'**"
+          - "**[OSS] nc('1' OR '1'='1')**"
           - "**[OSS] libinjection fingerprint**"
           - "**[OSS] URL encoding bypass + CRS normalize**"
           - "**[OSS] paranoia 2/3 정교한 변형**"
@@ -369,7 +369,7 @@ steps:
       # el34-web: 라인 수 기록
       B=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
       # el34-attacker: LFI 전송
-      curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?p=../../../../etc/passwd"
+      echo "응답: $(echo -en 'GET /?p=../../../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # el34-web: 신규 라인의 930xxx
       sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id "930[0-9]+"' | sort -u
 
@@ -377,7 +377,7 @@ steps:
       # el34-web:
       B2=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
       # el34-attacker:
-      curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?cmd=;cat%20/etc/passwd"
+      echo "응답: $(echo -en 'GET /?cmd=;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # el34-web:
       sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id "932[0-9]+"' | sort -u
 
@@ -385,7 +385,7 @@ steps:
       # el34-web:
       B3=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
       # el34-attacker:
-      curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?x=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"
+      echo "응답: $(echo -en 'GET /?x=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # el34-web:
       sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id "933[0-9]+"' | sort -u
       ```
@@ -412,17 +412,17 @@ steps:
     answer: |
       echo "=== LFI → 930xxx (이번 요청만 격리) ==="
       B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?p=../../../../etc/passwd"'
+      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?p=../../../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"930[0-9]+\"' | sort -u"
       echo "=== RCE → 932xxx ==="
       B2=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?cmd=;cat%20/etc/passwd"'
+      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?cmd=;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       ssh ccc@10.20.32.80 "sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"932[0-9]+\"' | sort -u"
       echo "=== PHP → 933xxx ==="
       B3=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/?x=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"'
+      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?x=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       ssh ccc@10.20.32.80 "sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"933[0-9]+\"' | sort -u"
     answer_detail: 'LFI 930xxx + RCE 932xxx + PHP 933xxx 매치(각 요청 error.log 라인수 격리). OWASP A03 sub-type별 CRS 카테고리.'
@@ -459,7 +459,7 @@ steps:
       ```bash
       # ── el34-attacker 에서: 공격 1발 ──
       # 💡 브라우저/Burp 로 열어도 audit log 에 같은 remote_address 가 기록된다(el34 는 출처 보존).
-      curl -s -o /dev/null "http://dvwa.el34.lab/?q=<script>alert(1)</script>"
+      echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
 
       # ── el34-web 에서: remote_address / XFF 확인 (공격 2초 후) ──
       sudo tail -1 /var/log/apache2/modsec_audit.log | jq '{remote:.transaction.remote_address, xff:.request.headers."x-forwarded-for"}'
@@ -499,7 +499,7 @@ steps:
     category: analysis
     points: 12
     answer: |
-      ssh att@192.168.0.202 'curl -s -o /dev/null "http://dvwa.el34.lab/?q=<script>alert(1)</script>"'
+      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
       # audit 기록이 flush 될 때까지 error.log 의 ModSec 경고로 조건 대기(zero-sleep)
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
       echo "=== remote_address (el34 출처 보존) ==="
@@ -636,7 +636,7 @@ steps:
       ```bash
       # ── el34-attacker 에서: baseline 요청 ──
       # 💡 브라우저/Burp Repeater 로 열어 exception 전/후 응답 코드(403↔200) 변화를 눈으로 비교하면 좋다.
-      curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/admin/comments?text=<b>hi</b>"
+      echo "응답: $(echo -en 'GET /admin/comments?text=<b>hi</b> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
 
       # === exception 작성 (초안 파일 → 검토·적용) ===
       cat > ~/w05_exception.conf <<'EOF'
@@ -694,7 +694,7 @@ steps:
     category: operations
     points: 12
     answer: |
-      ssh att@192.168.0.202 'curl -s -o /dev/null -w "응답: %{http_code}\n" "http://dvwa.el34.lab/admin/comments?text=<b>hi</b>"'
+      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /admin/comments?text=<b>hi</b> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       echo "=== exception (초안 파일) ==="
       cat > ~/w05_exception.conf <<'EOF'
       <LocationMatch "^/admin/comments$">
@@ -754,11 +754,11 @@ steps:
       # ── el34-attacker 에서: Red 5 공격 (XSS/SQLi/LFI/RCE/PHP) ──
       # 💡 각 payload 는 브라우저/Burp Intruder(payload 리스트 5종) 로도 순차 전송 가능 — 5/5 403 을 눈으로 확인.
       #    Burp Intruder 는 5 공격을 한 번에 배치로 돌려 응답 코드 표를 뽑기 좋다. 여기선 로그 상관을 위해 curl 배치로.
-      curl -s -o /dev/null -w "XSS  -> %{http_code}\n" "http://dvwa.el34.lab/?q=<script>alert(1)</script>"
-      curl -s -o /dev/null -w "SQLi -> %{http_code}\n" "http://dvwa.el34.lab/?q=1%27%20OR%20%271%27=%271"
-      curl -s -o /dev/null -w "LFI  -> %{http_code}\n" "http://dvwa.el34.lab/?q=../../etc/passwd"
-      curl -s -o /dev/null -w "RCE  -> %{http_code}\n" "http://dvwa.el34.lab/?q=;cat%20/etc/passwd"
-      curl -s -o /dev/null -w "PHP  -> %{http_code}\n" "http://dvwa.el34.lab/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E"
+      echo "XSS  -> $(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      echo "SQLi -> $(echo -en 'GET /?q=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      echo "LFI  -> $(echo -en 'GET /?q=../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      echo "RCE  -> $(echo -en 'GET /?q=;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      echo "PHP  -> $(echo -en 'GET /?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
 
       # ── el34-web 에서: Blue/Purple 분석 (공격 5초 후) ──
       # 카테고리 분포 (최근 5 transaction)
@@ -806,11 +806,11 @@ steps:
       BEFORE=$(ssh ccc@10.20.32.80 'sudo wc -l /var/log/apache2/modsec_audit.log | awk "{print \$1}"')
       echo "baseline: $BEFORE"
       echo "=== Red 5 ==="
-      code=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?q=<script>alert(1)</script>'"); echo "  ?q=<script>alert(1)</script> → $code"
-      code=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?q=1'%20OR%20'1'='1'"); echo "  ?q=1'%20OR%20'1'='1 → $code"
-      code=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?q=../../etc/passwd'"); echo "  ?q=../../etc/passwd → $code"
-      code=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?q=;cat%20/etc/passwd'"); echo "  ?q=;cat%20/etc/passwd → $code"
-      code=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'"); echo "  ?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E → $code"
+      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=<script>alert(1)</script> → $code"
+      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=1'%20OR%20'1'='1 → $code"
+      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=../../etc/passwd → $code"
+      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=;cat%20/etc/passwd → $code"
+      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E → $code"
       # 5 공격이 모두 audit/error.log 에 반영될 때까지 조건 대기(zero-sleep) — 마지막 공격의 ModSec 경고 확인
       ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
       echo "=== Blue — 카테고리 ==="
