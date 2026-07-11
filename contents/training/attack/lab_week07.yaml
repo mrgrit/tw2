@@ -44,7 +44,7 @@ steps:
 
       ```bash
       # 1) 차단형 dvwa 도달성 — 응답코드만(페이로드 발사 전 표적 생존 확인)
-      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' http://dvwa.el34.lab/
+      whatweb -a1 http://dvwa.el34.lab/
       ```
       > 💡 브라우저 주소창에 `http://dvwa.el34.lab/` 를 열면 dvwa 화면(또는 로그인 리다이렉트)이 뜬다 —
       > 이 단계는 도달성만 보므로 코드만 필요해 `-o /dev/null -w`(본문 버리고 코드만)로 확인한다.
@@ -58,7 +58,7 @@ steps:
     points: 10
     answer: |
       # 1) 차단형 dvwa 도달성 — 응답코드만(페이로드 발사 전 표적 생존 확인)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' http://dvwa.el34.lab/"
+      ssh att@192.168.0.202 'whatweb -a1 http://dvwa.el34.lab/'
     answer_detail: "입력 기반 공격의 대상 = dvwa(차단 모드 vhost, ModSec CRS 930/932/933 탐지). 페이로드 발사 전 표적 생존·도달성을 확인하는 정찰 마무리 단계. HTTP 응답 코드가 돌아오면(코드 종류 무관) 도달 정상으로 판정한다."
     expected_output: |
       dvwa=302
@@ -69,7 +69,7 @@ steps:
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] curl (권장)**"]
+        acceptable_methods: ["**[OSS] nc raw HTTP / whatweb (권장)**"]
     target_vm: web
 
   - order: 2
@@ -88,9 +88,9 @@ steps:
 
       ```bash
       # 1) 경로순회 평문 — ../../etc/passwd로 파일시스템 경계 탈출 시도
-      curl -s -o /dev/null -w 'pt=%{http_code}\n' 'http://dvwa.el34.lab/?q=../../etc/passwd'
+      echo "pt=$(echo -en 'GET /?q=../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # 2) 경로순회 URL 인코딩 — %2e%2e%2f(.,/를 인코딩)로 단순 필터 우회 시도
-      curl -s -o /dev/null -w 'enc=%{http_code}\n' 'http://dvwa.el34.lab/?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd'
+      echo "enc=$(echo -en 'GET /?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # 3) 여러 인코딩·우회 변종을 자동으로 — wfuzz(웹 퍼저)로 traversal payload 목록을 한 번에 발사
       printf '../../etc/passwd\n%%2e%%2e%%2fetc%%2fpasswd\n....//....//etc/passwd\n..%%2f..%%2fetc%%2fpasswd\n' > /tmp/pt.txt
       wfuzz -w /tmp/pt.txt -u 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'Payload|403'
@@ -109,9 +109,9 @@ steps:
     points: 12
     answer: |
       # 1) 경로순회 평문 — ../../etc/passwd로 파일시스템 경계 탈출 시도
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'pt=%{http_code}\n' 'http://dvwa.el34.lab/?q=../../etc/passwd'"
+      echo "pt=$(ssh att@192.168.0.202 "echo -en 'GET /?q=../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       # 2) 경로순회 URL 인코딩 — %2e%2e%2f(.,/를 인코딩)로 단순 필터 우회 시도
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'enc=%{http_code}\n' 'http://dvwa.el34.lab/?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd'"
+      echo "enc=$(ssh att@192.168.0.202 "echo -en 'GET /?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       # 3) wfuzz로 traversal 변종 목록을 한 번에 발사(자동 퍼징)
       ssh att@192.168.0.202 "printf '../../etc/passwd\n%%2e%%2e%%2fetc%%2fpasswd\n....//....//etc/passwd\n..%%2f..%%2fetc%%2fpasswd\n' > /tmp/pt.txt; wfuzz -w /tmp/pt.txt -u 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'Payload|403'; rm -f /tmp/pt.txt"
     answer_detail: "경로순회(Path Traversal, A03/A05) = ../로 의도된 디렉토리를 탈출해 임의 파일(/etc/passwd 등)을 읽는 공격. el34 dvwa(차단 모드)에서 ModSec CRS 930xxx(LFI/Path Traversal) 룰군이 ../, /etc/passwd 패턴을 잡아 403. 평문이든 URL 인코딩(%2e%2e%2f)이든 ModSec 이 검사 전 정규화(canonicalization)하므로 같은 룰에 걸려 둘 다 403. 손으로 2개를 던진 뒤 wfuzz(웹 퍼저)로 여러 우회 변종(%2e·....//·..%2f)을 목록으로 한 번에 발사하면 전부 403 — CRS 930 이 traversal 클래스 전체를 막음을 자동으로 확인한다(인코딩 우회 무력화)."
@@ -130,7 +130,7 @@ steps:
       semantic:
         intent: "Path Traversal 시도(수동 2 + wfuzz 자동 변종) + 930 차단"
         success_criteria: ["../etc/passwd 평문·인코딩", "wfuzz 변종 퍼징", "전부 403(930)"]
-        acceptable_methods: ["**[OSS] curl + wfuzz 퍼징 (권장)**"]
+        acceptable_methods: ["**[OSS] nc raw HTTP + wfuzz 퍼징 (권장)**"]
     target_vm: web
 
   - order: 3
@@ -147,9 +147,9 @@ steps:
 
       ```bash
       # 1) SSRF — 서버가 클라우드 메타데이터(169.254.169.254=IAM 키)에 대신 요청하게 유도
-      curl -s -o /dev/null -w 'ssrf=%{http_code}\n' 'http://dvwa.el34.lab/?q=http://169.254.169.254/latest/meta-data/'
+      echo "ssrf=$(echo -en 'GET /?q=http://169.254.169.254/latest/meta-data/ HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # 2) SSRF — 로컬 관리포트(127.0.0.1:9100)에 대신 요청하게 유도
-      curl -s -o /dev/null -w 'localhost=%{http_code}\n' 'http://dvwa.el34.lab/?q=http://127.0.0.1:9100/'
+      echo "localhost=$(echo -en 'GET /?q=http://127.0.0.1:9100/ HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       ```
       두 요청은 **주체가 서버**라는 점이 핵심이다 — 공격자 PC 는 방화벽 때문에 169.254.169.254·127.0.0.1 에
       직접 못 닿지만, 서버는 내부에 있어 대신 요청한다. SSRF 는 정상 URL 과 형태가 비슷해 항상 403 으로
@@ -166,9 +166,9 @@ steps:
     points: 12
     answer: |
       # 1) SSRF — 서버가 클라우드 메타데이터(169.254.169.254=IAM 키)에 대신 요청하게 유도
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'ssrf=%{http_code}\n' 'http://dvwa.el34.lab/?q=http://169.254.169.254/latest/meta-data/'"
+      echo "ssrf=$(ssh att@192.168.0.202 "echo -en 'GET /?q=http://169.254.169.254/latest/meta-data/ HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       # 2) SSRF — 로컬 관리포트(127.0.0.1:9100)에 대신 요청하게 유도
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'localhost=%{http_code}\n' 'http://dvwa.el34.lab/?q=http://127.0.0.1:9100/'"
+      echo "localhost=$(ssh att@192.168.0.202 "echo -en 'GET /?q=http://127.0.0.1:9100/ HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
     answer_detail: "SSRF(A10) = 사용자가 준 URL로 서버가 대신 요청 → 공격자가 직접 못 닿는 내부망/클라우드 메타데이터(169.254.169.254 = IAM 키)/로컬 관리포트에 접근. 요청 주체가 내부 서버라 방화벽을 무력화한다. el34 ModSec/CRS 는 내부 IP·위험 스킴 패턴을 일부 탐지하나 정상 요청과 비슷해 확정 403 은 아니다 → 판정은 'SSRF 시도 발사'로 한다. 근본 방어 = URL allowlist + 내부/링크-로컬 IP(127/10.x/169.254) 차단 + 해석된 최종 IP 기준 검사."
     expected_output: |
       ssrf=403
@@ -199,7 +199,7 @@ steps:
 
       ```bash
       # 1) PHP 코드 주입 — <?php system('id'); ?>(URL 인코딩) = webshell/RCE 시도
-      curl -s -o /dev/null -w 'php=%{http_code}\n' 'http://dvwa.el34.lab/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'
+      echo "php=$(echo -en 'GET /?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       ```
       php=403 이면 CRS 933(PHP Injection)이 `<?php`·`system(` 패턴을 잡아 차단한 것 — 코드가 실행되지
       않았으므로 `id` 출력(uid=...)은 나오지 않는 게 정상이다(나오면 오히려 RCE 성공 = 심각).
@@ -214,7 +214,7 @@ steps:
     points: 12
     answer: |
       # 1) PHP 코드 주입 — <?php system('id'); ?>(URL 인코딩) = webshell/RCE 시도
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'php=%{http_code}\n' 'http://dvwa.el34.lab/?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E'"
+      echo "php=$(ssh att@192.168.0.202 "echo -en 'GET /?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
     answer_detail: "악성 콘텐츠/업로드(A03) = webshell(PHP) 코드(<?php system('id'); ?>)를 입력·파일로 서버에 심어 실행 → RCE/서버 장악. el34 dvwa 에서 ModSec CRS 933xxx(PHP Injection)이 <?php, system( 패턴을 잡아 403 차단 → 코드 미실행(id 출력 없음이 정상). 우회=확장자(.phtml/.php5)·MIME 위조·polyglot(고급). 방어=확장자/MIME allowlist + 업로드 디렉토리 실행권한 제거 + 디렉토리 분리."
     expected_output: |
       php=403
