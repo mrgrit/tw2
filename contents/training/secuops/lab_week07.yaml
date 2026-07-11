@@ -28,7 +28,7 @@ prerequisites:
   - "장비 직접 SSH: ssh ccc@<장비IP>(fw 10.20.30.1/ips 31.2/web 32.80/siem 32.100, root은 sudo) + 공격 ssh att@192.168.0.202 (비번 1)"
   - "lecture §1-§9 (두 페르소나 / 텔레메트리 / SOP / R/B/P) 숙지"
 objectives:
-  - "IR 첫 단계로 victim 호스트(el34-web)의 텔레메트리(osquery 5.23.0 + Wazuh agent Active)가 살아있는지 점검한다"
+  - "IR 첫 단계로 victim 호스트(el34-web)의 텔레메트리(osquery 5.23.x + Wazuh agent Active)가 살아있는지 점검한다"
   - "osquery 다섯 핵심 테이블(file / processes / listening_ports / users / crontab)을 침해 신호별로 질의해 탐지한다"
   - "침해대응 5 시나리오(R/B/P)를 재현(Red) → osquery 탐지(Blue) → 제거(Contain) 한 사이클로 돌린다"
   - "JOIN(processes ⨝ process_open_sockets)으로 포트의 주인 프로세스를, on_disk=0 으로 은닉 프로세스를 추적한다"
@@ -66,7 +66,7 @@ steps:
       # ── el34-siem 에서: 무전기(agent) SIEM 연결 확인 ──
       /var/ossec/bin/agent_control -l | grep -E "Name: web,"
       ```
-      - `osqueryi --version` — osquery 의 단발 SQL 실행기 버전 출력. el34 는 5.23.0.
+      - `osqueryi --version` — osquery 의 단발 SQL 실행기 버전 출력. el34 는 5.23.x.
       - `--json 'SELECT count(*) ...'` — 결과를 JSON 으로 받는다. 본 lab 의 모든 탐지가 이 형태다.
       - `agent_control -l` — Wazuh 매니저(el34-siem)에 등록된 agent 목록. `Name: web` 의 상태가 핵심.
 
@@ -78,12 +78,12 @@ steps:
     points: 10
     answer: |
       echo "=== osquery 버전 ==="
-      ssh ccc@10.20.32.80 osqueryi --version
+      ssh ccc@10.20.32.80 sudo osqueryi --version
       echo "=== processes count ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT count(*) c FROM processes;'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT count(*) c FROM processes;'
       echo "=== Wazuh web agent ==="
-      ssh ccc@10.20.32.100 /var/ossec/bin/agent_control -l | grep -E "Name: web," || echo "web agent 확인 필요"
-    answer_detail: "IR 의 0단계 = 조사 도구 가용성 점검. osquery 5.23.0(손전등) + 프로세스 스냅샷(호스트 생존) + web 의 Wazuh agent Active(SIEM 무전기) 세 가지가 모두 확인되면 IR 도구 준비 완료. 합격 판정은 출력에 osquery 버전 '5.23' 이 포함되는지로 한다."
+      ssh ccc@10.20.32.100 sudo /var/ossec/bin/agent_control -l | grep -E "Name: web," || echo "web agent 확인 필요"
+    answer_detail: "IR 의 0단계 = 조사 도구 가용성 점검. osquery 5.23.x(손전등) + 프로세스 스냅샷(호스트 생존) + web 의 Wazuh agent Active(SIEM 무전기) 세 가지가 모두 확인되면 IR 도구 준비 완료. 합격 판정은 출력에 osquery 버전 '5.23' 이 포함되는지로 한다."
     verify:
       type: output_contains
       expect: '5.23'
@@ -132,7 +132,7 @@ steps:
     answer: |
       ssh ccc@10.20.32.80 'echo "ELF...payload-w07" > /tmp/evil.bin'
       echo "=== osquery file 탐지 ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT path,size,mtime FROM file WHERE path="/tmp/evil.bin";'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT path,size,mtime FROM file WHERE path="/tmp/evil.bin";'
       ssh ccc@10.20.32.80 rm -f /tmp/evil.bin
       echo "self-clean done"
     answer_detail: "ep-s01 의 정답 흐름은 Red(파일 drop 모사) → Blue(osquery file 테이블로 path/size/mtime 식별) → Contain(rm -f 제거). 다운로드된 파일은 네트워크에 흔적이 거의 없어도 호스트 file 테이블에는 남는다. /tmp·/dev/shm 등 누구나 쓸 수 있는 경로가 흔한 drop 지점. 합격은 출력에 'evil.bin' 포함 여부로 판정한다."
@@ -170,16 +170,19 @@ steps:
       ```bash
       # Red — 의심 cmdline 의 lingering 프로세스 (실제 악성 아님, 탐지용)
       nohup python3 -c "import time;exec(__import__(chr(98)+\"ase64\").b64decode(\"aW1wb3J0IHRpbWU=\"));time.sleep(180)" >/dev/null 2>&1 & echo started
-      sleep 1
+      # 프로세스가 실제로 뜰 때까지 조건 대기(zero-sleep) — sleep 고정대기 대신 pgrep 폴링
+      timeout 8 bash -c 'until pgrep -f "[b]64decode" >/dev/null; do :; done' || true
       # Blue — cmdline 에 base64/-c 패턴
       osqueryi --json 'SELECT pid,name,cmdline FROM processes WHERE cmdline LIKE "%b64decode%" OR cmdline LIKE "%-c %";' | head -c 400
       # Contain — 종료
-      pkill -f b64decode 2>/dev/null; echo killed
+      pkill -f "[b]64decode"; echo killed
       ```
       - `processes` 테이블 — 실행 중 프로세스. `pid`(번호) / `name`(이름) / `cmdline`(전체 명령행)을 본다.
       - `WHERE cmdline LIKE "%b64decode%"` — 명령행 안에 그 문자열이 들어간 프로세스만. `%` 는 SQL 와일드카드.
-      - `nohup ... &` — Red 가 백그라운드로 띄우는 부분(탐지 대상 생성). `sleep 1` 은 프로세스가 뜰 시간을 준다.
-      - `pkill -f b64decode` — 명령행에 `b64decode` 가 든 프로세스를 이름이 아닌 **명령행 매칭**으로 종료.
+      - `nohup ... &` — Red 가 백그라운드로 띄우는 부분(탐지 대상 생성). 이어지는 `until pgrep -f ...` 는
+        프로세스가 실제로 뜰 때까지만 대기하는 조건 폴링(고정 sleep 대신).
+      - `pkill -f "[b]64decode"` — 명령행에 `b64decode` 가 든 프로세스를 **명령행 매칭**으로 종료. `[b]` 는
+        검사 명령 자신(`pkill -f [b]64decode`)은 매칭 안 되게 하는 트릭(자기 매칭 방지).
 
       ## ✅ 합격 기준
       osquery 결과 JSON 의 cmdline 에 `python3` + 인코딩 패턴(b64decode 등)이 보인다.
@@ -188,10 +191,10 @@ steps:
     points: 15
     answer: |
       ssh ccc@10.20.32.80 'nohup python3 -c "import time,base64;exec(base64.b64decode(\"aW1wb3J0IHRpbWU=\"));time.sleep(180)" >/dev/null 2>&1 & echo started'
-      sleep 1
+      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until pgrep -f "[b]64decode" >/dev/null; do :; done'" || true
       echo "=== osquery 의심 cmdline ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT pid,name,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
-      ssh ccc@10.20.32.80 'pkill -f b64decode 2>/dev/null; echo killed'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT pid,name,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
+      ssh ccc@10.20.32.80 'pkill -f "[b]64decode"; echo killed'
       echo "self-clean done"
     answer_detail: "ep-s02 정답 흐름은 Red(인코딩 셸 프로세스 생성) → Blue(processes.cmdline 의 LIKE 패턴으로 탐지) → Contain(pkill -f 종료). cmdline 패턴(base64/exec/-c)은 osquery processes 에서 강력한 탐지 단서이며, 난독화 자체가 신호가 된다 — Windows 의 PowerShell -EncodedCommand 와 같은 발상. 합격은 출력에 'python3' 포함 여부로 판정한다."
     verify:
@@ -226,16 +229,16 @@ steps:
 
       ```bash
       nohup python3 -m http.server 4444 >/dev/null 2>&1 & echo started   # Red
-      sleep 1
+      timeout 8 bash -c 'until pgrep -f "[h]ttp.server 4444" >/dev/null; do :; done' || true   # 리스너가 뜰 때까지 조건 대기
       osqueryi --json 'SELECT pid,port,address FROM listening_ports WHERE port=4444;'  # Blue
-      pkill -f "http.server 4444" 2>/dev/null; echo killed              # Contain
+      pkill -f "[h]ttp.server 4444"; echo killed                         # Contain
       ```
       - `listening_ports` 테이블 — LISTEN 상태의 모든 소켓. `pid`(주인 프로세스) / `port`(포트) /
         `address`(바인딩 주소, 0.0.0.0 이면 모든 인터페이스 노출).
       - `WHERE port=4444` — 의심 포트 한 건을 지목. (짝꿍 테이블 `process_open_sockets` 는 외부로 나가는
         연결을 `remote_port` 로 본다 — step 7 에서 JOIN 으로 함께 쓴다.)
       - `python3 -m http.server 4444` — Red 가 4444 포트를 여는 부분(탐지 대상 생성).
-      - `pkill -f "http.server 4444"` — 그 리스너만 명령행 매칭으로 정확히 종료.
+      - `pkill -f "[h]ttp.server 4444"` — 그 리스너만 명령행 매칭으로 정확히 종료(`[h]` 로 자기 매칭 방지).
 
       ## ✅ 합격 기준
       osquery `listening_ports` 결과에 port `4444` 가 보인다.
@@ -244,10 +247,10 @@ steps:
     points: 15
     answer: |
       ssh ccc@10.20.32.80 'nohup python3 -m http.server 4444 >/dev/null 2>&1 & echo started'
-      sleep 1
+      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until pgrep -f \"[h]ttp.server 4444\" >/dev/null; do :; done'" || true
       echo "=== osquery listening_ports 4444 ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT pid,port,address FROM listening_ports WHERE port=4444;'
-      ssh ccc@10.20.32.80 'pkill -f "http.server 4444" 2>/dev/null; echo killed'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT pid,port,address FROM listening_ports WHERE port=4444;'
+      ssh ccc@10.20.32.80 'pkill -f "[h]ttp.server 4444"; echo killed'
       echo "self-clean done"
     answer_detail: "ep-s03 정답 흐름은 Red(임의 포트 리스너 생성) → Blue(listening_ports 로 포트·pid 식별) → Contain(pkill 종료). 백도어 리스너는 listening_ports(어느 포트를 듣나) + process_open_sockets(어느 외부와 연결됐나)로 식별하며, 정상 서비스 포트 목록(baseline)과 대조해 비정상 리스너를 찾는다. 합격은 출력에 '4444' 포함 여부로 판정한다."
     verify:
@@ -282,15 +285,15 @@ steps:
       **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
-      userdel -r w07intruder 2>/dev/null; useradd -m -s /bin/bash -u 1099 w07intruder && echo created  # Red
+      id w07intruder >/dev/null 2>&1 && sudo userdel -r w07intruder; sudo useradd -m -s /bin/bash -u 1099 w07intruder && echo created  # Red(useradd/userdel 은 root → sudo. 잔재 있으면 먼저 제거)
       osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE username="w07intruder";'  # Blue
-      userdel -r w07intruder 2>/dev/null; echo removed   # Contain
+      sudo userdel -r w07intruder; echo removed   # Contain
       ```
       - `users` 테이블 — `/etc/passwd` 의 모든 사용자. `username` / `uid`(사용자 번호) / `shell`(로그인 셸) /
         `directory`(홈 디렉터리).
       - `useradd -m -s /bin/bash -u 1099` — Red 가 홈(`-m`)·bash 셸(`-s`)·uid 1099(`-u`)로 계정 생성.
-      - `userdel -r` — 계정과 홈 디렉터리(`-r`)까지 함께 제거(Contain). 앞의 `userdel ... 2>/dev/null`
-        은 이전 잔재가 있으면 먼저 지우는 멱등 처리다.
+      - `userdel -r` — 계정과 홈 디렉터리(`-r`)까지 함께 제거(Contain). 앞의 `id ... && userdel`
+        은 이전 잔재가 있을 때만 먼저 지우는 멱등 처리다.
 
       ## ✅ 합격 기준
       osquery `users` 결과에 `w07intruder` 가 보인다.
@@ -298,10 +301,10 @@ steps:
     category: response
     points: 15
     answer: |
-      ssh ccc@10.20.32.80 'userdel -r w07intruder 2>/dev/null; useradd -m -s /bin/bash -u 1099 w07intruder && echo created'
+      ssh ccc@10.20.32.80 'id w07intruder >/dev/null 2>&1 && sudo userdel -r w07intruder; sudo useradd -m -s /bin/bash -u 1099 w07intruder && echo created'
       echo "=== osquery users 탐지 ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE username="w07intruder";'
-      ssh ccc@10.20.32.80 'userdel -r w07intruder 2>/dev/null; echo removed'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE username="w07intruder";'
+      ssh ccc@10.20.32.80 'sudo userdel -r w07intruder; echo removed'
       echo "self-clean done"
     answer_detail: "ep-s04 정답 흐름은 Red(백도어 계정 생성) → Blue(users 테이블로 식별) → Contain(userdel -r 제거). 백도어 계정은 이상 uid/shell 을 정상 계정 baseline 과 대조해 찾는다. 계정 추가는 네트워크에 흔적이 거의 없어 호스트 users 테이블이 유일한 탐지 길. 제거 시 실습 계정만 지우고 베이스 계정은 보존한다. 합격은 출력에 'w07intruder' 포함 여부로 판정한다."
     verify:
@@ -340,11 +343,12 @@ steps:
       **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
-      echo "* * * * * root /tmp/.w07bd.sh" > /etc/cron.d/w07_backdoor                 # Red 1
-      echo "ssh-rsa AAAAB3Nz_W07FAKE w07@evil" >> /root/.ssh/authorized_keys          # Red 2
-      osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%w07_backdoor%";'    # Blue
+      # /etc/cron.d·/root/.ssh 쓰기는 root → sudo tee 로(중첩따옴표 없이 파일 기록)
+      echo "* * * * * root /tmp/.w07bd.sh" | sudo tee /etc/cron.d/w07_backdoor >/dev/null   # Red 1
+      echo "ssh-rsa AAAAB3Nz_W07FAKE w07@evil" | sudo tee -a /root/.ssh/authorized_keys >/dev/null  # Red 2
+      sudo osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%w07_backdoor%";'    # Blue
       # Contain — cron 제거 + 추가한 키 1줄만 삭제(베이스 보존)
-      rm -f /etc/cron.d/w07_backdoor; sed -i "/W07FAKE/d" /root/.ssh/authorized_keys; echo cleaned
+      sudo rm -f /etc/cron.d/w07_backdoor; sudo sed -i "/W07FAKE/d" /root/.ssh/authorized_keys; echo cleaned
       ```
       - `crontab` 테이블 — 시스템·사용자의 모든 cron 항목. `command`(실행 명령) / `path`(어느 cron 파일에서 왔나).
       - `* * * * * root ...` — 매 분, root 권한으로 실행한다는 cron 표기(분 시 일 월 요일 + 사용자 + 명령).
@@ -361,9 +365,9 @@ steps:
       ssh ccc@10.20.32.80 'echo "* * * * * root /tmp/.w07bd.sh" > /etc/cron.d/w07_backdoor'
       ssh ccc@10.20.32.80 'echo "ssh-rsa AAAAB3Nz_W07FAKE w07@evil" >> /root/.ssh/authorized_keys'
       echo "=== osquery crontab 탐지 ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%w07_backdoor%";'
-      echo "=== authorized_keys 변경(FIM 대상) ==="
-      ssh ccc@10.20.32.80 'grep -c W07FAKE /root/.ssh/authorized_keys'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%w07_backdoor%";'
+      echo "=== authorized_keys 변경(FIM 대상) — 삽입된 백도어 키 라인 ==="
+      ssh ccc@10.20.32.80 'grep W07FAKE /root/.ssh/authorized_keys'
       ssh ccc@10.20.32.80 'rm -f /etc/cron.d/w07_backdoor; sed -i "/W07FAKE/d" /root/.ssh/authorized_keys; echo cleaned'
       echo "self-clean done"
     answer_detail: "ep-s05 정답 흐름은 Red(cron 백도어 + authorized_keys 키 추가) → Blue(osquery crontab 스냅샷 + Wazuh FIM syscheck 이벤트 두 각도 탐지) → Contain(cron 은 rm 통째 제거, 키는 W07FAKE 한 줄만 sed 삭제). syscheck 가 /etc·/root/.ssh 를 감시하므로 파일 변경이 SIEM alert 로 올라온다. 방화벽이 못 본 호스트 지속성을 엔드포인트가 잡는 다층 방어의 결정적 장면. 키는 추가분만 삭제해 베이스 보존. 합격은 출력에 'w07_backdoor' 포함 여부로 판정한다."
@@ -417,11 +421,11 @@ steps:
     points: 10
     answer: |
       echo "=== 프로세스 ↔ 포트 소유 (80/443 의 주인) ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT p.pid,p.name,s.local_port,s.remote_address,s.remote_port FROM processes p JOIN process_open_sockets s USING(pid) WHERE s.local_port IN (80,443) LIMIT 5;'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT p.pid,p.name,s.local_port,s.remote_address,s.remote_port FROM processes p JOIN process_open_sockets s USING(pid) WHERE s.local_port IN (80,443) LIMIT 5;'
       echo "=== 외부 연결(C2 후보, 있을 때만) ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT p.pid,p.name,s.remote_address,s.remote_port FROM processes p JOIN process_open_sockets s USING(pid) WHERE s.remote_port!=0 LIMIT 5;'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT p.pid,p.name,s.remote_address,s.remote_port FROM processes p JOIN process_open_sockets s USING(pid) WHERE s.remote_port!=0 LIMIT 5;'
       echo "=== on_disk=0 (삭제된 바이너리로 도는 은닉 프로세스 헌팅) ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT pid,name,path FROM processes WHERE on_disk=0 LIMIT 5;'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT pid,name,path FROM processes WHERE on_disk=0 LIMIT 5;'
     answer_detail: "Investigate 단계의 정답은 세 질의 — ① processes JOIN process_open_sockets USING(pid)로 '이 포트의 주인 프로세스는?'를 한 줄에(의심 포트→pid→cmdline 역추적), ② remote_port!=0 으로 외부(C2) 연결, ③ on_disk=0 으로 삭제된 바이너리로 도는 은닉 프로세스 헌팅. 분석가 timeline 의 핵심 질의다. 합격은 출력에 'pid' 포함 여부로 판정한다."
     verify:
       type: output_contains
@@ -469,7 +473,7 @@ steps:
     points: 10
     answer: |
       echo "=== web agent ==="
-      ssh ccc@10.20.32.100 /var/ossec/bin/agent_control -l | grep -E "Name: web," || echo "(web agent)"
+      ssh ccc@10.20.32.100 sudo /var/ossec/bin/agent_control -l | grep -E "Name: web," || echo "(web agent)"
       echo "=== el34-siem 의 FIM/syscheck alert ==="
       ssh ccc@10.20.32.100 'tail -400 /var/ossec/logs/alerts/alerts.json | grep -iE "syscheck|integrity|checksum" | tail -3' || echo "(최근 FIM alert 없음 — 실시간 syscheck 주기 대기)"
       echo "agent web active 확인 완료"
@@ -511,9 +515,10 @@ steps:
     category: report
     points: 5
     answer: |
-      cat <<'EOF'
+      # 보고서는 편집기로 작성해 파일로 남긴다 (nano ~/w07_ir_report.md 로 아래 골격을 채운다).
+      cat > ~/w07_ir_report.md <<'EOF'
       # el34 W07 Linux 엔드포인트 IR 보고서
-      ## 1. 텔레메트리: osquery 5.23.0 + web Wazuh agent Active
+      ## 1. 텔레메트리: osquery 5.23.x + web Wazuh agent Active
       ## 2. 침해대응 5 (osquery 탐지)
       | # | 시나리오 | 탐지 테이블/도구 | 결과 |
       |---|---------|------------------|------|
@@ -526,6 +531,7 @@ steps:
       ## 4. SIEM: web agent → el34-siem, syscheck(FIM) alert
       ## 5. SOP: Triage(alert 선별)→Investigate(osquery)→Contain(kill/userdel/rm)
       EOF
+      cat ~/w07_ir_report.md
     answer_detail: "정답은 분석가 SOP(Triage→Investigate→Contain) 틀에 5 시나리오 탐지 결과 표 + Investigate timeline(JOIN/헌팅) + SIEM 적재(FIM)를 한 페이지로 종합하는 것. 방화벽이 못 본 호스트 행위를 엔드포인트가 잡는 다층 방어의 완성이며, 보고서는 다음 사람이 재현·후속할 수 있어야 한다. 합격은 출력에 'Contain' 포함 여부로 판정한다."
     verify:
       type: output_contains
@@ -554,12 +560,13 @@ steps:
       **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
-      id w07intruder 2>/dev/null; ls /etc/cron.d/w07_backdoor /tmp/evil.bin 2>/dev/null; grep -c W07FAKE /root/.ssh/authorized_keys 2>/dev/null; pgrep -f "b64decode|http.server 4444"; echo "---check done---"
+      id w07intruder >/dev/null 2>&1 && echo "USER 잔재!" || echo "user ok"; ls /etc/cron.d/w07_backdoor /tmp/evil.bin >/dev/null 2>&1 && echo "파일 잔재!" || echo "files ok"; grep -qs W07FAKE /root/.ssh/authorized_keys && echo "key 잔재!" || echo "key ok"; pgrep -f "[b]64decode|[h]ttp.server 4444" && echo "프로세스 잔재!" || echo "proc ok"; echo "---check done---"
       ```
-      - `id w07intruder` — 백도어 계정 잔재 확인(있으면 출력, 없으면 에러→무시).
-      - `ls .../w07_backdoor /tmp/evil.bin` — cron·다운로드 파일 잔재 확인.
-      - `grep -c W07FAKE ...authorized_keys` — 추가한 SSH 키 줄 수(0 이어야 정상).
-      - `pgrep -f "b64decode|http.server 4444"` — 인코딩 셸·리스너 프로세스 잔재 확인.
+      - `id w07intruder >/dev/null 2>&1 && ... || ...` — 백도어 계정 잔재를 존재 여부로 판정(있으면 "잔재!", 없으면 "ok").
+      - `ls .../w07_backdoor /tmp/evil.bin >/dev/null 2>&1 && ... || ...` — cron·다운로드 파일 잔재 존재 판정.
+      - `grep -qs W07FAKE ...authorized_keys` — 추가한 SSH 키가 남았는지 존재 판정(`-s` 로 파일 없을 때 에러도 조용히).
+      - `pgrep -f "[b]64decode|[h]ttp.server 4444"` — 인코딩 셸·리스너 프로세스 잔재 확인. `[b]`/`[h]` 는
+        검사 셸 자신의 명령줄이 매칭돼 항상 "잔재"로 오판되는 것을 막는 트릭.
       - `echo "---check done---"` — 모든 점검을 끝까지 돌렸다는 마커.
 
       ## ✅ 합격 기준
@@ -568,7 +575,7 @@ steps:
     category: cleanup
     points: 5
     answer: |
-      ssh ccc@10.20.32.80 'id w07intruder 2>/dev/null && echo "USER 잔재!" || echo "user ok"; ls /etc/cron.d/w07_backdoor /tmp/evil.bin 2>/dev/null && echo "파일 잔재!" || echo "files ok"; N=$(grep -c W07FAKE /root/.ssh/authorized_keys 2>/dev/null); echo "key 잔재=$N"; pgrep -f "b64decode|http.server 4444" && echo "프로세스 잔재!" || echo "proc ok"; echo "---check done---"'
+      ssh ccc@10.20.32.80 'id w07intruder >/dev/null 2>&1 && echo "USER 잔재!" || echo "user ok"; ls /etc/cron.d/w07_backdoor /tmp/evil.bin >/dev/null 2>&1 && echo "파일 잔재!" || echo "files ok"; grep -qs W07FAKE /root/.ssh/authorized_keys && echo "key 잔재!" || echo "key ok"; pgrep -f "[b]64decode|[h]ttp.server 4444" && echo "프로세스 잔재!" || echo "proc ok"; echo "---check done---"'
     answer_detail: "정답은 6개 식별자(w07intruder/w07_backdoor/W07FAKE/evil.bin/4444/b64decode) 잔재가 모두 0임을 한 번에 검증하는 것. 공유 호스트에선 self-clean 이 필수 SOP — 실습 계정/cron/키/파일/프로세스를 끝까지 남기지 않아 다음 사람의 베이스를 보존한다. 합격은 출력에 'check done' 포함 여부로 판정한다."
     verify:
       type: output_contains

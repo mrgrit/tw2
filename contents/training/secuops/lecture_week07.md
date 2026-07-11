@@ -24,7 +24,7 @@
    무엇이며 각 단계에서 어떤 도구를 쓰는지 비유 없이 1분 안에 설명한다.
 2. **victim 호스트**(침해 현장 `el34-web`)와 **analyst 분석가**(조사하는 사람) 두 시점의 차이를
    알고, 각자 무엇을 보고 무엇을 하는지 그림으로 그린다.
-3. el34-web 의 IR 텔레메트리(osquery 5.23.0 + Wazuh agent)가 살아있는지 첫 30초 안에 점검한다.
+3. el34-web 의 IR 텔레메트리(osquery 5.23.x + Wazuh agent)가 살아있는지 첫 30초 안에 점검한다.
 4. **침해대응 5 시나리오** — 의심 다운로드 / 인코딩된 셸 프로세스 / 백도어 리스너 / 백도어 계정 /
    지속성(persistence) — 을 osquery 의 알맞은 테이블(`file` / `processes` / `listening_ports` /
    `users` / `crontab`)로 탐지하고, 각 사건을 **재현 → 탐지 → 제거**의 한 사이클로 돌린다.
@@ -148,7 +148,7 @@ graph TD
 
 ### 1.3 el34 에서 어떻게 — victim 은 el34-web, 도구는 osquery
 
-el34 의 본 주차 victim 은 **`el34-web`** 한 대다. 이 호스트에는 W06 에서 확인한 **osquery 5.23.0** 이
+el34 의 본 주차 victim 은 **`el34-web`** 한 대다. 이 호스트에는 W06 에서 확인한 **osquery 5.23.x** 이
 설치되어 있고, **Wazuh agent(ID 004)** 가 매니저(`el34-siem`)에 연결되어 호스트 행위를 SIEM 으로
 보낸다. 분석가는 표적 web `ssh ccc@10.20.32.80` 에 접속해 web` 로 victim 에
 osquery 를 던지고, `ssh ccc@10.20.32.100`(siem)으로 Wazuh 쪽 적재를 확인한다.
@@ -541,7 +541,7 @@ web → 엔드포인트 → SIEM 전 계층에서 추적"하는 종합 과제의
 
 > **왜 하는가** — IR 의 0단계는 "조사할 도구가 살아있는가"다. osquery 가 동작하고 Wazuh agent 가
 > Active 여야 이후 모든 탐지·적재가 성립한다.
-> **무엇을 알 수 있는가** — el34-web 의 osquery 버전(5.23.0), 현재 프로세스 수, web agent 의 Active 여부.
+> **무엇을 알 수 있는가** — el34-web 의 osquery 버전(5.23.x), 현재 프로세스 수, web agent 의 Active 여부.
 > **결과 해석** — osquery 5.x + 프로세스 count + `Name: web` Active 면 IR 도구 준비 완료. agent 가
 > Disconnected 면 SIEM 적재가 끊긴 상태이므로 먼저 이를 해결한다.
 > **실전 활용** — 사건 인수 첫 30초. "이 호스트를 조사할 수 있는 상태인가"를 가장 먼저 확정한다.
