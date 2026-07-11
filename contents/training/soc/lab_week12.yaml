@@ -56,7 +56,7 @@ steps:
       # 1) 호스트 auth.log 존재 확인(로그인 시각·sudo 권한 사용 = 행위 소스 1)
       ls -la /var/log/auth.log
       # 2) el34-web osquery 동작 확인(파일·프로세스 = 행위 소스 2)
-      docker exec el34-web osqueryi --version
+      ssh ccc@10.20.32.80 sudo osqueryi --version
       # 3) UEBA 두 소스 요약
       echo "UEBA 소스: auth.log(로그인/sudo 행위) + osquery(파일/프로세스 행위)"
     answer_detail: "UEBA(사용자·엔티티 행위 분석)의 전제 = 읽을 행위 소스의 가용성. 호스트 auth.log(로그인 시각·sudo 권한 사용)와 el34-web osquery 5.23.0(파일 접근·staging)이 행위의 네 축을 나눠 담당한다. 둘 다 살아 있어야 내부 위협을 행위로 식별할 수 있다."
@@ -107,7 +107,7 @@ steps:
       # 1) 권한 사용 — 비밀번호(1)를 stdin으로 넘겨 sudo 무인 실행(auth.log에 sudo 흔적)
       echo 1 | sudo -S id >/dev/null 2>&1; echo "sudo used"
       # 2) 데이터 staging — 민감 파일(/etc/passwd,hostname)을 /tmp에 압축(유출 직전 준비)
-      docker exec el34-web sh -c 'tar czf /tmp/socw12_exfil.tar.gz /etc/passwd /etc/hostname 2>/dev/null; echo staged'
+      ssh ccc@10.20.32.80 'tar czf /tmp/socw12_exfil.tar.gz /etc/passwd /etc/hostname 2>/dev/null; echo staged'
       # 3) 완료 마커
       echo "insider done"
     answer_detail: "내부 위협 = 인가된 사용자가 정상 권한으로 하는 비정상 행위. sudo 권한 사용(정상 명령)과 민감 파일 압축(tar, 정상 명령)이지만, 그 조합·패턴이 일탈 — staging은 유출 체인의 2단계(접근→staging→반출)로 반출 전에 잡을 마지막 신호다. 시그니처가 없으므로 행위(UEBA)로 잡는다."
@@ -205,7 +205,7 @@ steps:
     points: 12
     answer: |
       # 1) osquery file로 staging 아카이브 헌팅 — 경로/크기
-      docker exec el34-web osqueryi --json 'SELECT path,size FROM file WHERE path="/tmp/socw12_exfil.tar.gz";'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT path,size FROM file WHERE path="/tmp/socw12_exfil.tar.gz";'
       # 2) 해석 — 민감 파일 압축(/tmp/*.tar.gz of /etc) = 유출 직전 staging(대량 읽기+압축+전송)
       echo "→ 민감 파일 압축(/tmp/*.tar.gz of /etc) = 유출 직전 staging. 대량 읽기+압축+전송 = 유출 체인"
     answer_detail: "Hunt = 데이터 이동 축의 물증(staging) 헌팅. osquery file 테이블로 /tmp의 민감 파일 압축본을 잡는다 — 유출 체인(대량 접근 → staging → 반출)에서 반출 전에 잡을 마지막 신호다. 압축본의 비표준 위치와 민감 내용이 단서이며, DLP와 함께 유출의 마지막 방어선이다."
@@ -252,7 +252,7 @@ steps:
     points: 12
     answer: |
       # 1) 증거 보전(읽기 전용·비파괴) — staging 파일의 sha256 해시 + 수정시각/크기 기록
-      docker exec el34-web sh -c 'sha256sum /tmp/socw12_exfil.tar.gz; stat -c "%y %s bytes" /tmp/socw12_exfil.tar.gz'
+      ssh ccc@10.20.32.80 'sha256sum /tmp/socw12_exfil.tar.gz; stat -c "%y %s bytes" /tmp/socw12_exfil.tar.gz'
       # 2) 해석 — 내부 위협은 법적 대응 동반 → 증거(해시/시각)를 변경 없이 보전, 함부로 삭제 금지
       echo "→ 내부 위협은 법적 대응 동반 → 증거(해시/시각)를 변경 없이 보전. 함부로 삭제 금지"
     answer_detail: "내부 위협 IR의 최우선 = 증거 보전(격리·삭제보다 앞). 파일 해시(sha256)+타임스탬프(stat)를 변경 없이 기록해 무결성을 입증한다 — 해시는 1바이트 변경도 잡아내므로 법정 증거능력의 근거가 된다(법무/포렌식). 명령은 읽기 전용(비파괴). 외부 위협과 달리 '지우기 전에 지문부터'가 원칙이다."
@@ -303,15 +303,15 @@ steps:
     points: 12
     answer: |
       # 1) 유출 채널 탐지 룰 추가 — http.uri에 .tar.gz 실린 전송(alert, sid 9512001, nocase)
-      docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+      ssh ccc@10.20.31.2 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
       alert http any any -> any any (msg:\"SOC W12 data exfil archive\"; http.uri; content:\".tar.gz\"; nocase; sid:9512001; rev:1;)
       EOF"'
       # 2) 적용 전 룰 문법 테스트(-T)
-      docker exec el34-ips sh -c 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -1'
+      ssh ccc@10.20.31.2 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -1'
       # 3) 무중단 룰 재적용
-      docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules >/dev/null'
+      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules >/dev/null'
       # 4) self-clean — 룰 삭제 + reload + 잔재 0 확인
-      docker exec el34-ips sh -c 'sudo sed -i "/sid:9512001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "유출채널 rule_removed (잔재=$(grep -c 9512001 /etc/suricata/rules/local.rules))"'
+      ssh ccc@10.20.31.2 'sudo sed -i "/sid:9512001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules >/dev/null; echo "유출채널 rule_removed (잔재=$(grep -c 9512001 /etc/suricata/rules/local.rules))"'
     answer_detail: "Contain = 유출 채널 차단. .tar.gz 전송 탐지 룰(sid 9512001)을 작성→suricata -T 문법검증→reload-rules 적용→삭제하는 수명주기로, 공유 el34 보호를 위해 alert(탐지)로 시연 후 self-clean. 핵심 순서 — 증거 보전(미션 5) 후에 격리. 운영은 이 자리에 DLP 차단 + 계정 권한 동결이 들어간다."
     expected_output: |
       26/6/2026 -- 14:47:25 - <Notice> - Configuration provided was successfully loaded. Exiting.
@@ -353,7 +353,7 @@ steps:
     points: 12
     answer: |
       # 1) 증거 보전 후 staging 제거 + 잔재 확인(rm 후 ls 실패하면 clean)
-      docker exec el34-web sh -c 'rm -f /tmp/socw12_exfil.tar.gz; ls /tmp/socw12_exfil.tar.gz 2>/dev/null && echo "잔재!" || echo clean'
+      ssh ccc@10.20.32.80 'rm -f /tmp/socw12_exfil.tar.gz; ls /tmp/socw12_exfil.tar.gz 2>/dev/null && echo "잔재!" || echo clean'
       # 2) 해석 — 증거(해시)는 보전했으므로 제거 가능, 계정 권한 검토/동결·재발 감시
       echo "→ 증거(해시)는 보전했으므로 staging 제거 가능. 계정 권한 검토/동결, 재발 감시"
     answer_detail: "Recover = 증거 보전(미션 5) 후에야 staging 제거 + 비인가 권한 회수 + 재발 감시. 원본을 지워도 무결성 기록(해시·타임스탬프)이 남아 법적 대응이 가능하므로 삭제가 정당하다. 내부 위협은 HR/법무 협의 하에 진행 — 기술 제거와 인사·법적 절차가 함께 간다."

@@ -65,11 +65,11 @@ steps:
     points: 8
     answer: |
       echo "=== osquery (스냅샷) ==="
-      ssh ccc@10.20.32.80 osqueryi --version
+      ssh ccc@10.20.32.80 sudo osqueryi --version
       echo "=== sysmon (이벤트) ==="
       systemctl is-active sysmon
       echo "=== Wazuh (평결) ==="
-      ssh ccc@10.20.32.100 /var/ossec/bin/wazuh-control status | grep analysisd
+      ssh ccc@10.20.32.100 sudo /var/ossec/bin/wazuh-control status | grep analysisd
     answer_detail: "헌팅의 전제 = 텔레메트리 가용성. osquery(현재 상태 스냅샷, '지금 남은 것'에 강함) + sysmon(과거 이벤트 스트림, '잠깐 떴다 죽은 것'에 강함) + Wazuh(평결, 발견을 룰로 굳힘)를 결합해 '지금 있는 것 + 과거에 일어난 것'을 빠짐없이 캔다. 채점은 셋 중 sysmon `active`를 기준 신호로 본다 — 단명 프로세스 헌팅(STEP 5)이 이것 없이는 불가하기 때문. 하나라도 죽어 있으면 그 영역은 사냥 불능이다."
     verify:
       type: output_contains
@@ -117,7 +117,7 @@ steps:
     points: 10
     answer: |
       echo "=== 가설: persistence(T1136/T1053)가 잠복했을 것 ==="
-      ssh ccc@10.20.32.80 'userdel -r huntme 2>/dev/null; useradd -m -s /bin/bash huntme && echo planted'
+      ssh ccc@10.20.32.80 'sudo userdel -r huntme 2>/dev/null; useradd -m -s /bin/bash huntme && echo planted'
       ssh ccc@10.20.32.80 'echo "*/5 * * * * root /tmp/.huntme.sh" > /etc/cron.d/huntme_persist; echo cron_planted'
       echo "→ 경보는 안 떴다. 이제 가설로 사냥한다."
     answer_detail: "능동 헌팅은 경보를 안 기다린다. 조용한 persistence(계정 huntme + cron huntme_persist)는 정상 운영 행위와 똑같이 생겨 탐지 룰이 없으면 alerts.json에 한 줄도 안 남는다 — 그래서 ATT&CK Persistence(TA0003: T1136 계정 / T1053 cron)에 매단 가설을 세워 선제적으로 캔다. 채점은 `planted` 출력으로 발판 재현을 확인. 이 발판이 STEP 3~5 헌팅의 사냥 대상이 되고, STEP 6에서 탐지 룰로 굳혀진다."
@@ -162,7 +162,7 @@ steps:
     points: 12
     answer: |
       echo "=== osquery 계정 헌팅 (uid>=1000 + bash shell) ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE uid>=1000 AND shell LIKE "%/bash";'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT username,uid,shell,directory FROM users WHERE uid>=1000 AND shell LIKE "%/bash";'
     answer_detail: "가설(백도어 계정 T1136)을 osquery users로 검증 — uid>=1000(시스템 계정 제외) + 로그인 가능 shell(`%/bash`)로 좁혀 huntme를 끄집어낸다. 이름이 아니라 '예상 밖 로그인 계정'이라는 행동 패턴을 단서로 하는 TTP 헌팅이라, 공격자가 계정명을 바꿔도 잡힌다. 핵심은 baseline(정상 계정 목록)과의 대조 — baseline 없이는 huntme가 정상인지 가릴 수 없다. 채점은 출력에 huntme 포함 여부."
     verify:
       type: output_contains
@@ -205,9 +205,9 @@ steps:
     points: 12
     answer: |
       echo "=== osquery cron persistence 헌팅 ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%huntme%";'
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT command,path FROM crontab WHERE path LIKE "%huntme%";'
       echo "=== (보강) authorized_keys 벡터도 점검 ==="
-      ssh ccc@10.20.32.80 osqueryi --json 'SELECT key_file,algorithm FROM authorized_keys LIMIT 3;' 2>/dev/null || echo "(authorized_keys 없음)"
+      ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT key_file,algorithm FROM authorized_keys LIMIT 3;' 2>/dev/null || echo "(authorized_keys 없음)"
     answer_detail: "persistence는 한 벡터가 아니다 — 계정(users, T1136) 외 cron(crontab, T1053)·SSH키(authorized_keys, T1098)도 캔다. 한 발판만 지우고 다른 것을 놓치면 남은 cron이 계정을 다시 만들어 꼬리 자르기가 실패하므로, 헌팅은 가설의 여러 발현을 빠짐없이 질의한다. 채점은 crontab 출력에 huntme_persist 포함 여부."
     verify:
       type: output_contains
@@ -472,7 +472,7 @@ steps:
     category: cleanup
     points: 5
     answer: |
-      ssh ccc@10.20.32.80 'userdel -r huntme 2>/dev/null; rm -f /etc/cron.d/huntme_persist; id huntme 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /etc/cron.d/huntme_persist 2>/dev/null && echo "cron 잔재!" || echo "cron ok"'
+      ssh ccc@10.20.32.80 'sudo userdel -r huntme 2>/dev/null; rm -f /etc/cron.d/huntme_persist; id huntme 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /etc/cron.d/huntme_persist 2>/dev/null && echo "cron 잔재!" || echo "cron ok"'
       ssh ccc@10.20.32.100 'echo "101401 잔재=$(grep -c 101401 /var/ossec/etc/rules/local_rules.xml)"'
       echo "---check done---"
     answer_detail: "헌팅 실습 발판(huntme 계정 + huntme_persist cron)과 운영화 룰(101401)을 정리 — 공유 호스트(el34-web)/매니저(el34-siem) 베이스 보존. '내가 심은 것은 내가 정리한다'가 공유 환경의 기본 의무. 단, 운영에선 101401 같은 운영화 룰은 영구 유지(재발 자동 탐지)하지만 공유 실습 환경이라 삭제한다 — 발판은 어느 경우든 제거 대상. 채점은 계정/cron/룰 잔재 0 + 'check done' 출력."
