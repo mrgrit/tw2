@@ -182,7 +182,7 @@ steps:
       ## ✅ 합격 기준
       alerts.json 에 `w10_canary` 의 syscheck `added`(rule 554) 경보가 보이면 통과. **근거:** 네트워크
       장비가 못 보는 호스트 파일 변조를 FIM이 초 단위로 잡음을 실제 경보로 증명(폴링으로 지연/부하에 견고).
-    hint: '/home/ccc canary → sleep 12 → alerts.json syscheck added → rm'
+    hint: '/home/ccc canary → 조건 폴링(로그 흔적 대기) → alerts.json syscheck added → rm'
     category: detect
     points: 17
     answer: |
@@ -190,7 +190,8 @@ steps:
       echo "=== alerts.json syscheck (canary 실시간 탐지, 최대 ~45초 폴링) ==="
       R=""
       for i in $(seq 1 15); do
-        sleep 3
+        # 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
+        ssh ccc@10.20.32.100 "timeout 10 bash -c 'until sudo grep -q w10_canary /var/ossec/logs/alerts/alerts.json; do :; done'" || true
         R=$(ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep w10_canary | tail -1')
         [ -n "$R" ] && { echo "탐지: $(echo "$R" | grep -oE 'w10_canary[^\"]*' | head -1) (rule 554 File added)"; break; }
       done
@@ -370,7 +371,7 @@ steps:
       ```
       - nc raw HTTP(`GET /?id=...UNION SELECT...`) : SQLi 웹공격(네트워크 소스)을 재현해
         Suricata 탐지를 유발(`%27`=`'`, `%20`=공백 URL 인코딩).
-      - `sleep 8` : 공격이 eve.json→agent→manager→alerts.json 까지 반영되는 지연을 기다림.
+      - 조건 폴링(로그 흔적 대기) : 공격이 eve.json→agent→manager→alerts.json 까지 반영되는 지연을 기다림.
       - `jq -r "(.rule.groups|join(\",\"))" | grep -oE "ids|syscheck" | sort | uniq -c` : 최근 평결의
         rule.groups 에서 ids/syscheck 만 골라 빈도 집계 — 두 계층이 함께 모였는지 한눈에.
 
@@ -383,7 +384,8 @@ steps:
     answer: |
       echo "=== 웹공격 재현(네트워크 소스) ==="
       ssh att@192.168.0.202 "echo -en 'GET /?id=w10%27%20UNION%20SELECT%201--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      sleep 8
+      # 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.100 "timeout 10 bash -c 'until sudo grep -q "ids|syscheck" /var/ossec/logs/alerts/alerts.json; do :; done'" || true
       echo "=== alerts.json 다소스 집계 (ids + syscheck) ==="
       ssh ccc@10.20.32.100 'tail -600 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck" | sort | uniq -c'
     answer_detail: "ids(Suricata/네트워크)와 syscheck(FIM/호스트)가 한 alerts.json·대시보드로 수렴. 분석가는 한 화면에서 네트워크 침투와 호스트 변조를 같은 시간선으로 본다 — 조종석의 핵심."

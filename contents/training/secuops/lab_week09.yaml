@@ -283,19 +283,20 @@ steps:
       tail -300 /var/ossec/logs/alerts/alerts.json | jq -c 'select(.rule.groups|index("ids"))|{r:.rule.id,d:.rule.description,s:.data.src_ip}' | tail -2
       ```
       - nc raw HTTP(User-Agent: sqlmap/1.7 헤더 + UNION SELECT SQLi 페이로드)로 dvwa vhost 를 두드린다.
-      - `sleep 8` : 공격이 Suricata eve → ips agent → manager → alerts.json 에 반영되기까지의 파이프라인 지연 대기.
+      - 조건 폴링(로그 흔적 대기) : 공격이 Suricata eve → ips agent → manager → alerts.json 에 반영되기까지의 파이프라인 지연 대기.
       - `jq select(.rule.groups|index("ids"))` : 평결 중 ids(네트워크) 그룹만 골라 rule.id/설명/출처 IP 추출.
 
       ## ✅ 합격 기준
       alerts.json ids 그룹에 출처 `192.168.0.202` 의 최근 경보(Suricata 디코딩 rule, 예: 86601)가
-      적재된다. sleep 8 후에도 안 보이면 ips agent 수집 또는 analysisd 를 점검한다.
-    hint: '외부 SQLi → sleep 8 → alerts.json ids 그룹 src 192.168.0.202'
+      적재된다. 조건 폴링(로그 흔적 대기) 후에도 안 보이면 ips agent 수집 또는 analysisd 를 점검한다.
+    hint: '외부 SQLi → 조건 폴링(로그 흔적 대기) → alerts.json ids 그룹 src 192.168.0.202'
     category: detect
     points: 15
     answer: |
       echo "=== 웹공격 재현 ==="
       ssh att@192.168.0.202 "echo -en 'GET /?id=wz9%27%20UNION%20SELECT%201,2--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      sleep 8
+      # 고정 sleep 대신 로그에 공격 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.100 "timeout 12 bash -c 'until sudo grep -q 192.168.0.202 /var/ossec/logs/alerts/alerts.json; do :; done'" || true
       echo "=== alerts.json ids 그룹 ingest (출처 보존) ==="
       ssh ccc@10.20.32.100 'tail -300 /var/ossec/logs/alerts/alerts.json | jq -c "select(.rule.groups|index(\"ids\"))|{r:.rule.id,d:.rule.description,s:.data.src_ip}" | tail -2'
     answer_detail: "공격 → Suricata 가 eve.json 기록 → ips agent 가 localfile json 으로 수집 → 1514 → remoted → analysisd 의 decoder→rule → alerts.json ids 그룹. 출력의 src 192.168.0.202 가 곧 출처 보존의 증거(fw SNAT 없음) — W08 의 5계층 상관과 직결된다. detection validation(합성 공격으로 파이프라인 생존 확인)의 기본형. 판정은 src 192.168.0.202 로 한다."
@@ -403,7 +404,7 @@ steps:
       echo "=== 호스트(FIM) 이벤트 보장: canary로 syscheck 유발 ==="
       ssh ccc@10.20.32.80 'echo w09 > /home/ccc/w09_canary.txt; echo canary_created'
       # FIM(syscheck→analysisd→alerts.json)은 지연이 있어 최대 ~45초 폴링
-      for i in $(seq 1 15); do sleep 3; ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -q w09_canary' && break; done
+      timeout 45 bash -c 'until ssh ccc@10.20.32.100 "sudo grep -q 192.168.0.202 /var/ossec/logs/alerts/alerts.json"; do :; done' || true
       ssh ccc@10.20.32.80 'rm -f /home/ccc/w09_canary.txt'
       echo "=== 다소스 수렴 집계: 네트워크(ids)+호스트(syscheck)+인증(pam)+설정(sca) ==="
       ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -r "(.rule.groups|join(\",\"))" 2>/dev/null | grep -oE "ids|syscheck|pam|sca" | sort | uniq -c'

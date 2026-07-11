@@ -116,7 +116,7 @@ steps:
       id socw15bd >/dev/null 2>&1 && userdel -r socw15bd; useradd -m -s /bin/bash socw15bd; echo planted
       # ── el34 호스트에서: 완료 마커 ──
       # 5) SIEM 적재 대기 후 완료 마커
-      sleep 6
+      # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
       echo "apt campaign done"
       ```
       - `sudo nmap -sS`=SYN(half-open) 스캔, `-T4`=빠른 타이밍. `curl -A`=UA 지정. `ssh -o BatchMode=yes`=프롬프트 없이 즉시 실패(시도 흔적만). `useradd`=침투 성공의 호스트 흔적.
@@ -139,9 +139,9 @@ steps:
       # 4) ④ 호스트 발판 — 백도어 계정 socw15bd 생성(T1136, 침투 성공 흔적)
       ssh ccc@10.20.32.80 'sudo id socw15bd >/dev/null 2>&1 && userdel -r socw15bd; useradd -m -s /bin/bash socw15bd; echo planted'
       # 5) SIEM 적재 대기 후 완료 마커
-      sleep 6
+      # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
       echo "apt campaign done"
-    answer_detail: "APT 4 단계 재현 — 정찰(nmap, T1046) → 웹침투(sqlmap UA + SQLi, T1190) → 인증(SSH 무차별 대입, T1110) → 발판(백도어 계정 socw15bd, T1136). 한 출처(192.168.0.202)가 네 소스(네트워크·웹·인증·호스트)에 흔적을 남긴다. 끝에 sleep 6 은 SIEM(Wazuh)이 경보를 적재할 시간을 준 뒤 done 을 출력하기 위함. 채점은 출력에 'done' 이 보이는지로 4 단계 재현 완료를 확인한다. 이 흔적들이 이후 트리아지·교차 분석·격리·제거의 원천이다."
+    answer_detail: "APT 4 단계 재현 — 정찰(nmap, T1046) → 웹침투(sqlmap UA + SQLi, T1190) → 인증(SSH 무차별 대입, T1110) → 발판(백도어 계정 socw15bd, T1136). 한 출처(192.168.0.202)가 네 소스(네트워크·웹·인증·호스트)에 흔적을 남긴다. 끝에 조건 폴링(로그 흔적 대기) 은 SIEM(Wazuh)이 경보를 적재할 시간을 준 뒤 done 을 출력하기 위함. 채점은 출력에 'done' 이 보이는지로 4 단계 재현 완료를 확인한다. 이 흔적들이 이후 트리아지·교차 분석·격리·제거의 원천이다."
     expected_output: |
       scanned
       planted
@@ -344,9 +344,9 @@ steps:
       alert ip 192.168.0.202 any -> any any (msg:\"SOC W15 APT contain\"; sid:9515001; rev:1;)
       EOF"
       # 2) 무중단 reload
-      sudo suricatasc -c reload-rules; sleep 2
+      sudo suricatasc -c reload-rules
       # ── 외부 공격자 VM 192.168.0.202 에서: 출발지 트래픽 유발 ──
-      echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; sleep 4
+      echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; timeout 12 bash -c 'until ssh ccc@10.20.31.2 \"sudo grep -q 9515001 /var/log/suricata/eve.json\"; do :; done' || true
       # ── el34-ips 에서: 트리거 확인 + self-clean ──
       # 3) 격리 룰 트리거 횟수(출처 플래그)
       sudo grep -c 9515001 /var/log/suricata/eve.json
@@ -367,8 +367,8 @@ steps:
       alert ip 192.168.0.202 any -> any any (msg:\"SOC W15 APT contain\"; sid:9515001; rev:1;)
       EOF"'
       # 2) 무중단 reload 후 출발지 트래픽 유발
-      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'; sleep 2
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"; sleep 4
+      ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
+      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"; timeout 12 bash -c 'until ssh ccc@10.20.31.2 \"sudo grep -q 9515001 /var/log/suricata/eve.json\"; do :; done' || true
       # 3) 격리 룰 트리거 횟수(출처 플래그)
       ssh ccc@10.20.31.2 'sudo grep 9515001 /var/log/suricata/eve.json | jq -s length'
       # 4) self-clean — 격리 룰 삭제 + reload(베이스 보존)
