@@ -152,6 +152,18 @@ el34 는 두 공격자 페르소나를 둡니다:
 `command_ran` 이 신뢰 가능한 증거입니다. 외부 공격 시나리오는 `assess_target: opponent` + 타깃 측
 verify(log_contains/wazuh_alert)로 작성하세요(`contents/battle-scenarios/cohort-cross-infra-demo.yaml` 참고).
 
+### 4.2 공격 VM 자동 설정(provision)
+`kind=attacker` 인프라를 **등록하면 자동으로**(또는 인프라 카드의 `설정(provision)` 버튼으로) 공격 VM 에
+SSH 접속해 멱등 설정을 겁니다(`POST /infras/{id}/provision`, `services/attacker_provision.py`):
+- **`/etc/hosts`** 에 `*.el34.lab`(juice/dvwa/admin/siem/… 19개) → **웹진입 IP** 매핑. 실습 콘텐츠가
+  자연 URL(`http://juice.el34.lab/…`)로 공격하므로 이 매핑이 있어야 학생 명령이 동작합니다. 웹진입 IP 는
+  **하드코딩하지 않고** 같은 학생의 `kind=target` 인프라 `web_entry_ip`(폴백 `vm_ip`)에서 유도합니다.
+- **펜테스트 도구**(nmap/hydra/sqlmap/nikto/whatweb/curl) 중 없는 것만 `apt` 로 best-effort 설치.
+
+**전제조건**: 공격 VM 이 등록한 `ssh_user`/비밀번호로 SSH 접속 가능 + 그 계정이 **sudo 가능**(무암호 sudo 면
+`sudo -n`, 아니면 저장된 비번을 `sudo -S` 로 사용). SSH 포트는 `port_map.ssh`(기본 22). 접속·sudo 실패해도
+**등록은 유지**되고 결과에 `ok=false`+사유가 기록됩니다(비차단). 재실행은 멱등(관리블록 마커로 중복 없음).
+
 ---
 
 ## 5. 관리 콘솔 (관리자 메뉴 탭)
