@@ -599,8 +599,9 @@ ssh ccc@10.20.31.2 'echo "alert http any any -> any any (msg:\"el34 sqlmap UA\";
 ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
 
 # 3. 트리거
-ssh att@192.168.0.202 'curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/'
-sleep 3
+ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+# 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
+ssh ccc@10.20.31.2 "timeout 10 bash -c 'until sudo grep -qa "9004001" /var/log/suricata/eve.json; do :; done'" || true
 
 # 4. eve.json alert event 검증
 ssh ccc@10.20.31.2 'grep "9004001" /var/log/suricata/eve.json | tail -1 | jq .alert'
@@ -641,15 +642,15 @@ graph TD
 
 ```bash
 ssh att@192.168.0.202 'for i in 1 2 3 4 5; do
-    curl -s -o /dev/null -A "sqlmap/1.5" http://juice.el34.lab/
+    echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
 done'
-sleep 5
+# (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
 ```
 
 ### 8.3 Blue — 9004001 카운트
 
 ```bash
-ssh ccc@10.20.31.2 'sudo grep -c "9004001" /var/log/suricata/eve.json'
+ssh ccc@10.20.31.2 'sudo grep "9004001" /var/log/suricata/eve.json | jq -s length'
 ```
 
 **예상**: `10` (5 curl × 2 NIC). 5 가 아니면:
@@ -665,7 +666,7 @@ ssh ccc@10.20.31.2 'sudo grep -c "9004001" /var/log/suricata/eve.json'
 # - 그러나 burst (1초 50건) 이면 alert flood → SOC fatigue
 
 # threshold 권장 — 60초 동안 최대 5건만 기록 (alert flood 억제)
-cat <<'EOF' | sudo tee -a /etc/suricata/threshold.config
+sudo tee -a /etc/suricata/threshold.config <<'EOF'
 event_filter gen_id 1, sig_id 9004001, type limit, track by_src, count 5, seconds 60
 EOF
 

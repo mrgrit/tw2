@@ -219,7 +219,7 @@ eve.json 은 한 줄이 곧 한 JSON 이므로, 텍스트 검색(grep)보다 **J
 # el34 호스트에서 — ips 컨테이너의 eve.json 최근 3000줄에서
 #   event_type 이 alert 이고 시그니처에 "scan"(대소문자 무시)이 든 줄만 골라
 #   그 출발지(src_ip)를 세어 본다
-docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json \
+ssh ccc@10.20.31.2 'sudo tail -3000 /var/log/suricata/eve.json \
   | jq -rc "select(.event_type==\"alert\" and (.alert.signature|test(\"scan\";\"i\")))|.src_ip" \
   | sort | uniq -c'
 ```

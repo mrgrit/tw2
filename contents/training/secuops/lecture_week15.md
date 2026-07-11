@@ -492,7 +492,7 @@ nftables 는 Linux 커널의 표준 패킷 필터다(iptables 후속). el34 는 
 `ip six_nat`(DNAT) 두 테이블을 운영한다.
 
 ```bash
-ssh ccc@10.20.30.1 'sudo nft list ruleset 2>/dev/null | grep -c dnat'   # DNAT 규칙 수
+ssh ccc@10.20.30.1 'sudo nft list ruleset | grep dnat | jq -s length'   # DNAT 규칙 수
 ```
 
 무엇을 보나 — 공개 포트가 내부로 DNAT 되는지(L4 정책). **주의: baseline 정책은 수정하지
@@ -541,9 +541,9 @@ osquery 는 OS 를 SQL 테이블로 질의하는 호스트 가시화 도구다. 
 
 ```bash
 # C2 리스너의 주인 프로세스 (포트 → 프로세스 JOIN)
-ssh ccc@10.20.32.80 osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=61515;'
+ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT p.pid,p.name,s.port FROM processes p JOIN listening_ports s USING(pid) WHERE s.port=61515;'
 # 백도어 계정
-ssh ccc@10.20.32.80 osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w15ghost";'
+ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="w15ghost";'
 ```
 
 무엇을 보나 — 비표준 포트 리스너의 주인 프로세스, 백도어 계정 같은 호스트 내부 발판.
@@ -583,7 +583,7 @@ Wazuh manager 는 흩어진 로그를 한 평결로 수렴시키는 SIEM 의 두
 **ips(003)** 와 **web(004)** 둘이다.
 
 ```bash
-ssh ccc@10.20.32.100 /var/ossec/bin/wazuh-control status | grep analysisd            # 평결 엔진(심장) 가동
+ssh ccc@10.20.32.100 sudo /var/ossec/bin/wazuh-control status | grep analysisd            # 평결 엔진(심장) 가동
 ssh ccc@10.20.32.100 'tail -400 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.rule.groups|index(\"ids\"))|.data.src_ip" | sort | uniq -c'   # 출처별 수렴
 ```
 
@@ -765,7 +765,7 @@ osquery, C2 는 sysmon+인텔, 수렴은 SIEM. 그리고 **"무엇이 못 보나
 > 수렴함. el34 가 SNAT 를 안 하므로 출처가 전 계층에 보존된다는 사실.
 >
 > **결과 해석.** 정상: alerts.json 에 출처 192.168.0.202 가 수렴. 비정상: 출처가 fw IP 로
-> 보이면 SNAT 가 끼었거나 다른 사건 — 상관 전제를 재점검. `sleep 8` 후에도 안 보이면 ips
+> 보이면 SNAT 가 끼었거나 다른 사건 — 상관 전제를 재점검. 조건 폴링(로그 흔적 대기) 후에도 안 보이면 ips
 > agent·analysisd 점검.
 >
 > **실전 활용.** 실제 사고 조사에서 출처 IP + 시각으로 다중 소스 로그를 한 캠페인 타임라인으로

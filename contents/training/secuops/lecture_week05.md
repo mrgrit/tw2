@@ -753,14 +753,14 @@ graph TD
 
 | 시나리오 | Red 명령 | Blue 1차 (ModSec) | Blue 2차 (audit log) | Purple Gap | Purple 권장 |
 |---------|---------|------------------|---------------------|-----------|------------|
-| **① XSS** | `curl 'http://juice.el34.lab/search?q=<script>alert(1)</script>'` | 941100 (XSS) + 941110 (script tag) + 941160 (event handler) → score 15 → 403 | audit log 의 messages[] = 3 룰 매치 | paranoia 1 에서 941180 (DOM XSS) 누락 | paranoia 2 + tx.crs_exclusions_xenforo=1 |
-| **② SQLi UNION** | `curl 'http://juice.el34.lab/items?id=1 UNION SELECT 1,2,3'` | 942100 (SQLi detection lib) + 942270 (UNION SELECT) → score 10 → 403 | audit log 의 unique_id 로 추적 | paranoia 1 에서 942180 (basic SQLi keyword) 만 매치 = score 5 | paranoia 2 → 3 으로 UNION + comment + hex 룰 활성 |
-| **③ scanner UA** | `curl -A 'sqlmap/1.6' http://juice.el34.lab/` | 913100 (SCANNER nikto/sqlmap UA) → score 2 (alert only, paranoia 1) | audit log 의 REQUEST_HEADERS 의 User-Agent | paranoia 1 의 anomaly threshold 5 → 미만 → 통과 | scanner UA 의 즉시 차단 = SecRuleUpdateActionById 913100 "deny,status:403" |
+| **① XSS** | `echo -en 'GET /search?q=<script>alert(1)</script> HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null` | 941100 (XSS) + 941110 (script tag) + 941160 (event handler) → score 15 → 403 | audit log 의 messages[] = 3 룰 매치 | paranoia 1 에서 941180 (DOM XSS) 누락 | paranoia 2 + tx.crs_exclusions_xenforo=1 |
+| **② SQLi UNION** | `echo -en 'GET /items?id=1 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null UNION SELECT 1,2,3'` | 942100 (SQLi detection lib) + 942270 (UNION SELECT) → score 10 → 403 | audit log 의 unique_id 로 추적 | paranoia 1 에서 942180 (basic SQLi keyword) 만 매치 = score 5 | paranoia 2 → 3 으로 UNION + comment + hex 룰 활성 |
+| **③ scanner UA** | `echo -en 'GET /` HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.6\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null | 913100 (SCANNER nikto/sqlmap UA) → score 2 (alert only, paranoia 1) | audit log 의 REQUEST_HEADERS 의 User-Agent | paranoia 1 의 anomaly threshold 5 → 미만 → 통과 | scanner UA 의 즉시 차단 = SecRuleUpdateActionById 913100 "deny,status:403" |
 
 ### 시간선 — XSS 공격 의 1 사건 흐름
 
 ```
-T+0    Red attacker 에서 XSS payload (curl '/search?q=<script>alert(1)</script>')
+T+0    Red attacker 에서 XSS payload (nc raw HTTP: /search?q=<script>alert(1)</script>)
        └→ fw(nftables) → ips → web Apache → ModSec 5 phase 처리 시작
 
 T+1ms  ModSec phase 1 — REQUEST_HEADERS 검사
@@ -840,18 +840,19 @@ ssh ccc@10.20.32.80 'sudo dpkg -l | grep -E "modsec|crs"'
 ### 실습 2 — CRS 룰 파일 + paranoia (15분)
 
 ```bash
-ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/ | wc -l'
-ssh ccc@10.20.32.80 'sudo ls /etc/apache2/sites-enabled/ | wc -l'
-ssh ccc@10.20.32.80 'sudo grep -l "tx.paranoia_level" /etc/apache2/sites-enabled/* 2>/dev/null | head'
+ssh ccc@10.20.32.80 'sudo ls /usr/share/modsecurity-crs/rules/ | head'
+ssh ccc@10.20.32.80 'sudo ls /etc/apache2/sites-enabled/'
+ssh ccc@10.20.32.80 'sudo grep -l "tx.paranoia_level" /etc/apache2/sites-enabled/* | head'
 ```
 
 ### 실습 3 — XSS 공격 + audit log 분석 (20분)
 
 ```bash
-ssh att@192.168.0.202 'curl -s -o /dev/null -w "%{http_code}\n" "http://juice.el34.lab/?q=<script>alert(1)</script>"'
+echo "$(ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null")"
 # 403 응답
 
-sleep 2
+# 고정 sleep 대신 로그에 공격 흔적이 나타날 때까지 조건 대기(zero-sleep)
+ssh ccc@10.20.32.80 "timeout 12 bash -c 'until sudo grep -qa 192.168.0.202 /var/log/apache2/modsec_audit.log; do :; done'" || true
 ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq "{ip:.transaction.remote_address, status:.response.status, msg_count:(.audit_data.messages | length)}"'
 
 # 매치된 룰 ID 추출
@@ -861,8 +862,9 @@ ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".au
 ### 실습 4 — SQLi 공격 + audit (20분)
 
 ```bash
-ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code}\n' \"http://juice.el34.lab/?q=1' OR '1'='1\""
-sleep 2
+ssh att@192.168.0.202 "echo -en 'GET /?q=1%27 OR %271%27=%271 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
+# 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
+ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa "\\[id \" /var/log/apache2/modsec_audit.log; do :; done'" || true
 ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"942[0-9]+\"\\]"'
 ```
 
@@ -892,9 +894,10 @@ echo '<LocationMatch "/api/legacy/">
 ```bash
 # Red — 5 공격 burst
 for payload in "?q=<script>alert(1)</script>" "?q=1'OR'1'='1" "?q=../../etc/passwd" "?q=;cat /etc/passwd" "?q=<?php system('id'); ?>"; do
-  ssh att@192.168.0.202 "curl -s -o /dev/null -w '%{http_code} ' 'http://juice.el34.lab/$payload'"
+  ssh att@192.168.0.202 "echo -en \"GET /$payload HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n\" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
 done
-sleep 5
+# 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
+ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa "\\[id \" /var/log/apache2/modsec_audit.log; do :; done'" || true
 
 # Blue — audit log 의 룰 카테고리 분포
 ssh ccc@10.20.32.80 'sudo tail -50 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"[0-9]+\"\\]" | sort | uniq -c | sort -rn | head'

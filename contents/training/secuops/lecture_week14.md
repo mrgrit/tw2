@@ -368,15 +368,15 @@ sysmon 은 호스트의 `/var/log/syslog` 를 본다.
 
 ```bash
 # (가설 T1136) 백도어 계정 — osquery 스냅샷: uid>=1000 + 로그인 가능 shell 로 좁힌다
-ssh ccc@10.20.32.80 osqueryi --json \
+ssh ccc@10.20.32.80 sudo osqueryi --json \
   'SELECT username,uid,shell,directory FROM users WHERE uid>=1000 AND shell LIKE "%/bash";'
 
 # (가설 T1053) cron persistence — osquery 스냅샷: crontab 테이블
-ssh ccc@10.20.32.80 osqueryi --json \
+ssh ccc@10.20.32.80 sudo osqueryi --json \
   'SELECT command,path FROM crontab WHERE path LIKE "%huntme%";'
 
 # (가설 T1098) SSH 키 재진입로 — osquery 스냅샷: authorized_keys
-ssh ccc@10.20.32.80 osqueryi --json \
+ssh ccc@10.20.32.80 sudo osqueryi --json \
   'SELECT key_file,algorithm FROM authorized_keys LIMIT 3;'
 
 # (가설 T1059/T1027) 인코딩 셸 — sysmon 이벤트: 단명이라 스냅샷은 못 잡는다

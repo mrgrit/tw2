@@ -212,13 +212,13 @@ graph TD
 > **주의 — el34 사실.** 본 트랙의 인증 로그 1차 분석은 호스트 `/var/log/auth.log` 를 직접 본다
 > (W01~W02 와 동일). Wazuh manager 의 `analysisd` 와 agent 상태 점검·룰 작성·`wazuh-logtest`
 > 검증은 모두 `el34-siem` 컨테이너 안에서 한다. 명령은 호스트(`ssh ccc@192.168.0.80`,
-> 비밀번호 `1`)에 들어가 `docker exec el34-siem …` 으로 실행한다.
+> 비밀번호 `1`)에 들어가 `ssh ccc@10.20.32.100 …` 으로 실행한다.
 
 ```bash
 # manager 데몬 상태 (탐지 엔진이 살아있나)
-docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted"
+ssh ccc@10.20.32.100 sudo /var/ossec/bin/wazuh-control status | grep -E "analysisd|remoted"
 # 등록된 agent 목록 (로그가 들어오고 있나)
-docker exec el34-siem /var/ossec/bin/agent_control -l
+ssh ccc@10.20.32.100 sudo /var/ossec/bin/agent_control -l
 ```
 
 `analysisd` 가 멈춰 있으면 디코더·룰이 한 줄도 돌지 않는다 — 그래서 룰 작업의 **첫 점검**은
@@ -332,7 +332,7 @@ graph TD
 실습에서는 출력 중 디코더 필드와 룰 번호만 추려 본다.
 
 ```bash
-docker exec el34-siem sh -c 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4ssh.log 2>&1 \
+ssh ccc@10.20.32.100 'sudo /var/ossec/bin/wazuh-logtest < /tmp/socw4ssh.log 2>&1 \
   | grep -aE "decoder|id:|srcip|Failed"'
 ```
 
@@ -526,7 +526,7 @@ graph TD
 ## 7. 실습 안내 (총 8 미션)
 
 각 실습은 **4축 설명**(왜 하는가 / 무엇을 알 수 있는가 / 결과 해석 / 실전 활용)을 담는다.
-모든 명령은 호스트(`ssh ccc@192.168.0.80`)에 들어가 `docker exec el34-siem …` 으로 실행하고,
+모든 명령은 호스트(`ssh ccc@192.168.0.80`)에 들어가 `ssh ccc@10.20.32.100 …` 으로 실행하고,
 룰은 **`wazuh-logtest` 로만 검증한 뒤 반드시 삭제**한다(공유 SIEM 베이스 보존).
 
 ### 미션 1 — 점검: Manager / Agent

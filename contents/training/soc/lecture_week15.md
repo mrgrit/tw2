@@ -446,7 +446,7 @@ Suricata 는 네트워크 패킷을 시그니처로 검사하는 IDS 이고, 그
 하나의 JSON 이벤트로 남는다. 정찰(스캔)과 sqlmap UA 의 흔적이 여기에 보인다.
 
 ```bash
-docker exec el34-ips sh -c 'sudo tail -2000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.alert.signature" | sort | uniq -c | tail'
+ssh ccc@10.20.31.2 'sudo tail -2000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.alert.signature" | sort | uniq -c | tail'
 ```
 
 무엇을 보나 — 출발지 `192.168.0.202` 의 alert 시그니처 분포. `event_type=="alert"` 로 거른 뒤
@@ -459,7 +459,7 @@ ModSecurity + OWASP CRS 는 HTTP L7 페이로드를 검사하는 WAF 이고, aud
 `/var/log/apache2/modsec_audit.log` 에 남는다.
 
 ```bash
-docker exec el34-web sh -c 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u'
+ssh ccc@10.20.32.80 'sudo tail -60 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort -u'
 ```
 
 무엇을 보나 — 매치된 CRS 룰 ID 분포. SQLi 는 **단일 룰이 아니라** anomaly score 누적으로
@@ -494,7 +494,7 @@ osquery 는 OS 를 SQL 테이블로 질의하는 호스트 가시화 도구다. 
 
 ```bash
 # 백도어 계정 헌팅
-docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="socw15bd";'
+ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="socw15bd";'
 ```
 
 무엇을 보나 — 정상 계정 사이에 숨은 백도어 계정 `socw15bd`. 이것이 보이면 침투가 시도에
@@ -508,12 +508,12 @@ docker exec el34-web osqueryi --json 'SELECT username,uid,shell FROM users WHERE
 
 ```bash
 # 출발지 격리 룰(sid 9515001) 추가 → reload → 트리거 → eve 확인 → sed 삭제 (lab 미션 6)
-docker exec el34-ips sh -c 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
+ssh ccc@10.20.31.2 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
 alert ip 192.168.0.202 any -> any any (msg:\"SOC W15 APT contain\"; sid:9515001; rev:1;)
 EOF"'
-docker exec el34-ips sh -c 'sudo suricatasc -c reload-rules'   # 무중단 reload
+ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'   # 무중단 reload
 # 트리거 후: eve.json 에서 sid 확인, 끝나면 sed 로 삭제
-docker exec el34-ips sh -c 'sudo sed -i "/sid:9515001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules'
+ssh ccc@10.20.31.2 'sudo sed -i "/sid:9515001/d" /etc/suricata/rules/local.rules; sudo suricatasc -c reload-rules'
 ```
 
 무엇을 보나 — 내가 만든 격리 룰이 출처 `192.168.0.202` 의 트래픽을 플래그하는지. **base 룰은
@@ -529,8 +529,8 @@ docker exec el34-ips sh -c 'sudo sed -i "/sid:9515001/d" /etc/suricata/rules/loc
 삭제한다.
 
 ```bash
-docker exec el34-web osqueryi --json 'SELECT username,uid FROM users WHERE username="socw15bd";'  # 확인
-docker exec el34-web sh -c 'userdel -r socw15bd 2>/dev/null; echo eradicated'                      # 제거
+ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT username,uid FROM users WHERE username="socw15bd";'  # 확인
+ssh ccc@10.20.32.80 'sudo id socw15bd >/dev/null 2>&1 && userdel -r socw15bd; echo eradicated'                      # 제거
 ```
 
 무엇을 보나 — 백도어 계정이 확인되고, `userdel -r`(홈 디렉터리까지 제거)로 완전히 뽑혔는지.
@@ -561,8 +561,8 @@ Wazuh manager 는 흩어진 로그를 한 평결로 수렴시키는 SIEM 의 두
 **ips(003)** 와 **web(004)** 둘이다.
 
 ```bash
-docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd   # 평결 엔진(심장) 가동
-docker exec el34-siem sh -c 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|.rule.groups" | sort | uniq -c | head'   # 출처별 수렴
+ssh ccc@10.20.32.100 sudo /var/ossec/bin/wazuh-control status | grep analysisd   # 평결 엔진(심장) 가동
+ssh ccc@10.20.32.100 'tail -500 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|.rule.groups" | sort | uniq -c | head'   # 출처별 수렴
 ```
 
 무엇을 보나 — ips·web agent 의 경보가 한 manager 로 수렴하고, 그 출처가 모두 같은 APT

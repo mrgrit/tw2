@@ -240,7 +240,7 @@ el34-web 에서 osquery 를 호출하는 표준 형태는 다음과 같다. `--j
 사람이 읽기에도, 다른 도구로 넘기기에도 좋다.
 
 ```bash
-ssh ccc@10.20.32.80 osqueryi --json 'SELECT count(*) c FROM processes;'
+ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT count(*) c FROM processes;'
 ```
 
 `osqueryi` 는 osquery 의 대화형/단발 SQL 실행기다. 위처럼 따옴표 안에 SQL 한 줄을 주면 그 결과만
@@ -331,7 +331,7 @@ graph TD
 분석가가 가장 먼저 확인하는 것은 "그 호스트의 데이터가 매니저로 들어오고 있는가"다. el34 호스트에서:
 
 ```bash
-ssh ccc@10.20.32.100 /var/ossec/bin/agent_control -l | grep -E "Name: web,"
+ssh ccc@10.20.32.100 sudo /var/ossec/bin/agent_control -l | grep -E "Name: web,"
 ```
 
 출력에 `Name: web` 이 `Active` 로 보이면 el34-web 의 호스트 행위(FIM 포함)가 정상적으로 SIEM 에

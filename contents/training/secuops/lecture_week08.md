@@ -350,8 +350,8 @@ nftables 는 Linux 커널의 표준 패킷 필터다(iptables 후속, W02). el34
 `ip six_nat`(DNAT) 두 테이블을 운영한다.
 
 ```bash
-ssh ccc@10.20.30.1 nft list ruleset | head -40        # 정책 + NAT 테이블 전체
-ssh ccc@10.20.30.1 nft list table ip six_nat          # DNAT 규칙만
+ssh ccc@10.20.30.1 sudo nft list ruleset | head -40        # 정책 + NAT 테이블 전체
+ssh ccc@10.20.30.1 sudo nft list table ip six_nat          # DNAT 규칙만
 ```
 
 무엇을 보나 — 공개 포트가 어디로 DNAT 되는지(공개 → web `10.20.32.80`). **주의: baseline 정책을
@@ -398,8 +398,8 @@ osquery 는 OS 를 SQL 테이블로 질의하는 호스트 가시화 도구다(W
 내부 발판을 SQL 로 사냥한다.
 
 ```bash
-ssh ccc@10.20.32.80 osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=38088;'
-ssh ccc@10.20.32.80 osqueryi --json 'SELECT username,uid FROM users WHERE username="w08user";'
+ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT pid,port FROM listening_ports WHERE port=38088;'
+ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT username,uid FROM users WHERE username="w08user";'
 ```
 
 무엇을 보나 — 비표준 포트 리스너, 백도어 계정, cron persistence 같은 호스트 내부 발판.
@@ -410,7 +410,7 @@ Wazuh manager 는 흩어진 로그를 한 곳으로 수집하는 SIEM 의 두뇌
 agent 는 **ips(003)** 와 **web(004)** 둘이다.
 
 ```bash
-ssh ccc@10.20.32.100 /var/ossec/bin/agent_control -l        # 활성 agent: ips(003)+web(004)
+ssh ccc@10.20.32.100 sudo /var/ossec/bin/agent_control -l        # 활성 agent: ips(003)+web(004)
 ssh ccc@10.20.32.100 'tail -n 200 /var/ossec/logs/alerts/alerts.json | jq -c .rule.description'
 ```
 

@@ -214,7 +214,7 @@ fatigue(경보 피로)** 다. 너무 많은 경보에 시달리다 보면 "또 S
 # 실습 3 — 인텔 없는 트리아지(느린 경로)의 단계 정리
 echo "=== 인텔 없는 트리아지 (느린 경로) ==="
 echo "경보 수신 → 출발지 IP 조사(누구?) → 도구/페이로드 분석(위험?) → 위험도 판정 → 우선순위"
-echo "→ 경보마다 조사 필요. 처리량 제한, alert fatigue 위험"
+# → 경보마다 조사 필요. 처리량 제한, alert fatigue 위험
 ```
 
 ### 1.4 한계 — 모든 위협을 인텔이 아는 것은 아니다
@@ -317,7 +317,7 @@ enrichment 의 품질은 **인텔의 품질**에 달려 있다 — 인텔이 낡
 # 실습 5 — 인텔 주도 트리아지(빠른 경로)
 echo "=== 인텔 주도 트리아지 (빠른 경로) ==="
 echo "경보 + 인텔(sqlmap=known-bad) → 즉시 P1 격상 → 조사 생략 가능 → 대응 직행"
-echo "→ '이미 아는 답'을 인텔이 제공 → 조사 시간 절약"
+# → '이미 아는 답'을 인텔이 제공 → 조사 시간 절약
 ```
 
 ```mermaid
@@ -533,7 +533,7 @@ docker ps --format '{{.Names}}' | grep -iE 'opencti|misp' | head
 
 `el34-opencti-1` 이 보이면 STIX 인텔 저장소가, `el34-misp-core-1` 이 보이면 IOC 공유
 플랫폼이 가동 중이다. 적용 지점 Wazuh 의 가용성은 W09·W12 와 동일하게
-`docker exec el34-siem /var/ossec/bin/wazuh-control status | grep analysisd` 로 따로
+`ssh ccc@10.20.32.100 sudo /var/ossec/bin/wazuh-control status | grep analysisd` 로 따로
 확인한다. 인텔 소스(OpenCTI/MISP)와 적용 지점(Wazuh)을 **따로 보는 습관**이 인텔 운영
 점검의 핵심이다(W12 §3.2 의 분리 원칙).
 
@@ -586,7 +586,7 @@ graph TD
 echo "=== 인텔 가속 효과 ==="
 echo "인텔 없음: 경보당 조사 수 분, 처리량 제한"
 echo "인텔 있음: known-bad 즉시 격상 수 초 → 처리량 수배, 모르는 위협에 집중"
-echo "→ SOC 처리량은 인텔로 결정 — 아는 건 빨리, 모르는 건 깊게"
+# → SOC 처리량은 인텔로 결정 — 아는 건 빨리, 모르는 건 깊게
 ```
 
 ### 7.4 한계 — 처리량만 좇으면 오탐 격상의 함정에 빠진다

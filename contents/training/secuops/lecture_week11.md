@@ -340,7 +340,7 @@ graph TD
 ssh ccc@10.20.32.80 python3 -c "import base64; base64.b64decode('aGk=')  # w11 reverse-shell sim"
 
 # osquery 스냅샷 — 이미 죽은 프로세스 → 빈 결과
-ssh ccc@10.20.32.80 osqueryi --json \
+ssh ccc@10.20.32.80 sudo osqueryi --json \
   'SELECT pid,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
 #   → []   (스냅샷의 사각)
 

@@ -906,7 +906,7 @@ attacker VM 에서 학습 환경의 web 에 응답 body 안에 주민번호 형�
 ssh att@192.168.0.202
 
 # attacker VM 내부 (학습 환경 한정)
-curl -s http://juice.el34.lab/demo/leak.html | head -10
+echo -en 'GET /demo/leak.html HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null | head -10
 ```
 
 응답 body 에 `900101-1234567` 같은 형식 문자열이 보이면 leak 시뮬이 성공이다.

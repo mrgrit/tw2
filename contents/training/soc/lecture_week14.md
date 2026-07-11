@@ -304,8 +304,8 @@ graph TD
 
 > **점검 명령(el34 호스트에서).** 자동 대응의 토대가 살아 있는지는 두 데몬과 설정 수로 확인한다.
 > ```bash
-> docker exec el34-siem /var/ossec/bin/wazuh-control status | grep -E "analysisd|execd"
-> docker exec el34-siem sh -c 'grep -c active-response /var/ossec/etc/ossec.conf'
+> ssh ccc@10.20.32.100 sudo /var/ossec/bin/wazuh-control status | grep -E "analysisd|execd"
+> ssh ccc@10.20.32.100 'grep active-response /var/ossec/etc/ossec.conf'
 > ```
 > `analysisd`(평결)와 `execd`(실행)가 모두 running 이고 `active-response` 설정이 존재해야 자동 대응의
 > 토대가 갖춰진 것이다. 이 점검이 실습 lab 1 의 내용이다.
@@ -505,7 +505,7 @@ graph TD
 AI 자율 트리아지 → 무인 효과 → 종합 보고 순서로 흐른다.
 
 > **실습 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 실행한다.
-> 자동 대응 관련 작업은 `docker exec el34-siem`(Wazuh manager)에서 하고, 위협 재현은
+> 자동 대응 관련 작업은 `ssh ccc@10.20.32.100`(Wazuh manager)에서 하고, 위협 재현은
 > `ssh att@192.168.0.202` 다. **Active Response 는 점검·설계·logtest 까지만** 하고 실제
 > firewall-drop 은 활성화·트리거하지 않는다(공유 인프라 — §3 경고). 룰을 추가한 미션은 반드시
 > 백업본으로 원상 복구한다. 합격 임계값은 0.7 이다.

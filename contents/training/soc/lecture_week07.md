@@ -359,7 +359,7 @@ web-sqli SIGMA 를 변환하면 다음과 같은 Wazuh 룰이 나온다.
 ```bash
 # (개념 — 운영 적용 방법. el34 에는 이미 적용돼 있으니 실습에서 직접 하지 않는다)
 sigma2wazuh.py rules/ > /var/ossec/etc/rules/sigma_rules.xml   # 변환 결과를 룰 파일로
-docker exec el34-siem /var/ossec/bin/wazuh-control restart      # manager 재시작으로 반영
+ssh ccc@10.20.32.100 sudo /var/ossec/bin/wazuh-control restart      # manager 재시작으로 반영
 ```
 
 > **공유 인프라 수칙.** el34-siem 은 모든 학생이 함께 쓰는 단일 manager 다. 그래서 실습에서는
@@ -497,7 +497,7 @@ SIGMA 는 본질적으로 **Purple Team 의 도구** 다. 미탐지를 발견하
 ## 7. 실습 안내 (총 8 미션)
 
 각 실습은 **4축 설명** 을 포함한다. 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`)에서
-실행하며, 컨테이너 작업은 `docker exec el34-<comp>` 로 한다. 변환 컨버터는 결과를 stdout 으로만
+실행하며, 장비 작업은 `ssh ccc@<장비IP>`(web 32.80/ips 31.2/siem 32.100)로 한다. 변환 컨버터는 결과를 stdout 으로만
 출력하므로 라이브 `sigma_rules.xml` 은 바뀌지 않는다.
 
 ### 실습 1 — SIGMA 설정 점검 (survey)
@@ -598,7 +598,7 @@ SIGMA 는 본질적으로 **Purple Team 의 도구** 다. 미탐지를 발견하
 >
 > **결과 해석**
 > 정상: alerts.json 의 sigma 그룹에 최근 경보가 적재된다(또는 sigma 룰 적용이 확인된다).
-> `sleep 8` 후에도 안 보이면 수집·analysisd 파이프라인을 점검.
+> 조건 폴링(로그 흔적 대기) 후에도 안 보이면 수집·analysisd 파이프라인을 점검.
 >
 > **실전 활용**
 > "탐지 룰이 실전에서 작동하나" 를 합성 공격으로 확인하는 detection validation 의 기본형.

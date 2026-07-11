@@ -184,7 +184,7 @@ graph TD
 순서를 지키지 않고 처음부터 경보 하나하나를 깊게 파면, 폭주 앞에서 시간이 바닥난다.
 
 > **el34 환경 주의.** 본 주차의 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)
-> 에서 `docker exec el34-<컨테이너>` 로 실행한다. 분석 대상은 `el34-siem` 컨테이너의
+> 에서 각 장비 `ssh ccc@<장비IP>`(web 32.80/ips 31.2/siem 32.100)로 실행한다. 분석 대상은 `el34-siem` 컨테이너의
 > `/var/ossec/logs/alerts/alerts.json` 이다. el34 는 **공유** SIEM 이므로, 억제 룰은 라이브로
 > 적용(`wazuh-control restart`)하지 않고 **`wazuh-logtest` 로 발화만 검증한 뒤 원복** 한다(§6).
 
@@ -203,7 +203,7 @@ graph TD
 `el34-siem` 컨테이너에는 `jq`(JSON 명령행 파서)가 있어 바로 쓸 수 있다.
 
 ```bash
-docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json \
+ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json \
   | jq -rc "\"level=\"+(.rule.level|tostring)" | sort | uniq -c | sort -rn'
 ```
 
@@ -246,7 +246,7 @@ docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json \
 **el34 에서 어떻게.**
 
 ```bash
-docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json \
+ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json \
   | jq -rc .rule.groups | sort | uniq -c | sort -rn | head'
 ```
 
@@ -288,11 +288,11 @@ docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json \
 
 ```bash
 # (1) top 룰 ID — 무엇이 폭주의 대부분인가
-docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json \
+ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json \
   | jq -rc "\"id=\"+(.rule.id|tostring)" | sort | uniq -c | sort -rn | head'
 
 # (2) top 출발지 — 누가 폭주를 일으키나
-docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json \
+ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json \
   | jq -rc ".data.src_ip // empty" | sort | uniq -c | sort -rn | head -5'
 ```
 

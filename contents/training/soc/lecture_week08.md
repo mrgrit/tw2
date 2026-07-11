@@ -303,7 +303,7 @@ ModSec 의 `remote_address`, `auth.log` 의 `from <IP>` 가 모두 같은 IP 를
 
 시험에서 각 소스를 읽는 핵심 명령과 "무엇을 보는가"를 한 번에 정리한다. 모든 명령은 el34
 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 실행한다. 네트워크·웹·SIEM 은
-`docker exec el34-<comp>` 로 컨테이너 안에서 보고, 인증 로그는 호스트의 `/var/log/auth.log`
+`ssh ccc@<장비IP>`(web 10.20.32.80/ips 31.2/siem 32.100)로 각 장비에서 보고, 인증 로그는 호스트의 `/var/log/auth.log`
 를 직접 본다.
 
 ### 4.1 네트워크 — Suricata eve.json (W03 복습)
@@ -312,7 +312,7 @@ Suricata 는 네트워크 패킷을 시그니처로 검사하는 IDS 이고, 그
 하나의 JSON 이벤트로 남는다(W03 에서 학습). 정찰(스캔)과 sqlmap UA 의 흔적이 여기에 보인다.
 
 ```bash
-docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.alert.signature" | sort | uniq -c | tail -5'
+ssh ccc@10.20.31.2 'sudo tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\")|.alert.signature" | sort | uniq -c | tail -5'
 ```
 
 무엇을 보나 — 출발지 `192.168.0.202` 의 alert 시그니처 분포. 스캔 탐지나 스캐너 UA 시그니처가
@@ -330,7 +330,7 @@ ModSecurity(+OWASP CRS)는 HTTP L7 페이로드를 검사하는 WAF 이고, audi
 vhost 별 access 로그(`dvwa_access.log` 등)에 흔적이 남는다(W03 에서 학습).
 
 ```bash
-docker exec el34-web sh -c 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
+ssh ccc@10.20.32.80 'sudo tail -80 /var/log/apache2/modsec_audit.log | grep -oE "9[0-9]{5}" | sort | uniq -c'
 ```
 
 무엇을 보나 — 매치된 CRS 룰 ID 분포. **942**(SQLi 탐지)가 점수를 올리고 **949110**(Inbound
@@ -366,7 +366,7 @@ Wazuh manager 는 흩어진 소스를 한 곳으로 모으는 SIEM 의 두뇌다
 흔적이 `alerts.json` 으로 수렴했는지를 여기서 본다.
 
 ```bash
-docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|[.timestamp,.rule.description]|@tsv" | tail -8'
+ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json | jq -rc "select(.data.src_ip==\"192.168.0.202\")|[.timestamp,.rule.description]|@tsv" | tail -8'
 ```
 
 무엇을 보나 — 같은 출발지 `192.168.0.202` 의 경보가 **시간순으로** 한 manager 에 모여 있는지.
