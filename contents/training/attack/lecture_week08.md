@@ -391,7 +391,7 @@ el34 의 4-tier 세그먼트는 `ext 10.20.30` / `pipe 10.20.31` / `dmz 10.20.32
 ```bash
 # 셸 캡처(플래그) — 리스너 포트 48008 을 띄우고 osquery 로 확인
 ssh ccc@10.20.32.80 'nohup python3 -m http.server 48008 >/dev/null 2>&1 & echo shell_captured'
-ssh ccc@10.20.32.80 ss -tlnp 2>/dev/null | grep ':48008'
+ssh ccc@10.20.32.80 ss -tlnp | grep ':48008'
 # 확인 즉시 self-clean (공유 인프라 보존)
 ssh ccc@10.20.32.80 'pkill -f "[h]ttp.server 48008"; true'
 ```
@@ -421,13 +421,13 @@ nmap -p 80,443,8001-8007 192.168.0.161 -T4 --max-retries 1 2>/dev/null | grep -E
 무엇을 보나 — 어떤 포트가 `open` 인지. 열린 포트·웹 vhost 가 다음 단계의 익스플로잇 후보다. 빠른 스캔은
 IDS 에 잡히므로, 이 정찰 자체가 방어 흔적을 남긴다(공격자의 가시성 인식).
 
-### 4.2 웹 익스플로잇 — 외부 공격자 VM 192.168.0.202 / sqlmap UA + curl
+### 4.2 웹 익스플로잇 — 외부 공격자 VM 192.168.0.202 / sqlmap UA(진짜 sqlmap) + nc
 
 SQLi 는 입력에 SQL 문법을 주입하는 공격이다(W03–W04). 스캐너 UA(`-A sqlmap/1.7`)와 함께 SQLi
 페이로드를 보내면, 같은 요청이 정찰 신호(UA)와 침투 신호(SQLi)를 동시에 담는다.
 
 ```bash
-curl -s -o /dev/null -w 'exploit=%{http_code}\n' -A sqlmap/1.7 \"http://dvwa.el34.lab/?id=ct8%27%20UNION%20SELECT%201--%20-\"
+echo "exploit=$(echo -en 'GET /?id=ct8%27%20UNION%20SELECT%201--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
 ```
 
 무엇을 보나 — 응답 코드. dvwa(차단 모드)에서는 `403`(WAF 차단)이 정상이다. 403 은 "여기는 차단형"이라는
@@ -444,7 +444,7 @@ curl -s -o /dev/null -w 'exploit=%{http_code}\n' -A sqlmap/1.7 \"http://dvwa.el3
 
 ```bash
 ssh ccc@10.20.32.80 'nohup python3 -m http.server 48008 >/dev/null 2>&1 & echo shell_captured'
-ssh ccc@10.20.32.80 ss -tlnp 2>/dev/null | grep ':48008'
+ssh ccc@10.20.32.80 ss -tlnp | grep ':48008'
 ssh ccc@10.20.32.80 'pkill -f "[h]ttp.server 48008"; true'
 ```
 

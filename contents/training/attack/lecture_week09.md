@@ -334,8 +334,9 @@ trade-off 위에 있다.
 # 1~200 포트에 대량 SYN 스캔 → 잠시 후 Suricata eve.json 에서 같은 출처의 scan 경보 집계
 python3 -c "from scapy.all import *; \
   sr(IP(dst='192.168.0.161')/TCP(dport=(1,200),flags='S'),timeout=6,verbose=0); print('mass scan sent')"
-sleep 5
-ssh ccc@10.20.31.2 'tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
+# 고정 sleep 대신 로그에 공격 흔적이 나타날 때까지 조건 대기(zero-sleep)
+ssh ccc@10.20.31.2 "timeout 12 bash -c 'until sudo grep -qa 192.168.0.202 /var/log/suricata/eve.json; do :; done'" || true
+ssh ccc@10.20.31.2 'sudo tail -3000 /var/log/suricata/eve.json | jq -rc "select(.event_type==\"alert\" and .src_ip==\"192.168.0.202\" and (.alert.signature|test(\"scan\";\"i\")))|.alert.signature" | sort | uniq -c | tail -2'
 ```
 
 명령을 해석하면 이렇다. `dport=(1,200)` 은 포트 1번부터 200번까지를 **범위**로 지정하는
@@ -398,10 +399,11 @@ ssh ccc@10.20.31.2 'sudo bash -c "cat >> /etc/suricata/rules/local.rules <<EOF
 alert tcp any any -> any any (msg:\"W9 NULL scan detected\"; flags:0; sid:9409001; rev:1;)
 EOF"'
 # ② 무중단 reload (데몬을 멈추지 않고 룰만 다시 읽음)
-ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'; sleep 2
+ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
 # ③ 트리거 — NULL 패킷 전송
 sudo python3 -c "from scapy.all import *; sr(IP(dst='192.168.0.161')/TCP(dport=80,flags=0),timeout=2,verbose=0); print('null sent')"
-sleep 4
+# 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
+ssh ccc@10.20.31.2 "timeout 10 bash -c 'until sudo grep -qa "9409001" /var/log/suricata/eve.json; do :; done'" || true
 # ④ eve.json 에서 내 룰(9409001)이 잡혔는지 확인
 ssh ccc@10.20.31.2 'sudo grep "9409001" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature}"'
 # ⑤ self-clean — 내 sid 만 삭제 후 reload (베이스 룰 보존)

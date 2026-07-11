@@ -278,7 +278,7 @@ graph TD
 
 ```bash
 # sudo 권한 + 내 그룹(sudo 그룹 멤버십도 단서) 점검
-ssh ccc@10.20.32.80 'id; sudo -ln 2>/dev/null | head -5 || echo "sudo 비번 필요"'
+ssh ccc@10.20.32.80 'id; sudo -ln | head -5 || echo "sudo 비번 필요"'
 ```
 
 > **용어 — `sudo -ln` / NOPASSWD / sudo 그룹.** `sudo -l` 은 "내가 sudo 로 무엇을 할 수 있나"를
@@ -332,7 +332,7 @@ ssh ccc@10.20.32.80 'ls -la /etc/cron.d/ /etc/crontab 2>/dev/null; find / -writa
 
 ```bash
 # 민감 파일의 권한 직접 확인 (쓰기 가능하면 위험)
-ssh ccc@10.20.32.80 'ls -la /etc/passwd /etc/shadow 2>/dev/null | head'
+ssh ccc@10.20.32.80 'ls -la /etc/passwd /etc/shadow | head'
 ```
 
 **결과 해석.** `ls -la` 출력의 권한 필드를 읽는다. 정상은 `/etc/passwd` 가 `-rw-r--r--`

@@ -17,7 +17,7 @@
 
 1. SQLi 의 4 유형(UNION-based / Boolean-blind / Time-based blind / Error-based)을 각각
    언제·왜 쓰는지 설명하고, 최소 한 가지 payload 를 직접 만들어 보낸다.
-2. 외부 공격자 VM 192.168.0.202 컨테이너에서 `curl` 로 수동 UNION SQLi 를 보내고, 차단형 vhost(dvwa)에서
+2. 외부 공격자 VM 192.168.0.202 컨테이너에서 `nc` raw HTTP 로 수동 UNION SQLi 를 보내고, 차단형 vhost(dvwa)에서
    `403` 이 떨어지는 것을 확인한다.
 3. WAF 우회(tamper) 기법(대소문자·인코딩·주석분할)을 직접 시도하고, ModSec CRS 의
    **정규화(normalization)** 가 대소문자·인코딩은 차단(403)하지만 주석분할(`UN/**/ION`)은

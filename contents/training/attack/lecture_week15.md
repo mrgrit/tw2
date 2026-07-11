@@ -521,15 +521,15 @@ printf "admin\nlogin\nftp\n" > /tmp/pt15.txt; ffuf -u http://juice.el34.lab/FUZZ
 무엇을 보나 — 어떤 포트가 `open` 이고 어떤 경로가 응답하는가. 열린 포트·경로가 다음 단계의
 익스플로잇 후보다. 임시 단어 목록(`/tmp/pt15.txt`)은 쓰고 바로 지운다.
 
-### 5.2 ④ 취약점 분석 — 외부 공격자 VM 192.168.0.202 / curl SQLi + 강제 브라우징 — W04·W06
+### 5.2 ④ 취약점 분석 — 외부 공격자 VM 192.168.0.202 / nc SQLi + 강제 브라우징 — W04·W06
 
 SQLi 는 입력에 SQL 문법을 주입(W04), 강제 브라우징은 경로에 직접 접근(W06)하는 기법이다.
 
 ```bash
 # SQLi (dvwa=차단 모드 → 403 이 정상)
-curl -s -o /dev/null -w 'sqli=%{http_code} ' -A sqlmap/1.7 \"http://dvwa.el34.lab/?id=pt15%27%20UNION%20SELECT%201--\"
+echo -n "sqli=$(echo -en 'GET /?id=pt15%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "
 # 강제 브라우징 (juice /ftp → 200 이 정상)
-curl -s -o /dev/null -w 'ftp=%{http_code}\n' http://juice.el34.lab/ftp
+echo "ftp=$(echo -en 'GET /ftp HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
 ```
 
 무엇을 보나 — `sqli=403`(dvwa 차단 모드라 WAF 가 942→949110 으로 차단=탐지), `ftp=200`(juice
@@ -542,8 +542,9 @@ SQL 로 질의하는 도구다(W06).
 
 ```bash
 ssh ccc@10.20.32.80 'nohup python3 -m http.server 51515 >/dev/null 2>&1 & echo shell'
-sleep 1
-ssh ccc@10.20.32.80 "ss -tlnp 2>/dev/null | grep ':51515'"
+# 고정 sleep 대신 리스너/프로세스가 뜰 때까지 조건 대기(zero-sleep)
+timeout 10 bash -c 'until pgrep -f "http.server 51515" >/dev/null; do :; done' || true
+ssh ccc@10.20.32.80 "ss -tlnp | grep ':51515'"
 ssh ccc@10.20.32.80 'pkill -f "[h]ttp.server 51515"; true'
 ```
 
@@ -567,7 +568,7 @@ ssh ccc@10.20.32.80 'find / -perm -4000 -type f 2>/dev/null | head -5; id'
 백도어 계정(persistence)과 데이터 staging(유출 준비)을 재현하고, osquery 로 계정을 확인한다.
 
 ```bash
-ssh ccc@10.20.32.80 'sudo userdel -r pt15ghost 2>/dev/null; sudo useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz /etc/passwd 2>/dev/null; echo "persist+exfil"'
+ssh ccc@10.20.32.80 'sudo id pt15ghost >/dev/null 2>&1 && userdel -r pt15ghost; sudo useradd -m -s /bin/bash pt15ghost; tar czf /tmp/pt15_exfil.tar.gz /etc/passwd; echo "persist+exfil"'
 ssh ccc@10.20.32.80 'sudo osqueryi --json "SELECT username FROM users WHERE username=\"pt15ghost\";"'
 ```
 
