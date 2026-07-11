@@ -32,7 +32,7 @@ CATS = [
  # ★★ curl 사용금지 — 꼭 필요한 경우(줄에 '# curl-ok') 아니면 진짜 도구/브라우저로. 노트 병기로는 해결 안 됨.
  ('M-curl 사용금지(진짜 도구/브라우저로)','★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and re.search(r'https?://|\.el34\.lab|192\.168\.0\.(161|202)', ln) and not re.search(r"UNION\s+SELECT|UNION%20SELECT|<script|%3Cscript|onerror|%27%20OR|\.\./\.\./|%2e%2e%2f|/etc/passwd|<\?php|%3C%3Fphp|;cat\s|SLEEP\(|information_schema|-A\s+[\"']?(sqlmap|nikto|nmap)", ln, re.I)),
  # output 파싱을 python-c 로 하는 기계식만 플래그. 공격 페이로드(nohup exec b64decode = 헌팅 대상 위협)·scapy 제외.
- ('M-python -c (scapy·정당사유 외)','★★', lambda ln: re.search(r'python3? -c ', ln) and 'scapy' not in ln and not re.search(r'nohup|exec\(|b64decode', ln)),
+ ('M-python -c (scapy·정당사유 외)','★★', lambda ln: re.search(r'python3? -c ', ln) and 'scapy' not in ln and not re.search(r'nohup|exec\(|b64decode|c2_beacon|beacon|time\.sleep', ln)),
  ('M-cat<<EOF 보고서 텍스트 출력','★★', lambda ln: re.search(r"cat\s+<<'?EOF'?", ln)),
  ('M-echo 캔드 해석/결론(분석 박스체크)','★★★', lambda ln: re.search(r'echo "(→|해석|결론|정리)', ln) and '$' not in ln),
  ('M-2>/dev/null 에러 숨김','★', lambda ln: '2>/dev/null' in ln and re.search(r'\bssh ccc@', ln) and not re.search(r'\b(nmap|ffuf|gobuster|sqlmap|nikto|osqueryi|conntrack|find|jq)\b', ln)),
