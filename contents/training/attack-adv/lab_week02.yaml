@@ -163,35 +163,33 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      echo -en "HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -iE "server|x-powered|set-cookie" | head
-      whatweb -a 1 http://10.20.30.1/ --header "Host: dvwa.el34.lab" | head -c 200; echo
-      echo -en "HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -qi "server" && echo fingerprint_done
+      W=$(whatweb -a1 --colour=never http://dvwa.el34.lab/ 2>/dev/null)
+      echo "$W" | grep -oE 'HTTPServer\[[^]]*\]\[[^]]*\]|Set-Cookie\[[^]]*\]|Apache\[[0-9.]+\]|\[[0-9]{3} [A-Za-z ]+\]' | head
+      echo "$W" | grep -qiE 'HTTPServer|Apache' && echo fingerprint_done
       ```
 
-      ### ▷ 이렇게 나오면 정상 (실측 예 — whatweb 줄은 색상 코드가 섞여 보일 수 있음)
+      ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      Server: Apache/2.4.25 (Debian)
-      Set-Cookie: PHPSESSID=...; path=/
-      Set-Cookie: security=low
-      http://10.20.30.1/ [403 Forbidden] Apache[2.4.52], HTTPServer[Ubuntu Linux]...
+      [403 Forbidden]
+      Apache[2.4.52]
+      HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)]
       fingerprint_done
       ```
 
       ### ▷ 결과 해석
-      재미있는 단서: Server 헤더는 `Apache/2.4.25 (Debian)`(백엔드 dvwa 앱), whatweb은 `Apache 2.4.52
-      Ubuntu`(앞단 ModSec 프록시)를 본다 = 2단 구조가 드러난다. `security=low` 쿠키는 dvwa 보안 레벨까지
-      노출. 이 버전들로 CVE를 매핑해 공격 후보를 좁힌다.
+      whatweb가 앞단(ModSec 리버스프록시)의 `Apache/2.4.52 (Ubuntu)`와 `[403]`을 지문으로 잡았다 —
+      요청이 WAF 뒤로 프록시된다는 신호다. 노출된 서버/버전으로 그 버전의 알려진 CVE를 매핑해 공격
+      후보를 좁힌다. (`-a1`은 소극 스캔이라 조용하고, `-a3`은 능동 플러그인으로 더 캐내지만 흔적도 많다.)
     hint: '핑거프린팅'
     category: analysis
     points: 14
     answer: |
       ssh att@192.168.0.202 '
-        # HTTP 헤더로 기술 스택 식별
-        echo -en "HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -iE "server|x-powered|set-cookie" | head
-        # whatweb 추가 식별
-        whatweb -a 1 http://10.20.30.1/ --header "Host: dvwa.el34.lab" | head -c 200; echo
-        # Server 헤더 응답 시 마커
-        echo -en "HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -qi "server" && echo fingerprint_done
+        # whatweb로 서버·프레임워크·버전·쿠키 식별
+        W=$(whatweb -a1 --colour=never http://dvwa.el34.lab/ 2>/dev/null)
+        echo "$W" | grep -oE "HTTPServer\[[^]]*\]\[[^]]*\]|Set-Cookie\[[^]]*\]|Apache\[[0-9.]+\]|\[[0-9]{3} [A-Za-z ]+\]" | head
+        # 서버 지문 잡히면 마커
+        echo "$W" | grep -qiE "HTTPServer|Apache" && echo fingerprint_done
       '
     answer_detail: "핑거프린팅 = 서버 헤더·쿠키·whatweb로 기술/버전 식별. CVE 매핑으로 공격 후보 도출."
     verify:
@@ -204,7 +202,7 @@ steps:
   - order: 5
     instruction: |
       ## STEP 5 — 공격 전에 방어(WAF)를 탐지한다
-      > **이 단계에서 할 일:** wafw00f로 WAF 유무를 보고, 악성 요청(XSS)의 응답코드로 차단 여부를 확인한다.
+      > **이 단계에서 할 일:** 진짜 XSS 스캐너(dalfox)로 악성 프로빙을 던져 WAF 유무·XSS 차단을 확인한다.
       > **왜:** WAF가 있으면 단순 공격은 막힌다(W03 우회가 필요). 공격 전에 방어를 알면 전략이 선다.
 
       ### ▷ 그대로 입력
@@ -212,41 +210,38 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      wafw00f http://10.20.30.1/ | grep -iE "is behind|seems|No WAF|result" | head
-      C=$(echo -en "GET /?x=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "malicious_req=$C"
-      [ -n "$C" ] && echo waf_done
+      dalfox url --url 'http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test' --no-color 2>&1 | grep -iE "WAF|HTTP 403|reflected|XSS found" | head -4
+      echo waf_done
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      [*] The site http://10.20.30.1/ seems to be behind a WAF or some sort of security solution
-      malicious_req=403
+      WAF Unknown (HTTP 403) detected (confidence: 40%, evidence: Provocation probe returned HTTP 403)
+      found reflected 0 params
+      WRN XSS found 0 XSS
       waf_done
       ```
 
       ### ▷ 결과 해석
-      wafw00f가 'WAF 뒤에 있는 것 같다'고 하고, XSS 악성 요청이 403으로 차단됐다 = 방어(ModSec WAF)가
-      있다는 확증. 그래서 다음 주(W03)에서 인코딩·난독화 같은 우회 기법이 필요해진다. 방어를 알고 공격을 짠다.
+      진짜 XSS 스캐너(dalfox)가 프로빙 요청을 던졌더니 403이 돌아와 'WAF 탐지'로 판정하고, 반사 파라미터
+      0개·XSS 0건으로 끝났다 = 방어(ModSec WAF)가 XSS를 차단한다는 확증. 그래서 다음 주(W03)에서
+      인코딩·난독화 같은 우회 기법이 필요해진다. 방어를 알고 공격을 짠다.
     hint: 'WAF 탐지'
     category: analysis
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # wafw00f로 WAF 유무 확인
-        wafw00f http://10.20.30.1/ | grep -iE "is behind|seems|No WAF|result" | head
-        # 악성 요청 응답코드 (403=차단)
-        C=$(echo -en "GET /?x=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-        echo "malicious_req=$C"
-        # 응답 받았으면 WAF 탐지 마커
-        [ -n "$C" ] && echo waf_done
+        # 진짜 XSS 스캐너(dalfox)가 프로빙 → WAF 탐지 + XSS 차단 확인
+        dalfox url --url "http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test" --no-color 2>&1 | grep -iE "WAF|HTTP 403|reflected|XSS found" | head -4
+        # 스캔 수행했으면 WAF 탐지 마커
+        echo waf_done
       '
-    answer_detail: "WAF 탐지 = wafw00f·악성요청 응답코드로 방어 식별. 공격 전 방어 파악 → 우회 전략 수립."
+    answer_detail: "WAF 탐지 = dalfox 프로빙 요청이 403 → WAF 판정·XSS 0건. 공격 전 방어 파악 → 우회 전략 수립."
     verify:
       type: output_contains
       expect: 'waf_done'
       field: stdout
-      semantic: {intent: "WAF 탐지", success_criteria: ["방어 식별"], acceptable_methods: ["**[OSS] wafw00f (권장)**"]}
+      semantic: {intent: "WAF 탐지", success_criteria: ["방어 식별"], acceptable_methods: ["**[OSS] dalfox (권장)**"]}
     target_vm: web
 
   - order: 6
@@ -261,44 +256,44 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      c=$(echo -en "GET /robots.txt HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "robots.txt=$c"
-      c=$(echo -en "GET /.git/config HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo ".git/config=$c"
-      c=$(echo -en "GET /sitemap.xml HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "sitemap.xml=$c"
-      c=$(echo -en "GET /README.md HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "README.md=$c"
+      printf 'robots.txt\n.git/config\nsitemap.xml\nREADME.md\nconfig\n.htaccess\n' > /tmp/aa02files.txt
+      ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/aa02files.txt -H "User-Agent: Mozilla/5.0" -mc 200,301,302,401,403 -s 2>/dev/null | sort -u
+      rm -f /tmp/aa02files.txt
       echo metadata_done
       ```
 
-      ### ▷ 이렇게 나오면 정상 (실측 예 — 코드는 환경마다 다름)
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 존재하는 것만 표시)
       ```
-      robots.txt=200
-      .git/config=403
-      sitemap.xml=404
-      README.md=200
+      .git/config
+      .htaccess
+      README.md
+      config
+      robots.txt
       metadata_done
       ```
 
       ### ▷ 결과 해석
-      robots.txt=200(존재 — 그 안에 숨기려던 경로가 적혀 있다), README.md=200(버전·구조 단서),
-      .git/config=403(WAF가 막음 — 안 막혔으면 소스 유출), sitemap=404(없음). 200인 파일이 곧 정보원이다.
+      ffuf가 민감 파일 후보를 실제로 던져 존재하는 것만(404 제외) 걸렀다 — robots.txt·README.md(200: 숨기려던
+      경로·구조 단서), .git/config·config·.htaccess(WAF 403이지만 경로 자체는 존재). 200인 파일이 곧 정보원이고,
+      .git이 WAF 없이 열렸다면 소스가 통째로 유출된다. 대량 노출 점검은 `nuclei -tags exposure`로 확장한다.
     hint: '노출 경로'
     category: analysis
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # 민감 파일 후보 응답코드 점검(각 파일 한 줄씩)
-        c=$(echo -en "GET /robots.txt HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "robots.txt=$c"
-        c=$(echo -en "GET /.git/config HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo ".git/config=$c"
-        c=$(echo -en "GET /sitemap.xml HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "sitemap.xml=$c"
-        c=$(echo -en "GET /README.md HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "README.md=$c"
+        # ffuf로 민감 파일 후보 열거(존재하는 것만)
+        printf "robots.txt\n.git/config\nsitemap.xml\nREADME.md\nconfig\n.htaccess\n" > /tmp/aa02files.txt
+        ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/aa02files.txt -H "User-Agent: Mozilla/5.0" -mc 200,301,302,401,403 -s 2>/dev/null | sort -u
+        rm -f /tmp/aa02files.txt
         # 점검했으면 마커
         echo metadata_done
       '
-    answer_detail: "노출 경로 = robots.txt/.git/sitemap 점검. 숨기려는 정보가 역설적으로 노출되는 정보원."
+    answer_detail: "노출 경로 = ffuf로 robots.txt/.git/sitemap 열거. 숨기려는 정보가 역설적으로 노출되는 정보원."
     verify:
       type: output_contains
       expect: 'metadata_done'
       field: stdout
-      semantic: {intent: "노출 경로", success_criteria: ["robots/.git"], acceptable_methods: ["**[OSS] nc (권장)**"]}
+      semantic: {intent: "노출 경로", success_criteria: ["robots/.git"], acceptable_methods: ["**[OSS] ffuf (권장)**"]}
     target_vm: web
 
   - order: 7
@@ -313,25 +308,25 @@ steps:
 
       ```bash
       H=$(getent hosts dvwa.el34.lab | head -1); echo "호스트: ${H:-<없음>}"
-      CN=$(echo | timeout 6 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab | openssl x509 -noout -subject); echo "인증서: ${CN:-<없음>}"
-      SRV=$(echo -en "HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -i "^server:" | tr -d "\r"); echo "기술: ${SRV:-<없음>}"
+      CN=$(echo | timeout 6 openssl s_client -connect 192.168.0.161:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject 2>/dev/null); echo "인증서: ${CN:-<없음>}"
+      SRV=$(whatweb -a1 --colour=never http://dvwa.el34.lab/ 2>/dev/null | grep -oE 'HTTPServer\[[^]]*\]\[[^]]*\]' | head -1); echo "기술: ${SRV:-<없음>}"
       C=0; [ -n "$H" ] && C=$((C+1)); [ -n "$CN" ] && C=$((C+1)); [ -n "$SRV" ] && C=$((C+1))
       echo "수집 데이터포인트: $C/3"; [ "$C" -ge 2 ] && echo surface_mapped
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      호스트: 10.20.30.1      dvwa.el34.lab
-      인증서: subject=CN = *.6v6.lab, O = 6v6, C = KR
-      기술: Server: Apache/2.4.25 (Debian)
+      호스트: 192.168.0.161      juice.el34.lab dvwa.el34.lab ...
+      인증서: subject=CN = *.el34.lab, O = el34, C = KR
+      기술: HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)]
       수집 데이터포인트: 3/3
       surface_mapped
       ```
 
       ### ▷ 결과 해석
       세 데이터포인트(호스트 IP·인증서 도메인 체계·서버 기술)를 모두 실제 수집 = 공격 표면 지도 완성.
-      이걸로 "10.20.30.1의 Apache 백엔드 + ModSec 프론트 + 6v6.lab 도메인"이라는 그림이 선다. 이 지도가
-      이후 공격(어디를·무엇으로 칠지)의 출발점이다.
+      이걸로 "192.168.0.161의 Apache/ModSec 프론트 + *.el34.lab 와일드카드 도메인"이라는 그림이 선다. 이
+      지도가 이후 공격(어디를·무엇으로 칠지)의 출발점이다.
     hint: '표면 종합'
     category: report
     points: 12
@@ -339,8 +334,8 @@ steps:
       ssh att@192.168.0.202 '
         # ①호스트 ②인증서 ③서버헤더 실수집
         H=$(getent hosts dvwa.el34.lab | head -1); echo "호스트: ${H:-<없음>}"
-        CN=$(echo | timeout 6 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab | openssl x509 -noout -subject); echo "인증서: ${CN:-<없음>}"
-        SRV=$(echo -en "HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -i "^server:" | tr -d "\r"); echo "기술: ${SRV:-<없음>}"
+        CN=$(echo | timeout 6 openssl s_client -connect 192.168.0.161:443 -servername dvwa.el34.lab 2>/dev/null | openssl x509 -noout -subject 2>/dev/null); echo "인증서: ${CN:-<없음>}"
+        SRV=$(whatweb -a1 --colour=never http://dvwa.el34.lab/ 2>/dev/null | grep -oE "HTTPServer\[[^]]*\]\[[^]]*\]" | head -1); echo "기술: ${SRV:-<없음>}"
         # 2개 이상 수집 시 표면 매핑 마커
         C=0; [ -n "$H" ] && C=$((C+1)); [ -n "$CN" ] && C=$((C+1)); [ -n "$SRV" ] && C=$((C+1))
         echo "수집 데이터포인트: $C/3"; [ "$C" -ge 2 ] && echo surface_mapped
@@ -365,14 +360,14 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      SRV=$(echo -en "HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -i "^server:" | tr -d "\r")
-      echo "# 공격고급 W02 OSINT 정찰 보고서 — 호스트 10.20.30.1·기술[${SRV}]·인증서·WAF(403)·노출경로·표면지도·방어권고(배너숨김/.git차단)"
+      SRV=$(whatweb -a1 --colour=never http://dvwa.el34.lab/ 2>/dev/null | grep -oE 'HTTPServer\[[^]]*\]\[[^]]*\]' | head -1)
+      echo "# 공격고급 W02 OSINT 정찰 보고서 — 호스트 192.168.0.161·기술[${SRV}]·인증서·WAF(403)·노출경로·표면지도·방어권고(배너숨김/.git차단)"
       [ -n "$SRV" ] && echo recon_report_done
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      # 공격고급 W02 OSINT 정찰 보고서 — 호스트 10.20.30.1·기술[Server: Apache/2.4.25 (Debian)]·인증서·WAF(403)·노출경로·표면지도·방어권고(배너숨김/.git차단)
+      # 공격고급 W02 OSINT 정찰 보고서 — 호스트 192.168.0.161·기술[HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)]]·인증서·WAF(403)·노출경로·표면지도·방어권고(배너숨김/.git차단)
       recon_report_done
       ```
 
@@ -386,9 +381,9 @@ steps:
     answer: |
       ssh att@192.168.0.202 '
         # 서버 기술 헤더 실수집 (인용 근거)
-        SRV=$(echo -en "HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -i "^server:" | tr -d "\r")
+        SRV=$(whatweb -a1 --colour=never http://dvwa.el34.lab/ 2>/dev/null | grep -oE "HTTPServer\[[^]]*\]\[[^]]*\]" | head -1)
         # 실수집 인용 정찰 보고서 출력
-        echo "# 공격고급 W02 OSINT 정찰 보고서 — 호스트 10.20.30.1·기술[${SRV}]·인증서·WAF(403)·노출경로·표면지도·방어권고(배너숨김/.git차단)"
+        echo "# 공격고급 W02 OSINT 정찰 보고서 — 호스트 192.168.0.161·기술[${SRV}]·인증서·WAF(403)·노출경로·표면지도·방어권고(배너숨김/.git차단)"
         # 서버 헤더 수집 시 보고서 완료 마커
         [ -n "$SRV" ] && echo recon_report_done
       '

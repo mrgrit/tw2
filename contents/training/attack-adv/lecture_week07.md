@@ -177,7 +177,7 @@ graph TD
 ```bash
 python3 -u -m http.server 55007 >/tmp/c2.log 2>&1 & P=$!   # C2 리스너 기동
 # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
-echo -en "GET /tasks HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null >/dev/null            # 비콘 체크인 1회 (×3 반복)
+echo -en "GET /tasks HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null >/dev/null            # 비콘 체크인 1회 (×3 반복)  # nc-ok: C2 비콘/태스크 폴링(HTTP C2 채널 모사)
 ```
 
 **리스너**는 임플란트 접속을 받는 공격자측 서버다(실무는 Sliver·Mythic·Cobalt Strike). **비콘**은 sleep

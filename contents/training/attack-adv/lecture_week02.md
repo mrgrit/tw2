@@ -218,7 +218,7 @@ graph TD
 
 ```bash
 wafw00f http://10.20.30.1/ | grep -iE "is behind|seems"
-echo -en 'GET /?x=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+ssh att@192.168.0.202 'dalfox url --url "http://dvwa.el34.lab/?x=test" 2>&1 | grep -iE "WAF|403|POC|triggered|blocked"'
 # → seems to be behind a WAF ... / 403
 ```
 

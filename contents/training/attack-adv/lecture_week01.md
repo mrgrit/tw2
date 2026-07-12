@@ -230,7 +230,7 @@ graph TD
 
 ```bash
 # el34-attacker: 태그 단 공격
-echo -en "GET /?t=aa01opsec HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: aa01opsec\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+ssh att@192.168.0.202 'whatweb -a1 --user-agent aa01opsec "http://dvwa.el34.lab/?t=aa01opsec"'  >/dev/null
 # el34-web: 타깃 로그에 남은 내 흔적
 grep -c aa01opsec /var/log/apache2/dvwa_access.log
 ```

