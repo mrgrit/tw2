@@ -35,6 +35,8 @@ CATS = [
  ('M-curl 채점권장 라벨(진짜 도구 권장으로)','★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and ('acceptable_methods' in ln or '(권장)' in ln)),
  # ★★ 강의/프로즈의 실제 curl 명령(curl -flag / curl /path / curl http). 부정("curl 아니라 ssh로")·IOC/탐지 시그니처는 제외.
  ('M-강의 curl 명령(nc/진짜 도구로)','★★', lambda ln: (re.search(r"\bcurl\s+[\"']?(-[A-Za-z]|/|https?://)", ln) or re.search(r'curl\s*·|·\s*curl|curl robots|curl 루프', ln)) and 'curl-ok' not in ln and not re.search(r'localhost|127\.0\.0\.1', ln) and not re.search(r'(아니라|아니고|않고|않는|않게|우회하지|말고|금지|대신|하지\s?않)', ln) and not re.search(r'user_agent|흔적|시그니처|탐지|IOC|남긴다|남는다', ln, re.I)),
+ # ★★ curl 을 '표준/주력 도구' 로 소개·정의하는 프로즈(튜토리얼 섹션) — nc(raw HTTP) 소개로 재집필. 부정문·탐지·curl-ok 제외.
+ ('M-curl 개념정의/주력도구(nc 소개로 재집필)','★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and re.search(r'(\*\*curl\*\*|`curl`|용어\s*—\s*curl|curl\s*—|주력 도구는[^.\n]*curl|쓰는 도구가[^.\n]*curl)', ln) and re.search(r'도구|클라이언트|주력|표준|HTTP 요청|주문서', ln) and not re.search(r'(아니라|아니고|않고|않는|않게|우회하지|말고|금지|대신|하지\s?않)', ln) and not re.search(r'user_agent|흔적|시그니처|탐지|IOC|남긴|스캐너|cmdline', ln, re.I) and not re.search(r'악성코드|내려받|다운로드|공격자|침투|베이스 이미지|distroless|미니멀|이미지에', ln)),
  # output 파싱을 python-c 로 하는 기계식만 플래그. 공격 페이로드(nohup exec b64decode = 헌팅 대상 위협)·scapy 제외.
  ('M-python -c (scapy·정당사유 외)','★★', lambda ln: re.search(r'python3? -c ', ln) and 'scapy' not in ln and not re.search(r'nohup|exec\(|b64decode|c2_beacon|beacon|time\.sleep', ln) and not re.search(r'-c [\x27"]\s*$', ln)),
  ('M-cat<<EOF 보고서 텍스트 출력','★★', lambda ln: re.search(r"cat\s+<<'?EOF'?", ln)),

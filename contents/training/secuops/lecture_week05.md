@@ -958,7 +958,7 @@ ssh ccc@10.20.32.80 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".au
 
 **0a. 사용 도구 사전 안내.**
 
-- **curl** — HTTP 요청을 보내는 표준 도구.
+- **nc** — raw HTTP 요청을 손수 보내는 도구.
 - **modsec_audit.log** — ModSecurity 의 audit 전용 로그. JSON 한 줄에 한 transaction.
 - **jq** — JSON 을 파싱해서 보는 표준 도구.
 

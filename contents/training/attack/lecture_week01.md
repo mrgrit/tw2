@@ -389,7 +389,7 @@ tail /var/log/suricata/eve.json
 > 주소를 여는 것과 동일). `-H "Host:"` + 생 IP 를 반복할 필요가 없다.
 
 > **내 공격 VM에 미리 설치된 도구.** 외부 공격자 VM 에는 정찰·공격 도구가 사전
-> 설치되어 있다 — `nmap`(포트/서비스 스캔), `curl`(HTTP 요청), `nikto`(웹 취약점 스캔),
+> 설치되어 있다 — `nmap`(포트/서비스 스캔), `nc`(raw HTTP 요청), `nikto`(웹 취약점 스캔),
 > `whatweb`(기술 스택 핑거프린팅), `ffuf`/`gobuster`(디렉터리 브루트), `sqlmap`(SQLi 자동화),
 > `dalfox`(XSS 자동화), `python3-scapy`(패킷 크래프팅) 등. 본 주차는 그중 정찰의 기본인
 > `nmap` 과 `curl` 에 집중한다.

@@ -763,7 +763,7 @@ attacker (192.168.0.202) 에서는 9005041 alert 없음. 다른 src 는 정상.
 
 **0a. 사용 도구 사전 안내.**
 
-- **curl** — HTTP 요청을 보내는 표준 도구. 학습 환경 web 의 admin endpoint 가 401 또는 403 으로 응답하는지 확인할 때 쓴다.
+- **nc** — raw HTTP 요청을 손수 보내는 도구. 학습 환경 web 의 admin endpoint 가 401 또는 403 으로 응답하는지 확인할 때 쓴다.
 - **flowbits** — Suricata 룰의 변수. set 으로 표식을 켜두고 isset 으로 그 표식이 켜진 상태에서만 매칭한다.
 - **eve.json 의 flow_id 필드** — 한 TCP connection 의 고유 ID. 두 event 의 flow_id 가 같으면 같은 flow 안의 두 단계다.
 
