@@ -20,7 +20,7 @@
 
 1. **자산 식별(asset inventory)** 의 개념과, "있는 줄 몰랐던 자산(shadow IT·방치 서비스)이 가장
    위험하다"는 원칙을 감사 관점에서 설명한다.
-2. el34 호스트(`ssh ccc@192.168.0.80`)에서 `docker exec el34-web` 로 **Apache `sites-enabled`**
+2. el34 호스트(`ssh ccc@192.168.0.80`)에서 `ssh ccc@10.20.32.80` 로 **Apache `sites-enabled`**
    디렉터리를 열거하여, 실제 웹 애플리케이션 자산(11개 vhost)을 **빠짐없이 식별·집계**하고, 그중 자산이
    아닌 항목(ports 설정 파일)을 가려낸다.
 3. **CIA(기밀성·무결성·가용성) 중요도 등급**의 의미를 풀어 설명하고, el34 의 각 vhost 자산을 1급(핵심)~
@@ -268,7 +268,7 @@ graph TD
 
 ```bash
 # el34 호스트(ssh ccc@192.168.0.80)에서 실행
-docker exec el34-web sh -c 'N=$(ls /etc/apache2/sites-enabled/ 2>/dev/null | wc -l); echo "assets=$N"; ls /etc/apache2/sites-enabled/'
+ssh ccc@10.20.32.80 'N=$(ls /etc/apache2/sites-enabled/ | wc -l); echo "assets=$N"; ls /etc/apache2/sites-enabled/'
 ```
 
 **예상 출력(el34 실측)**:
@@ -571,7 +571,7 @@ graph TD
 > **왜 하는가?** 자산 점검의 전제는 점검 대상에 접근할 수 있다는 것이다. 자산 식별의 출발점인 web
 > 컨테이너에 `docker exec` 가 닿는지부터 확인한다.
 >
-> **무엇을 알 수 있는가?** `docker exec el34-web` 으로 hostname 이 응답하고 `target_ok` 가 출력되는지 —
+> **무엇을 알 수 있는가?** `ssh ccc@10.20.32.80` 으로 hostname 이 응답하고 `target_ok` 가 출력되는지 —
 > 자산 식별 대상(el34-web)이 점검 가능한 상태인지.
 >
 > **결과 해석.** 정상: 출력에 `target_ok` 가 보임. 비정상: 응답이 없으면 호스트 SSH(`ssh

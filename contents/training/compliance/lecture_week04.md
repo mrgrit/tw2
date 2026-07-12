@@ -294,7 +294,7 @@ graph TD
 
 ```bash
 ssh ccc@192.168.0.80                     # el34 호스트 접속 (비밀번호: 1)
-docker exec el34-web sh -c "hostname"     # 대상 컨테이너에 점검 명령 실행
+ssh ccc@10.20.32.80 "hostname"     # 대상 컨테이너에 점검 명령 실행
 ```
 
 > **왜 web 컨테이너인가.** el34-web 은 Apache + ModSecurity(WAF)가 도는 DMZ 의 핵심 서버(dmz
@@ -321,7 +321,7 @@ docker exec el34-web sh -c "hostname"     # 대상 컨테이너에 점검 명령
 세 번째 필드가 UID 이므로, `awk` 로 그 필드가 0인 줄을 골라 세면 UID0 계정 수를 알 수 있다.
 
 ```bash
-docker exec el34-web sh -c 'echo "uid0_count=$(awk -F: "\$3==0" /etc/passwd | wc -l)"; awk -F: "\$3==0 {print \$1}" /etc/passwd'
+ssh ccc@10.20.32.80 'echo "uid0_count=$(awk -F: "\$3==0" /etc/passwd | wc -l)"; awk -F: "\$3==0 {print \$1}" /etc/passwd'
 ```
 
 이 명령을 한 부분씩 해석하면 — `awk -F:` 는 콜론을 필드 구분자로 삼고, `$3==0` 은 세 번째 필드(UID)가
@@ -374,7 +374,7 @@ UID0 점검은 "전권 계정의 유일성"만 본다. UID 가 0이 아니어도
 기준(90)을 넘는지 비교한다.
 
 ```bash
-docker exec el34-web sh -c 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] 2>/dev/null && echo "gap=no_expiry" || echo "compliant"'
+ssh ccc@10.20.32.80 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] >/dev/null 2>&1 && echo "gap=no_expiry" || echo "compliant"'
 ```
 
 명령 해석 — `grep "^PASS_MAX_DAYS"` 로 해당 줄을 찾고, `tr -dc "0-9"` 로 숫자만 남겨 값 `V` 를 얻은
@@ -416,7 +416,7 @@ readable) 그 모든 통제가 무력해진다.
 인지 판정한다.
 
 ```bash
-docker exec el34-web sh -c 'stat -c "%n %a" /etc/shadow /etc/passwd /etc/sudoers; S=$(stat -c "%a" /etc/shadow); case "$S" in 600|640) echo "compliant=shadow_$S";; *) echo "gap=shadow_$S";; esac'
+ssh ccc@10.20.32.80 'stat -c "%n %a" /etc/shadow /etc/passwd /etc/sudoers; S=$(stat -c "%a" /etc/shadow); case "$S" in 600|640) echo "compliant=shadow_$S";; *) echo "gap=shadow_$S";; esac'
 ```
 
 **예상 출력**:
@@ -555,7 +555,7 @@ graph TD
 > **왜 하는가?** 감사의 전제는 대상에 접근할 수 있다는 것이다. 점검 착수 전 항상 대상의 도달성부터
 > 확인한다 — 접근이 안 되면 이후의 모든 음성 결과가 무의미하다.
 >
-> **무엇을 알 수 있는가?** `docker exec el34-web` 으로 hostname 을 받아, 감사 대상 컨테이너에 명령을
+> **무엇을 알 수 있는가?** `ssh ccc@10.20.32.80` 으로 hostname 을 받아, 감사 대상 컨테이너에 명령을
 > 보낼 수 있는 상태인지.
 >
 > **결과 해석.** 정상: `target_ok` 가 출력 → 대상 접근 가능. 비정상: 응답이 없으면 호스트 SSH·컨테이너

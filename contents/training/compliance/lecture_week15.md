@@ -233,16 +233,17 @@ graph TD
 
 ## 2. 여덟 영역 한 바퀴 — 종합 감사 단계별 상세
 
-이번 시험의 시나리오는 한 감사자가 el34 를 여덟 영역 순서로 한 바퀴 점검하는 것이다. 명령은 el34
-호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에 접속한 뒤 `docker exec el34-web`(설정·SCA·FIM 점검),
-`docker exec el34-siem`(로깅·FIM 적재), `docker exec el34-attacker`(전송 암호화·취약점 스캔·PII
-점검)로 실행한다. 각 단계마다 **한 줄 정의 → 무엇을 점검하나 → el34 에서 어떻게 보이나(준수/갭) →
-한계**의 4축으로 설명한다.
+이번 시험의 시나리오는 한 감사자가 el34 를 여덟 영역 순서로 한 바퀴 점검하는 것이다. 설정·로그
+점검은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에 접속한 뒤 `ssh ccc@10.20.32.80`(설정·SCA·FIM
+점검)·`ssh ccc@10.20.32.100`(로깅·FIM 적재)로, 전송 암호화·취약점 스캔·PII 점검은 외부 공격자 위치
+(`ssh att@192.168.0.202`)에서 실행한다. 각 단계마다 **한 줄 정의 → 무엇을 점검하나 → el34 에서 어떻게
+보이나(준수/갭) → 한계**의 4축으로 설명한다.
 
-> **왜 docker exec 인가.** el34 의 모든 보안 컨테이너는 타깃 VM(192.168.0.80) 한 대 위에서 돈다.
-> 감사자는 호스트에 SSH 로 들어간 뒤 `docker exec` 로 점검 대상 컨테이너에 진입해 설정 파일·로그·API
-> 응답을 직접 읽는다. 신규 도구 설치는 없으며, 기존 OS 명령(`grep`/`openssl`/`curl`)과 컨테이너에 이미
-> 깔린 도구(`nuclei`)만 쓴다.
+> **왜 두 위치인가.** 설정 파일·로그는 el34 **안에서** 봐야 정확하므로 감사자는 호스트 SSH 로 들어가
+> 점검 대상(`ssh ccc@10.20.32.80`·`ssh ccc@10.20.32.100`)에 접속해 설정·로그를 직접 읽는다. 반면 전송
+> 암호화(TLS)·취약점 스캔·무인증 API 응답은 실제 이용자·공격자가 보는 **밖에서** 봐야 의미가 있으므로
+> 외부 공격자 VM(`att@192.168.0.202`)에서 공인 진입점으로 요청한다. 신규 도구 설치는 없으며, 기존 OS
+> 명령(`grep`/`openssl`/`nc`)과 이미 깔린 도구(`nuclei`)만 쓴다.
 
 ### 2.1 ① 정보노출 — ServerTokens (W01: 프레임워크·갭 분석)
 
@@ -597,7 +598,7 @@ graph TD
 
 ```mermaid
 graph TD
-    REQ["한 번의 점검 요청<br/>출처 10.20.30.202<br/>nuclei 스캔 / Feedbacks 호출"]
+    REQ["한 번의 점검 요청<br/>출처 192.168.0.202<br/>nuclei 스캔 / Feedbacks 호출"]
     AUD["감사자 관점<br/>취약점·PII 노출 식별<br/>→ 갭 판정 + 증적"]
     OPS["운영자 관점<br/>WAF/SIEM 에 스캐너·접근 탐지<br/>+ 출처 IP 기록"]
     REQ --> AUD
@@ -612,7 +613,7 @@ graph TD
 | 감사자(컴플라이언스) | 점검 결과로 기준 대비 준수/갭 판정 | 설정값·응답·스캔 발견 → 준수/갭 + 증적 |
 | 운영자(보안 운영) | 점검 요청이 방어 측에 남긴 흔적 | WAF CRS 룰 번호(913 scanner 등) + 출처 IP |
 
-el34 의 fw 는 SNAT 를 하지 않으므로, attacker(`10.20.30.202`)에서 보낸 점검 요청의 **출처 IP 가 web 의
+el34 의 fw 는 SNAT 를 하지 않으므로, attacker(`192.168.0.202`)에서 보낸 점검 요청의 **출처 IP 가 web 의
 로그·WAF audit 에 그대로 보존**된다. 그래서 감사 보고서에 "이 갭은 이렇게 점검해 판정했고, 그 점검
 자체는 방어 측(WAF·SIEM)에 이렇게 탐지되더라"까지 적을 수 있다 — 이것이 단순 체크리스트 점검을 넘어
 **보안 운영과 연결되는 감사자**의 시야다. el34 의 4-tier 세그먼트는 `ext 10.20.30` / `pipe 10.20.31` /
@@ -664,7 +665,7 @@ ccc@192.168.0.80`, 비밀번호 1)에서 `docker exec` 로 실행하며, 신규 
 ### 6.1 ① 정보노출 (ServerTokens — W01)
 
 ```bash
-docker exec el34-web sh -c 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ | head -1); echo "current:$V"; echo "$V" | grep -qi Prod && echo compliant || echo "gap=ServerTokens"'
+ssh ccc@10.20.32.80 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ | head -1); echo "current:$V"; echo "$V" | grep -qi Prod && echo compliant || echo "gap=ServerTokens"'
 ```
 
 무엇을 보나 — `current:` 뒤의 실제 설정값과 판정. el34-web 은 `OS` 라 `gap=ServerTokens`(CIS Prod 미달).
@@ -672,7 +673,7 @@ docker exec el34-web sh -c 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apac
 ### 6.2 ② 접근통제 (PASS_MAX_DAYS — W04)
 
 ```bash
-docker exec el34-web sh -c 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] 2>/dev/null && echo "gap=no_expiry" || echo compliant'
+ssh ccc@10.20.32.80 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "0-9"); echo "max_days=$V"; [ "$V" -gt 90 ] >/dev/null 2>&1 && echo "gap=no_expiry" || echo compliant'
 ```
 
 무엇을 보나 — `max_days=99999`(사실상 무기한) → PCI 8.3.9(≤90) 미달 → `gap=no_expiry`. (참고: root 로그인은
@@ -681,7 +682,7 @@ docker exec el34-web sh -c 'V=$(grep "^PASS_MAX_DAYS" /etc/login.defs | tr -dc "
 ### 6.3 ③ 암호화 (TLS — W05)
 
 ```bash
-docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername neobank.el34.lab 2>/dev/null | grep -i Protocol | head -1"
+ssh att@192.168.0.202 "echo | openssl s_client -connect neobank.el34.lab:443 -servername neobank.el34.lab | grep -i Protocol | head -1"
 ```
 
 무엇을 보나 — `Protocol: TLSv1.3`(PCI 4 준수). 자체서명 인증서는 운영 환경이면 별도 주의 사항.
@@ -689,7 +690,7 @@ docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443
 ### 6.4 ④ 로깅 (Wazuh — W06)
 
 ```bash
-docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json | head -c 40; echo; echo siem_ok'
+ssh ccc@10.20.32.100 'tail -1 /var/ossec/logs/alerts/alerts.json | head -c 40; echo; echo siem_ok'
 ```
 
 무엇을 보나 — `alerts.json` 적재 + `siem_ok`(PCI 10 중앙 수집 준수).
@@ -697,7 +698,7 @@ docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json | head -
 ### 6.5 ⑤ 구성평가 (SCA — W09)
 
 ```bash
-docker exec el34-web sh -c "grep -A1 '<sca>' /var/ossec/etc/ossec.conf | head -2"
+ssh ccc@10.20.32.80 "grep -A1 '<sca>' /var/ossec/etc/ossec.conf | head -2"
 ```
 
 무엇을 보나 — `<sca>` `enabled yes`(+ interval 12h) = CIS 자동 구성평가 가동(준수).
@@ -705,7 +706,7 @@ docker exec el34-web sh -c "grep -A1 '<sca>' /var/ossec/etc/ossec.conf | head -2
 ### 6.6 ⑥ 무결성 (FIM — W10)
 
 ```bash
-docker exec el34-siem sh -c 'N=$(tail -8000 /var/ossec/logs/alerts/alerts.json | grep -c syscheck); echo "fim_alerts=$N"'
+ssh ccc@10.20.32.100 'N=$(tail -8000 /var/ossec/logs/alerts/alerts.json | grep -c syscheck); echo "fim_alerts=$N"'
 ```
 
 무엇을 보나 — `fim_alerts=<수>` 다수 = FIM(syscheck) 무결성 모니터링 가동(준수).
@@ -713,7 +714,7 @@ docker exec el34-siem sh -c 'N=$(tail -8000 /var/ossec/logs/alerts/alerts.json |
 ### 6.7 ⑦ 취약점 (nuclei — W07)
 
 ```bash
-docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el34.lab' -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc 2>/dev/null | head -3"
+ssh att@192.168.0.202 "nuclei -u http://juice.el34.lab -t /root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml -silent -nc | head -3"
 ```
 
 무엇을 보나 — 보안 헤더 누락 등 발견(`findings=<수>`). PCI-DSS 11.3(정기 스캔)의 한 회차(갭).
@@ -721,7 +722,7 @@ docker exec el34-attacker sh -c "nuclei -u http://10.20.30.1 -H 'Host: juice.el3
 ### 6.8 ⑧ 개인정보 (Feedbacks PII — W12)
 
 ```bash
-docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Feedbacks | grep -oE '@[a-zA-Z0-9.-]+' | head -1; echo pii_check"
+ssh att@192.168.0.202 "echo -en "GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null | grep -oE '@[a-zA-Z0-9.-]+' | head -1; echo pii_check"
 ```
 
 무엇을 보나 — 무인증 응답의 이메일 조각(`@도메인`) 노출 + `pii_check`. 개인정보 보호 갭(최우선 시정).
@@ -744,7 +745,7 @@ docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20
 > **왜 하는가?** 감사의 전제는 표적에 접근이 된다는 것이다. 감사자는 본격 점검 전 항상 대상의 도달성부터
 > 확인한다(접근이 안 되면 모든 음성 결과가 무의미하다).
 >
-> **무엇을 알 수 있는가?** `docker exec el34-web` 으로 hostname 이 응답하는지 — 종합 감사 대상(el34
+> **무엇을 알 수 있는가?** `ssh ccc@10.20.32.80` 으로 hostname 이 응답하는지 — 종합 감사 대상(el34
 > 전반: web/siem/attacker)이 실제 살아있고 점검 가능한 상태인지.
 >
 > **결과 해석.** 정상: 출력에 `target_ok` 가 나옴(대상 접근 성공). 비정상: 응답이 없으면 호스트 SSH·

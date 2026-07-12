@@ -281,7 +281,7 @@ graph TD
 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 `docker exec` 로 실행한다.
 
 ```bash
-docker exec el34-web sh -c 'V=$(grep -iE "^PermitRootLogin" /etc/ssh/sshd_config 2>/dev/null); echo "current:$V"; echo "$V" | grep -qi "no" && echo "enforced=rootlogin_disabled" || echo "gap=rootlogin_allowed"'
+ssh ccc@10.20.32.80 'V=$(grep -iE "^PermitRootLogin" /etc/ssh/sshd_config); echo "current:$V"; echo "$V" | grep -qi "no" && echo "enforced=rootlogin_disabled" || echo "gap=rootlogin_allowed"'
 ```
 
 이 한 줄이 무엇을 하는지 부분별로 읽어 보자.
@@ -472,7 +472,7 @@ graph TD
 > **왜 하는가?** 정책 강제 점검의 전제는 점검 대상 시스템에 접근할 수 있어야 한다는 것이다. 감사자는
 > 본격 점검 전에 늘 대상의 도달성부터 확인한다.
 >
-> **무엇을 알 수 있는가?** `docker exec el34-web` 으로 hostname 을 받아오고 `target_ok` 가 출력되는지
+> **무엇을 알 수 있는가?** `ssh ccc@10.20.32.80` 으로 hostname 을 받아오고 `target_ok` 가 출력되는지
 > 확인해, 이번 주 정책 강제 점검의 대상(el34-web)에 접근 가능한지.
 >
 > **결과 해석.** 정상: 출력에 `target_ok` 가 보임(대상 접근 성공). 비정상: 응답이 없거나 오류면 el34

@@ -35,12 +35,11 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      # 1) 금융 vhost(neobank) HTTPS 도달성 확인 — -k로 자체서명 허용, 응답코드만 https= 형식으로
-      curl -sk -o /dev/null -w 'https=%{http_code}\n' -H 'Host: neobank.el34.lab' https://10.20.30.1/
+      # 1) 금융 vhost(neobank) HTTPS 도달성 확인 — openssl로 TLS 위에 raw GET, 응답 첫 줄의 상태코드만 https= 형식으로
+      echo -n https=; echo -en 'GET / HTTP/1.0\r\nHost: neobank.el34.lab\r\nConnection: close\r\n\r\n' | openssl s_client -quiet -connect neobank.el34.lab:443 2>/dev/null | head -1 | grep -oE '[0-9]{3}'
       ```
-      - `curl` : 명령줄 HTTP(S) 도구. `-s`(진행표시 숨김), `-k`(자체서명 허용), `-o /dev/null`(본문 버림),
-        `-w 'https=%{http_code}'`(응답 코드만). `-H 'Host: neobank.el34.lab'`로 vhost 지정.
-      - `10.20.30.1` : fw의 ext 게이트웨이. 요청은 fw → web 경로로 전달된다.
+      - `openssl s_client -quiet -connect neobank.el34.lab:443` : TLS 핸드셰이크 후 stdin의 raw HTTP 요청을 그대로 전달(자체서명이어도 연결). 요청 헤더 `Host: neobank.el34.lab`로 vhost 지정.
+      - 응답 첫 줄(`HTTP/1.1 <코드>`)에서 `grep -oE '[0-9]{3}'`로 상태 코드만 추출해 `https=<코드>`로 라벨링. 요청은 fw → web 경로로 전달된다.
       ## ✅ 합격 기준
       `https=` 출력 시 통과. **근거:** `https=<코드>`(200/302 등)가 나오면 도달 성공 — 응답이 없으면
       Host 헤더·게이트웨이·포트(443)를 재확인한다.
@@ -48,9 +47,9 @@ steps:
     category: survey
     points: 10
     answer: |
-      # 1) 금융 vhost(neobank) HTTPS 도달성 확인 — -k로 자체서명 허용, 응답코드만 https= 형식으로
-      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'https=%{http_code}\n' -H 'Host: neobank.el34.lab' https://10.20.30.1/"
-    answer_detail: "암호화 점검 대상 = el34 web 443의 금융 vhost(neobank). curl -k로 HTTPS 응답 코드가 돌아오면(https=200/302 등) 대상이 살아있고 도달 가능 — 이후 TLS 점검의 전제가 성립한다."
+      # 1) 금융 vhost(neobank) HTTPS 도달성 확인 — openssl로 TLS 위에 raw GET, 응답 첫 줄의 상태코드만 https= 형식으로
+      ssh att@192.168.0.202 "echo -n https=; echo -en 'GET / HTTP/1.0\r\nHost: neobank.el34.lab\r\nConnection: close\r\n\r\n' | openssl s_client -quiet -connect neobank.el34.lab:443 2>/dev/null | head -1 | grep -oE '[0-9]{3}'"
+    answer_detail: "암호화 점검 대상 = el34 web 443의 금융 vhost(neobank). openssl s_client로 TLS 핸드셰이크 후 raw GET을 보내 HTTPS 응답 코드가 돌아오면(https=200/302 등) 대상이 살아있고 도달 가능 — 이후 TLS 점검의 전제가 성립한다."
     expected_output: |
       https=200
     verify:
@@ -60,7 +59,7 @@ steps:
       semantic:
         intent: "HTTPS 점검"
         success_criteria: ["443 도달"]
-        acceptable_methods: ["**[OSS] curl -k (권장)**"]
+        acceptable_methods: ["**[OSS] openssl s_client (권장)**"]
     target_vm: web
 
   - order: 2
@@ -75,9 +74,9 @@ steps:
 
       ```bash
       # 1) openssl s_client로 neobank 443에 접속해 협상된 Protocol/Cipher 줄만 추출(SNI로 vhost 지정)
-      echo | openssl s_client -connect 10.20.30.1:443 -servername neobank.el34.lab 2>/dev/null | grep -iE 'Protocol|Cipher' | head -3
+      echo | openssl s_client -connect neobank.el34.lab:443 -servername neobank.el34.lab | grep -iE 'Protocol|Cipher' | head -3
       # 2) 해석 — TLSv1.3 + AEAD(GCM) = PCI-DSS 4.2.1 강한 암호 준수, 단 인증서는 자체서명(W10 갭)
-      echo "→ TLSv1.3 + AEAD(GCM) = PCI-DSS 4.2.1 강한 암호 준수. 단 인증서는 자체서명(W10 갭)"
+      # → TLSv1.3 + AEAD(GCM) = PCI-DSS 4.2.1 강한 암호 준수. 단 인증서는 자체서명(W10 갭)
       ```
       - `openssl s_client` : TLS 핸드셰이크 결과를 보여주는 진단 도구. `Protocol:`=협상 버전, `Cipher:`=선택 cipher.
       - `-servername neobank.el34.lab` SNI(vhost), 앞의 `echo |`는 핸드셰이크 후 입력을 닫아 멈춤 방지.
@@ -89,9 +88,9 @@ steps:
     points: 14
     answer: |
       # 1) openssl s_client로 neobank 443에 접속해 협상된 Protocol/Cipher 줄만 추출(SNI로 vhost 지정)
-      docker exec el34-attacker sh -c "echo | openssl s_client -connect 10.20.30.1:443 -servername neobank.el34.lab 2>/dev/null | grep -iE 'Protocol|Cipher' | head -3"
+      ssh att@192.168.0.202 "echo | openssl s_client -connect neobank.el34.lab:443 -servername neobank.el34.lab | grep -iE 'Protocol|Cipher' | head -3"
       # 2) 해석 — TLSv1.3 + AEAD(GCM) = PCI-DSS 4.2.1 강한 암호 준수, 단 인증서는 자체서명(W10 갭)
-      echo "→ TLSv1.3 + AEAD(GCM) = PCI-DSS 4.2.1 강한 암호 준수. 단 인증서는 자체서명(W10 갭)"
+      # → TLSv1.3 + AEAD(GCM) = PCI-DSS 4.2.1 강한 암호 준수. 단 인증서는 자체서명(W10 갭)
     answer_detail: "전송 암호화 점검 = openssl s_client로 협상된 TLS 버전(Protocol)과 cipher를 읽는 것. el34는 TLSv1.3 + TLS_AES_256_GCM_SHA384(GCM=AEAD, 암호화+무결성 동시)로 PCI-DSS 4.2.1 강한 암호를 충족. 단 버전·cipher의 강도와 인증서 신뢰(자체서명 갭)는 별개 통제다."
     expected_output: |
       New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
@@ -118,9 +117,9 @@ steps:
 
       ```bash
       # 1) nmap ssl-enum-ciphers로 서버 허용 cipher 전체 등급과 least strength(최저 등급) 열거
-      timeout 55 nmap --script ssl-enum-ciphers -p 443 10.20.30.1 2>/dev/null | grep -iE 'TLSv|least strength'
+      timeout 55 nmap --script ssl-enum-ciphers -p 443 neobank.el34.lab 2>/dev/null | grep -iE 'TLSv|least strength'
       # 2) 해석 — least strength A=약한 cipher 없음(PCI 준수), C~F면 RC4/3DES 잔존(PCI 미달)
-      echo "→ least strength A = 약한 cipher 없음(PCI 준수). C~F면 RC4/3DES 잔존 = PCI 미달"
+      # → least strength A = 약한 cipher 없음(PCI 준수). C~F면 RC4/3DES 잔존 = PCI 미달
       ```
       - `nmap --script ssl-enum-ciphers` : 지원 cipher 전체에 A~F 등급을 매기고 `least strength:`(최저 등급)를 출력.
       - `-p 443` 대상 포트. 앞의 `timeout 55`는 스캔이 길어지면 55초에 강제 종료하는 안전장치.
@@ -132,9 +131,9 @@ steps:
     points: 14
     answer: |
       # 1) nmap ssl-enum-ciphers로 서버 허용 cipher 전체 등급과 least strength(최저 등급) 열거
-      docker exec el34-attacker sh -c "timeout 55 nmap --script ssl-enum-ciphers -p 443 10.20.30.1 2>/dev/null | grep -iE 'TLSv|least strength'"
+      ssh att@192.168.0.202 "timeout 55 nmap --script ssl-enum-ciphers -p 443 neobank.el34.lab 2>/dev/null | grep -iE 'TLSv|least strength'"
       # 2) 해석 — least strength A=약한 cipher 없음(PCI 준수), C~F면 RC4/3DES 잔존(PCI 미달)
-      echo "→ least strength A = 약한 cipher 없음(PCI 준수). C~F면 RC4/3DES 잔존 = PCI 미달"
+      # → least strength A = 약한 cipher 없음(PCI 준수). C~F면 RC4/3DES 잔존 = PCI 미달
     answer_detail: "cipher 강도 = nmap ssl-enum-ciphers의 least strength 등급(서버가 허용하는 cipher 중 가장 약한 것). el34는 A = 약한 cipher(RC4·3DES·EXPORT) 없음 = PCI-DSS 4.2.1 준수. C~F면 취약 cipher 잔존 = PCI 미달이므로 해당 cipher를 서버 설정에서 비활성해야 한다."
     expected_output: |
       |   TLSv1.2:
@@ -162,9 +161,9 @@ steps:
 
       ```bash
       # 1) -tls1_1로만 핸드셰이크 강제 → 거부 신호(no protocols/alert/handshake fail) 있으면 tls11=blocked, 없으면 allowed
-      if echo | openssl s_client -connect 10.20.30.1:443 -tls1_1 2>&1 | grep -qiE "no protocols|alert|handshake fail|no peer cert"; then echo "tls11=blocked"; else echo "tls11=allowed"; fi
+      if echo | openssl s_client -connect neobank.el34.lab:443 -tls1_1 2>&1 | grep -qiE "no protocols|alert|handshake fail|no peer cert"; then echo "tls11=blocked"; else echo "tls11=allowed"; fi
       # 2) 해석 — PCI-DSS는 TLS1.0/1.1 사용 금지, 차단(blocked)이 준수(allowed면 즉시 비활성)
-      echo "→ PCI-DSS는 TLS1.0/1.1 사용 금지. 차단(blocked)이 준수. allowed면 즉시 비활성"
+      # → PCI-DSS는 TLS1.0/1.1 사용 금지. 차단(blocked)이 준수. allowed면 즉시 비활성
       ```
       - `openssl s_client -tls1_1` : TLS1.1로만 핸드셰이크 시도. 서버가 닫아 두었으면 거부 신호가 나타난다.
       - `if ... grep -q ...; then "blocked"; else "allowed"` : 거부 신호 있으면 차단(준수), 없으면 허용(갭).
@@ -176,9 +175,9 @@ steps:
     points: 14
     answer: |
       # 1) -tls1_1로만 핸드셰이크 강제 → 거부 신호(no protocols/alert/handshake fail) 있으면 tls11=blocked, 없으면 allowed
-      docker exec el34-attacker sh -c 'if echo | openssl s_client -connect 10.20.30.1:443 -tls1_1 2>&1 | grep -qiE "no protocols|alert|handshake fail|no peer cert"; then echo "tls11=blocked"; else echo "tls11=allowed"; fi'
+      ssh att@192.168.0.202 'if echo | openssl s_client -connect neobank.el34.lab:443 -tls1_1 2>&1 | grep -qiE "no protocols|alert|handshake fail|no peer cert"; then echo "tls11=blocked"; else echo "tls11=allowed"; fi'
       # 2) 해석 — PCI-DSS는 TLS1.0/1.1 사용 금지, 차단(blocked)이 준수(allowed면 즉시 비활성)
-      echo "→ PCI-DSS는 TLS1.0/1.1 사용 금지. 차단(blocked)이 준수. allowed면 즉시 비활성"
+      # → PCI-DSS는 TLS1.0/1.1 사용 금지. 차단(blocked)이 준수. allowed면 즉시 비활성
     answer_detail: "폐기 프로토콜 = 보안 결함으로 사용 금지된 TLS1.0/1.1. 일부러 -tls1_1로 접속해 핸드셰이크가 거부되면(tls11=blocked) 다운그레이드 공격을 막은 것 = PCI-DSS 4 준수. allowed면 즉시 비활성해야 할 갭이다."
     expected_output: |
       tls11=blocked
@@ -208,7 +207,7 @@ steps:
       # 3) 원칙 — 평문 저장 금지, 카드번호는 토큰화/마스킹
       echo "원칙: 평문 저장 금지, 카드번호는 토큰화/마스킹"
       # 4) 결론 — 전송만 암호화하고 저장은 평문이면 DB 유출 시 그대로 노출
-      echo "→ 전송만 암호화하고 저장은 평문이면 DB 유출 시 그대로 노출"
+      # → 전송만 암호화하고 저장은 평문이면 DB 유출 시 그대로 노출
       ```
       ## ✅ 합격 기준
       `AES-256` 출력 시 통과. **근거:** 저장 암호화의 대상·알고리즘(AES-256)·원칙(평문 금지/토큰화/마스킹)이
@@ -224,7 +223,7 @@ steps:
       # 3) 원칙 — 평문 저장 금지, 카드번호는 토큰화/마스킹
       echo "원칙: 평문 저장 금지, 카드번호는 토큰화/마스킹"
       # 4) 결론 — 전송만 암호화하고 저장은 평문이면 DB 유출 시 그대로 노출
-      echo "→ 전송만 암호화하고 저장은 평문이면 DB 유출 시 그대로 노출"
+      # → 전송만 암호화하고 저장은 평문이면 DB 유출 시 그대로 노출
     answer_detail: "저장 암호화(at rest, PCI-DSS 3) = 카드/개인정보/인증정보/백업을 AES-256 등 강한 알고리즘으로 저장 시 암호화. 평문 저장 금지가 대원칙이며 카드번호는 토큰화/마스킹한다. 전송만 암호화하고 저장이 평문이면 DB·백업 유출 한 번에 그대로 노출된다."
     expected_output: |
       대상: 카드정보(PCI 3)·개인정보·인증정보·백업
@@ -256,7 +255,7 @@ steps:
       # 3) 접근통제 — 키 접근 최소화 + 감사
       echo "접근통제: 키 접근 최소화 + 감사"
       # 4) 결론 — 키가 데이터 옆 평문이면 암호화 무의미, 키 분리·보호가 핵심
-      echo "→ 키가 데이터 옆 평문이면 암호화 무의미. 키 분리·보호가 핵심"
+      # → 키가 데이터 옆 평문이면 암호화 무의미. 키 분리·보호가 핵심
       ```
       - DEK(데이터 직접 암호화) ≠ KEK(DEK를 다시 암호화하는 마스터 키). 데이터 옆엔 암호화된 DEK만, KEK는 KMS/HSM에 격리.
       ## ✅ 합격 기준
@@ -273,7 +272,7 @@ steps:
       # 3) 접근통제 — 키 접근 최소화 + 감사
       echo "접근통제: 키 접근 최소화 + 감사"
       # 4) 결론 — 키가 데이터 옆 평문이면 암호화 무의미, 키 분리·보호가 핵심
-      echo "→ 키가 데이터 옆 평문이면 암호화 무의미. 키 분리·보호가 핵심"
+      # → 키가 데이터 옆 평문이면 암호화 무의미. 키 분리·보호가 핵심
     answer_detail: "키 관리(PCI-DSS 3) = 생성→배포→보관(KMS/HSM)→교체→폐기 생명주기 + DEK(데이터 암호화 키)/KEK(마스터 키) 분리 + 키 접근 최소화·감사. DB를 빼가도 KEK가 없어 DEK를 못 풀게 하는 것이 핵심 — 키 보호가 암호화의 전제다."
     expected_output: |
       키 관리 생명주기: 생성→배포→보관(KMS/HSM)→교체(주기적)→폐기
@@ -307,7 +306,7 @@ steps:
       # 4) 폐기 프로토콜(TLS1.0/1.1) 차단
       echo "4) 폐기 프로토콜(TLS1.0/1.1) 차단"
       # 5) 핵심 — 전송+저장 양쪽 + 키 보호(PCI 4·3)
-      echo "→ 핵심: 전송+저장 양쪽 + 키 보호(PCI 4·3)"
+      # → 핵심: 전송+저장 양쪽 + 키 보호(PCI 4·3)
       ```
       ## ✅ 합격 기준
       `키 관리` 출력 시 통과. **근거:** 전송·저장·키·폐기 프로토콜 차단이 종합되면(자체서명→유효 CA 교체
@@ -325,7 +324,7 @@ steps:
       # 4) 폐기 프로토콜(TLS1.0/1.1) 차단
       echo "4) 폐기 프로토콜(TLS1.0/1.1) 차단"
       # 5) 핵심 — 전송+저장 양쪽 + 키 보호(PCI 4·3)
-      echo "→ 핵심: 전송+저장 양쪽 + 키 보호(PCI 4·3)"
+      # → 핵심: 전송+저장 양쪽 + 키 보호(PCI 4·3)
     answer_detail: "암호화 방어 4 기둥 = ① 전송(TLS1.2+/AEAD + 유효 CA 인증서) ② 저장(AES-256 + 토큰화/마스킹) ③ 키 관리(KMS/HSM + DEK/KEK 분리) ④ 폐기 프로토콜 차단. 전송과 저장 양쪽 + 키 보호가 모두 있어야 PCI-DSS 4·3을 충족한다."
     expected_output: |
       1) 전송: TLS1.2/1.3 + AEAD cipher + 유효 CA 인증서(자체서명 교체)
@@ -352,13 +351,14 @@ steps:
       ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
       # 1) heredoc(<<'EOF' ... EOF)으로 암호화 보고서를 출력 — 전송(PCI 4)→저장/키(PCI 3)→갭/권고
-      cat <<'EOF'
+      cat > ~/compliance_w05_note1.md <<'EOF'
       # 컴플라이언스 W05 암호화 보고서
       ## 1. 전송: TLSv1.3/least strength A/TLS1.1 차단 → PCI-DSS 4 준수
       ## 2. 저장: AES-256 + 토큰화, 키 관리(KMS/HSM, DEK≠KEK) → PCI-DSS 3
       ## 3. 갭: 자체서명 인증서(신뢰 체인 결함) → 유효 CA 인증서 교체 필요
       ## 결론: 알고리즘/프로토콜은 강하나 인증서 신뢰가 갭. 전송+저장+키 관리 3축 충족이 목표
       EOF
+      cat ~/compliance_w05_note1.md
       ```
       ## ✅ 합격 기준
       `PCI-DSS` 출력 시 통과. **근거:** 보고서에 전송 점검 + 저장/키 + 갭(자체서명)이 모두 포함되고
@@ -367,13 +367,14 @@ steps:
     category: report
     points: 12
     answer: |
-      cat <<'EOF'
+      cat > ~/compliance_w05_note2.md <<'EOF'
       # 컴플라이언스 W05 암호화 보고서
       ## 1. 전송: TLSv1.3/least strength A/TLS1.1 차단 → PCI-DSS 4 준수
       ## 2. 저장: AES-256 + 토큰화, 키 관리(KMS/HSM, DEK≠KEK) → PCI-DSS 3
       ## 3. 갭: 자체서명 인증서(신뢰 체인 결함) → 유효 CA 인증서 교체 필요
       ## 결론: 알고리즘/프로토콜은 강하나 인증서 신뢰가 갭. 전송+저장+키 관리 3축 충족이 목표
       EOF
+      cat ~/compliance_w05_note2.md
     answer_detail: "암호화 컴플라이언스 보고서 = 준수(전송 TLSv1.3/least strength A/TLS1.1 차단 → PCI 4) + 저장·키(AES-256/토큰화/KMS·DEK≠KEK → PCI 3) + 갭(자체서명 인증서 = 신뢰 체인 결함) + 권고(유효 CA 교체). 결론은 '알고리즘·프로토콜은 강하나 인증서 신뢰가 갭'. 결론 선언이 아니라 명령 출력을 증거로 제시해야 감사 증적이 된다."
     expected_output: |
       # 컴플라이언스 W05 암호화 보고서

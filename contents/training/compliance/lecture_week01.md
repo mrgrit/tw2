@@ -468,12 +468,12 @@ graph TD
 실측 명령은 다음과 같다(lab 미션 4 와 동일).
 
 ```bash
-docker exec el34-web sh -c 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ 2>/dev/null | head -1); echo "current:$V"; echo "$V" | grep -qi "Prod" && echo "compliant" || echo "gap=not_Prod"'
+ssh ccc@10.20.32.80 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ | head -1); echo "current:$V"; echo "$V" | grep -qi "Prod" && echo "compliant" || echo "gap=not_Prod"'
 ```
 
 이 명령을 한 부분씩 읽어 보면 점검 논리가 그대로 드러난다.
 
-- `docker exec el34-web sh -c '...'` — el34 호스트에서 점검 대상 컨테이너(el34-web) 안에 명령을 보낸다.
+- `ssh ccc@10.20.32.80 '...'` — el34 호스트에서 점검 대상 컨테이너(el34-web) 안에 명령을 보낸다.
 - `grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/` — Apache 설정 디렉터리 전체를 뒤져
   `ServerTokens` 로 시작하는 줄을 찾는다(`-r` 하위 포함, `-h` 파일명 숨김, `-i` 대소문자 무시,
   `-E` 확장 정규식, `^[[:space:]]*` 는 줄 앞 공백 허용).
@@ -611,7 +611,7 @@ graph TD
 graph TD
     AUDITOR["점검자(학생)<br/>학생 PC 터미널"]
     HOST["el34 호스트<br/>ssh ccc@192.168.0.80 (pw 1)"]
-    WEB["점검 대상 자산<br/>el34-web (Apache 웹 서버)<br/>docker exec el34-web ..."]
+    WEB["점검 대상 자산<br/>el34-web (Apache 웹 서버)<br/>ssh ccc@10.20.32.80 ..."]
     CHECK["설정 실측 → 기준 대조 → 갭·증적"]
     AUDITOR --> HOST --> WEB --> CHECK
     style AUDITOR fill:#1f6feb,color:#fff
@@ -626,7 +626,7 @@ graph TD
 
 ```bash
 ssh ccc@192.168.0.80                          # el34 호스트 접속 (비밀번호: 1)
-docker exec el34-web sh -c "hostname; echo target_ok"   # 점검 대상 도달 확인
+ssh ccc@10.20.32.80 "hostname; echo target_ok"   # 점검 대상 도달 확인
 ```
 
 > **왜 el34-web 인가.** 컴플라이언스 점검은 모든 자산을 동시에 보지 않고, **위험이 큰 자산부터**

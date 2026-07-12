@@ -246,8 +246,8 @@ graph TD
 ## 2. SCA 한 바퀴 — el34 에서 6 단계 상세
 
 이번 주의 시나리오는 한 감사자가 `el34-web` 의 SCA 를 6 단계로 점검하는 것이다. 명령은 el34
-호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에 접속한 뒤, **에이전트** 점검은 `docker exec el34-web`,
-**매니저/정책/결과** 점검은 `docker exec el34-siem` 으로 실행한다. 각 단계마다 **한 줄 정의 → 무엇을
+호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에 접속한 뒤, **에이전트** 점검은 `ssh ccc@10.20.32.80`,
+**매니저/정책/결과** 점검은 `ssh ccc@10.20.32.100` 으로 실행한다. 각 단계마다 **한 줄 정의 → 무엇을
 점검하나 → el34 에서 어떻게 보이나 → 한계**의 4축으로 설명한다.
 
 > **왜 web 과 siem 을 나눠 보는가.** el34 의 Wazuh 는 **에이전트-매니저** 구조다(W01 §2.4). **SCA
@@ -510,7 +510,7 @@ ccc@192.168.0.80`, 비밀번호 1)에서 `docker exec` 로 실행하며, 신규 
 ### 4.1 SCA 모듈 활성 (ossec.conf — 미션 2, web)
 
 ```bash
-docker exec el34-web sh -c "grep -A4 '<sca>' /var/ossec/etc/ossec.conf | head -6"
+ssh ccc@10.20.32.80 "grep -A4 '<sca>' /var/ossec/etc/ossec.conf | head -6"
 ```
 
 무엇을 보나 — `<sca>` 블록의 `enabled yes` + `interval 12h`. 12시간 주기 자동 평가가 켜져 있으면 준수.
@@ -518,7 +518,7 @@ docker exec el34-web sh -c "grep -A4 '<sca>' /var/ossec/etc/ossec.conf | head -6
 ### 4.2 내장 CIS 정책 목록 (ruleset/sca — 미션 3, siem)
 
 ```bash
-docker exec el34-siem sh -c "ls /var/ossec/ruleset/sca/ | grep -i cis | head -8"
+ssh ccc@10.20.32.100 "ls /var/ossec/ruleset/sca/ | grep -i cis | head -8"
 ```
 
 무엇을 보나 — `cis_apache_24.yml` 등 내장 CIS 정책. 대상(web)에 맞는 정책을 활성화해 점검에 쓴다.
@@ -526,7 +526,7 @@ docker exec el34-siem sh -c "ls /var/ossec/ruleset/sca/ | grep -i cis | head -8"
 ### 4.3 SCA 결과 적재 (alerts.json — 미션 4, siem)
 
 ```bash
-docker exec el34-siem sh -c 'N=$(tail -8000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c sca); echo "sca_alerts=$N"'
+ssh ccc@10.20.32.100 'N=$(tail -8000 /var/ossec/logs/alerts/alerts.json | grep -c sca); echo "sca_alerts=$N"'
 ```
 
 무엇을 보나 — `sca_alerts=<수>`. 0 보다 크면 SCA 점검 결과가 SIEM 에 적재되는 중(자동 평가 실제 동작).
@@ -534,7 +534,7 @@ docker exec el34-siem sh -c 'N=$(tail -8000 /var/ossec/logs/alerts/alerts.json 2
 ### 4.4 CIS 점검 항목 정의 (cis_apache_24 8.1 — 미션 5, siem)
 
 ```bash
-docker exec el34-siem sh -c "grep -B1 -A2 'ServerTokens' /var/ossec/ruleset/sca/cis_apache_24.yml.disabled | head -6"
+ssh ccc@10.20.32.100 "grep -B1 -A2 'ServerTokens' /var/ossec/ruleset/sca/cis_apache_24.yml.disabled | head -6"
 ```
 
 무엇을 보나 — ServerTokens 항목(CIS 8.1)의 정의. W08·W01 의 수동 갭이 정책에 그대로 코드화돼 있다.
@@ -542,7 +542,7 @@ docker exec el34-siem sh -c "grep -B1 -A2 'ServerTokens' /var/ossec/ruleset/sca/
 ### 4.5 수동 검증 — 실제 설정 대조 (미션 6, web)
 
 ```bash
-docker exec el34-web sh -c 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ 2>/dev/null | head -1); echo "actual:$V"; echo "$V" | grep -qi "Prod" && echo "pass" || echo "fail=not_Prod"'
+ssh ccc@10.20.32.80 'V=$(grep -rhiE "^[[:space:]]*ServerTokens" /etc/apache2/ | head -1); echo "actual:$V"; echo "$V" | grep -qi "Prod" && echo "pass" || echo "fail=not_Prod"'
 ```
 
 무엇을 보나 — `actual:` 의 실제값과 판정. el34-web 은 `ServerTokens OS` 라 `fail=not_Prod`(SCA fail 과
@@ -623,7 +623,7 @@ SCA 운영에서 차지하는 자리. 네 방향을 모두 말할 수 있으면 
 > **왜 하는가?** SCA 점검의 전제는 표적에 접근이 된다는 것이다. 본격 점검 전 항상 대상의 도달성부터
 > 확인한다 — 대상에 못 닿으면 이후 모든 결과가 무의미하다.
 >
-> **무엇을 알 수 있는가?** `docker exec el34-web` 으로 hostname 이 응답하는지 — SCA 점검 대상(에이전트)
+> **무엇을 알 수 있는가?** `ssh ccc@10.20.32.80` 으로 hostname 이 응답하는지 — SCA 점검 대상(에이전트)
 > 이 살아있고 점검 가능한 상태인지. el34 의 SCA 구도에서 점검 대상은 `el34-web`(에이전트), 결과를 모으는
 > 곳은 `el34-siem`(매니저)이다.
 >

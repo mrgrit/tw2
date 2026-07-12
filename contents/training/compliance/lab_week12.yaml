@@ -16,7 +16,7 @@ description: |
   재식별 위험"이라는 개인정보 보호의 시선으로 다시 판정한다. 채점은 "데이터가 새더라"는 선언이 아니라
   개인정보 식별 → 위반 원칙(법 조항) → 재식별 위험 → 안전성 조치의 네 박자다.
 
-  표적은 el34 JuiceShop(juice.el34.lab), 점검은 el34-attacker(docker exec -it el34-attacker bash 로 접속)에서 curl·grep 으로 수행한다. 모든
+  표적은 el34 JuiceShop(juice.el34.lab), 점검은 외부 공격자 위치(ssh att@192.168.0.202)에서 nc(raw HTTP)·grep 으로 수행한다. 모든
   점검은 읽기 전용이며(노출된 개인정보를 수집·저장·재배포하지 않음), 인가된 표적만 점검한다. 신규
   도구 설치는 없다. lecture §0.5(개인정보/가명/익명) §2(식별) §3(처리원칙) §5(재식별) §6(가명/마스킹)
   과 1:1 로 대응한다.
@@ -50,9 +50,9 @@ steps:
 
       ```bash
       # 1) el34-attacker에서 fw 게이트웨이(10.20.30.1)에 Host: juice.el34.lab로 요청 — 응답코드를 juice= 로 출력
-      curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/
+      echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}"
       ```
-      - `curl` 옵션 — `-s`(진행률 숨김) `-k`(self-signed 무시) `-o /dev/null`(본문 버림) `-w 'juice=%{http_code}'`(응답코드만 출력). `-H 'Host: ...'` 로 가상호스트(JuiceShop) 라우팅.
+      - `echo -en 'GET / ...\r\nHost: juice.el34.lab\r\n...'` 가 raw HTTP 요청이고, `nc -w3 192.168.0.161 80` 로 fw→web 에 전송(`-w3` 3초 타임아웃). `head -1`(응답 첫 줄)→`grep -oE '[0-9]{3}'`(상태 코드만). `Host` 헤더로 가상호스트(JuiceShop) 라우팅.
       ## ✅ 합격 기준
       `juice` 출력 시 통과. **근거:** juice=<응답코드>(예: juice=200)가 나오면 대상 도달 성공 — 응답이
       없으면 호스트 SSH·컨테이너 상태(`docker ps`)·vhost(`Host: juice.el34.lab`)부터 점검한다.
@@ -61,7 +61,7 @@ steps:
     points: 10
     answer: |
       # 1) el34-attacker에서 fw 게이트웨이(10.20.30.1)에 Host: juice.el34.lab로 요청 — 응답코드를 juice= 로 출력
-      docker exec el34-attacker sh -c "curl -sk -o /dev/null -w 'juice=%{http_code}\n' -H 'Host: juice.el34.lab' http://10.20.30.1/"
+      ssh att@192.168.0.202 "echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}"
     answer_detail: "데이터 보호 점검 대상 = JuiceShop(개인정보를 처리하는 웹 앱). el34-attacker 에서 fw 게이트웨이(10.20.30.1)로 Host: juice.el34.lab 헤더를 실어 호출하고 juice=<응답코드>가 돌아오면 대상 도달 확인 — 본격 점검 전 도달성을 검증하는 감사 착수의 전제 단계다."
     expected_output: |
       juice=200
@@ -72,7 +72,7 @@ steps:
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] curl (권장)**"]
+        acceptable_methods: ["**[OSS] nc (권장)**"]
     target_vm: web
 
   - order: 2
@@ -91,11 +91,11 @@ steps:
 
       ```bash
       # 1) /api/Feedbacks 무인증 응답에서 이메일 조각(@도메인)만 추려 앞 3개 — 무인증 개인정보 노출 확인
-      curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Feedbacks | grep -oE '@[a-zA-Z0-9.-]+' | head -3
+      echo -en "GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null | grep -oE '@[a-zA-Z0-9.-]+' | head -3
       # 2) 해석 — 무인증 200 + 이메일 조각(@도메인) + UserId 노출 = 개인정보 보호 결함
-      echo "→ /api/Feedbacks 무인증 200 + 이메일 조각(@도메인) + UserId 노출 = 개인정보 보호 결함"
+      # → /api/Feedbacks 무인증 200 + 이메일 조각(@도메인) + UserId 노출 = 개인정보 보호 결함
       ```
-      - `curl … /api/Feedbacks`(토큰·로그인 없이 응답 본문)→`grep -oE '@[a-zA-Z0-9.-]+'`(@도메인만)→`head -3`(표본 3개).
+      - `nc … /api/Feedbacks`(토큰·로그인 없이 raw HTTP 로 응답 본문)→`grep -oE '@[a-zA-Z0-9.-]+'`(@도메인만)→`head -3`(표본 3개).
       ## ✅ 합격 기준
       `@` 출력 시 통과. **근거:** @도메인(이메일 조각)이 나오면 무인증 응답에 개인정보가 실려 있다는 증거 —
       같은 응답의 UserId 와 함께 새는 것이 핵심이다(재식별은 미션 5). 노출된 실제 이메일은 증거로만 본다.
@@ -104,9 +104,9 @@ steps:
     points: 14
     answer: |
       # 1) /api/Feedbacks 무인증 응답에서 이메일 조각(@도메인)만 추려 앞 3개 — 무인증 개인정보 노출 확인
-      docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Feedbacks | grep -oE '@[a-zA-Z0-9.-]+' | head -3"
+      ssh att@192.168.0.202 "echo -en "GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null | grep -oE '@[a-zA-Z0-9.-]+' | head -3"
       # 2) 해석 — 무인증 200 + 이메일 조각(@도메인) + UserId 노출 = 개인정보 보호 결함
-      echo "→ /api/Feedbacks 무인증 200 + 이메일 조각(@도메인) + UserId 노출 = 개인정보 보호 결함"
+      # → /api/Feedbacks 무인증 200 + 이메일 조각(@도메인) + UserId 노출 = 개인정보 보호 결함
     answer_detail: "개인정보 식별 = /api/Feedbacks 가 무인증 200 으로 이메일 조각(@도메인)과 UserId 를 흘리는 것을 확인하는 단계(자산 식별 = 감사의 1단계). API·로그·백업 어디에 개인정보가 있는지 찾는 데이터 매핑(data mapping)의 축소판이며, 화면엔 안 보여도 응답 본문에는 식별자가 실려 있다는 사실이 핵심. 증적 = 추출된 @도메인."
     expected_output: |
       @juice-sh.op
@@ -149,7 +149,7 @@ steps:
       # 6) ⑥ 투명성 — 처리방침 공개·동의
       echo "투명성: 처리방침 공개·동의"
       # 7) 판정 — Feedbacks 무인증 노출은 안전성·최소화 원칙 위반
-      echo "→ Feedbacks 무인증 노출은 안전성·최소화 원칙 위반"
+      # → Feedbacks 무인증 노출은 안전성·최소화 원칙 위반
       ```
       ## ✅ 합격 기준
       `최소화` 출력 시 통과. **근거:** 처리 원칙 6 이 정리되고 수집 최소화가 나오면 통과 — 핵심은
@@ -171,7 +171,7 @@ steps:
       # 6) ⑥ 투명성 — 처리방침 공개·동의
       echo "투명성: 처리방침 공개·동의"
       # 7) 판정 — Feedbacks 무인증 노출은 안전성·최소화 원칙 위반
-      echo "→ Feedbacks 무인증 노출은 안전성·최소화 원칙 위반"
+      # → Feedbacks 무인증 노출은 안전성·최소화 원칙 위반
     answer_detail: "처리 원칙 6 = 목적 제한·수집 최소화·정확성·보유 제한·안전성·투명성(개인정보보호법 제3조 / GDPR 제5조). Feedbacks 무인증 노출은 그중 수집 최소화(불필요한 식별자를 응답에 포함)와 안전성(접근통제 없는 무인증 노출)을 위반 — '노출됐다'가 아니라 '어느 원칙을 어겼다'로 법적 의미를 부여하는 판정 근거다. 증적 = 무인증 응답에 실린 이메일·UserId."
     expected_output: |
       목적 제한: 수집 목적 내에서만 이용
@@ -210,7 +210,7 @@ steps:
       # 2) GDPR 추가 — 데이터 이동권, 잊힐 권리(삭제권)
       echo "GDPR 추가: 데이터 이동권, 잊힐 권리(삭제권)"
       # 3) 의무 — 권리 행사 요청에 법정 기한 내 대응
-      echo "→ 권리 행사 요청에 법정 기한 내 대응 의무"
+      # → 권리 행사 요청에 법정 기한 내 대응 의무
       ```
       ## ✅ 합격 기준
       `처리정지` 출력 시 통과. **근거:** 정보주체 권리 목록(열람·정정·삭제·처리정지·동의철회 + GDPR
@@ -224,7 +224,7 @@ steps:
       # 2) GDPR 추가 — 데이터 이동권, 잊힐 권리(삭제권)
       echo "GDPR 추가: 데이터 이동권, 잊힐 권리(삭제권)"
       # 3) 의무 — 권리 행사 요청에 법정 기한 내 대응
-      echo "→ 권리 행사 요청에 법정 기한 내 대응 의무"
+      # → 권리 행사 요청에 법정 기한 내 대응 의무
     answer_detail: "정보주체 권리 = 열람·정정·삭제·처리정지·동의철회(PIPA·GDPR 공통) + GDPR 데이터 이동권(제20조)·잊힐 권리(제17조). 개인정보는 정보주체에게 빌린 것이므로 주인이 통제권을 행사할 수 있어야 하고, 처리자는 법정 기한 내 대응 의무가 있다. 핵심 통찰 = Feedbacks 무인증 노출 시 이 권리들이 실질적으로 무력화된다(안전성 붕괴 = 권리 붕괴)."
     expected_output: |
       열람 · 정정·삭제 · 처리정지 · 동의철회
@@ -258,9 +258,9 @@ steps:
 
       ```bash
       # 1) 같은 무인증 응답에서 UserId 값만 추려 앞 2개 출력 후 reident_check 마커
-      curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Feedbacks | grep -oE 'UserId[^,]*' | head -2; echo reident_check
+      echo -en "GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null | grep -oE 'UserId[^,]*' | head -2; echo reident_check
       # 2) 해석 — 부분 마스킹(***in@도메인)이어도 UserId+도메인 결합으로 재식별 가능
-      echo "→ 부분 마스킹(***in@도메인)이어도 UserId+도메인 결합으로 재식별 가능. 부분 마스킹의 한계"
+      # → 부분 마스킹(***in@도메인)이어도 UserId+도메인 결합으로 재식별 가능. 부분 마스킹의 한계
       ```
       - `grep -oE 'UserId[^,]*'` = UserId 로 시작해 다음 쉼표 전까지(쉼표 아닌 문자들) 값 추출. `head -2`(표본 2개).
       ## ✅ 합격 기준
@@ -272,9 +272,9 @@ steps:
     points: 12
     answer: |
       # 1) 같은 무인증 응답에서 UserId 값만 추려 앞 2개 출력 후 reident_check 마커
-      docker exec el34-attacker sh -c "curl -sk -H 'Host: juice.el34.lab' http://10.20.30.1/api/Feedbacks | grep -oE 'UserId[^,]*' | head -2; echo reident_check"
+      ssh att@192.168.0.202 "echo -en "GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null | grep -oE 'UserId[^,]*' | head -2; echo reident_check"
       # 2) 해석 — 부분 마스킹(***in@도메인)이어도 UserId+도메인 결합으로 재식별 가능
-      echo "→ 부분 마스킹(***in@도메인)이어도 UserId+도메인 결합으로 재식별 가능. 부분 마스킹의 한계"
+      # → 부분 마스킹(***in@도메인)이어도 UserId+도메인 결합으로 재식별 가능. 부분 마스킹의 한계
     answer_detail: "재식별 = 부분 마스킹된 이메일 + 준식별자(UserId·도메인)의 결합으로 개인을 특정하는 것(결합 공격, linkage attack). 부분 마스킹의 한계 — 비식별 안전성은 '무엇을 가렸나'가 아니라 '남은 것을 결합해 식별되나'로 판단한다. 무인증 노출 상황의 진짜 안전성은 마스킹이 아니라 접근 통제 + 응답 필드 최소화(또는 가명·익명)에서 나온다(미션 6·7). 증적 = UserId + reident_check."
     expected_output: |
       UserId":1
@@ -313,7 +313,7 @@ steps:
       # 3) 마스킹 — 화면/응답 부분 가림, 부분 마스킹은 재식별 위험 잔존
       echo "마스킹: 화면/응답 부분 가림 — 부분 마스킹은 재식별 위험 잔존"
       # 4) 판단 — Feedbacks는 완전 비식별/접근통제 필요(부분 마스킹 불충분)
-      echo "→ Feedbacks는 완전 비식별/접근통제가 필요(부분 마스킹 불충분)"
+      # → Feedbacks는 완전 비식별/접근통제가 필요(부분 마스킹 불충분)
       ```
       ## ✅ 합격 기준
       `가명처리` 출력 시 통과. **근거:** 세 기법(마스킹<가명<익명)이 복원 가능성·법적 지위로 구분되면
@@ -329,7 +329,7 @@ steps:
       # 3) 마스킹 — 화면/응답 부분 가림, 부분 마스킹은 재식별 위험 잔존
       echo "마스킹: 화면/응답 부분 가림 — 부분 마스킹은 재식별 위험 잔존"
       # 4) 판단 — Feedbacks는 완전 비식별/접근통제 필요(부분 마스킹 불충분)
-      echo "→ Feedbacks는 완전 비식별/접근통제가 필요(부분 마스킹 불충분)"
+      # → Feedbacks는 완전 비식별/접근통제가 필요(부분 마스킹 불충분)
     answer_detail: "비식별 세 기법 = 마스킹(부분 가림·재식별 잔존·여전히 개인정보·가장 약함) < 가명처리(추가정보로 복원 가능·여전히 개인정보·통계/연구 활용) < 익명처리(복원 불가·개인정보 아님). 강도·법적 지위가 다르다. Feedbacks 같은 무인증 노출엔 부분 마스킹이 부족하므로 접근 통제 + 응답 필드 최소화(또는 가명)가 적정 — '목적에 맞는 최소한의 식별성'이 정답이다."
     expected_output: |
       가명처리: 추가정보 없이는 식별 불가(분석 활용 가능, 여전히 개인정보)
@@ -371,7 +371,7 @@ steps:
       # 5) 접근 로깅 + 보유기간 만료 시 파기
       echo "5) 접근 로깅 + 보유기간 만료 시 파기"
       # 6) 핵심 — 무인증 노출 차단 + 비식별 + 암호화
-      echo "→ 핵심: 무인증 노출 차단 + 비식별 + 암호화"
+      # → 핵심: 무인증 노출 차단 + 비식별 + 암호화
       ```
       ## ✅ 합격 기준
       `접근통제` 출력 시 통과. **근거:** 안전성 확보 조치가 위험 감소 효과순으로 정리되고 접근통제(무인증
@@ -391,7 +391,7 @@ steps:
       # 5) 접근 로깅 + 보유기간 만료 시 파기
       echo "5) 접근 로깅 + 보유기간 만료 시 파기"
       # 6) 핵심 — 무인증 노출 차단 + 비식별 + 암호화
-      echo "→ 핵심: 무인증 노출 차단 + 비식별 + 암호화"
+      # → 핵심: 무인증 노출 차단 + 비식별 + 암호화
     answer_detail: "안전성 확보 조치(PIPA 안전성 확보조치 기준 / GDPR 제32조) = 위험 감소 효과순으로 ① 접근 통제(API 인증=무인증 노출 근본 차단·최우선) ② 응답 필드 최소화(직렬화 allowlist) ③ 비식별(가명/식별자 제거) ④ 암호화(전송 TLS + 저장 AES-256) ⑤ 접근 로깅 + 보유기간 파기. 단순 나열이 아니라 우선순위를 붙여야 시정 로드맵이 된다 — 접근 통제가 노출의 근본을 없앤다."
     expected_output: |
       1) 최소 수집 + 목적 제한
@@ -423,13 +423,14 @@ steps:
       ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
       # 1) heredoc(<<'EOF' ... EOF)으로 데이터 보호 보고서 출력 — 노출/재식별→원칙/권리→조치→결론
-      cat <<'EOF'
+      cat > ~/compliance_w12_note1.md <<'EOF'
       # 컴플라이언스 W12 데이터 보호 보고서
       ## 1. 노출: /api/Feedbacks 무인증 200 + 이메일/UserId → 부분 마스킹에도 재식별 위험
       ## 2. 원칙: 최소화/목적제한/보유제한/안전성 위반(무인증 노출). 정보주체 권리(열람~삭제) 보장 필요
       ## 3. 조치: API 인증 + 응답 최소화 + 가명/익명 + 암호화(전송/저장) + 보유기간 파기
       ## 결론: 개인정보는 빌린 것. 무인증 노출 차단·비식별·암호화로 안전성 확보, 위반 시 과징금
       EOF
+      cat ~/compliance_w12_note1.md
       ```
       ## ✅ 합격 기준
       `재식별` 출력 시 통과. **근거:** 노출(Feedbacks)/재식별 위험 + 처리 원칙/권리 + 안전성 조치 + 결론이
@@ -438,13 +439,14 @@ steps:
     category: report
     points: 14
     answer: |
-      cat <<'EOF'
+      cat > ~/compliance_w12_note2.md <<'EOF'
       # 컴플라이언스 W12 데이터 보호 보고서
       ## 1. 노출: /api/Feedbacks 무인증 200 + 이메일/UserId → 부분 마스킹에도 재식별 위험
       ## 2. 원칙: 최소화/목적제한/보유제한/안전성 위반(무인증 노출). 정보주체 권리(열람~삭제) 보장 필요
       ## 3. 조치: API 인증 + 응답 최소화 + 가명/익명 + 암호화(전송/저장) + 보유기간 파기
       ## 결론: 개인정보는 빌린 것. 무인증 노출 차단·비식별·암호화로 안전성 확보, 위반 시 과징금
       EOF
+      cat ~/compliance_w12_note2.md
     answer_detail: "데이터 보호 종합 보고 = ① 노출(/api/Feedbacks 무인증 200 + 이메일/UserId → 부분 마스킹에도 재식별 위험) + ② 처리 원칙(최소화·안전성 위반) 및 정보주체 권리(노출 시 무력화) + ③ 안전성 확보 조치(API 인증·응답 최소화·비식별·암호화·파기). 개인정보 감사·DPIA 보고서의 골격(노출/위험 → 법적 판정 → 시정 조치)이며 위반 시 과징금(개인정보보호법/GDPR) 대응의 근거. 결론 = 개인정보는 빌린 것 — 무인증 노출 차단·비식별·암호화로 안전성을 확보한다."
     expected_output: |
       # 컴플라이언스 W12 데이터 보호 보고서
