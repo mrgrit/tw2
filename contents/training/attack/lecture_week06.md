@@ -19,7 +19,7 @@
 1. 인증(authentication)과 인가(authorization)의 차이를 비유 없이 1분 안에 설명하고, 왜
    OWASP **A01(Broken Access Control)** 이 가장 빈번한 1위 취약점인지 근거를 댄다.
 2. el34 juiceshop 을 대상으로 **강제 브라우징** 을 수행해, UI 에 링크가 없는 경로
-   (`/ftp`) 가 직접 요청만으로 열리는 것을 `curl` 로 입증한다.
+   (`/ftp`) 가 직접 요청만으로 열리는 것을 `nc` 로 입증한다.
 3. **무인증 관리 엔드포인트**(`/rest/admin/application-configuration`) 를 토큰 없이
    호출해 A01 결함을 입증하고, 같은 앱 안에서 보호된 엔드포인트(`/api/Users`, 401)와
    비교해 **인가의 비일관성** 이라는 공격 표면을 식별한다.

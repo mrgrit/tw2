@@ -937,7 +937,7 @@ pcre 패턴의 각 부분 의미는 다음과 같다.
 - `[1-4]` — 성별/세기 식별 첫 자리. 1~4 가 가장 흔한 학습용 범위다.
 - `[0-9]{6}` — 뒷자리 6 숫자.
 
-attacker VM 에서 위 curl 을 다시 보낸 뒤 ips 에서 alert 발생 여부를 확인한다.
+attacker VM 에서 위 nc 요청을 다시 보낸 뒤 ips 에서 alert 발생 여부를 확인한다.
 
 ```bash
 sudo tail -100 /var/log/suricata/eve.json \

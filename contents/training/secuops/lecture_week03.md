@@ -346,7 +346,7 @@ ips 는 두 NIC 모두 sniff 라 packet 이 ips 를 forward 통과할 때:
 - ips 가 routing 으로 dmz (eth1) 로 보낼 때 → 다시 capture (event 2, in_iface eth1)
 
 따라서 같은 HTTP request 가 eve.json 에 **보통 2 라인** 으로 기록된다. R/B/P 의 alert
-count 계산 시 양 NIC 효과를 고려해야 함 (5 curl → 10 alert).
+count 계산 시 양 NIC 효과를 고려해야 함 (5 요청 → 10 alert).
 
 ---
 
@@ -653,7 +653,7 @@ done'
 ssh ccc@10.20.31.2 'sudo grep "9004001" /var/log/suricata/eve.json | jq -s length'
 ```
 
-**예상**: `10` (5 curl × 2 NIC). 5 가 아니면:
+**예상**: `10` (5 요청 × 2 NIC). 5 가 아니면:
 - 5 미만 → 룰 reload 안 됨 or content 매치 실패
 - 10 초과 → 다른 reload trigger 또는 retry traffic
 - 정확히 5 → 한쪽 NIC capture 만 (af-packet 설정 검토)
@@ -1232,7 +1232,7 @@ ssh ccc@10.20.31.2 'sudo grep "\"event_type\":\"tls\"" /var/log/suricata/eve.jso
 
 실습 5 의 R/B/P 결과 + 다음 4 항목:
 
-1. Red 5 curl 의 9004001 alert 정확 카운트 (10 예상)
+1. Red 5 요청의 9004001 alert 정확 카운트 (10 예상)
 2. 양 NIC capture 가 카운트에 미친 영향
 3. false-positive 가능성 + threshold 권장값 (count, seconds)
 4. production 환경에서 본 룰을 어떻게 audit 화 (git PR / reload 자동화 / Wazuh 통합)
@@ -1268,7 +1268,7 @@ ssh ccc@10.20.31.2 'sudo grep "\"event_type\":\"tls\"" /var/log/suricata/eve.jso
    suricata-update workflow (4 단계)
 7. **새 alert 룰** — `alert http any any -> $HOME_NET any (msg ...; http.user_agent;
    content:"..."; sid:9004001; rev:1)`. reload-rules 가 downtime 0
-8. **R/B/P** — Red 5 curl → 10 alert (양 NIC) → Purple threshold 5/60s
+8. **R/B/P** — Red 5 요청 → 10 alert (양 NIC) → Purple threshold 5/60s
 
 ---
 

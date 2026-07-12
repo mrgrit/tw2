@@ -117,7 +117,7 @@ graph TD
 
 XSS는 "남이 보는 페이지" 가 있어야 효과가 크다(특히 Stored). 그리고 본 실습의 핵심 검증은
 **payload가 실제로 브라우저에서 실행되는지** 가 아니라, payload가 **WAF에 탐지·차단되는지**
-(HTTP 응답 코드와 ModSec 로그)다. el34 실습은 `curl`로 payload를 전송해 응답 코드(403/200)와
+(HTTP 응답 코드와 ModSec 로그)다. el34 실습은 `nc`(raw HTTP)로 payload를 전송해 응답 코드(403/200)와
 ModSec 941 매치로 공방을 확인한다 — 실제 브라우저 팝업(`alert(1)`)을 띄우는 것이 목표가
 아니다. **그리고 이 모든 시도는 인가된 el34 실습 환경 안에서만 한다.** 외부 사이트를 대상으로
 한 XSS 시도는 불법이다.
@@ -222,7 +222,7 @@ echo "svg=$(echo -en 'GET /?q=<svg%20onload=alert(1)> HTTP/1.0\r\nHost: dvwa.el3
 
 > **el34 실측 주의 — payload 안의 공백은 반드시 `%20`으로 인코딩한다.**
 > `<img src=x onerror=alert(1)>` 처럼 payload에 **공백**이 들어가면, 그 공백이 URL과
-> `curl` 명령에서 인자 구분자로 잘못 해석되어 요청이 깨진다. 그래서 el34 실습에서는 공백을
+> raw HTTP 요청 줄(`GET <경로> HTTP/1.0`)에서 경로와 프로토콜을 가르는 구분자로 잘못 해석되어 요청이 깨진다. 그래서 el34 실습에서는 공백을
 > URL 인코딩 값 **`%20`** 으로 바꿔 `<img%20src=x%20onerror=alert(1)>` 형태로 보낸다.
 > 이렇게 보내도 web Apache는 디코딩해 원형으로 받고, ModSec의 **941 룰군은 `onerror=`·
 > `onload=` 같은 이벤트 핸들러 패턴까지 탐지**해 `403`으로 차단한다. 즉 `%20` 인코딩은

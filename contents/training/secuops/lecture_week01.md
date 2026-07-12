@@ -21,7 +21,7 @@
    진입하고, 각 컨테이너에서 본인 역할의 헬스체크를 1분 안에 수행한다.
 4. web 의 Apache vhost 라우팅(11 vhost)을 host header 별로 구분하고, 학생 트래픽
    (취약 웹) vs 운영 트래픽 (siem / portal) 의 경로 차이를 설명한다.
-5. attacker 컨테이너에서 가벼운 공격 (curl XSS / sqlmap UA) 을 발생시키고, 같은
+5. attacker 컨테이너에서 가벼운 공격 (nc XSS / sqlmap UA) 을 발생시키고, 같은
    transaction 의 흔적을 **5 곳** (fw nftables/conntrack → ips Suricata eve.json → web
    Apache access.log → web ModSec modsec_audit.log → siem Wazuh alerts.json) 에서 모두
    찾아낸다.
@@ -744,7 +744,7 @@ graph TD
 
 | 팀 | 책임 | 본 주차 활동 |
 |----|------|-------------|
-| **Red** | 공격 시뮬레이션 | attacker 에서 curl XSS / sqlmap 시도 |
+| **Red** | 공격 시뮬레이션 | attacker 에서 nc XSS / sqlmap 시도 |
 | **Blue** | detection + 분석 | fw/ips/web/siem 의 5 곳 로그 추적 |
 | **Purple** | gap 분석 + 룰 개선 | 미탐지 TTP 식별 + W03+ 에서 룰 추가 |
 
@@ -886,7 +886,7 @@ wazuh.manager
 >
 > **결과 해석**
 > table 출력 3개 (`ip nat` docker daemon + `inet six_filter` el34 정책 + `ip six_nat` el34 NAT).
-> attacker 에서 vhost 별 curl 이 `200`/`302` 응답.
+> attacker 에서 vhost 별 요청이 `200`/`302` 응답.
 >
 > **실전 활용**
 > production 환경에서 fw 의 첫 헬스체크. 5분 안에 정책·NAT·체인 통과를 확인 가능해야.
@@ -1273,7 +1273,7 @@ ssh ccc@10.20.32.100 'sudo tail -3 /var/ossec/logs/alerts/alerts.json | tail -1 
 echo "$(ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script>&id=1+UNION+SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null")"
 ```
 
-이 한 줄의 curl(sqlmap UA + XSS/SQLi payload)이 다음 4 도구에 흔적을 남긴다. `403` 이 떨어지면
+이 한 줄의 nc 요청(sqlmap UA + XSS/SQLi payload)이 다음 4 도구에 흔적을 남긴다. `403` 이 떨어지면
 ModSec 이 차단한 것이다. (대상은 **차단형 vhost `dvwa`**. `juice` 는 per-vhost DetectionOnly 라 200 통과
 — W02/W03 학습용이고, W01 의 차단 검증은 dvwa/neobank 등을 쓴다.)
 
@@ -1723,7 +1723,7 @@ el34 호스트
 | WAF의 사전 검증 | ModSecurity의 audit + 차단 |
 | 가짜 신분증 거부 | HTTP 403 응답 |
 
-본 케이스의 학습 목표는 attacker VM에서 curl로 SQLi payload를 보내고, ModSecurity가 그 시도를 차단하면서 audit log를 남기고, 학생이 Wazuh Dashboard UI에서 그 audit log를 분석하는 것이다.
+본 케이스의 학습 목표는 attacker VM에서 nc로 SQLi payload를 보내고, ModSecurity가 그 시도를 차단하면서 audit log를 남기고, 학생이 Wazuh Dashboard UI에서 그 audit log를 분석하는 것이다.
 
 **0a. 사용 도구 사전 안내.**
 

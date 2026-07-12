@@ -405,7 +405,7 @@ graph TD
 | ① 식별 | 출발지·타임라인 + 발판 확인 | `el34-siem` / `el34-web` | `alerts.json` / osquery |
 | ② 격리 | 출발지 플래그 룰 | `el34-ips` | Suricata `local.rules`·`eve.json` |
 | ③ 제거 | 발판 삭제 | `el34-web` | osquery · `userdel` · `rm` |
-| ④ 복구 | 서비스·잔재 검증 | `el34-web` | curl 헬스체크 · `id` |
+| ④ 복구 | 서비스·잔재 검증 | `el34-web` | nc 헬스체크 · `id` |
 | ⑤ 교훈 | 타임라인·근본원인 정리 | (호스트) | 보고서 |
 
 > **참고 — 출발지 IP 가 보존되는 이유.** 식별·격리가 출발지 `192.168.0.202` 를 키로 삼을 수

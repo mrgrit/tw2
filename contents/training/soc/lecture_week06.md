@@ -500,13 +500,13 @@ graph TD
 > - 같은 출발지(192.168.0.202)에서 두 단계가 연속으로 나가, 캠페인 재구성의 재료가 된다.
 >
 > **결과 해석**
-> 정상: nmap 스캔 완료(`scanned`) + SQLi curl 후 `chain done` 출력. 이 시점에 Suricata·
+> 정상: nmap 스캔 완료(`scanned`) + SQLi nc 후 `chain done` 출력. 이 시점에 Suricata·
 > ModSec·Wazuh에 각각 흔적이 쌓이기 시작한다(전파에 수 초 소요).
 >
 > **실전 활용**
 > Purple Team의 표준 절차 — Red가 통제된 공격을 재현해야 Blue가 탐지·분석을 검증할 수 있다.
 
-핵심 명령(요지): attacker에서 `sudo nmap -sS`(SYN 스캔)로 fw를 정찰하고, `curl`로 dvwa vhost에
+핵심 명령(요지): attacker에서 `sudo nmap -sS`(SYN 스캔)로 fw를 정찰하고, `nc`로 dvwa vhost에
 UNION SELECT SQLi를 보낸다. 조건 폴링(로그 흔적 대기)으로 경보 전파를 기다린 뒤 완료 표시를 낸다.
 
 > **처음 나오는 도구.** `sudo nmap -sS` = SYN 스캔(연결을 끝까지 맺지 않는 은밀한 포트 스캔).

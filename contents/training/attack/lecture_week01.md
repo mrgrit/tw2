@@ -100,7 +100,7 @@
   스캔(`nmap`)이 대표적이다. 정보를 훨씬 많이 얻지만, **대상의 방어 스택(IDS/IPS)에
   흔적이 남는다.** 본 주차의 실습은 인가된 환경에서의 능동 정찰이다.
 
-> **핵심.** 본 주차에서 학생이 수행하는 `nmap` 스캔과 `curl` 요청은 모두 **능동 정찰**
+> **핵심.** 본 주차에서 학생이 수행하는 `nmap` 스캔과 `whatweb` 요청은 모두 **능동 정찰**
 > 이다. 따라서 el34 의 Suricata 에 흔적이 남는다. 좋은 공격자는 "내가 지금 얼마나
 > 시끄러운가" 를 항상 의식한다 — 그것이 §6 에서 다룰 **탐지 회피** 의 출발점이다.
 
@@ -287,7 +287,7 @@ graph TD
     GW["대상 게이트웨이<br/>el34-fw<br/>192.168.0.161 (DNAT)"]
     IPS["방어: el34-ips<br/>Suricata<br/>eve.json 에 탐지"]
     WEB["대상: el34-web<br/>Apache + ModSec<br/>vhost별 앱"]
-    ATT -->|"① 정찰 패킷<br/>(nmap / curl)"| GW
+    ATT -->|"① 정찰 패킷<br/>(nmap / whatweb)"| GW
     GW -->|"② inline 검사"| IPS
     IPS -->|"③ 통과 / 기록"| WEB
     IPS -.->|"④ 공격자 IP로<br/>흔적 남김"| ATT
@@ -392,7 +392,7 @@ tail /var/log/suricata/eve.json
 > 설치되어 있다 — `nmap`(포트/서비스 스캔), `nc`(raw HTTP 요청), `nikto`(웹 취약점 스캔),
 > `whatweb`(기술 스택 핑거프린팅), `ffuf`/`gobuster`(디렉터리 브루트), `sqlmap`(SQLi 자동화),
 > `dalfox`(XSS 자동화), `python3-scapy`(패킷 크래프팅) 등. 본 주차는 그중 정찰의 기본인
-> `nmap` 과 `curl` 에 집중한다.
+> `nmap` 과 `whatweb` 에 집중한다.
 
 ### 3.4 도구 설치 — 내 공격 박스를 직접 꾸릴 때 (참고, 한 번만)
 
@@ -403,7 +403,7 @@ tail /var/log/suricata/eve.json
 ```bash
 # 1) 배포판 패키지로 한 번에 (가장 흔한 도구들)
 sudo apt-get update
-sudo apt-get install -y nmap nikto whatweb curl gobuster sqlmap python3-scapy
+sudo apt-get install -y nmap nikto whatweb netcat-openbsd gobuster sqlmap python3-scapy
 
 # 2) Go 기반 도구 — 배포판에 있으면 apt, 없으면 go install 또는 릴리스 바이너리
 sudo apt-get install -y ffuf                       # 없으면: go install github.com/ffuf/ffuf/v2@latest
@@ -515,7 +515,7 @@ Set-Cookie: PHPSESSID=...
 > 로 raw HTTP 요청을 보내 헤더를 확인한다 — 무엇을 보고 판단하는지가 명확하기 때문이다.
 
 **한계**: 운영자가 `Server` 헤더를 일부러 숨기거나 위조하면(`ServerTokens Prod`)
-핑거프린팅이 어려워진다. curl 요청도 능동 정찰이라 웹 접근 로그에 남는다.
+핑거프린팅이 어려워진다. whatweb 요청도 능동 정찰이라 웹 접근 로그에 남는다.
 
 ---
 
@@ -604,10 +604,10 @@ graph TD
 > **왜 하는가?** 정찰의 0번째 단계는 "내 도구가 준비됐고, 대상에 도달 가능한가" 의
 > 확인이다. 도구가 없거나 대상에 닿지 못하면 그 뒤 모든 정찰이 무의미하다.
 >
-> **무엇을 알 수 있는가?** 내 공격 VM에 `nmap`/`curl` 이 설치돼 있는지, 그리고
+> **무엇을 알 수 있는가?** 내 공격 VM에 `nmap`/`whatweb` 이 설치돼 있는지, 그리고
 > 대상 게이트웨이(192.168.0.161)에 HTTP 로 도달 가능한지(응답 코드).
 >
-> **결과 해석.** `which` 가 도구 경로를 출력하고, 도달성 curl 이 `200`/`302`/`403` 같은
+> **결과 해석.** `which` 가 도구 경로를 출력하고, 도달성 whatweb 이 `200`/`302`/`403` 같은
 > HTTP 코드를 반환하면 정상. 도달 코드가 `000` 이면 네트워크 미연결 또는 대상 다운.
 >
 > **실전 활용.** 모든 침투 테스트의 첫 명령. 도구·도달성 점검 없이 스캔부터 하면 원인
