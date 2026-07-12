@@ -120,16 +120,18 @@ el34는 방화벽이 SNAT를 하지 않아 **외부 공격자의 출처 IP(192.1
 성숙도의 핵심인 "사건 단위 재구성"이 불가능해진다. (대부분의 상용 환경은 게이트웨이에서 SNAT를 하기
 때문에 X-Forwarded-For 같은 헤더에 기대야 하지만, el34는 학습을 위해 출처를 살려 두었다.)
 
-### 0.5.4 HTTP 상태 코드 빠르게 읽기 — `dvwa=302`, `sqli=403`, `=000`
+### 0.5.4 HTTP 상태 코드 빠르게 읽기 — `whatweb [403]`, `sqlmap 403 (Forbidden)`, 무응답
 
-실습에서 raw HTTP 요청(`... | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'`)의 응답 첫 줄에서 상태 코드를 뽑는다. 세 자리 숫자의 첫 자리가 큰 뜻을 가진다.
+실습의 진짜 도구 출력에는 HTTP 상태 코드가 함께 찍힌다 — `whatweb`(도달·핑거프린팅)은 응답 줄의 `[403 Forbidden]`처럼, `sqlmap`(SQLi 자동 주입)은 `403 (Forbidden) - N times`처럼. 세 자리 숫자의 첫 자리가 큰 뜻을 가진다.
 
 | 코드 | 분류 | 이번 주차에서의 의미 |
 |------|------|----------------------|
-| **2xx** (200) | 성공 | 요청이 정상 처리됨(juice 같은 탐지전용 vhost는 공격도 200) |
-| **3xx** (302) | 리다이렉트 | dvwa가 로그인 페이지로 보냄 = **표적에 정상 도달**(STEP 1) |
-| **4xx** (403) | 클라이언트 차단 | ModSec(WAF)가 공격을 **차단**함(STEP 2의 `sqli=403`) |
+| **2xx** (200) | 성공 | 요청이 정상 처리됨(juice 같은 탐지전용 vhost는 whatweb·공격도 200) |
+| **3xx** (302) | 리다이렉트 | dvwa가 일반 클라이언트를 로그인 페이지로 보냄 = **표적 생존** |
+| **4xx** (403) | 클라이언트 차단 | ModSec(WAF)가 recon/공격을 **차단**함(STEP 1 whatweb·STEP 2 sqlmap 모두 dvwa에선 403) |
 | **5xx** (500) | 서버 오류 | 앱 내부 오류(때로는 취약점의 신호) |
+
+whatweb 지문(`Apache[2.4.52]`·`IP[192.168.0.161]`)이 함께 찍혔다면, 코드가 403이어도 응답이 왔다는 것 자체가 **도달** 증거다(못 닿으면 지문 자체가 안 나온다).
 | **000** | 응답 없음 | **연결 자체가 실패**(표적 미도달 — 네트워크/컨테이너부터 점검) |
 
 핵심: STEP 1에서 `000`이 아니라 세 자리 코드가 찍히면, 이후 "안 보임"은 미도달이 아니라 진짜 탐지 공백으로
@@ -256,21 +258,22 @@ graph TD
 **el34에서 어떻게 — 실측 예.** 공격자가 SQLi를 보낸 뒤 web 컨테이너에서 audit 로그의 942 룰을 집계한다.
 
 ```bash
-# el34-attacker: SQLi 한 발 (raw HTTP)
-echo -n "sqli="; echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+# el34-attacker: sqlmap 으로 SQLi 자동 주입(진짜 SQLi 도구, dvwa WAF 403 차단)
+sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'do not appear to be injectable|403 \(Forbidden\)' | head -2
 # el34-web: audit 로그에서 942 룰군만 집계
 sudo tail -400 /var/log/apache2/modsec_audit.log | grep -oE '942[0-9]{3}' | sort | uniq -c | head -3
 ```
 
 ```
-sqli=403
-     52 942100
-      2 942160
-     10 942190
+[ERROR] all tested parameters do not appear to be injectable ... maybe you could try to use option '--tamper'
+403 (Forbidden) - 445 times
+   1214 942100
+    222 942160
+     84 942190
 ```
 
-**읽는 법.** `sqli=403` 은 WAF가 이 SQLi를 차단했다는 뜻이지만, **핵심은 그 아래 942 줄이다.** `52 942100`
-은 "942100 룰이 52번 발화"라는 뜻 — 즉 SQLi 시도가 audit에 탐지로 또렷이 남았다 = **웹 계층 가시성 있음**.
+**읽는 법.** sqlmap의 `403 (Forbidden) - 445 times`·`do not appear to be injectable` 는 WAF가 SQLi 페이로드를 전부 차단해 못 뚫었다는 뜻이지만, **핵심은 그 아래 942 줄이다.** `1214 942100`
+은 "942100 룰이 1214번 발화"라는 뜻 — 즉 sqlmap의 SQLi 시도가 audit에 탐지로 또렷이 남았다 = **웹 계층 가시성 있음**.
 
 **한계.** DetectionOnly vhost(juice)는 차단은 안 하나 탐지는 기록하므로(공격해도 200), vhost별 ModSec
 모드를 알고 해석해야 한다. 또 el34의 modsec_audit.log는 **멀티라인 JSON**이라 `tail -1 | jq` 가 안 되고,

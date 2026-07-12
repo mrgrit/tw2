@@ -179,17 +179,19 @@ graph TD
     style ALERT fill:#f85149,color:#fff
 ```
 
-**실측 예 — IOC 흔적 만들기.** 알려진 악성 도구처럼 보이는 UA로 요청을 보내 로그에 IOC를 심는다.
+**실측 예 — IOC 흔적 만들기.** 알려진 스캐너 `nikto`로 표적을 훑으면, 그 요청 UA(`Mozilla/5.00 (Nikto/2.1.5)...`)가 로그에 남는다 = 실제 IOC.
 
 ```bash
-# el34-attacker: known-bad UA로 요청
-echo -en "GET /?id=ioc_test HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: known-bad-tool/1.0\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
-# el34-web: 액세스 로그에서 그 UA 흔적
-sudo tail -200 /var/log/apache2/dvwa_access.log | grep -c 'known-bad-tool'
+# el34-attacker: 알려진 스캐너 nikto 로 표적을 훑는다 → nikto UA(실제 IOC)가 로그에 남음
+nikto -h http://dvwa.el34.lab/ -maxtime 20s -Tuning 1 2>&1 | grep -iE 'Target|Server' | head -3
+# el34-web: 액세스 로그에서 nikto UA 흔적
+sudo tail -400 /var/log/apache2/dvwa_access.log | grep -c -i nikto
 ```
 
 ```
-1
++ Target IP:          192.168.0.161
++ Server: Apache/2.4.52 (Ubuntu)
+23
 ```
 
 이 UA가 CDB list에 IOC로 등록돼 있으면 list lookup으로 즉시 격상될 대상이 생긴 것이다. (단 STEP 4에서 보듯

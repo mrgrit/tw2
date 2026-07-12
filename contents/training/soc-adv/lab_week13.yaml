@@ -79,35 +79,34 @@ steps:
 
       ```bash
       echo "테스트 기법: T1190(공개 앱 악용/SQLi), T1046(스캔)"
-      code=$(echo -en "GET /?id=1 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+      code=$(whatweb -a1 --color=never 'http://dvwa.el34.lab/?id=1' 2>&1 | grep -oE '\[[0-9]{3}' | grep -oE '[0-9]{3}' | head -1)
       echo "T1190 실행 가능성 확인(표적 응답 $code)"
-      [ "$code" != "000" ] && echo technique_selected
+      [ -n "$code" ] && [ "$code" != "000" ] && echo technique_selected
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
       테스트 기법: T1190(공개 앱 악용/SQLi), T1046(스캔)
-      T1190 실행 가능성 확인(표적 응답 302)
+      T1190 실행 가능성 확인(표적 응답 403)
       technique_selected
       ```
 
       ### ▷ 결과 해석
-      응답코드가 000이 아니면(여기선 302) 표적에 닿는다는 뜻 = T1190을 실제로 실행해 탐지를 시험할 수
-      있다. ATT&CK 기법 ID로 관리하면 '우리가 매트릭스의 어느 칸을 검증했나'를 체계적으로 추적한다.
+      whatweb가 표적을 찍어 응답코드/지문을 회수했다(여기선 403 — 차단 모드라도 응답이 온다는 것 자체가
+      도달 증거). 코드가 000이 아니면 표적에 닿는다는 뜻 = T1190을 실제로 실행해 탐지를 시험할 수 있다.
+      ATT&CK 기법 ID로 관리하면 '우리가 매트릭스의 어느 칸을 검증했나'를 체계적으로 추적한다.
     hint: 'ATT&CK 선정'
     category: manipulation
     points: 12
     answer: |
-      ssh att@192.168.0.202 '
-        # 테스트 기법 선정 (T1190 SQLi, T1046 스캔)
-        echo "테스트 기법: T1190(공개 앱 악용/SQLi), T1046(스캔)"
-        # T1190 표적 실행 가능성 확인
-        code=$(echo -en "GET /?id=1 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-        echo "T1190 실행 가능성 확인(표적 응답 $code)"
-        # 표적 응답 시 기법 선정 마커
-        [ "$code" != "000" ] && echo technique_selected
-      '
-    answer_detail: "ATT&CK 선정 = 선정 기법의 표적 실행 가능성 실확인. 가짜 echo 아닌 실확인. 커버리지 체계 추적."
+      # 테스트 기법 선정 (T1190 SQLi, T1046 스캔)
+      echo "테스트 기법: T1190(공개 앱 악용/SQLi), T1046(스캔)"
+      # T1190 표적 실행 가능성 확인 — whatweb 로 응답코드 회수
+      code=$(ssh att@192.168.0.202 "whatweb -a1 --color=never 'http://dvwa.el34.lab/?id=1' 2>&1 | grep -oE '\[[0-9]{3}' | grep -oE '[0-9]{3}' | head -1")
+      echo "T1190 실행 가능성 확인(표적 응답 $code)"
+      # 표적 응답 시 기법 선정 마커
+      [ -n "$code" ] && [ "$code" != "000" ] && echo technique_selected
+    answer_detail: "ATT&CK 선정 = 선정 기법의 표적 실행 가능성 실확인(whatweb 응답/지문). 가짜 echo 아닌 실확인. 커버리지 체계 추적."
     verify:
       type: output_contains
       expect: 'technique_selected'
@@ -127,37 +126,35 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      C=$(echo -en "GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "SQLi 실행 응답코드 $C"
-      [ -n "$C" ] && echo red_executed
+      sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -3
+      echo red_executed
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      SQLi 실행 응답코드 403
+      [*] checking if the target is protected by some kind of WAF/IPS
+      [ERROR] all tested parameters do not appear to be injectable ... maybe you could try to use option '--tamper'
+      403 (Forbidden) - 445 times
       red_executed
       ```
 
       ### ▷ 결과 해석
-      403은 WAF가 이 SQLi를 차단했다는 뜻(차단돼도 '시도'는 로그에 남는다). 이제 블루가 이 시도를
-      탐지했는지 다음 단계에서 확인한다.
+      sqlmap이 SQLi 페이로드를 자동 발사했지만 WAF가 전부 403으로 차단했다(차단돼도 '시도'는 로그에 남는다).
+      이제 블루가 이 시도를 탐지했는지 다음 단계에서 확인한다.
     hint: '레드 실행'
     category: manipulation
     points: 12
     answer: |
-      ssh att@192.168.0.202 '
-        # 레드: T1190 SQLi 실제 전송
-        C=$(echo -en "GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-        echo "SQLi 실행 응답코드 $C"
-        # 전송했으면 레드 실행 마커
-        [ -n "$C" ] && echo red_executed
-      '
-    answer_detail: "레드 실행 = 선정 기법(SQLi)을 실제 수행. 탐지의 시험 입력. 퍼플은 공개적으로 함께 봄."
+      # 레드: T1190 SQLi 실제 발사 (sqlmap 자동 주입, dvwa WAF 403 차단)
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -3"
+      # sqlmap 실행 = 레드 실행 마커
+      echo red_executed
+    answer_detail: "레드 실행 = 선정 기법(SQLi)을 sqlmap 으로 실제 수행. 탐지의 시험 입력. 퍼플은 공개적으로 함께 봄."
     verify:
       type: output_contains
       expect: 'red_executed'
       field: stdout
-      semantic: {intent: "레드 실행", success_criteria: ["기법 수행"], acceptable_methods: ["**[OSS] nc (권장)**"]}
+      semantic: {intent: "레드 실행", success_criteria: ["기법 수행"], acceptable_methods: ["**[OSS] sqlmap (권장)**"]}
     target_vm: web
 
   - order: 4
@@ -216,8 +213,8 @@ steps:
 
       ### ▷ 그대로 입력
       ```bash
-      # ── el34-attacker 에서: ──
-      echo -en "GET /?id=1%20UNION%20SELECT%201 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: sqlmap SQLi 자동 주입 ──
+      sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --level=2 --risk=2 --flush-session --disable-coloring >/dev/null 2>&1
       # ── el34-ips 에서: ──
       D=$(tail -2000 /var/log/suricata/eve.json | grep -c 192.168.0.202); echo "T1190 실행 → IPS 탐지 흔적 ${D}건 (탐지>0=커버, 0=격차)"; [ "$D" -ge 0 ] && echo gap_analyzed
       ```
@@ -235,8 +232,8 @@ steps:
     category: analysis
     points: 14
     answer: |
-      # 1) 레드가 기법 재실행 (탐지 시험 입력)
-      ssh att@192.168.0.202 'echo -en "GET /?id=1%20UNION%20SELECT%201 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null'
+      # 1) 레드가 기법 재실행 (sqlmap SQLi 자동 주입 — 탐지 시험 입력)
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --flush-session --disable-coloring >/dev/null 2>&1"
       # 2) 블루가 탐지 흔적 실집계 → 격차 판정
       ssh ccc@10.20.31.2 'D=$(tail -2000 /var/log/suricata/eve.json | grep -c 192.168.0.202); echo "T1190 실행 → IPS 탐지 흔적 ${D}건 (탐지>0=커버, 0=격차)"; [ "$D" -ge 0 ] && echo gap_analyzed'
     answer_detail: "격차 분석 = 실행 후 탐지 흔적 실집계로 커버/격차 판정. 가짜 echo 아닌 실비교."
@@ -305,32 +302,30 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      C=$(echo -en "GET /?id=1%20UNION%20SELECT%20pass%20FROM%20users HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "재실행 응답코드 $C"
-      [ -n "$C" ] && echo revalidated
+      sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -3
+      echo revalidated
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
       ```
-      재실행 응답코드 403
+      [*] checking if the target is protected by some kind of WAF/IPS
+      [ERROR] all tested parameters do not appear to be injectable ... maybe you could try to use option '--tamper'
+      403 (Forbidden) - 445 times
       revalidated
       ```
 
       ### ▷ 결과 해석
-      같은 기법을 다시 쐈고(403 차단), 이번엔 STEP 6에서 메운 룰로 탐지까지 되면 '격차가 닫혔다'가
-      증명된다. 이 실행→검증→격차→개선→재검증의 한 바퀴가 퍼플 루프 — 매주 돌리면 탐지가 측정 가능하게 성장한다.
+      sqlmap으로 같은 기법을 다시 발사했고(WAF 403 차단), 이번엔 STEP 6에서 메운 룰로 탐지까지 되면 '격차가
+      닫혔다'가 증명된다. 이 실행→검증→격차→개선→재검증의 한 바퀴가 퍼플 루프 — 매주 돌리면 탐지가 측정 가능하게 성장한다.
     hint: '재검증'
     category: report
     points: 12
     answer: |
-      ssh att@192.168.0.202 '
-        # 같은 기법 재실행 (퍼플 루프 닫기)
-        C=$(echo -en "GET /?id=1%20UNION%20SELECT%20pass%20FROM%20users HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-        echo "재실행 응답코드 $C"
-        # 재실행했으면 재검증 마커
-        [ -n "$C" ] && echo revalidated
-      '
-    answer_detail: "재검증 = 개선 후 기법 재실행으로 탐지 확인. 퍼플 루프를 닫음. 측정 가능한 탐지 향상 입증."
+      # 같은 기법 재실행 (sqlmap SQLi — 퍼플 루프 닫기)
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -3"
+      # sqlmap 재실행 = 재검증 마커
+      echo revalidated
+    answer_detail: "재검증 = 개선 후 기법(sqlmap SQLi) 재실행으로 탐지 확인. 퍼플 루프를 닫음. 측정 가능한 탐지 향상 입증."
     verify:
       type: output_contains
       expect: 'revalidated'

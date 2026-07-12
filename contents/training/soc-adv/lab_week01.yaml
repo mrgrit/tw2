@@ -29,28 +29,28 @@ steps:
 
       ### ▷ 그대로 입력
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **실습 컨테이너:** `el34-attacker`(=att@192.168.0.202) — 웹 핑거프린팅 도구 `whatweb` 로 표적을 찍는다.
 
       ```bash
-      echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      whatweb -a1 --color=never http://dvwa.el34.lab/
       ```
 
-      ### ▷ 이렇게 나오면 정상 (실측 예 — 코드 숫자는 환경마다 다를 수 있음)
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 코드·버전은 환경마다 다를 수 있음)
       ```
-      dvwa=302
+      http://dvwa.el34.lab/ [403 Forbidden] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], IP[192.168.0.161], Title[403 Forbidden]
       ```
-      `dvwa=` 뒤에 세 자리 HTTP 코드가 찍히면 OK. 302는 dvwa가 로그인 페이지로 리다이렉트한 것(=정상 도달).
+      `whatweb` 가 응답 줄에 `[403 Forbidden]` 상태 + `Apache[2.4.52]`·`IP[192.168.0.161]` 지문을 찍었다 = 표적에 실제로 닿았다는 뜻(못 닿으면 지문 자체가 안 나온다). dvwa는 차단 모드라 recon 도구의 탐침에도 WAF가 403을 주지만, 서버 배너·IP는 노출된다(juice로 같은 명령을 쏘면 `[200 OK]`).
 
       ### ▷ 결과 해석
-      코드가 찍혔다 = 공격자→fw→ips→web→dvwa 경로가 살아 있다는 뜻. 이제부터의 4계층 가시성 점검
-      결과를 신뢰할 수 있다. 만약 `dvwa=000`이면 표적 미도달(네트워크/컨테이너 상태부터 확인).
+      지문이 찍혔다 = 공격자→fw→ips→web→dvwa 경로가 살아 있다는 뜻. 이제부터의 4계층 가시성 점검
+      결과를 신뢰할 수 있다. 응답 자체가 안 오면(타임아웃) 표적 미도달(네트워크/컨테이너 상태부터 확인).
     hint: '도달성'
     category: survey
     points: 10
     answer: |
-      # 1) 웹 표적(dvwa)에 HTTP 요청 → 응답코드를 dvwa= 형식으로 출력 (도달 확인)
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "SOC 성숙도 평가 대상 = el34 인프라(웹/네트워크/호스트/SIEM 4계층)."
+      # 1) 웹 표적(dvwa) 핑거프린팅 — whatweb 이 도달성 + 서버/기술 스택 지문을 뽑는다
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://dvwa.el34.lab/"
+    answer_detail: "SOC 성숙도 평가 대상 = el34 인프라(웹/네트워크/호스트/SIEM 4계층). whatweb 지문(Apache/IP)=도달 확증."
     verify:
       type: output_contains
       expect: 'dvwa'
@@ -58,7 +58,7 @@ steps:
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] nc (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 2
@@ -69,34 +69,36 @@ steps:
 
       ### ▷ 그대로 입력
       ```bash
-      # ── el34-attacker 에서: ──
-      echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # ── el34-attacker 에서: sqlmap 이 SQLi 페이로드를 자동 주입(진짜 SQLi 도구) ──
+      sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -3
       # ── el34-web 에서: ──
       sudo tail -400 /var/log/apache2/modsec_audit.log | grep -oE '942[0-9]{3}' | sort | uniq -c | head -3
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예 — 횟수 숫자는 환경마다 다름)
       ```
-      sqli=403
-           52 942100
-            2 942160
-           10 942190
+      [*] checking if the target is protected by some kind of WAF/IPS
+      [ERROR] all tested parameters do not appear to be injectable ... maybe you could try to use option '--tamper'
+      403 (Forbidden) - 445 times
+         1214 942100
+          222 942160
+           84 942190
       ```
-      `sqli=403` = WAF가 이 SQLi를 차단. `942xxx`가 보이면 그 시도가 감사 로그에 탐지로 기록된 것.
+      sqlmap이 SQLi 페이로드를 수백 개 던졌지만 dvwa WAF가 전부 403으로 막았다(`do not appear to be injectable`=못 뚫음, `403 - 445 times`). 그래도 그 시도 하나하나가 ModSec `942xxx`(SQLi) 룰로 audit에 탐지로 기록됐다.
 
       ### ▷ 결과 해석
-      403(차단) 여부보다 핵심은 **942 룰이 audit에 남았는가**다. 942가 1건이라도 보이면 웹 계층 가시성
+      차단 여부보다 핵심은 **942 룰이 audit에 남았는가**다. 942가 1건이라도 보이면 웹 계층 가시성
       '있음'. 안 보이면 tail 범위를 늘려(-2000) 다시 보거나 해당 vhost의 ModSec 모드를 확인한다
-      (dvwa=차단 모드, juice=탐지만).
+      (dvwa=차단 모드라 sqlmap 403 무더기, juice=탐지만이라 sqlmap이 `--dump`로 실제 추출까지 간다).
     hint: 'ModSec 942'
     category: manipulation
     points: 14
     answer: |
-      # 1) 공격자가 SQLi(UNION SELECT) 요청 전송 (raw HTTP — 상태코드 확인)
-      ssh att@192.168.0.202 'echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}''
+      # 1) 공격자가 sqlmap 으로 SQLi 자동 주입 (dvwa WAF 가 403 차단 — 진짜 SQLi 도구)
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -3"
       # 2) ModSec audit 로그에서 SQLi 탐지 룰군(942xxx)만 골라 발화 횟수 집계 → 942가 보이면 SQLi 탐지됨
       ssh ccc@10.20.32.80 "sudo tail -400 /var/log/apache2/modsec_audit.log | grep -oE '942[0-9]{3}' | sort | uniq -c | head -3"
-    answer_detail: "웹 가시성 = SQLi 시도가 ModSec 942 audit에 탐지로 남는가. 942 보이면 웹공격 가시성 있음."
+    answer_detail: "웹 가시성 = sqlmap SQLi 시도가 ModSec 942 audit에 탐지로 남는가. 942 보이면 웹공격 가시성 있음. dvwa=WAF 403 차단이라 미주입, 흔적은 남음."
     verify:
       type: output_contains
       expect: '942'

