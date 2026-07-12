@@ -71,7 +71,7 @@ el34의 트래픽과 로그 흐름을 한 그림으로 보면 이렇다.
 
 ```mermaid
 graph TD
-  ATK[el34-attacker<br/>공격자 10.20.30.202] -->|HTTP 요청| FW[el34-fw<br/>nftables 방화벽<br/>agent.name: fw]
+  ATK[el34-attacker<br/>공격자 192.168.0.202] -->|HTTP 요청| FW[el34-fw<br/>nftables 방화벽<br/>agent.name: fw]
   FW -->|인라인 검사| IPS[el34-ips<br/>Suricata IDS<br/>agent.name: ips]
   IPS --> WEB[el34-web<br/>Apache+ModSecurity WAF<br/>agent.name: web]
   WEB --> APP[취약 웹앱 7종<br/>dvwa/juice/neobank...]
@@ -89,7 +89,7 @@ graph TD
 2. **로그는 전부 manager로 모인다**(점선) — 어느 컨테이너에서 났든 경보는 결국 `el34-siem`의 manager가 판정하고 indexer에 저장한다.
 3. **우리는 Dashboard만 본다** — `https://192.168.136.145:5601`. 이 한 화면에서 4대 시스템의 경보를 전부 검색한다.
 
-> 💡 **출발지 IP가 보존된다는 것의 의미** — el34는 방화벽에서 NAT 변조(masquerade)를 하지 않는다. 즉 경보의 `data.srcip`(또는 `data.src_ip`)에 **진짜 공격자 IP**(예: `10.20.30.202`)가 찍힌다. "누가 했나"를 추적할 수 있다는 뜻이고, 이번 실습 내내 이 필드를 근거로 삼는다.
+> 💡 **출발지 IP가 보존된다는 것의 의미** — el34는 방화벽에서 NAT 변조(masquerade)를 하지 않는다. 즉 경보의 `data.srcip`(또는 `data.src_ip`)에 **진짜 공격자 IP**(예: `192.168.0.202`)가 찍힌다. "누가 했나"를 추적할 수 있다는 뜻이고, 이번 실습 내내 이 필드를 근거로 삼는다.
 
 ---
 

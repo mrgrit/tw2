@@ -46,7 +46,7 @@ steps:
       el34 호스트(`ssh ccc@{{TARGET_IP}}`, 비밀번호 `1`)에서:
 
       ```bash
-      docker exec el34-siem /var/ossec/bin/agent_control -l
+      ssh ccc@10.20.32.100 sudo /var/ossec/bin/agent_control -l
       ```
 
       ## 📋 확인 사항
@@ -54,9 +54,9 @@ steps:
       - `ID: 000, Name: wazuh.manager` (서버 자신)
       - `ID: 009, Name: fw ... Active` / `010, web ... Active` / `011, ips ... Active`
       - 셋 중 하나라도 `Disconnected` 면 그 컨테이너의 경보가 SIEM에 안 들어온다.
-    hint: docker exec el34-siem /var/ossec/bin/agent_control -l
+    hint: ssh ccc@10.20.32.100 sudo /var/ossec/bin/agent_control -l
     answer: |
-      docker exec el34-siem /var/ossec/bin/agent_control -l
+      ssh ccc@10.20.32.100 sudo /var/ossec/bin/agent_control -l
     answer_detail: |
       agent_control -l 은 manager에 등록된 에이전트 목록과 연결 상태를 보여 준다.
       el34에는 fw(009)·web(010)·ips(011) 3개가 Active 로 붙어 있고, 이들이 각각
@@ -93,7 +93,7 @@ steps:
 
       ```bash
       # 가장 최근 경보 1건을 꺼내 핵심 필드 존재를 확인
-      LINE=$(docker exec el34-siem tail -n 1 /var/ossec/logs/alerts/alerts.json)
+      LINE=$(ssh ccc@10.20.32.100 tail -n 1 /var/ossec/logs/alerts/alerts.json)
       echo "$LINE" | grep -q '"rule"' && echo "$LINE" | grep -q '"agent"' \
         && echo "$LINE" | grep -q '"timestamp"' && echo "STRUCT_OK"
       ```
@@ -103,9 +103,9 @@ steps:
       - 한 건 안에 `"rule":{...,"id":"..."}`, `"agent":{"id":"...","name":"..."}`,
         `"timestamp":"..."` 가 모두 있다.
       - 이 세 필드가 Discover에서 보는 `rule.id`·`agent.name`·`@timestamp` 의 원본이다.
-    hint: docker exec el34-siem tail -n 1 /var/ossec/logs/alerts/alerts.json
+    hint: ssh ccc@10.20.32.100 tail -n 1 /var/ossec/logs/alerts/alerts.json
     answer: |
-      LINE=$(docker exec el34-siem tail -n 1 /var/ossec/logs/alerts/alerts.json)
+      LINE=$(ssh ccc@10.20.32.100 tail -n 1 /var/ossec/logs/alerts/alerts.json)
       echo "$LINE" | grep -q '"rule"' && echo "$LINE" | grep -q '"agent"' \
         && echo "$LINE" | grep -q '"timestamp"' && echo "STRUCT_OK"
     answer_detail: |
@@ -140,17 +140,18 @@ steps:
       agent.name:fw AND @timestamp:>now-1h
       ```
       → 행을 펼쳐 `data.srcip`(출발지)·`data.dstport`(목적지 포트)를 읽는다. el34는 출발지 IP를
-      보존하므로 `data.srcip` 가 곧 공격자(10.20.30.202)다.
+      보존하므로 `data.srcip` 가 곧 공격자(192.168.0.202)다.
 
       ## 💻 실행 명령 (CLI 검증)
 
       ```bash
       # 1) attacker → 웹앱으로 트래픽 발생 (방화벽이 관측)
-      docker exec el34-attacker curl -s -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/
-      docker exec el34-attacker curl -s -o /dev/null -H 'Host: dvwa.el34.lab' http://10.20.30.1/
-      sleep 4
+      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.100 "timeout 10 bash -c 'until sudo grep -qa '"name":"fw"' /var/ossec/logs/alerts/alerts.json; do :; done'" || true
       # 2) fw 에이전트 경보 건수 = KQL agent.name:fw 의 결과 수
-      N=$(docker exec el34-siem tail -n 4000 /var/ossec/logs/alerts/alerts.json | grep -c '"name":"fw"')
+      N=$(ssh ccc@10.20.32.100 tail -n 4000 /var/ossec/logs/alerts/alerts.json | grep -c '"name":"fw"')
       [ "$N" -gt 0 ] && echo "FW_ALERTS_OK n=$N"
       ```
 
@@ -158,12 +159,13 @@ steps:
 
       - `FW_ALERTS_OK n=...` 출력 (fw 경보 1건 이상).
       - Dashboard에서 같은 KQL을 넣으면 같은 건수대가 나온다.
-    hint: docker exec el34-siem tail -n 4000 /var/ossec/logs/alerts/alerts.json | grep -c '"name":"fw"'
+    hint: ssh ccc@10.20.32.100 tail -n 4000 /var/ossec/logs/alerts/alerts.json | grep '"name":"fw"' | jq -s length
     answer: |
-      docker exec el34-attacker curl -s -o /dev/null -H 'Host: juice.el34.lab' http://10.20.30.1/
-      docker exec el34-attacker curl -s -o /dev/null -H 'Host: dvwa.el34.lab' http://10.20.30.1/
-      sleep 4
-      N=$(docker exec el34-siem tail -n 4000 /var/ossec/logs/alerts/alerts.json | grep -c '"name":"fw"')
+      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.100 "timeout 10 bash -c 'until sudo grep -qa '"name":"fw"' /var/ossec/logs/alerts/alerts.json; do :; done'" || true
+      N=$(ssh ccc@10.20.32.100 tail -n 4000 /var/ossec/logs/alerts/alerts.json | grep -c '"name":"fw"')
       [ "$N" -gt 0 ] && echo "FW_ALERTS_OK n=$N"
     answer_detail: |
       KQL `agent.name:fw` 는 alerts.json에서 `"agent":{...,"name":"fw"}` 인 줄을 세는 것과 동치.
@@ -205,10 +207,11 @@ steps:
 
       ```bash
       # 1) sqlmap User-Agent 로 스캔 흉내
-      docker exec el34-attacker curl -s -o /dev/null -A 'sqlmap/1.7' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1'
-      sleep 4
+      ssh att@192.168.0.202 "echo -en 'GET /?id=1 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.31.2 "timeout 10 bash -c 'until sudo grep -qa '"signature_id"' /var/log/suricata/eve.json; do :; done'" || true
       # 2) Suricata alert(시그니처 매치) 발생 확인
-      N=$(docker exec el34-ips tail -n 600 /var/log/suricata/eve.json | grep -c '"signature_id"')
+      N=$(ssh ccc@10.20.31.2 tail -n 600 /var/log/suricata/eve.json | grep -c '"signature_id"')
       [ "$N" -gt 0 ] && echo "IPS_SIG_OK n=$N"
       ```
 
@@ -216,11 +219,12 @@ steps:
 
       - `IPS_SIG_OK n=...` (Suricata 시그니처 경보 1건 이상).
       - eve.json에서 `"signature_id":1000003` 을 찾으면 sqlmap UA 룰이 탄 것.
-    hint: docker exec el34-ips tail -n 600 /var/log/suricata/eve.json | grep -c '"signature_id"'
+    hint: ssh ccc@10.20.31.2 tail -n 600 /var/log/suricata/eve.json | grep '"signature_id"' | jq -s length
     answer: |
-      docker exec el34-attacker curl -s -o /dev/null -A 'sqlmap/1.7' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1'
-      sleep 4
-      N=$(docker exec el34-ips tail -n 600 /var/log/suricata/eve.json | grep -c '"signature_id"')
+      ssh att@192.168.0.202 "echo -en 'GET /?id=1 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.31.2 "timeout 10 bash -c 'until sudo grep -qa '"signature_id"' /var/log/suricata/eve.json; do :; done'" || true
+      N=$(ssh ccc@10.20.31.2 tail -n 600 /var/log/suricata/eve.json | grep -c '"signature_id"')
       [ "$N" -gt 0 ] && echo "IPS_SIG_OK n=$N"
     answer_detail: |
       Suricata는 인라인으로 트래픽을 검사하며, sqlmap UA 같은 시그니처에 맞으면 eve.json에
@@ -260,10 +264,11 @@ steps:
 
       ```bash
       # 1) XSS payload 전송 (dvwa = ModSec 차단 모드 → 403)
-      docker exec el34-attacker curl -s -o /dev/null -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<script>alert(1)</script>'
-      sleep 3
+      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null")</script>'
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa '941[0-9]{3}' /var/log/apache2/modsec_audit.log; do :; done'" || true
       # 2) 941(XSS) 룰 매치 확인
-      N=$(docker exec el34-web tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '941[0-9]{3}')
+      N=$(ssh ccc@10.20.32.80 tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '941[0-9]{3}')
       [ "$N" -gt 0 ] && echo "XSS_941_OK n=$N"
       ```
 
@@ -271,11 +276,12 @@ steps:
 
       - `XSS_941_OK n=...` (941xxx XSS 룰 매치 1건 이상).
       - Dashboard의 `data.id:[941000 TO 941999]` 와 같은 결과를 가리킨다.
-    hint: docker exec el34-web tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '941[0-9]{3}'
+    hint: ssh ccc@10.20.32.80 tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '941[0-9]{3}'
     answer: |
-      docker exec el34-attacker curl -s -o /dev/null -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?q=<script>alert(1)</script>'
-      sleep 3
-      N=$(docker exec el34-web tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '941[0-9]{3}')
+      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null")</script>'
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa '941[0-9]{3}' /var/log/apache2/modsec_audit.log; do :; done'" || true
+      N=$(ssh ccc@10.20.32.80 tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '941[0-9]{3}')
       [ "$N" -gt 0 ] && echo "XSS_941_OK n=$N"
     answer_detail: |
       ModSec는 요청을 OWASP CRS 룰셋에 통과시키고, 매치되면 modsec_audit.log(JSON)에 룰 번호를
@@ -311,10 +317,11 @@ steps:
 
       ```bash
       # 1) SQLi 전송 + 응답코드 캡처 (차단되면 403)
-      CODE=$(docker exec el34-attacker curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password--')
-      sleep 3
+      CODE=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%20user,password-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa '942[0-9]{3}' /var/log/apache2/modsec_audit.log; do :; done'" || true
       # 2) 942(SQLi) 룰 매치 확인
-      N=$(docker exec el34-web tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}')
+      N=$(ssh ccc@10.20.32.80 tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}')
       [ "$N" -gt 0 ] && echo "SQLI_942_OK code=$CODE n=$N"
       ```
 
@@ -322,11 +329,12 @@ steps:
 
       - `SQLI_942_OK code=403 n=...` — 차단(403) + 탐지(942) 동시 성립.
       - 강의 §3 CRS 번호표: 942=SQLi, 949=종합 점수 기반 차단 결정.
-    hint: docker exec el34-web tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}'
+    hint: ssh ccc@10.20.32.80 tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}'
     answer: |
-      CODE=$(docker exec el34-attacker curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password--')
-      sleep 3
-      N=$(docker exec el34-web tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}')
+      CODE=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%20user,password-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa '942[0-9]{3}' /var/log/apache2/modsec_audit.log; do :; done'" || true
+      N=$(ssh ccc@10.20.32.80 tail -n 2000 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}')
       [ "$N" -gt 0 ] && echo "SQLI_942_OK code=$CODE n=$N"
     answer_detail: |
       SQLi payload는 CRS 942 대역에 걸린다. dvwa는 차단 모드라 응답이 403, 동시에
@@ -361,9 +369,9 @@ steps:
 
       ```bash
       # 최근 경보의 위험도(rule.level) 분포 = "막대 차트"의 숫자판
-      docker exec el34-siem tail -n 5000 /var/ossec/logs/alerts/alerts.json \
+      ssh ccc@10.20.32.100 tail -n 5000 /var/ossec/logs/alerts/alerts.json \
         | grep -oE '"level":[0-9]+' | sort | uniq -c | sort -rn | head
-      B=$(docker exec el34-siem tail -n 5000 /var/ossec/logs/alerts/alerts.json \
+      B=$(ssh ccc@10.20.32.100 tail -n 5000 /var/ossec/logs/alerts/alerts.json \
         | grep -oE '"level":[0-9]+' | sort -u | wc -l)
       [ "$B" -gt 0 ] && echo "AGG_OK buckets=$B"
       ```
@@ -372,11 +380,11 @@ steps:
 
       - 위험도별 경보 개수 표 출력 (예: `120 "level":3`, `40 "level":7` ...).
       - `AGG_OK buckets=N` — 서로 다른 위험도 구간이 N개. 이것이 막대 N개에 해당.
-    hint: docker exec el34-siem tail -n 5000 /var/ossec/logs/alerts/alerts.json | grep -oE '"level":[0-9]+' | sort | uniq -c | sort -rn
+    hint: ssh ccc@10.20.32.100 tail -n 5000 /var/ossec/logs/alerts/alerts.json | grep -oE '"level":[0-9]+' | sort | uniq -c | sort -rn
     answer: |
-      docker exec el34-siem tail -n 5000 /var/ossec/logs/alerts/alerts.json \
+      ssh ccc@10.20.32.100 tail -n 5000 /var/ossec/logs/alerts/alerts.json \
         | grep -oE '"level":[0-9]+' | sort | uniq -c | sort -rn | head
-      B=$(docker exec el34-siem tail -n 5000 /var/ossec/logs/alerts/alerts.json \
+      B=$(ssh ccc@10.20.32.100 tail -n 5000 /var/ossec/logs/alerts/alerts.json \
         | grep -oE '"level":[0-9]+' | sort -u | wc -l)
       [ "$B" -gt 0 ] && echo "AGG_OK buckets=$B"
     answer_detail: |
@@ -409,7 +417,7 @@ steps:
 
       한 공격자 IP로 필터:
       ```kql
-      data.client_ip:"10.20.30.202" OR data.srcip:"10.20.30.202"
+      data.client_ip:"192.168.0.202" OR data.srcip:"192.168.0.202"
       ```
       → 같은 출발지의 fw·ips·web 경보가 시간순으로 한 줄에 모인다.
 
@@ -417,10 +425,11 @@ steps:
 
       ```bash
       # 1) 단일 SQLi 공격
-      CODE=$(docker exec el34-attacker curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=99%27%20OR%20%271%27%3D%271')
-      sleep 4
+      CODE=$(ssh att@192.168.0.202 "echo -en 'GET /?id=99%27%20OR%20%271%27%3D%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa '942[0-9]{3}' /var/log/apache2/modsec_audit.log; do :; done'" || true
       # 2) 흔적 2종 상관: WAF 942 탐지 + 차단코드
-      WAF=$(docker exec el34-web tail -n 1500 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}')
+      WAF=$(ssh ccc@10.20.32.80 tail -n 1500 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}')
       # 3) 둘 다 성립하면 상관 완료
       if [ "$WAF" -gt 0 ] && [ "$CODE" = "403" ]; then echo "CORRELATED waf942=$WAF block=$CODE"; fi
       ```
@@ -429,12 +438,13 @@ steps:
 
       - `CORRELATED waf942=... block=403` — 하나의 공격이 "탐지(942)"와 "차단(403)" 두 신호로
         교차 확인됨.
-      - 실전 보고서에는 여기에 시각·공격자 IP(10.20.30.202)·대상 vhost(dvwa)를 덧붙인다.
-    hint: 'CODE=$(docker exec el34-attacker curl ... -w %{http_code} ...); WAF=$(... grep -cE 942...); [ "$WAF" -gt 0 ] && [ "$CODE" = 403 ] && echo CORRELATED'
+      - 실전 보고서에는 여기에 시각·공격자 IP(192.168.0.202)·대상 vhost(dvwa)를 덧붙인다.
+    hint: 'att 에서 nc raw HTTP 로 트리거 → WAF 응답코드/차단 확인'
     answer: |
-      CODE=$(docker exec el34-attacker curl -s -o /dev/null -w '%{http_code}' -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=99%27%20OR%20%271%27%3D%271')
-      sleep 4
-      WAF=$(docker exec el34-web tail -n 1500 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}')
+      CODE=$(ssh att@192.168.0.202 "echo -en 'GET /?id=99%27%20OR%20%271%27%3D%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
+      # 고정 sleep 대신 로그 흔적이 나타날 때까지 조건 대기(zero-sleep)
+      ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa '942[0-9]{3}' /var/log/apache2/modsec_audit.log; do :; done'" || true
+      WAF=$(ssh ccc@10.20.32.80 tail -n 1500 /var/log/apache2/modsec_audit.log | grep -cE '942[0-9]{3}')
       if [ "$WAF" -gt 0 ] && [ "$CODE" = "403" ]; then echo "CORRELATED waf942=$WAF block=$CODE"; fi
     answer_detail: |
       하나의 SQLi가 두 가지 독립 증거를 남긴다 — ModSec 감사 로그의 942 룰 매치(탐지)와
