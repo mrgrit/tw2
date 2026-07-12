@@ -33,10 +33,10 @@ steps:
       **실행 위치:** el34 **호스트** — ips·siem·web 세 컨테이너를 한 번에 점검하므로(`&&` 체인이 호스트 셸에서 평가), 컨테이너에 접속하지 않고 호스트에서 `docker exec` 로 실행한다.
 
       ```bash
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json && echo ips_ok'
-      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json && echo siem_ok'
-      docker exec el34-web sh -c 'command -v osqueryi >/dev/null && echo web_ok'
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' && docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' && docker exec el34-web sh -c 'command -v osqueryi >/dev/null' && echo capstone_ready
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json && echo ips_ok'
+      ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json && echo siem_ok'
+      ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null && echo web_ok'
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json' && ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json' && ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null' && echo capstone_ready
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예)
@@ -55,13 +55,13 @@ steps:
     points: 10
     answer: |
       # 1) 네트워크(IPS eve.json) 확인
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json && echo ips_ok'
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json && echo ips_ok'
       # 2) SIEM(Wazuh alerts.json) 확인
-      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json && echo siem_ok'
+      ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json && echo siem_ok'
       # 3) 호스트(osquery) 확인
-      docker exec el34-web sh -c 'command -v osqueryi >/dev/null && echo web_ok'
+      ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null && echo web_ok'
       # 4) 세 계층 모두 가동 시 캡스톤 준비 마커
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' && docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' && docker exec el34-web sh -c 'command -v osqueryi >/dev/null' && echo capstone_ready
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json' && ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json' && ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null' && echo capstone_ready
     answer_detail: "통합 환경 = IPS(네트워크)+SIEM(상관)+osquery(호스트) 다계층. APT는 한 계층으로 못 잡음."
     verify:
       type: output_contains
@@ -94,13 +94,13 @@ steps:
       ```
 
       ### ▷ 결과 해석
-      4개 포트가 열린 걸 스캔으로 확인 = 정찰 수행. 이 SYN 스캔이 Suricata eve.json에 출처 10.20.30.202로
+      4개 포트가 열린 걸 스캔으로 확인 = 정찰 수행. 이 SYN 스캔이 Suricata eve.json에 출처 192.168.0.202로
       기록된다(STEP 5에서 집계). ATT&CK T1046(Network Service Discovery).
     hint: '정찰'
     category: manipulation
     points: 12
     answer: |
-      docker exec el34-attacker sh -c '
+      ssh att@192.168.0.202 '
         # 정찰(T1046): 포트 스캔
         OPEN=$(nmap -sS -T4 --top-ports 50 10.20.30.1 2>/dev/null | grep -c open)
         echo "열린 포트 ${OPEN}개 스캔"
@@ -126,7 +126,7 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      C=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--")
+      C=$(echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}")
       echo "SQLi 응답코드 $C (403=WAF 차단)"
       [ -n "$C" ] && echo intrusion_detected
       ```
@@ -144,9 +144,9 @@ steps:
     category: manipulation
     points: 12
     answer: |
-      docker exec el34-attacker sh -c '
+      ssh att@192.168.0.202 '
         # 초기 침투(T1190): SQLi UNION 탈취 시도
-        C=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--")
+        C=$(echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}")
         echo "SQLi 응답코드 $C (403=WAF 차단)"
         # 전송했으면 마커
         [ -n "$C" ] && echo intrusion_detected
@@ -188,7 +188,7 @@ steps:
     category: analysis
     points: 14
     answer: |
-      docker exec el34-web sh -c '
+      ssh ccc@10.20.32.80 '
         # 발판(T1505): on_disk=0 은닉 발판 헌팅
         osqueryi --json "SELECT count(*) c FROM processes WHERE on_disk=0" 2>/dev/null | grep -oE "[0-9]+" | head -1
         # osquery 헌팅 수행 시 마커
@@ -205,16 +205,16 @@ steps:
   - order: 5
     instruction: |
       ## STEP 5 — 통합 포렌식: 출처 IP로 전 계층을 묶는다 (교차 상관)
-      > **이 단계에서 할 일:** 네트워크(IPS)와 SIEM에서 같은 출처 IP(10.20.30.202) 흔적 수를 각각 집계한다.
+      > **이 단계에서 할 일:** 네트워크(IPS)와 SIEM에서 같은 출처 IP(192.168.0.202) 흔적 수를 각각 집계한다.
       > **왜:** 캡스톤의 핵심 — 출처 IP 하나로 정찰(네트워크)+침투(웹)+발판(호스트)을 '한 공격자의
       > 타임라인'으로 묶는다. el34는 SNAT가 없어 출처가 전 계층에 보존된다.
 
       ### ▷ 그대로 입력
       ```bash
       # ── el34-ips 에서: ──
-      echo "IPS: $(tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202)건"
+      echo "IPS: $(tail -3000 /var/log/suricata/eve.json | grep -c 192.168.0.202)건"
       # ── el34-siem 에서: ──
-      echo "SIEM: $(tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c 10.20.30.202)건"
+      echo "SIEM: $(tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c 192.168.0.202)건"
       echo correlated
       ```
 
@@ -226,16 +226,16 @@ steps:
       ```
 
       ### ▷ 결과 해석
-      같은 IP 10.20.30.202가 네트워크 2935건+SIEM 1772건으로 양 계층에 보인다 = '네트워크에서 스캔하던
+      같은 IP 192.168.0.202가 네트워크 2935건+SIEM 1772건으로 양 계층에 보인다 = '네트워크에서 스캔하던
       그 IP가 SIEM에서도 웹 공격으로 잡힌다'를 한 사건으로 통합. 이 교차 상관이 APT 대응의 뼈대다.
     hint: '교차 상관'
     category: analysis
     points: 14
     answer: |
       # 1) 네트워크(IPS) 출처 흔적 수
-      docker exec el34-ips sh -c 'echo "IPS: $(tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202)건"'
+      ssh ccc@10.20.31.2 'echo "IPS: $(tail -3000 /var/log/suricata/eve.json | grep 192.168.0.202)건"' | jq -s length
       # 2) SIEM 출처 흔적 수
-      docker exec el34-siem sh -c 'echo "SIEM: $(tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c 10.20.30.202)건"'
+      ssh ccc@10.20.32.100 'echo "SIEM: $(tail -2000 /var/ossec/logs/alerts/alerts.json | grep 192.168.0.202)건"' | jq -s length
       # 3) 두 계층 교차 상관 마커
       echo correlated
     answer_detail: "교차 상관 = 출처 IP로 네트워크+웹+호스트 계층을 한 공격자 타임라인으로 통합. APT 대응의 핵심."
@@ -279,7 +279,7 @@ steps:
     category: analysis
     points: 14
     answer: |
-      docker exec el34-siem sh -c '
+      ssh ccc@10.20.32.100 '
         # PICERL+SOAR 대응 흐름 정리
         echo "PICERL: 식별(교차상관)→격리(firewall-drop .202 차단+망분리)→근절(웹셸/발판+패치)→복구(검증)"
         echo "SOAR: 고위험 알림→플레이북 자동(보강→차단→티켓), 비가역은 사람 승인(HITL)"
@@ -307,8 +307,8 @@ steps:
       **실행 위치:** el34 **호스트** — 변수(N/S) 집계가 호스트 셸에서 일어나므로(ips·siem 두 컨테이너 프로브), 컨테이너에 접속하지 않고 호스트에서 `docker exec` 로 실행한다.
 
       ```bash
-      N=$(docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202')
-      S=$(docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c 10.20.30.202')
+      N=$(ssh ccc@10.20.31.2 'sudo tail -3000 /var/log/suricata/eve.json | grep -c 192.168.0.202')
+      S=$(ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c 192.168.0.202')
       echo "킬체인 다계층 탐지(실측): 네트워크 ${N}건(T1046/T1190) + SIEM ${S}건"
       echo "환류: 격차→SIGMA/Wazuh(W03/W13), 새 IOC→CTI/CDB(W05), 플레이북(W10)"
       [ "$((N+S))" -ge 0 ] && echo feedback_done
@@ -330,9 +330,9 @@ steps:
     points: 12
     answer: |
       # 1) 네트워크 출처 흔적 수
-      N=$(docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202')
+      N=$(ssh ccc@10.20.31.2 'sudo tail -3000 /var/log/suricata/eve.json | grep -c 192.168.0.202')
       # 2) SIEM 출처 흔적 수
-      S=$(docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c 10.20.30.202')
+      S=$(ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c 192.168.0.202')
       # 3) 다계층 탐지 ATT&CK 매핑·환류 정리
       echo "킬체인 다계층 탐지(실측): 네트워크 ${N}건(T1046/T1190) + SIEM ${S}건"
       echo "환류: 격차→SIGMA/Wazuh(W03/W13), 새 IOC→CTI/CDB(W05), 플레이북(W10)"
@@ -359,8 +359,8 @@ steps:
       **실행 위치:** el34 **호스트** — 변수(N/S) 집계가 호스트 셸에서 일어나므로(ips·siem 두 컨테이너 프로브), 컨테이너에 접속하지 않고 호스트에서 `docker exec` 로 실행한다.
 
       ```bash
-      N=$(docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202')
-      S=$(docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c 10.20.30.202')
+      N=$(ssh ccc@10.20.31.2 'sudo tail -3000 /var/log/suricata/eve.json | grep -c 192.168.0.202')
+      S=$(ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c 192.168.0.202')
       echo "# W15 종합 APT 캡스톤 — 킬체인 다계층(네트워크 ${N}건+SIEM ${S}건: T1046→T1190→T1505)·출처 교차상관·PICERL/SOAR·ATT&CK 환류"
       [ "$((N+S))" -ge 0 ] && echo apt_capstone_report_done
       ```
@@ -380,8 +380,8 @@ steps:
     points: 12
     answer: |
       # 1) 네트워크·SIEM 출처 흔적 수 실집계 (인용 근거)
-      N=$(docker exec el34-ips sh -c 'tail -3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202')
-      S=$(docker exec el34-siem sh -c 'tail -2000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -c 10.20.30.202')
+      N=$(ssh ccc@10.20.31.2 'sudo tail -3000 /var/log/suricata/eve.json | grep -c 192.168.0.202')
+      S=$(ssh ccc@10.20.32.100 'tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c 192.168.0.202')
       # 2) 실측 다계층 탐지 인용 캡스톤 보고서 출력
       echo "# W15 종합 APT 캡스톤 — 킬체인 다계층(네트워크 ${N}건+SIEM ${S}건: T1046→T1190→T1505)·출처 교차상관·PICERL/SOAR·ATT&CK 환류"
       # 3) 실측 인용 보고서면 완료 마커

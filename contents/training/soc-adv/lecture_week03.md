@@ -221,7 +221,7 @@ SIGMA 룰 3개가 Wazuh 룰 3개로 변환됐다 = 같은 detection 로직이 Wa
 **③ 테스트 — 실측 예.** 변환만으로는 탐지가 보장되지 않는다. 실제 로그 한 줄을 넣어 발화를 확인한다.
 
 ```bash
-printf "Jan  1 00:00:00 host sshd[1]: Failed password for root from 10.20.30.202 port 22 ssh2\n" \
+printf "Jan  1 00:00:00 host sshd[1]: Failed password for root from 192.168.0.202 port 22 ssh2\n" \
   | /var/ossec/bin/wazuh-logtest 2>&1 | grep -iE "Phase 3|id:|level:" | head -3
 ```
 

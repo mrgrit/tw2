@@ -31,7 +31,7 @@ steps:
       **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속해 실행한다.
 
       ```bash
-      ls -la /var/log/suricata/eve.json 2>/dev/null | awk '{print $5}'
+      ls -la /var/log/suricata/eve.json | awk '{print $5}'
       echo eve_ready
       ```
 
@@ -49,7 +49,7 @@ steps:
     points: 10
     answer: |
       # 1) IPS 컨테이너의 Suricata eve.json 파일 크기를 조회 (포렌식 원천 로그 접근 확인)
-      docker exec el34-ips sh -c "ls -la /var/log/suricata/eve.json 2>/dev/null | awk '{print \$5}'"
+      ssh ccc@10.20.31.2 "ls -la /var/log/suricata/eve.json | awk '{print \$5}'"
       # 2) 단계 완료 마커
       echo eve_ready
     answer_detail: "네트워크 포렌식 소스 = el34-ips Suricata eve.json(JSON 라인 이벤트 로그)."
@@ -73,8 +73,8 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      nmap -sS -T4 --top-ports 30 10.20.30.1 2>/dev/null | grep -c open
-      curl -s -o /dev/null -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20OR%201=1--'
+      nmap -sS -T4 --top-ports 30 192.168.0.161 2>/dev/null | grep -c open
+      echo -en "GET /?id=1%27%20OR%201=1-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
       echo traffic_generated
       ```
 
@@ -85,16 +85,16 @@ steps:
       ```
 
       ### ▷ 결과 해석
-      `4`는 스캔에서 열린 포트 수(SQLi curl은 출력 없이 전송됨). 이제 eve.json에 이 출처의 flow/alert/http
+      `4`는 스캔에서 열린 포트 수(SQLi 요청은 출력 없이 전송됨). 이제 eve.json에 이 출처의 flow/alert/http
       이벤트가 갓 쌓였다 — STEP 3~6에서 그걸 복원한다.
     hint: '흐름 생성'
     category: manipulation
     points: 12
     answer: |
       # 1) 포트 스캔 → IPS에 flow/alert 이벤트 생성
-      docker exec el34-attacker sh -c "nmap -sS -T4 --top-ports 30 10.20.30.1 2>/dev/null | grep -c open"
+      ssh att@192.168.0.202 "nmap -sS -T4 --top-ports 30 192.168.0.161 2>/dev/null | grep open" | jq -s length
       # 2) SQLi 웹공격 → http/alert 이벤트 생성
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -H 'Host: dvwa.el34.lab' 'http://10.20.30.1/?id=1%27%20OR%201=1--'"
+      ssh att@192.168.0.202 "echo -en "GET /?id=1%27%20OR%201=1-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null"
       # 3) 단계 완료 마커
       echo traffic_generated
     answer_detail: "흐름 생성 = 스캔+웹공격으로 eve.json에 flow/alert/http 이벤트 남김. 포렌식 분석 대상."
@@ -117,7 +117,7 @@ steps:
       **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속해 실행한다.
 
       ```bash
-      tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep -oE '"event_type":"[a-z]+"' | sort | uniq -c | head
+      tail -n 3000 /var/log/suricata/eve.json | grep -oE '"event_type":"[a-z]+"' | sort | uniq -c | head
       echo types_analyzed
       ```
 
@@ -139,7 +139,7 @@ steps:
     points: 14
     answer: |
       # 1~2) eve.json에서 event_type 값을 뽑아 종류별 건수 집계
-      docker exec el34-ips sh -c "tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep -oE '\"event_type\":\"[a-z]+\"' | sort | uniq -c | head"
+      ssh ccc@10.20.31.2 "tail -n 3000 /var/log/suricata/eve.json | grep -oE '\"event_type\":\"[a-z]+\"' | sort | uniq -c | head"
       # 3) 단계 완료 마커
       echo types_analyzed
     answer_detail: "event_type 분석 = eve.json의 alert/flow/http/dns/tls 분포. 각 타입이 다른 포렌식 단서."
@@ -153,7 +153,7 @@ steps:
   - order: 4
     instruction: |
       ## STEP 4 — "누가"를 묶는다 (출처 IP 상관)
-      > **이 단계에서 할 일:** 최근 eve.json에서 공격자 출처 IP(10.20.30.202)가 든 이벤트 건수를 센다.
+      > **이 단계에서 할 일:** 최근 eve.json에서 공격자 출처 IP(192.168.0.202)가 든 이벤트 건수를 센다.
       > **왜:** 포렌식의 핵심 질문은 "누가"다. el34는 SNAT가 없어 출처 IP가 보존되므로, 이 IP로 모든
       > 이벤트를 한 공격자 활동으로 묶을 수 있다.
 
@@ -162,7 +162,7 @@ steps:
       **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속해 실행한다.
 
       ```bash
-      tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'
+      tail -n 3000 /var/log/suricata/eve.json | grep -c '192.168.0.202'
       echo src_correlated
       ```
 
@@ -179,8 +179,8 @@ steps:
     category: manipulation
     points: 14
     answer: |
-      # 1) 공격자 출처 IP(10.20.30.202) 이벤트 건수 집계 (출처 기반 활동 묶기)
-      docker exec el34-ips sh -c "tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'"
+      # 1) 공격자 출처 IP(192.168.0.202) 이벤트 건수 집계 (출처 기반 활동 묶기)
+      ssh ccc@10.20.31.2 "tail -n 3000 /var/log/suricata/eve.json | grep '192.168.0.202'" | jq -s length
       # 2) 단계 완료 마커
       echo src_correlated
     answer_detail: "출처 상관 = 출처 IP로 eve.json 이벤트 묶기. SNAT 없는 출처 보존이 포렌식 귀속의 기반."
@@ -203,7 +203,7 @@ steps:
       **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속해 실행한다.
 
       ```bash
-      tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep '"event_type":"flow"' | head -1 | head -c 80
+      tail -n 3000 /var/log/suricata/eve.json | grep '"event_type":"flow"' | head -1 | head -c 80
       echo; echo flow_analyzed
       ```
 
@@ -222,7 +222,7 @@ steps:
     points: 12
     answer: |
       # 1) flow 이벤트 한 건의 앞부분(연결 요약 필드) 확인
-      docker exec el34-ips sh -c "tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep '\"event_type\":\"flow\"' | head -1 | head -c 80"
+      ssh ccc@10.20.31.2 "tail -n 3000 /var/log/suricata/eve.json | grep '\"event_type\":\"flow\"' | head -1 | head -c 80"
       # 2) 줄바꿈 + 단계 완료 마커
       echo; echo flow_analyzed
     answer_detail: "flow 분석 = 연결 단위 요약(bytes/pkts/duration). 대량=유출, 주기적 소량=비콘 식별."
@@ -246,8 +246,8 @@ steps:
       **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속해 실행한다.
 
       ```bash
-      tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep 10.20.30.202 | grep -oE '"timestamp":"[0-9T:.-]+' | head -5
-      N=$(tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202)
+      tail -n 3000 /var/log/suricata/eve.json | grep 192.168.0.202 | grep -oE '"timestamp":"[0-9T:.-]+' | head -5
+      N=$(tail -n 3000 /var/log/suricata/eve.json | grep -c 192.168.0.202)
       echo "타임라인 이벤트 ${N}건"
       echo timeline_built
       ```
@@ -269,9 +269,9 @@ steps:
     points: 12
     answer: |
       # 1) 출처 이벤트의 timestamp 시간순 추출
-      docker exec el34-ips sh -c "tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep 10.20.30.202 | grep -oE '\"timestamp\":\"[0-9T:.-]+' | head -5"
+      ssh ccc@10.20.31.2 "tail -n 3000 /var/log/suricata/eve.json | grep 192.168.0.202 | grep -oE '\"timestamp\":\"[0-9T:.-]+' | head -5"
       # 2) 타임라인 총 이벤트 수
-      N=$(docker exec el34-ips sh -c "tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202")
+      N=$(ssh ccc@10.20.31.2 "tail -n 3000 /var/log/suricata/eve.json | grep -c 192.168.0.202")
       echo "타임라인 이벤트 ${N}건"
       # 3) 단계 완료 마커
       echo timeline_built
@@ -295,7 +295,7 @@ steps:
       **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속해 실행한다.
 
       ```bash
-      H=$(sha256sum /var/log/suricata/eve.json 2>/dev/null | cut -c1-32)
+      H=$(sha256sum /var/log/suricata/eve.json | cut -c1-32)
       echo "eve.json 증거 무결성 해시(SHA-256): ${H}"
       echo "chain of custody: 해시+수집시각으로 변조 방지 (원본 패킷은 pcap)"
       echo "$H" | grep -qE "^[a-f0-9]{16}" && echo evidence_preserved
@@ -317,7 +317,7 @@ steps:
     points: 12
     answer: |
       # 1) 증거 로그 SHA-256 해시 계산 (무결성 지문)
-      H=$(docker exec el34-ips sh -c "sha256sum /var/log/suricata/eve.json 2>/dev/null | cut -c1-32")
+      H=$(ssh ccc@10.20.31.2 "sha256sum /var/log/suricata/eve.json | cut -c1-32")
       echo "eve.json 증거 무결성 해시(SHA-256): ${H}"
       # 2) chain of custody 메모
       echo "chain of custody: 해시+수집시각으로 변조 방지 (원본 패킷은 pcap)"
@@ -343,8 +343,8 @@ steps:
       **실습 컨테이너:** `el34-ips` — `docker exec -it el34-ips bash` 로 접속해 실행한다.
 
       ```bash
-      N=$(tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202)
-      H=$(sha256sum /var/log/suricata/eve.json 2>/dev/null | cut -c1-16)
+      N=$(tail -n 3000 /var/log/suricata/eve.json | grep -c 192.168.0.202)
+      H=$(sha256sum /var/log/suricata/eve.json | cut -c1-16)
       echo "# W07 네트워크 포렌식 보고서 — event_type/출처상관(${N}건)·flow/타임라인·증거(해시 ${H})"
       echo netforensics_report_done
       ```
@@ -363,9 +363,9 @@ steps:
     points: 14
     answer: |
       # 1) 출처 이벤트 수 집계 (인용 근거 ①)
-      N=$(docker exec el34-ips sh -c "tail -n 3000 /var/log/suricata/eve.json 2>/dev/null | grep -c 10.20.30.202")
+      N=$(ssh ccc@10.20.31.2 "tail -n 3000 /var/log/suricata/eve.json | grep -c 192.168.0.202")
       # 2) 증거 해시 계산 (인용 근거 ②)
-      H=$(docker exec el34-ips sh -c "sha256sum /var/log/suricata/eve.json 2>/dev/null | cut -c1-16")
+      H=$(ssh ccc@10.20.31.2 "sha256sum /var/log/suricata/eve.json | cut -c1-16")
       # 3) 실측 수치 인용 보고서 출력
       echo "# W07 네트워크 포렌식 보고서 — event_type/출처상관(${N}건)·flow/타임라인·증거(해시 ${H})"
       # 4) 보고서 생성 완료 마커

@@ -32,7 +32,7 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/
+      echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}"
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예 — 코드 숫자는 환경마다 다를 수 있음)
@@ -49,7 +49,7 @@ steps:
     points: 10
     answer: |
       # 1) 웹 표적(dvwa)에 HTTP 요청 → 응답코드를 dvwa= 형식으로 출력 (도달 확인)
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'dvwa=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://10.20.30.1/"
+      ssh att@192.168.0.202 "echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}"
     answer_detail: "SOC 성숙도 평가 대상 = el34 인프라(웹/네트워크/호스트/SIEM 4계층)."
     verify:
       type: output_contains
@@ -70,9 +70,9 @@ steps:
       ### ▷ 그대로 입력
       ```bash
       # ── el34-attacker 에서: ──
-      curl -s -o /dev/null -w 'sqli=%{http_code}\n' -H 'Host: dvwa.el34.lab' "http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password--"
+      echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}"
       # ── el34-web 에서: ──
-      sudo tail -400 /var/log/apache2/modsec_audit.log 2>/dev/null | grep -oE '942[0-9]{3}' | sort | uniq -c | head -3
+      sudo tail -400 /var/log/apache2/modsec_audit.log | grep -oE '942[0-9]{3}' | sort | uniq -c | head -3
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예 — 횟수 숫자는 환경마다 다름)
@@ -92,10 +92,10 @@ steps:
     category: manipulation
     points: 14
     answer: |
-      # 1) 공격자가 SQLi(UNION SELECT) 요청 전송
-      docker exec el34-attacker sh -c "curl -s -o /dev/null -w 'sqli=%{http_code}\n' -H 'Host: dvwa.el34.lab' \"http://10.20.30.1/?id=1%27%20UNION%20SELECT%20user,password--\""
+      # 1) 공격자가 SQLi(UNION SELECT) 요청 전송 (raw HTTP — 상태코드 확인)
+      ssh att@192.168.0.202 'echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}"'
       # 2) ModSec audit 로그에서 SQLi 탐지 룰군(942xxx)만 골라 발화 횟수 집계 → 942가 보이면 SQLi 탐지됨
-      docker exec el34-web sh -c "sudo tail -400 /var/log/apache2/modsec_audit.log 2>/dev/null | grep -oE '942[0-9]{3}' | sort | uniq -c | head -3"
+      ssh ccc@10.20.32.80 "sudo tail -400 /var/log/apache2/modsec_audit.log | grep -oE '942[0-9]{3}' | sort | uniq -c | head -3"
     answer_detail: "웹 가시성 = SQLi 시도가 ModSec 942 audit에 탐지로 남는가. 942 보이면 웹공격 가시성 있음."
     verify:
       type: output_contains
@@ -112,14 +112,14 @@ steps:
       ## STEP 3 — 네트워크 계층(IPS)이 공격 트래픽을 보는가 (② 네트워크 가시성)
       > **이 단계에서 할 일:** 포트 스캔을 한 번 흘리고, Suricata eve.json에 공격자 출처 IP 흔적이 쌓이는지 센다.
       > **왜:** 웹 로그에 안 남는 포트 스캔·비-HTTP 트래픽은 네트워크 계층(IPS)이 본다. el34는 방화벽이
-      > SNAT를 안 해서 출처 IP(10.20.30.202)가 보존된다 → "누가" 스캔했는지 귀속이 된다.
+      > SNAT를 안 해서 출처 IP(192.168.0.202)가 보존된다 → "누가" 스캔했는지 귀속이 된다.
 
       ### ▷ 그대로 입력
       ```bash
       # ── el34-attacker 에서: ──
-      nmap -sS -T4 --top-ports 50 10.20.30.1 2>/dev/null | grep -c open
+      nmap -sS -T4 --top-ports 50 192.168.0.161 2>/dev/null | grep -c open
       # ── el34-ips 에서: ──
-      tail -2000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'
+      tail -2000 /var/log/suricata/eve.json | grep -c '192.168.0.202'
       echo netvis_done
       ```
 
@@ -140,9 +140,9 @@ steps:
     points: 12
     answer: |
       # 1) 포트 스캔 수행 (IPS가 트래픽을 보게 만든다)
-      docker exec el34-attacker sh -c "nmap -sS -T4 --top-ports 50 10.20.30.1 2>/dev/null | grep -c open"
-      # 2) eve.json에서 출처 IP(10.20.30.202) 흔적 건수 집계
-      docker exec el34-ips sh -c "tail -2000 /var/log/suricata/eve.json 2>/dev/null | grep -c '10.20.30.202'"
+      ssh att@192.168.0.202 "nmap -sS -T4 --top-ports 50 192.168.0.161 2>/dev/null | grep open" | jq -s length
+      # 2) eve.json에서 출처 IP(192.168.0.202) 흔적 건수 집계
+      ssh ccc@10.20.31.2 "tail -2000 /var/log/suricata/eve.json | grep '192.168.0.202'" | jq -s length
       # 3) 네트워크 가시성 점검 완료 마커
       echo netvis_done
     answer_detail: "네트워크 가시성 = Suricata eve.json의 출처 IP 흔적. 출처 보존(SNAT 없음)으로 귀속 가능."
@@ -168,7 +168,7 @@ steps:
       **실습 컨테이너:** `el34-siem` — `docker exec -it el34-siem bash` 로 접속해 실행한다.
 
       ```bash
-      N=$(tail -3000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -oE '"level":1[0-9]' | wc -l); echo "siem_high=$N"
+      N=$(tail -3000 /var/ossec/logs/alerts/alerts.json | grep -oE '"level":1[0-9]' | wc -l); echo "siem_high=$N"
       ```
 
       ### ▷ 이렇게 나오면 정상 (실측 예 — 건수는 환경마다 다름)
@@ -185,7 +185,7 @@ steps:
     points: 12
     answer: |
       # 1) Wazuh alerts.json의 고위험(level 10~19) 알림 수 집계 → siem_high=N
-      docker exec el34-siem sh -c 'N=$(tail -3000 /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -oE "\"level\":1[0-9]" | wc -l); echo "siem_high=$N"'
+      ssh ccc@10.20.32.100 'N=$(tail -3000 /var/ossec/logs/alerts/alerts.json | grep -oE "\"level\":1[0-9]" | wc -l); echo "siem_high=$N"'
     answer_detail: "SIEM 가시성 = Wazuh alerts.json 고위험 집계. 다소스 상관·격상이 SOC 성숙의 지표."
     verify:
       type: output_contains
@@ -231,7 +231,7 @@ steps:
     points: 12
     answer: |
       # 1) osquery로 프로세스 1건 질의 (호스트를 SQL로 점검 가능한지)
-      docker exec el34-web sh -c "osqueryi --json 'SELECT pid,name FROM processes LIMIT 1' 2>/dev/null | head -c 40"
+      ssh ccc@10.20.32.80 "sudo osqueryi --json 'SELECT pid,name FROM processes LIMIT 1' 2>/dev/null | head -c 40"
       # 2) 줄바꿈 + 호스트 가시성 점검 완료 마커
       echo; echo hostvis_done
     answer_detail: "호스트 가시성 = osquery로 프로세스/포트/계정 헌팅 가능. 호스트 계층 탐지의 토대."
@@ -259,9 +259,9 @@ steps:
 
       ```bash
       N=0
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' && { echo "네트워크(Suricata eve) 가시성 OK"; N=$((N+1)); }
-      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' && { echo "SIEM(Wazuh alerts) 가시성 OK"; N=$((N+1)); }
-      docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' && { echo "호스트(osquery) 가시성 OK"; N=$((N+1)); }
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json' && { echo "네트워크(Suricata eve) 가시성 OK"; N=$((N+1)); }
+      ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json' && { echo "SIEM(Wazuh alerts) 가시성 OK"; N=$((N+1)); }
+      ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null 2>&1' && { echo "호스트(osquery) 가시성 OK"; N=$((N+1)); }
       echo "가시성 확보 계층: $N/3"; [ "$N" -ge 2 ] && echo soc_cmm_assessed
       ```
 
@@ -286,11 +286,11 @@ steps:
       # 1) 가시성 확보 계층 수 카운터 초기화
       N=0
       # 2) 네트워크: Suricata eve.json 있으면 +1
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' && { echo "네트워크(Suricata eve) 가시성 OK"; N=$((N+1)); }
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json' && { echo "네트워크(Suricata eve) 가시성 OK"; N=$((N+1)); }
       # 3) SIEM: Wazuh alerts.json 있으면 +1
-      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' && { echo "SIEM(Wazuh alerts) 가시성 OK"; N=$((N+1)); }
+      ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json' && { echo "SIEM(Wazuh alerts) 가시성 OK"; N=$((N+1)); }
       # 4) 호스트: osqueryi 있으면 +1
-      docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' && { echo "호스트(osquery) 가시성 OK"; N=$((N+1)); }
+      ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null 2>&1' && { echo "호스트(osquery) 가시성 OK"; N=$((N+1)); }
       # 5) 확보 계층 수 + 2계층 이상이면 합격 마커
       echo "가시성 확보 계층: $N/3"; [ "$N" -ge 2 ] && echo soc_cmm_assessed
     answer_detail: "SOC-CMM = 4계층 가시성 실프로브로 정량화(N≥2 게이트). 가짜 echo 아닌 실측. 성숙도=탐지 역량."
@@ -317,9 +317,9 @@ steps:
 
       ```bash
       GAP=""
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' || GAP="$GAP 네트워크"
-      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' || GAP="$GAP SIEM"
-      docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' || GAP="$GAP 호스트"
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json' || GAP="$GAP 네트워크"
+      ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json' || GAP="$GAP SIEM"
+      ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null 2>&1' || GAP="$GAP 호스트"
       echo "탐지 갭(미탐 계층):${GAP:- 없음}"; echo "로드맵: ①룰 보강(SIGMA/Suricata) ②격상(Wazuh) ③SOAR ④헌팅 정례화"; echo gap_roadmap_done
       ```
 
@@ -341,9 +341,9 @@ steps:
       # 1) 갭(미탐 계층) 목록 초기화
       GAP=""
       # 2) 각 계층 프로브 실패 시 그 계층명을 갭 목록에 추가
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' || GAP="$GAP 네트워크"
-      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' || GAP="$GAP SIEM"
-      docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' || GAP="$GAP 호스트"
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json' || GAP="$GAP 네트워크"
+      ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json' || GAP="$GAP SIEM"
+      ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null 2>&1' || GAP="$GAP 호스트"
       # 3) 갭 목록 + 개선 로드맵 출력 → 완료 마커
       echo "탐지 갭(미탐 계층):${GAP:- 없음}"; echo "로드맵: ①룰 보강(SIGMA/Suricata) ②격상(Wazuh) ③SOAR ④헌팅 정례화"; echo gap_roadmap_done
     answer_detail: "갭 분석 = 계층 실프로브로 미탐 갭 식별. 가짜 echo 아닌 실식별. 로드맵=룰보강→격상→SOAR→헌팅."
@@ -371,9 +371,9 @@ steps:
 
       ```bash
       N=0
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' && N=$((N+1))
-      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' && N=$((N+1))
-      docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' && N=$((N+1))
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json' && N=$((N+1))
+      ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json' && N=$((N+1))
+      ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null 2>&1' && N=$((N+1))
       echo "# SOC고급 W01 성숙도 보고서"
       echo "## 1. 가시성(실측): 네트워크/SIEM/호스트 ${N}/3계층 탐지 가능"
       echo "## 2. SOC-CMM 5도메인으로 정량화"
@@ -400,9 +400,9 @@ steps:
     answer: |
       # 1) 가시성 계층 수 재집계 (보고서 인용 근거)
       N=0
-      docker exec el34-ips sh -c 'test -f /var/log/suricata/eve.json' && N=$((N+1))
-      docker exec el34-siem sh -c 'test -f /var/ossec/logs/alerts/alerts.json' && N=$((N+1))
-      docker exec el34-web sh -c 'command -v osqueryi >/dev/null 2>&1' && N=$((N+1))
+      ssh ccc@10.20.31.2 'test -f /var/log/suricata/eve.json' && N=$((N+1))
+      ssh ccc@10.20.32.100 'test -f /var/ossec/logs/alerts/alerts.json' && N=$((N+1))
+      ssh ccc@10.20.32.80 'command -v osqueryi >/dev/null 2>&1' && N=$((N+1))
       # 2) 실측 수치(N) 인용 성숙도 보고서 출력
       echo "# SOC고급 W01 성숙도 보고서"
       echo "## 1. 가시성(실측): 네트워크/SIEM/호스트 ${N}/3계층 탐지 가능"

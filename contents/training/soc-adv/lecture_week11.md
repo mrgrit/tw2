@@ -154,11 +154,11 @@ graph TD
 **식별 — 실측 예.** 알림(Wazuh)을 출처 IP 상관(W07)으로 확증한다 — **알림이 곧 사건은 아니다.**
 
 ```bash
-N=$(tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c "10.20.30.202"); echo "출처 알림 ${N}건 — triage"
+N=$(tail -2000 /var/ossec/logs/alerts/alerts.json | grep -c "192.168.0.202"); echo "출처 알림 ${N}건 — triage"
 ```
 
 ```
-출처 10.20.30.202 알림 1744건 — triage(심각도/범위)
+출처 192.168.0.202 알림 1744건 — triage(심각도/범위)
 ```
 
 한 출처의 알림이 다수면 활발한 사건이다 — 이 수치로 심각도·범위를 정해 우선순위를 매긴다. **격리**는 증거

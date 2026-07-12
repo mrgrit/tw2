@@ -197,9 +197,9 @@ graph TD
 
 ```bash
 # 레드(el34-attacker): SQLi 발사
-curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=1%27%20OR%20%271%27=%271"
+echo -en "GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}"
 # 블루(el34-ips): 출처 탐지 흔적
-tail -2000 /var/log/suricata/eve.json | grep -c "10.20.30.202"
+tail -2000 /var/log/suricata/eve.json | grep -c "192.168.0.202"
 ```
 
 ```
@@ -243,7 +243,7 @@ el34 호스트에서 `docker exec` 로(STEP 1·5는 레드+블루 두 컨테이�
 
 ### STEP 1 — 퍼플 환경 (레드+블루)
 - **왜**: 퍼플은 공격(레드)과 탐지(블루)가 한 테이블에 앉아야 성립.
-- **무엇을**: el34-attacker(curl/nmap) + el34-siem(alerts.json) 둘 다 준비.
+- **무엇을**: el34-attacker(nc) + el34-siem(alerts.json) 둘 다 준비.
 - **해석**: red_ok+blue_ok = 루프 준비(`purple_ready`).
 - **실전**: 레드·블루 합동 세션의 환경 점검.
 

@@ -55,7 +55,7 @@ eve.json은 거대한 JSON 하나가 아니라, **한 줄에 JSON 객체 하나*
 `tail`·`grep`·`jq` 로 줄 단위 분석이 쉽다. 한 줄은 대략 이렇게 생겼다.
 
 ```json
-{"timestamp":"2026-06-24T14:04:44+0000","src_ip":"10.20.30.202","event_type":"alert","alert":{"signature":"...SQLi..."}}
+{"timestamp":"2026-06-24T14:04:44+0000","src_ip":"192.168.0.202","event_type":"alert","alert":{"signature":"...SQLi..."}}
 ```
 
 모든 줄에 `timestamp`·`src_ip`·`event_type` 이 있어, 이 세 필드로 **언제·누가·무엇**을 엮는다. (주의: 흐름이
@@ -97,7 +97,7 @@ STEP 7에서 eve.json의 SHA-256을 구하는데, 다시 구하면 값이 달라
 
 | 값 | 무엇 | 규칙 |
 |----|------|------|
-| **10.20.30.202** | 공격자 출처 IP | el34 내부 발판(attacker), SNAT 없어 전 계층 보존 |
+| **192.168.0.202** | 공격자 출처 IP | el34 내부 발판(attacker), SNAT 없어 전 계층 보존 |
 | **10.20.30.1** | 표적 | fw 게이트웨이(→ vhost로 DNAT) |
 | **protocol/in_iface** | flow 필드 | Suricata가 기록한 연결 메타 |
 | **마커(`eve_ready` 등)** | 단계 완료 신호 | 채점이 통과를 확인하는 약속 문자열 |
@@ -192,7 +192,7 @@ graph TD
 **출처 상관 — 실측 예.** 출처 IP가 든 이벤트 수를 센다.
 
 ```bash
-tail -n 3000 /var/log/suricata/eve.json | grep -c '10.20.30.202'
+tail -n 3000 /var/log/suricata/eve.json | grep -c '192.168.0.202'
 ```
 
 ```
@@ -229,7 +229,7 @@ zeek(흐름)·jq(eve.json)다.
 ## 5. 실습 안내 (8 미션)
 
 각 미션을 **① 왜 하는가 / ② 무엇을 알 수 있는가 / ③ 결과 해석 / ④ 실전 활용** 4축으로 설명한다. 명령은
-el34 호스트에서 `docker exec el34-ips`(eve.json)로. **인가된 실습 환경(el34)에서만**, 읽기 전용.
+el34 호스트에서 `ssh ccc@10.20.31.2`(eve.json)로. **인가된 실습 환경(el34)에서만**, 읽기 전용.
 
 ### STEP 1 — eve.json 접근
 - **왜**: 네트워크 포렌식의 모든 분석이 eve.json에서 출발.
@@ -251,7 +251,7 @@ el34 호스트에서 `docker exec el34-ips`(eve.json)로. **인가된 실습 환
 
 ### STEP 4 — 출처 상관
 - **왜**: 포렌식 핵심 질문 "누가" — 출처로 묶는다.
-- **무엇을**: 출처 IP(10.20.30.202) 이벤트 건수.
+- **무엇을**: 출처 IP(192.168.0.202) 이벤트 건수.
 - **해석**: 다수면 활발한 활동(`src_correlated`). 출처 보존이 귀속의 기반.
 - **실전**: 한 IP를 축으로 전 event_type을 한 행위자로 묶기.
 
