@@ -13,12 +13,12 @@ description: |
   WSTG-INFO/ERRH. 표적은 juiceshop(juice.el34.lab, DetectionOnly 라 노출이 그대로 보임).
   점검은 외부 공격자 VM 192.168.0.202(att/1)에서 공인 진입 192.168.0.161로 — `ssh att@192.168.0.202`(비번 1)로
   접속해 수행한다. 인가된 실습만.
-  신규 설치 없음(nc 기본 탑재).
+  도구: 도달성·배너·에러·헤더 노출은 whatweb(핑거프린팅), DB 에러 기반 노출은 sqlmap — 모두 att 192.168.0.202 에 탑재.
 difficulty: medium
 duration_minutes: 140
 prerequisites:
   - "W01–W10 통과 (특히 W03 정보수집, W05 SQLi 표면 개념)"
-  - "el34 호스트 SSH(ssh ccc@{{TARGET_IP}}, 비밀번호 1) + docker exec 외부 공격자 VM 192.168.0.202"
+  - "외부 공격자 VM 접속(ssh att@192.168.0.202, 비밀번호 1) — whatweb/sqlmap 탑재"
   - "lecture §2(네 채널 점검: 배너/상세에러/DB에러/헤더), §3(정찰 가속), §4(정보 최소화 방어) 숙지"
 objectives:
   - "네 채널(배너·상세에러·DB에러·헤더)에서 정보 노출을 식별하고 응답 증거로 입증한다"
@@ -43,11 +43,11 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) juice vhost 도달 확인 — -k로 인증서 검증 생략, Host로 vhost 지정, 본문 버리고 응답코드만 juice= 형식으로
-      echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) whatweb으로 juice vhost 도달 확인 + 1차 핑거프린팅 — 상태코드([200 OK])·서버·타이틀·IP를 한 줄로
+      whatweb -a1 --color=never http://juice.el34.lab/
       ```
-      - `-o /dev/null` 은 본문을 버리고 `-w '%{http_code}'` 로 응답 코드만 출력한다(도달성 확인 관용구).
-      - `-s` 조용히, `-k` 인증서 검증 생략, `-H 'Host: ...'` 로 표적 vhost 지정.
+      - `whatweb` 는 응답을 분석해 상태코드(`[200 OK]`)·웹서버(`Apache[2.4.52]`)·타이틀·비표준 헤더·IP 를 한 줄로 요약하는 표준 웹 핑거프린팅 도구다(raw 소켓 nc 와 달리 곧바로 노출을 읽어준다).
+      - `-a1` 은 공격성 낮은 1단계(수동적 정찰), `--color=never` 는 색상 코드를 끈다. att 의 `/etc/hosts` 가 `*.el34.lab → 192.168.0.161` 로 매핑돼 fw 게이트웨이로 요청이 나간다.
 
       ## ✅ 합격 기준
       `juice` 출력 시 통과. **근거:** `juice` 와 함께 HTTP 응답 코드(200 등)가 돌아오면 표적이 점검
@@ -56,11 +56,11 @@ steps:
     category: survey
     points: 10
     answer: |
-      # 1) juice vhost 도달 확인 — -k로 인증서 검증 생략, Host로 vhost 지정, 본문 버리고 응답코드만 juice= 형식으로
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "정보 노출 점검 대상 = JuiceShop(juice.el34.lab). 출력에 juice 가 보이고 HTTP 코드가 돌아오면 도달 성공으로 판정. JuiceShop vhost 는 DetectionOnly 라 점검 요청이 차단(403)되지 않고 통과해 노출을 끝까지 입증하기 좋다."
+      # 1) whatweb으로 juice vhost 도달 확인 + 1차 핑거프린팅 — 상태코드([200 OK])·서버·타이틀·IP를 한 줄로
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/"
+    answer_detail: "정보 노출 점검 대상 = JuiceShop(juice.el34.lab). whatweb 출력에 juice.el34.lab 과 [200 OK] 가 보이면 도달 성공으로 판정. JuiceShop vhost 는 DetectionOnly 라 점검 요청이 차단(403)되지 않고 통과해 노출을 끝까지 입증하기 좋다."
     expected_output: |
-      juice=200
+      http://juice.el34.lab/ [200 OK] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], Title[OWASP Juice Shop], UncommonHeaders[access-control-allow-origin,x-content-type-options,feature-policy,x-recruiting], IP[192.168.0.161]
     verify:
       type: output_contains
       expect: 'juice'
@@ -68,7 +68,7 @@ steps:
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 2
@@ -86,13 +86,13 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 응답 헤더를 덤프(-D -)하고 본문은 버려(-o /dev/null) Server 헤더만 추출 → 웹서버 종류·버전 노출 확인
-      echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -i 'server:'
+      # 1) whatweb 결과에서 서버 배너(Apache/버전)만 추려 웹서버 종류·버전 노출 확인
+      whatweb -a1 --color=never http://juice.el34.lab/ | tr ',' '\n' | grep -i apache
       # 2) 해석 — Apache/2.4.x 버전 노출은 해당 버전 CVE 매핑에 악용됨
       # → Apache/2.4.x 버전 노출 → 해당 버전 CVE 매핑에 악용
       ```
-      - `-D -` 는 응답 헤더를 표준출력으로 덤프한다(헤더 보기 핵심 옵션).
-      - `-o /dev/null` 로 본문은 버리고, `grep -i 'server:'` 로 Server 줄만 추출한다.
+      - `whatweb` 는 `Server:` 응답 헤더를 파싱해 `Apache[2.4.52]`·`HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)]` 로 종류·버전·OS 를 보여준다.
+      - `tr ',' '\n'` 으로 필드를 줄로 나눈 뒤 `grep -i apache` 로 서버 배너 줄만 추출한다.
 
       ## ✅ 합격 기준
       `Apache` 출력 시 통과. **근거:** `Server: Apache/2.4.x (Ubuntu)` 처럼 웹서버 종류·버전이 노출되면
@@ -101,13 +101,14 @@ steps:
     category: recon
     points: 14
     answer: |
-      # 1) 응답 헤더를 덤프(-D -)하고 본문은 버려(-o /dev/null) Server 헤더만 추출 → 웹서버 종류·버전 노출 확인
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -i 'server:'"
+      # 1) whatweb 결과에서 서버 배너(Apache/버전)만 추려 웹서버 종류·버전 노출 확인
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/ | tr ',' '\n' | grep -i apache"
       # 2) 해석 — Apache/2.4.x 버전 노출은 해당 버전 CVE 매핑에 악용됨
       # → Apache/2.4.x 버전 노출 → 해당 버전 CVE 매핑에 악용
-    answer_detail: "배너 = Server 헤더에 실린 웹서버 종류/버전. 출력에 Apache 가 보이면 노출 확인. 버전→해당 버전 CVE 즉시 매핑으로 정찰을 가속한다. 방어는 ServerTokens Prod(+ ServerSignature Off)로 버전·OS 를 숨겨 Server: Apache 한 단어까지 억제."
+    answer_detail: "배너 = Server 헤더에 실린 웹서버 종류/버전. whatweb 이 Apache[2.4.52]·HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)] 로 잡아준다. 버전→해당 버전 CVE 즉시 매핑으로 정찰을 가속한다. 방어는 ServerTokens Prod(+ ServerSignature Off)로 버전·OS 를 숨겨 Server: Apache 한 단어까지 억제."
     expected_output: |
-      Server: Apache/2.4.52 (Ubuntu)
+      Apache[2.4.52]
+      HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)]
       → Apache/2.4.x 버전 노출 → 해당 버전 CVE 매핑에 악용
     verify:
       type: output_contains
@@ -116,7 +117,7 @@ steps:
       semantic:
         intent: "배너 노출"
         success_criteria: ["Server 버전"]
-        acceptable_methods: ["**[OSS] nc raw 헤더 (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 3
@@ -134,13 +135,13 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 일부러 없는 경로(/api/Nonexistent123)를 호출 → 응답 본문에서 'Unexpected path' 상세 에러 문구만 추출
-      echo -en "GET /api/Nonexistent123 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -oE 'Unexpected path[^<]*' | head -1
+      # 1) 일부러 없는 경로(/api/Nonexistent123)를 whatweb으로 호출 → 에러 페이지 타이틀에서 'Unexpected path' 상세 에러 노출 확인
+      whatweb -a1 --color=never http://juice.el34.lab/api/Nonexistent123 | tr ',' '\n' | grep -i unexpected
       # 2) 해석 — 'Unexpected path: /api/...' = 라우팅 구조/내부 경로 노출(커스텀 에러로 숨겨야)
       # → 'Unexpected path: /api/...' = 라우팅 구조/내부 경로 노출. 커스텀 에러로 숨겨야
       ```
-      - `/api/Nonexistent123` 은 일부러 없는 경로다(에러 유발용).
-      - `grep -oE 'Unexpected path[^<]*'` 은 응답 본문에서 그 에러 문구만 추출한다.
+      - `/api/Nonexistent123` 은 일부러 없는 경로다(에러 유발용). 앱은 500 과 함께 `Error: Unexpected path: /api/Nonexistent123` 를 그대로 내주고, whatweb 은 이를 `Title[...]` 로 잡아낸다.
+      - `tr ',' '\n' | grep -i unexpected` 으로 그 에러 타이틀 줄만 추출한다.
 
       ## ✅ 합격 기준
       `Unexpected path` 출력 시 통과. **근거:** 존재하지 않는 경로 요청에 `Unexpected path: /api/...` 같은
@@ -149,13 +150,13 @@ steps:
     category: manipulation
     points: 14
     answer: |
-      # 1) 일부러 없는 경로(/api/Nonexistent123)를 호출 → 응답 본문에서 'Unexpected path' 상세 에러 문구만 추출
-      ssh att@192.168.0.202 "echo -en 'GET /api/Nonexistent123 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -oE 'Unexpected path[^<]*' | head -1"
+      # 1) 일부러 없는 경로(/api/Nonexistent123)를 whatweb으로 호출 → 에러 페이지 타이틀에서 'Unexpected path' 상세 에러 노출 확인
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/api/Nonexistent123 | tr ',' '\n' | grep -i unexpected"
       # 2) 해석 — 'Unexpected path: /api/...' = 라우팅 구조/내부 경로 노출(커스텀 에러로 숨겨야)
       # → 'Unexpected path: /api/...' = 라우팅 구조/내부 경로 노출. 커스텀 에러로 숨겨야
     answer_detail: "상세 에러 = 잘못된 경로 요청에 내부 경로/라우팅 구조가 그대로 노출되는 것(Unexpected path 문구가 증거). 공격자에게 공격 표면 지도를 준다. 방어는 커스텀 에러 페이지로 사용자에겐 일반 메시지만, 상세 원인은 서버측 로그에만 남기는 것."
     expected_output: |
-      Unexpected path: /api/Nonexistent123
+      Title[Error: Unexpected path: /api/Nonexistent123]
       → 'Unexpected path: /api/...' = 라우팅 구조/내부 경로 노출. 커스텀 에러로 숨겨야
     verify:
       type: output_contains
@@ -164,7 +165,7 @@ steps:
       semantic:
         intent: "상세 에러 노출"
         success_criteria: ["내부 경로 노출"]
-        acceptable_methods: ["**[OSS] 잘못된 경로 (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 4
@@ -183,13 +184,13 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 검색 파라미터에 따옴표 하나(q=test')를 넣어 SQL 문법을 깨고 → 응답에서 DB 원본 에러(SQLITE_ERROR) 문구만 추출
-      echo -en 'GET /rest/products/search?q=test%27 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -oE 'SQLITE_ERROR[^<]*' | head -1
-      # 2) 해석 — SQLITE_ERROR = DB 엔진(SQLite) 확정 + SQLi 표면 입증(주입 문법까지 노출)
+      # 1) sqlmap으로 검색 파라미터(q)에 주입을 시도 — 앱이 DB 원본 에러(SQLITE_ERROR)를 노출해 sqlmap이 엔진을 SQLite로 확정
+      sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --level=2 --risk=2 --disable-coloring
+      # 2) 해석 — 앱의 verbose DB 에러(SQLITE_ERROR) → sqlmap이 back-end DBMS: SQLite 판정 + q 파라미터 주입가능 확인
       # → SQLITE_ERROR = DB 엔진(SQLite) 확정 + SQLi 표면 입증. 공격자에게 주입 문법을 알려줌
       ```
-      - `q=test'` 의 끝 따옴표가 DB 질의의 문법을 깬다(잘못된 입력 유발).
-      - `grep -oE 'SQLITE_ERROR[^<]*'` 로 노출된 DB 엔진 에러 문구만 추출한다.
+      - sqlmap 은 `q` 파라미터에 여러 페이로드를 던지는데, JuiceShop 이 잘못된 입력에 `SQLITE_ERROR: near "'%'": syntax error` 같은 원본 DB 에러를 그대로 노출하므로, sqlmap 이 이 오류를 근거로 엔진을 확정하고 주입 가능성을 판정한다.
+      - `--batch` 무인상호작용, `--level=2 --risk=2` 탐지 강도, `--disable-coloring` 색상 끔. (블라인드 추출 `--tables`/`--dump` 은 W05 의 인가 범위에서.)
 
       ## ✅ 합격 기준
       `SQLITE_ERROR` 출력 시 통과. **근거:** 잘못된 입력에 `SQLITE_ERROR: ... syntax error` 같은 DB 엔진
@@ -198,22 +199,26 @@ steps:
     category: manipulation
     points: 16
     answer: |
-      # 1) 검색 파라미터에 따옴표 하나(q=test')를 넣어 SQL 문법을 깨고 → 응답에서 DB 원본 에러(SQLITE_ERROR) 문구만 추출
-      ssh att@192.168.0.202 "echo -en 'GET /rest/products/search?q=test%27 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -oE 'SQLITE_ERROR[^<]*' | head -1"
-      # 2) 해석 — SQLITE_ERROR = DB 엔진(SQLite) 확정 + SQLi 표면 입증(주입 문법까지 노출)
+      # 1) sqlmap으로 검색 파라미터(q)에 주입을 시도 — 앱이 DB 원본 에러(SQLITE_ERROR)를 노출해 sqlmap이 엔진을 SQLite로 확정
+      ssh att@192.168.0.202 'sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --level=2 --risk=2 --disable-coloring'
+      # 2) 해석 — 앱의 verbose DB 에러(SQLITE_ERROR) → sqlmap이 back-end DBMS: SQLite 판정 + q 파라미터 주입가능 확인
       # → SQLITE_ERROR = DB 엔진(SQLite) 확정 + SQLi 표면 입증. 공격자에게 주입 문법을 알려줌
-    answer_detail: "DB 에러 = 잘못된 입력(따옴표)에 DB 원본 에러가 노출되는 것(SQLITE_ERROR 가 증거). DB 엔진(SQLite) 확정 + SQLi 표면 입증으로 곧바로 다음 공격(SQLi)으로 이어지므로 네 채널 중 가장 위험. 방어 1차는 사용자에겐 generic 메시지·원본은 로그로만, 근본 방어는 입력 검증·parameterized query(W05)."
+    answer_detail: "DB 에러 = 잘못된 입력에 DB 원본 에러가 노출되는 것(SQLITE_ERROR 가 증거). 앱이 이 오류를 그대로 흘리므로 sqlmap 이 back-end DBMS: SQLite 로 엔진을 확정하고 q 파라미터가 주입 가능함을 입증한다 — 곧바로 다음 공격(SQLi)으로 이어지므로 네 채널 중 가장 위험. 방어 1차는 사용자에겐 generic 메시지·원본은 로그로만, 근본 방어는 입력 검증·parameterized query(W05)."
     expected_output: |
-      SQLITE_ERROR: near &quot;&#39;%&#39;&quot;: syntax error
-      → SQLITE_ERROR = DB 엔진(SQLite) 확정 + SQLi 표면 입증. 공격자에게 주입 문법을 알려줌
+      GET parameter 'q' is vulnerable. Do you want to keep testing the others (if any)? [y/N] N
+      Parameter: q (GET)
+          Type: boolean-based blind
+          Title: AND boolean-based blind - WHERE or HAVING clause
+      back-end DBMS: SQLite
+      → SQLITE_ERROR(원본 DB 에러) 노출 → sqlmap이 back-end DBMS: SQLite 확정 + q 주입 표면 입증
     verify:
       type: output_contains
-      expect: 'SQLITE_ERROR'
+      expect: 'SQLite'
       field: stdout
       semantic:
         intent: "DB 에러 노출"
         success_criteria: ["DB 엔진 노출"]
-        acceptable_methods: ["**[OSS] 잘못된 입력 (권장)**"]
+        acceptable_methods: ["**[OSS] sqlmap (권장)**"]
     target_vm: web
 
   - order: 5
@@ -231,12 +236,12 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 응답 헤더를 덤프해 비표준 헤더(x-recruiting/x-powered/feature-policy)만 추출 → 숨은 경로/스택 힌트 확인
-      echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -iE 'x-recruiting|x-powered|feature-policy'
+      # 1) whatweb의 UncommonHeaders에서 비표준 헤더(x-recruiting/feature-policy/x-powered)만 추려 숨은 경로/스택 힌트 확인
+      whatweb -a1 --color=never http://juice.el34.lab/ | tr ',' '\n' | grep -iE 'recruiting|feature-policy|powered'
       # 2) 해석 — X-Recruiting: /#/jobs = 숨은 경로 힌트, 불필요 헤더는 제거
       # → X-Recruiting: /#/jobs = 숨은 경로 힌트. 불필요 헤더는 제거
       ```
-      - `-D -` 로 응답 헤더를 떠서 `grep -iE` 로 비표준 헤더 후보만 골라 본다(대소문자 무시).
+      - whatweb 은 표준 밖 응답 헤더를 `UncommonHeaders[...,feature-policy,x-recruiting]` 로 모아 보여준다. `tr ',' '\n' | grep -iE` 로 비표준 헤더 후보만 골라 본다(대소문자 무시).
 
       ## ✅ 합격 기준
       `Recruiting` 출력 시 통과. **근거:** `X-Recruiting: /#/jobs` 같은 비표준 헤더에서 숨은 경로/스택
@@ -245,23 +250,23 @@ steps:
     category: recon
     points: 12
     answer: |
-      # 1) 응답 헤더를 덤프해 비표준 헤더(x-recruiting/x-powered/feature-policy)만 추출 → 숨은 경로/스택 힌트 확인
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -iE 'x-recruiting|x-powered|feature-policy'"
+      # 1) whatweb의 UncommonHeaders에서 비표준 헤더(x-recruiting/feature-policy/x-powered)만 추려 숨은 경로/스택 힌트 확인
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/ | tr ',' '\n' | grep -iE 'recruiting|feature-policy|powered'"
       # 2) 해석 — X-Recruiting: /#/jobs = 숨은 경로 힌트, 불필요 헤더는 제거
       # → X-Recruiting: /#/jobs = 숨은 경로 힌트. 불필요 헤더는 제거
-    answer_detail: "헤더 누출 = 비표준 헤더가 정보를 흘리는 것 — X-Powered-By(기술 스택)/X-Recruiting(/#/jobs 숨은 경로). 출력에 Recruiting 등 X- 헤더가 보이면 노출 확인. 방어는 운영에 불필요한 헤더를 응답에서 제거."
+    answer_detail: "헤더 누출 = 비표준 헤더가 정보를 흘리는 것 — X-Powered-By(기술 스택)/X-Recruiting(/#/jobs 숨은 경로). whatweb 이 UncommonHeaders 로 모아 보여줘 x-recruiting/feature-policy 가 추출되면 노출 확인. 방어는 운영에 불필요한 헤더를 응답에서 제거."
     expected_output: |
-      Feature-Policy: payment 'self'
-      X-Recruiting: /#/jobs
+      feature-policy
+      x-recruiting]
       → X-Recruiting: /#/jobs = 숨은 경로 힌트. 불필요 헤더는 제거
     verify:
       type: output_contains
-      expect: 'Recruiting'
+      expect: 'recruiting'
       field: stdout
       semantic:
         intent: "헤더 누출"
         success_criteria: ["비표준 헤더 노출"]
-        acceptable_methods: ["**[OSS] nc raw 헤더 (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 6

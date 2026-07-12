@@ -451,7 +451,7 @@ el34 에는 점검 모드가 다른 두 표적이 함께 있다. **JuiceShop(`ju
 
 ```mermaid
 graph TD
-    ATK["점검자 외부 공격자 VM<br/>192.168.0.202<br/>nc/nuclei (Host: ...)"]
+    ATK["점검자 외부 공격자 VM<br/>192.168.0.202<br/>whatweb/sqlmap/nuclei (juice·dvwa)"]
     FW["el34-fw (nftables)<br/>공개 80/443 → DNAT → web 10.20.32.80<br/>※ SNAT 없음 → 출처 IP 보존"]
     WEB["el34-web (Apache + ModSecurity CRS)<br/>Host 헤더로 vhost 라우팅 + WAF 검사"]
     APP["백엔드 표적<br/>juice = 탐지만(200) / dvwa = 차단(403)"]
@@ -474,13 +474,13 @@ el34 의 4-tier 세그먼트는 `ext 10.20.30` / `pipe 10.20.31` / `dmz 10.20.32
 
 ## 4. 점검 명령 빠른 복습 — "무엇을 어디서 보나"
 
-기말에서 각 단계를 점검하는 핵심 도구를 한 번에 정리한다. 모든 명령은 el34
-호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 `ssh att@192.168.0.202`(점검) 로 실행한다. 점검의
-주력 도구는 **`nc`**(수동 정밀 raw HTTP)와 **`nuclei`**(자동 정찰)다.
+기말에서 각 단계를 점검하는 핵심 도구를 한 번에 정리한다. 모든 명령은 외부 공격자
+VM(`ssh att@192.168.0.202`, 비밀번호 1)에서 실행한다. 점검의 주력 도구는 **whatweb**(핑거프린팅·경계/
+노출)·**sqlmap**(SQLi)·**dalfox**(XSS)·**ffuf**(디렉터리/객체 퍼징)와 **nuclei**(자동 정찰)다.
 
-> **용어 — nc.** `echo -en` 으로 HTTP 요청 라인·헤더를 손수 써서 `nc` 로 보내는 방식이다. `헤더: 값` 으로
-> 헤더(예: `Host`)를, 빈 줄 뒤에 본문(POST 데이터)을 붙인다. `| head -1 | grep -oE '[0-9]{3}'` 로 본문은
-> 버리고 **응답 코드만** 뽑는 관용구는 도달성·차단 여부를 빠르게 볼 때 쓴다.
+> **용어 — whatweb.** `whatweb -a1 --color=never http://<vhost>/경로` 로 요청을 보내 상태코드
+> (`[200 OK]`/`[403 Forbidden]`)·서버 배너·헤더·본문 단서를 한 줄로 요약한다. `grep -oE '[0-9]{3} (OK|Unauthorized|Forbidden)'`
+> 로 상태 코드만 추리면 도달성·차단 여부를 빠르게 볼 수 있다.
 
 ### 4.1 정찰 (nuclei — 기술 핑거프린팅 + 보안 헤더 누락)
 
@@ -504,21 +504,26 @@ echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv1
 ### 4.3 주입 (SQLi / XSS / RCE) — 차단 표적 DVWA
 
 ```bash
-echo "sqli=$(echo -en 'GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"; echo "xss=$(echo -en 'GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-echo -en "GET /?q=1;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+# SQLi → sqlmap, XSS → dalfox, RCE → whatweb 페이로드. 모두 차단 모드 dvwa가 WAF 403으로 막음
+sqlmap -u "http://dvwa.el34.lab/vulnerabilities/sqli/?id=1&Submit=Submit" --batch --level=2 --risk=2 --disable-coloring
+dalfox url --url "http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test"
+whatweb -a1 --color=never "http://dvwa.el34.lab/?q=1%3Bcat%20/etc/passwd"
 ```
 
-무엇을 보나 — DVWA(차단 모드)에서 SQLi(942)·XSS(941)·RCE(932)가 WAF 에 막혀 **403** 이 돌아오는지.
-같은 입력을 JuiceShop(탐지만)에 보내면 200 으로 통과한다.
+무엇을 보나 — DVWA(차단 모드)에서 SQLi(942)·XSS(941)·RCE(932) 페이로드가 WAF 에 막혀 **403** 이 돌아오는지.
+sqlmap 은 '주입 불가+WAF', dalfox 는 'WAF (HTTP 403)', whatweb 은 `[403 Forbidden]` 을 보고한다. 같은
+페이로드를 JuiceShop(탐지만)에 보내면 200 으로 통과한다.
 
 ### 4.4 접근제어 (무인증 관리 · 강제 브라우징)
 
 ```bash
-echo -en "GET /rest/admin/application-configuration; HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' echo -en "GET /ftp HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+# 무인증 관리 엔드포인트는 whatweb으로 상태 확인, 숨은 경로(/ftp)는 ffuf 강제 브라우징으로 발견
+whatweb -a1 --color=never http://juice.el34.lab/rest/admin/application-configuration | grep -oE '[0-9]{3} (OK|Unauthorized|Forbidden)'
+ffuf -u http://juice.el34.lab/FUZZ -w /usr/share/wfuzz/wordlist/general/common.txt -mc 200,301,302 -ac -s 2>/dev/null
 ```
 
-무엇을 보나 — 무인증 관리 엔드포인트가 **200** 으로 설정을 노출하는지(A01). `/ftp` 강제 브라우징도
-접근되면 접근제어 실패의 또 다른 증거다.
+무엇을 보나 — 무인증 관리 엔드포인트가 whatweb 에 **200 OK** 로 설정을 노출하는지(A01). ffuf 강제 브라우징이
+`/ftp` 를 찾아내면 접근제어 실패의 또 다른 증거다.
 
 ### 4.5 위험 평가 (CVSS 3.1)
 
@@ -562,9 +567,8 @@ XSS/정보 노출이 6.1/5.3 Medium 으로 자리매김된다(미션 8).
 / 결과 해석(정상 vs 비정상) / 실전 활용. 미션은 점검 한 사이클을 따라 점검(도달성) → ① 정찰 → ②
 인증/JWT → ③ 주입 → ④ 접근제어 → ⑤ 위험 평가 → ⑥ 권고 → 전문 보고서 순서로 흐른다.
 
-> **시험 진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`)에서 `ssh att@192.168.0.202`
-> 로. 각 미션은 **독립적**이며, **인가된 표적(JuiceShop/DVWA) vhost 만** 점검한다. 합격 임계값은 0.7
-> 이다.
+> **시험 진행 원칙.** 모든 명령은 외부 공격자 VM(`ssh att@192.168.0.202`)에서 실행한다. 각 미션은
+> **독립적**이며, **인가된 표적(JuiceShop/DVWA) vhost 만** 점검한다. 합격 임계값은 0.7 이다.
 
 ### 미션 1 — 점검: 표적에 도달하나 (8점)
 

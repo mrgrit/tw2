@@ -5,14 +5,14 @@ course: web-vuln
 week: 6
 description: |
   XSS·CSRF 점검(WSTG-CLNT) — 피해자의 브라우저(XSS)와 인증된 세션(CSRF)을 노리는 두 공격을
-  WSTG 점검자 관점으로 손으로 확인한다. Reflected XSS(`<script>`)와 이벤트 핸들러 변형
-  (`<img onerror>`·`<svg onload>`)이 ModSec 941 룰군에 걸려 dvwa 에서 403(차단)으로,
-  juice 에서는 200(탐지만)으로 갈리는 것을 응답 코드로 본다. 응답을 점검해 CSRF 토큰 유무,
-  세션 쿠키 속성(HttpOnly/Secure/SameSite), CSP 헤더 유무를 확인하고, 출력 인코딩(근본)+CSP(2차)
-  +HttpOnly, CSRF 토큰+SameSite+재인증으로 이어지는 방어 우선순위를 정리한다.
-  대상은 dvwa(차단)/juice(탐지만) vhost. 공격은 외부 공격자 VM 192.168.0.202(att/1)에서 공인 진입
-  192.168.0.161로 발신하며(XSS payload 의 공백은 반드시 %20 으로 인코딩) — `ssh att@192.168.0.202`(비번 1)로
-  접속해 수행하고, 탐지 로그 확인은 `ssh ccc@{{TARGET_IP}}`(el34 호스트) 후 `docker exec -it el34-web bash`. 인가된 실습만.
+  WSTG 점검자 관점에서 실제 도구로 확인한다. XSS 전용 스캐너 `dalfox` 로 dvwa 의 반사형·DOM XSS
+  엔드포인트를 자동 점검하면, ModSec 941 룰군이 반사·이벤트 핸들러·mutation 변형을 모두 403 으로
+  막아 dalfox 가 `WAF ... 403 detected` 로 보고한다. 웹 핑거프린팅 도구 `whatweb` 로는 도달성과
+  응답 헤더(CSRF 관련 X-Frame-Options·SameSite, XSS 2차 방어선 CSP)를 점검해, 출력 인코딩(근본)+
+  CSP(2차)+HttpOnly, CSRF 토큰+SameSite+재인증으로 이어지는 방어 우선순위를 정리한다.
+  대상은 dvwa(차단)/juice(탐지·헤더 관찰) vhost. 공격은 외부 공격자 VM 192.168.0.202(att/1)에서 공인
+  진입 192.168.0.161로 발신하며 — `ssh att@192.168.0.202`(비번 1)로 접속해 수행하고, 탐지 로그 확인은
+  `ssh ccc@{{TARGET_IP}}`(el34 호스트) 후 `docker exec -it el34-web bash`. 인가된 실습만.
 difficulty: medium
 duration_minutes: 160
 prerequisites:
@@ -20,188 +20,189 @@ prerequisites:
   - "el34 호스트 SSH + docker exec"
   - "lecture §2(XSS·세션 탈취) §3(CSRF·쿠키 속성·세션 고정) §4(방어 우선순위) 숙지"
 objectives:
-  - "Reflected XSS(`<script>`) + 이벤트 핸들러 변형(img onerror/svg onload) 주입과 %20 인코딩 이해"
-  - "CSRF 토큰 유무 + CSP 헤더 + 세션 쿠키 속성(HttpOnly/Secure/SameSite) 점검"
+  - "dalfox 로 Reflected/DOM XSS 를 자동 점검하고 WAF(941) 차단·우회 인코더 보고를 해석"
+  - "whatweb 로 CSRF 관련 통제(X-Frame-Options·SameSite) + CSP 헤더 유무를 점검"
   - "ModSec 941 탐지를 룰 ID 증거로 확인 + 출력 인코딩/CSP/CSRF 토큰 방어 우선순위 정리"
 pass_threshold: 0.7
 steps:
 
   - order: 1
     instruction: |
-      ## 🎯 점검 — 대상 도달성 확인
+      ## 🎯 점검 — 대상 도달성·핑거프린팅
       XSS·CSRF 점검의 첫걸음은 대상 vhost(`dvwa.el34.lab`)가 응답하는지 확인하는 것이다.
-      페이로드를 던지기 전에 대상 도달성을 먼저 보는 것은 모든 웹 점검의 표준 절차다 —
-      대상이 무응답이면 이후 결과를 신뢰할 수 없다.
+      페이로드를 던지기 전에 대상 도달성과 서버 스택을 먼저 보는 것은 모든 웹 점검의 표준 절차다 —
+      대상이 무응답이면 이후 결과를 신뢰할 수 없다. 여기서는 웹 핑거프린팅 도구 `whatweb` 로
+      도달성과 응답(WAF 유무)을 함께 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa vhost 도달 확인 — Host 헤더로 vhost 지정, 본문 버리고 응답코드만 dvwa= 형식으로
-      echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) whatweb로 dvwa vhost 도달성·핑거프린팅 — WAF가 걸린 자산은 [403 Forbidden]으로 응답
+      whatweb -a1 http://dvwa.el34.lab/
       ```
-      `외부 공격자 VM 192.168.0.202`(att·1, 출처 192.168.0.202)에서 fw 게이트웨이(192.168.0.161)로 요청을
-      보내되, `Host: dvwa.el34.lab` 헤더로 dvwa vhost 를 지정한다. `nc -w3 192.168.0.161 80` 으로 raw 요청을 보내고
-      `head -1 | grep -oE '[0-9]{3}'` 로 응답 코드만 뽑아 `dvwa=<코드>` 로 본다.
+      `whatweb -a1` 은 대상에 정상 요청을 보내 서버·프레임워크·타이틀·헤더를 식별하는 핑거프린팅
+      도구다(`-a1` = 가장 조용한 패시브 수준). `dvwa.el34.lab` 은 ModSec WAF(차단 모드) 뒤에 있어
+      `[403 Forbidden]` 과 함께 `Apache/2.4.52 (Ubuntu)` 배너가 찍힌다 — 응답이 온다는 것 자체가
+      도달 성공이고, 403 은 "이 자산은 WAF 차단형"이라는 신호다.
       ## ✅ 합격 기준
-      `dvwa` 출력 시 통과. **근거:** `dvwa=` 와 함께 HTTP 응답 코드(예: `dvwa=200`)가 나오면 대상에
-      도달한 것이고, 이로써 XSS·CSRF 점검을 시작할 수 있다.
+      `Forbidden`(또는 `403`) 출력 시 통과. **근거:** whatweb 이 `[403 Forbidden]` 과 서버 배너를
+      반환하면 대상에 도달한 것이고, WAF 가 응답하고 있음을 확인 — XSS·CSRF 점검을 시작할 수 있다.
     hint: '도달성'
     category: survey
     points: 10
     answer: |
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa vhost 도달 확인 — Host 헤더로 vhost 지정, 본문 버리고 응답코드만 dvwa= 형식으로
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "XSS·CSRF 점검 대상 = web 컨테이너의 dvwa vhost(차단 모드). `Host: dvwa.el34.lab` 헤더로 라우팅된 정상 응답 코드가 나오면 대상 도달 = 점검 시작 준비 완료. 판정은 출력에 `dvwa=`(응답 코드)가 포함되는지로 한다."
+      # 1) whatweb로 dvwa vhost 도달성·핑거프린팅 — WAF가 걸린 자산은 [403 Forbidden]으로 응답
+      ssh att@192.168.0.202 "whatweb -a1 http://dvwa.el34.lab/"
+    answer_detail: "XSS·CSRF 점검 대상 = web 컨테이너의 dvwa vhost(ModSec 차단 모드). whatweb -a1 로 핑거프린팅하면 [403 Forbidden] + Apache/2.4.52 (Ubuntu) 배너가 나온다 — 응답이 온다는 것이 도달 성공이고, 403 은 WAF 차단형 자산이라는 신호. 판정은 출력에 `Forbidden`(403)이 포함되는지로 한다."
     expected_output: |
-      dvwa=302
+      http://dvwa.el34.lab/ [403 Forbidden] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], Title[403 Forbidden], IP[192.168.0.161]
     verify:
       type: output_contains
-      expect: 'dvwa'
+      expect: 'Forbidden'
       field: stdout
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 2
     instruction: |
-      ## 🎯 Reflected XSS — `<script>` 주입 → 403
-      Reflected XSS 는 요청 파라미터(`?q=`)가 응답 페이지에 그대로 반사되어 피해자 브라우저에서
-      실행되는 XSS 의 기본형이다. 여기서는 검색어 파라미터에 `<script>` 페이로드를 넣어, dvwa
-      (차단 모드)의 WAF 가 이를 어떻게 막는지 응답 코드로 확인한다.
+      ## 🎯 Reflected XSS — dalfox 자동 점검(WAF 차단)
+      Reflected XSS 는 요청 파라미터(`?name=`)가 응답 페이지에 그대로 반사되어 피해자 브라우저에서
+      실행되는 XSS 의 기본형이다. 손으로 페이로드를 하나씩 넣는 대신, XSS 전용 스캐너 `dalfox` 로
+      dvwa 의 반사형 XSS 엔드포인트를 자동 점검해, WAF 가 이를 어떻게 막는지 도구의 눈으로 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) Reflected XSS(?q=<script>alert(1)</script>)를 dvwa에 전송 → 응답코드만 xss= 형식으로(941→949110→403 차단 확인)
-      echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 해석 — <script> 주입이 941에 탐지되어 403 차단
-      # → <script> 주입 → 941 탐지 → 403
+      # 1) dalfox로 dvwa 반사형 XSS 엔드포인트(xss_r?name=) 자동 점검 — 파라미터 마이닝·페이로드 주입까지 자동
+      dalfox url --url 'http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test' 2>&1 | grep -viE '░|█|▓|▒|Dalfox v|open-source|and utility|focused'
       ```
-      `?q=<script>alert(1)</script>` 가 Reflected XSS 페이로드다. dvwa 의 ModSec **941 룰군**
-      (XSS 전담)이 이를 탐지해 anomaly score 를 누적하고, 임계를 넘으면 949110 룰이 발동해
-      403 으로 차단한다(단일 룰이 아니라 점수 누적 후 차단 — W05 SQLi 와 같은 메커니즘).
+      `dalfox url --url '<URL>'` 은 대상 파라미터에 수십 종의 XSS 페이로드를 자동 주입하고 반사 여부를
+      판정하는 XSS 전용 스캐너다(뒤 `grep -viE` 는 배너 이모지 줄만 걷어내 결과를 깔끔히 본다).
+      dvwa 는 ModSec WAF 뒤에 있어 dalfox 의 탐침이 `HTTP 403` 으로 막히고, dalfox 는 이를
+      **`WAF Unknown (HTTP 403) detected`** 로 보고하며 우회 인코더(`2url, unicode, zwsp`)까지 제안한다.
+      결과적으로 반사 파라미터 0, XSS 0 — WAF(941→949110)가 반사형 XSS 를 차단했다는 뜻이다.
       ## ✅ 합격 기준
-      `403` 출력 시 통과. **근거:** 응답이 403이면 WAF(941→949110)가 XSS 를 차단한 것 — "이 자산은
-      차단형"이라는 탐지 성공 신호다.
-    hint: '<script> → 403'
+      `WAF` 출력 시 통과. **근거:** dalfox 가 `WAF Unknown (HTTP 403) detected` 를 보고하면, 이 자산이
+      XSS 를 WAF 로 차단하는 자산임을 도구가 확인한 것 — 탐지 성공 신호다.
+    hint: 'dalfox XSS → WAF'
     category: manipulation
     points: 12
     answer: |
-      # 1) Reflected XSS(?q=<script>alert(1)</script>)를 dvwa에 전송 → 응답코드만 xss= 형식으로(941→949110→403 차단 확인)
-      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 2) 해석 — <script> 주입이 941에 탐지되어 403 차단
-      # → <script> 주입 → 941 탐지 → 403
-    answer_detail: "Reflected XSS = 요청 파라미터(?q=)가 응답에 즉시 반사되어 피해자 브라우저에서 실행되는 XSS. `<script>alert(1)</script>` 가 ModSec 941 룰군에 매치 → anomaly score 누적 → 949110 발동 → dvwa(차단 모드)에서 403. 판정은 출력에 `403` 이 포함되는지로 한다."
+      # 1) dalfox로 dvwa 반사형 XSS 엔드포인트(xss_r?name=) 자동 점검 — 파라미터 마이닝·페이로드 주입까지 자동
+      ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test' 2>&1 | grep -viE '░|█|▓|▒|Dalfox v|open-source|and utility|focused'"
+    answer_detail: "Reflected XSS = 요청 파라미터(?name=)가 응답에 즉시 반사되어 피해자 브라우저에서 실행되는 XSS. XSS 전용 스캐너 dalfox(v3, `dalfox url --url` 문법)로 dvwa 반사형 엔드포인트를 자동 점검하면, ModSec WAF 가 탐침을 403 으로 막아 `WAF Unknown (HTTP 403) detected` + 우회 인코더(2url/unicode/zwsp) 제안 + `found reflected 0 params` / `XSS found 0 XSS` 로 끝난다 = WAF 차단(941). 판정은 출력에 `WAF` 가 포함되는지로 한다."
     expected_output: |
-      xss=403
-      → <script> 주입 → 941 탐지 → 403
+      INF start scan to http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test
+      WAF Unknown (HTTP 403) detected (confidence: 40%, evidence: Provocation probe returned HTTP 403)
+        └── bypass encoders: 2url, unicode, zwsp
+        └── bypass mutations: 7 types
+      INF found reflected 0 params
+      WRN XSS found 0 XSS
+      → dvwa는 ModSec WAF가 반사형 XSS를 403 차단 — dalfox가 WAF 탐지·우회 인코더 제안
     verify:
       type: output_contains
-      expect: '403'
+      expect: 'WAF'
       field: stdout
       semantic:
         intent: "Reflected XSS"
-        success_criteria: ["<script> 403"]
-        acceptable_methods: ["**[OSS] XSS → 403 (권장)**"]
+        success_criteria: ["dalfox WAF 차단"]
+        acceptable_methods: ["**[OSS] dalfox (권장)**"]
     target_vm: web
 
   - order: 3
     instruction: |
-      ## 🎯 XSS 변형 — 이벤트 핸들러(img onerror / svg onload)
-      사이트가 `<script>` 만 걸러내면 공격자는 **이벤트 핸들러**로 우회한다. `onerror`·`onload`
-      는 특정 사건(이미지 로드 실패·SVG 로드 완료)이 일어나면 자동으로 스크립트를 실행하는 HTML
-      속성이다. 여기서는 스크립트 태그 없는 변형도 941 룰군이 커버하는지 확인한다.
+      ## 🎯 XSS 변형 — 이벤트 핸들러·mutation(dalfox DOM 점검)
+      사이트가 `<script>` 만 걸러내면 공격자는 **이벤트 핸들러**(`onerror`·`onload`)나 인코딩 변형으로
+      우회한다. dalfox 는 이런 변형을 mutation 엔진으로 자동 생성해 시도한다. 여기서는 dvwa 의
+      DOM 기반 XSS 엔드포인트에 dalfox 를 걸어, 스크립트 태그 없는 변형까지 WAF(941)가 커버하는지 본다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 이벤트 핸들러 변형 <img src=x onerror=alert(1)>를 %20 인코딩해 dvwa에 전송 → img= 응답코드
-      echo -en 'GET /?q=<img%20src=x%20onerror=alert(1)> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 또 다른 변형 <svg onload=alert(1)>도 전송 → svg= 응답코드(스크립트 태그 없는 변형도 941 커버 확인)
-      echo -en 'GET /?q=<svg%20onload=alert(1)> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 3) 해석 — 이벤트 핸들러(onerror/onload)도 941이 탐지(403)
-      # → 이벤트 핸들러(onerror/onload)도 941이 탐지
+      # 1) dalfox로 dvwa DOM 기반 XSS 엔드포인트(xss_d?default=) 자동 점검 — 이벤트 핸들러(onerror/onload) 변형·mutation까지 시도
+      dalfox url --url 'http://dvwa.el34.lab/vulnerabilities/xss_d/?default=English' 2>&1 | grep -viE '░|█|▓|▒|Dalfox v|open-source|and utility|focused'
       ```
-      `<img src=x onerror=alert(1)>` 는 `src=x` 로딩이 실패하면 `onerror` 가 실행되는 변형이다.
-      URL 의 **공백은 그대로 쓸 수 없으므로**(셸·HTTP 가 구분자로 해석해 페이로드가 잘림) 공백을
-      그 코드값인 `%20` 으로 인코딩해 `<img%20src=x%20onerror=...>` 로 보낸다. 이 인코딩은 공격을
-      숨기는 우회가 아니라 변형 페이로드를 온전히 전달하기 위한 필수 절차다. `<svg onload=alert(1)>`
-      도 같은 원리의 변형이다.
+      dalfox 는 `<img onerror=...>`·`<svg onload=...>` 같은 이벤트 핸들러 변형과 인코딩 우회(2url·
+      unicode·zwsp)를 mutation(7종)으로 자동 생성해 던진다. dvwa 에서는 이 변형들도 모두 ModSec
+      941 룰군에 걸려 `HTTP 403` 으로 막히므로 dalfox 는 다시 `WAF Unknown (HTTP 403) detected`,
+      `XSS found 0 XSS` 를 보고한다 — 특정 단어(`<script>`)만이 아니라 변형까지 941 이 커버한다는 증거다.
       ## ✅ 합격 기준
-      `403` 출력 시 통과. **근거:** 변형 페이로드(img onerror / svg onload)도 403 으로 차단되면 941 이
-      스크립트 태그 없는 변형까지 탐지함이 확인된다.
-    hint: 'img onerror (%20)'
+      `WAF` 출력 시 통과. **근거:** 이벤트 핸들러·mutation 변형에도 dalfox 가 `WAF ... 403 detected`,
+      `XSS found 0` 를 내면 941 이 스크립트 태그 없는 변형까지 탐지·차단함이 확인된다.
+    hint: 'dalfox mutation → WAF'
     category: manipulation
     points: 12
     answer: |
-      # 1) 이벤트 핸들러 변형 <img src=x onerror=alert(1)>를 %20 인코딩해 dvwa에 전송 → img= 응답코드
-      ssh att@192.168.0.202 "echo -en 'GET /?q=<img%20src=x%20onerror=alert(1)> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 2) 또 다른 변형 <svg onload=alert(1)>도 전송 → svg= 응답코드(스크립트 태그 없는 변형도 941 커버 확인)
-      ssh att@192.168.0.202 "echo -en 'GET /?q=<svg%20onload=alert(1)> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 3) 해석 — 이벤트 핸들러(onerror/onload)도 941이 탐지(403)
-      # → 이벤트 핸들러(onerror/onload)도 941이 탐지
-    answer_detail: "XSS 변형 = `<script>` 외에 `<img onerror>`·`<svg onload>` 같은 이벤트 핸들러로 스크립트를 실행시키는 우회. ModSec 941 룰군(libinjection 기반)이 이런 변형까지 폭넓게 커버해 dvwa 에서 403 으로 차단. URL 의 공백은 반드시 %20 으로 인코딩해야 페이로드가 잘리지 않는다(필수). 판정은 출력에 `403` 이 포함되는지로 한다. 교훈: XSS 방어는 특정 단어 차단이 아니라 출력 인코딩이라는 근본 처리여야 한다."
+      # 1) dalfox로 dvwa DOM 기반 XSS 엔드포인트(xss_d?default=) 자동 점검 — 이벤트 핸들러(onerror/onload) 변형·mutation까지 시도
+      ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/vulnerabilities/xss_d/?default=English' 2>&1 | grep -viE '░|█|▓|▒|Dalfox v|open-source|and utility|focused'"
+      # 2) 해석 — 이벤트 핸들러·7종 mutation 변형도 941/WAF에 403 차단
+    answer_detail: "XSS 변형 = `<script>` 외에 `<img onerror>`·`<svg onload>` 이벤트 핸들러나 인코딩으로 우회. dalfox 는 이런 변형을 mutation(7종)·bypass 인코더(2url/unicode/zwsp)로 자동 생성해 dvwa DOM XSS 엔드포인트에 던지지만, ModSec 941 룰군이 모두 403 차단 → `WAF Unknown (HTTP 403) detected` / `XSS found 0 XSS`. 특정 단어가 아닌 변형까지 941 이 커버함을 도구가 확인. 교훈: XSS 방어는 단어 차단이 아니라 출력 인코딩이라는 근본 처리여야 한다. 판정은 출력에 `WAF` 가 포함되는지로 한다."
     expected_output: |
-      img=403
-      svg=403
-      → 이벤트 핸들러(onerror/onload)도 941이 탐지
+      INF start scan to http://dvwa.el34.lab/vulnerabilities/xss_d/?default=English
+      WAF Unknown (HTTP 403) detected (confidence: 40%, evidence: Provocation probe returned HTTP 403)
+        └── bypass encoders: 2url, unicode, zwsp
+        └── bypass mutations: 7 types
+      INF found reflected 0 params
+      WRN XSS found 0 XSS
+      → 이벤트 핸들러·7종 mutation 변형도 941/WAF에 403 차단
     verify:
       type: output_contains
-      expect: '403'
+      expect: 'WAF'
       field: stdout
       semantic:
         intent: "XSS 변형"
-        success_criteria: ["이벤트 핸들러 탐지"]
-        acceptable_methods: ["**[OSS] img/svg XSS (권장)**"]
+        success_criteria: ["mutation WAF 차단"]
+        acceptable_methods: ["**[OSS] dalfox (권장)**"]
     target_vm: web
 
   - order: 4
     instruction: |
-      ## 🎯 CSRF 점검 — 토큰 유무
+      ## 🎯 CSRF 점검 — 응답 헤더의 CSRF 관련 통제
       CSRF 는 로그인된 피해자가 공격자 페이지를 열면 피해자의 인증된 세션으로 위조 요청이 전송되는
-      공격이다. 이를 막는 근본 방어가 **CSRF 토큰**(서버가 발급하는 예측 불가능한 일회성 값)이다.
-      점검자는 상태 변경 폼/요청에 이 토큰이 포함되는지를 가장 먼저 확인한다.
+      공격이다. 근본 방어는 **CSRF 토큰**(예측 불가 일회성 값)과 **SameSite 쿠키**다. dvwa 의 CSRF 폼은
+      WAF(403) 뒤라 외부에서 토큰을 직접 긁을 수 없으므로, 여기서는 `whatweb` 로 juice 응답 헤더의
+      CSRF 관련 통제(클릭재킹 완화용 `X-Frame-Options`, 세션 쿠키의 `SameSite`)를 점검한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) dvwa 응답 HTML에서 CSRF 토큰 필드(csrf/user_token/anti-csrf)를 대소문자 무시로 추출(없으면 위조 가능 안내)
-      echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | { grep -ioE 'csrf|user_token|anti.?csrf' || echo 'CSRF 토큰 미발견 → 위조 가능'; } | head -3
-      # 2) 해석 — 상태 변경 요청에 예측 불가 CSRF 토큰이 없으면 피해자 세션으로 위조 가능
-      # → 상태 변경 요청에 예측 불가 CSRF 토큰 없으면 위조 가능(피해자 세션 악용)
+      # 1) whatweb로 juice 응답 헤더 덤프 → CSRF 관련 통제(X-Frame-Options·SameSite 쿠키) 확인
+      H=$(whatweb -a1 -v http://juice.el34.lab/ 2>&1); echo "$H" | grep -iE 'X-Frame-Options:|Set-Cookie|SameSite'; echo "$H" | grep -iq 'SameSite' && echo 'SameSite 쿠키=있음' || echo 'CSRF: SameSite 쿠키 미관측 → 토큰 기반(Bearer) 인증 의존, 클래식 CSRF 방어는 토큰+SameSite'
+      # 2) 해석 — 상태 변경 요청에 CSRF 토큰/SameSite가 없으면 피해자 세션으로 위조 가능
       ```
-      dvwa 응답 HTML 을 받아 `csrf`·`token`·`user_token` 같은 토큰 필드를 대소문자 무시(`-i`)로
-      grep 한다(`-o` 매치 부분만, `-E` 확장 정규식). dvwa 는 화면에 `user_token` 형태의 CSRF
-      토큰을 노출하므로 검출될 수 있다. 토큰이 없으면 위조 요청을 거를 장치가 없다는 뜻이다.
+      `whatweb -a1 -v` 로 juice 응답 헤더를 통째로 덤프한 뒤 CSRF 관련 헤더만 grep 한다. juice 는
+      `X-Frame-Options: SAMEORIGIN`(프레임 삽입=클릭재킹 완화)은 있으나 서버 세션 쿠키(SameSite)를
+      내려주지 않는 토큰 기반 SPA 라, 클래식 쿠키 편승 CSRF 표면은 제한적이다. 상태 변경 요청에
+      예측 불가 CSRF 토큰과 SameSite 가 모두 없으면 위조 요청을 거를 장치가 없다는 뜻이다.
       ## ✅ 합격 기준
-      `CSRF` 출력 시 통과. **근거:** CSRF 토큰 키워드 검출 또는 "미발견" 결과가 나오면 토큰 유무를
-      점검한 것이고, 토큰이 없으면 위조 요청을 거를 장치가 없다는 뜻이다.
-    hint: 'csrf/token grep'
+      `CSRF` 출력 시 통과. **근거:** CSRF 관련 통제(X-Frame-Options·SameSite)를 헤더에서 점검한 결과가
+      나오면 통과 — 토큰·SameSite 가 없으면 위조 요청을 거를 장치가 없음을 확인한다.
+    hint: 'csrf 헤더 점검'
     category: analysis
     points: 12
     answer: |
-      # 1) dvwa 응답 HTML에서 CSRF 토큰 필드(csrf/user_token/anti-csrf)를 대소문자 무시로 추출(없으면 위조 가능 안내)
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | { grep -ioE 'csrf|user_token|anti.?csrf' || echo 'CSRF 토큰 미발견 → 위조 가능'; } | head -3"
-      # 2) 해석 — 상태 변경 요청에 예측 불가 CSRF 토큰이 없으면 피해자 세션으로 위조 가능
-      # → 상태 변경 요청에 예측 불가 CSRF 토큰 없으면 위조 가능(피해자 세션 악용)
-    answer_detail: "CSRF 점검 = 상태 변경 폼/요청에 예측 불가능한 CSRF 토큰(예: dvwa 의 user_token)이 포함되는지 확인. 없으면 공격자 페이지가 피해자의 인증된 세션으로 위조 요청(비밀번호·이메일 변경 등)을 전송할 수 있다. 단, XSS 가 가능하면 같은 페이지에서 토큰이 읽혀 이 방어도 무력화됨(XSS 방어가 전제). 판정은 출력에 `CSRF` 가 포함되는지로 한다."
+      # 1) whatweb로 juice 응답 헤더 덤프 → CSRF 관련 통제(X-Frame-Options·SameSite 쿠키) 확인
+      ssh att@192.168.0.202 "H=\$(whatweb -a1 -v http://juice.el34.lab/ 2>&1); echo \"\$H\" | grep -iE 'X-Frame-Options:|Set-Cookie|SameSite'; echo \"\$H\" | grep -iq 'SameSite' && echo 'SameSite 쿠키=있음' || echo 'CSRF: SameSite 쿠키 미관측 → 토큰 기반(Bearer) 인증 의존, 클래식 CSRF 방어는 토큰+SameSite'"
+      # 2) 해석 — 상태 변경 요청에 CSRF 토큰/SameSite가 없으면 피해자 세션으로 위조 가능
+    answer_detail: "CSRF 점검 = 상태 변경 요청을 거를 통제(CSRF 토큰·SameSite 쿠키)가 있는지 확인. dvwa CSRF 폼은 WAF(403) 뒤라 외부에서 토큰을 못 긁으므로, whatweb -a1 -v 로 juice 응답 헤더를 덤프해 CSRF 관련 통제를 본다. juice 는 X-Frame-Options: SAMEORIGIN(클릭재킹 완화)은 있으나 SameSite 세션 쿠키가 없는 토큰(Bearer) 기반 SPA. 토큰·SameSite 가 없으면 위조 요청을 거를 장치가 없다(단 XSS 가 되면 토큰도 읽혀 무력화 → XSS 방어가 전제). 판정은 출력에 `CSRF` 가 포함되는지로 한다."
     expected_output: |
-      CSRF 토큰 미발견 → 위조 가능
-      → 상태 변경 요청에 예측 불가 CSRF 토큰 없으면 위조 가능(피해자 세션 악용)
+      X-Frame-Options: SAMEORIGIN
+      CSRF: SameSite 쿠키 미관측 → 토큰 기반(Bearer) 인증 의존, 클래식 CSRF 방어는 토큰+SameSite
     verify:
       type: output_contains
       expect: 'CSRF'
       field: stdout
       semantic:
         intent: "CSRF 토큰 점검"
-        success_criteria: ["토큰 유무"]
-        acceptable_methods: ["**[OSS] csrf token grep (권장)**"]
+        success_criteria: ["CSRF 통제 유무"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 5
@@ -262,31 +263,29 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) juice 응답 헤더에서 CSP/X-Frame 확인 후, CSP 유무를 명시적으로 판정(마커 CSP)
-      H=$(echo -en 'HEAD / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80); echo "$H" | grep -iE 'content-security|x-frame'; echo "$H" | grep -iq 'content-security-policy' && echo 'CSP=설정됨' || echo 'CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)'
+      # 1) whatweb로 juice 헤더 덤프 → Content-Security-Policy 유무 판정(마커 CSP)
+      H=$(whatweb -a1 -v http://juice.el34.lab/ 2>&1); echo "$H" | grep -iE 'X-Frame-Options:|Content-Security-Policy:|Feature-Policy:'; echo "$H" | grep -iq 'Content-Security-Policy:' && echo 'CSP=설정됨' || echo 'CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)'
       # 2) 해석 — juice는 X-Frame-Options(SAMEORIGIN)는 있으나 CSP 미설정 = XSS 2차 방어선 부재
-      # → juice: X-Frame-Options 있음 / CSP 없음 → XSS 출력인코딩 한 곳만 뚫려도 막을 2차 방어선 부재
       ```
-      `HEAD` 요청(위 `echo -en 'HEAD ...' | nc`)은 응답 **헤더만** 받는다. 대상은 `juice.el34.lab` vhost 인데,
-      juice 는 DetectionOnly(탐지만) 모드라 200 응답의 헤더를 그대로 받아볼 수 있어 헤더 점검에
-      적합하다(차단형 dvwa 는 페이로드가 403 으로 끊겨 헤더 관찰이 불편). `Content-Security-Policy`
-      와 클릭재킹 완화용 `X-Frame-Options` 의 유무를 grep 한다.
+      `whatweb -a1 -v` 로 juice 응답 헤더를 덤프한 뒤 `Content-Security-Policy` 유무를 판정한다. juice
+      는 `X-Frame-Options: SAMEORIGIN`·`Feature-Policy` 는 내려주지만 CSP 는 없다 → 출력 인코딩이 한
+      곳만 뚫려도 브라우저가 스크립트 실행을 거부해 줄 2차 방어선이 없다는 뜻이다(차단형 dvwa 는
+      403 으로 끊겨 헤더 관찰이 불편하므로 탐지·200 응답인 juice 로 헤더를 본다).
       ## ✅ 합격 기준
-      `CSP` 출력 시 통과. **근거:** juice 응답에 X-Frame-Options(SAMEORIGIN)는 있으나 CSP 가 없어
-      'CSP=미설정'이 출력되면 통과 — XSS 방어가 출력 인코딩 하나에만 의존(2차 방어선 부재)함을 확인한다.
+      `CSP` 출력 시 통과. **근거:** juice 헤더에 X-Frame-Options 는 있으나 CSP 가 없어 'CSP=미설정'이
+      출력되면 통과 — XSS 방어가 출력 인코딩 하나에만 의존(2차 방어선 부재)함을 확인한다.
     hint: 'content-security-policy 헤더'
     category: analysis
     points: 12
     answer: |
-      # 1) juice 응답 헤더에서 CSP/X-Frame 확인 후, CSP 유무를 명시적으로 판정(마커 CSP)
-      ssh att@192.168.0.202 "H=\$(echo -en 'HEAD / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80); echo \"\$H\" | grep -iE 'content-security|x-frame'; echo \"\$H\" | grep -iq 'content-security-policy' && echo 'CSP=설정됨' || echo 'CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)'"
+      # 1) whatweb로 juice 헤더 덤프 → Content-Security-Policy 유무 판정(마커 CSP)
+      ssh att@192.168.0.202 "H=\$(whatweb -a1 -v http://juice.el34.lab/ 2>&1); echo \"\$H\" | grep -iE 'X-Frame-Options:|Content-Security-Policy:|Feature-Policy:'; echo \"\$H\" | grep -iq 'Content-Security-Policy:' && echo 'CSP=설정됨' || echo 'CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)'"
       # 2) 해석 — juice는 X-Frame-Options(SAMEORIGIN)는 있으나 CSP 미설정 = XSS 2차 방어선 부재
-      # → juice: X-Frame-Options 있음 / CSP 없음 → XSS 출력인코딩 한 곳만 뚫려도 막을 2차 방어선 부재
-    answer_detail: "CSP 점검 = 응답 헤더의 Content-Security-Policy 유무. 실측상 juice 는 X-Frame-Options: SAMEORIGIN(클릭재킹 완화)은 설정돼 있으나 CSP 는 없다 → XSS 의 2차 방어선이 부재. CSP 는 출력 인코딩이 한 군데서 빠져도 브라우저가 인라인/외부 스크립트 실행을 거부해 피해를 완화하는데, 없으면 XSS 방어가 출력 인코딩 하나에만 의존한다. 판정은 'CSP=미설정' 출력(마커 CSP)으로 한다."
+    answer_detail: "CSP 점검 = 응답 헤더의 Content-Security-Policy 유무. whatweb -a1 -v 로 juice 헤더를 덤프하면 X-Frame-Options: SAMEORIGIN·Feature-Policy 는 있으나 CSP 는 없다 → XSS 2차 방어선 부재. CSP 는 출력 인코딩이 한 군데서 빠져도 브라우저가 인라인/외부 스크립트 실행을 거부해 피해를 완화하는데, 없으면 XSS 방어가 출력 인코딩 하나에만 의존한다. 판정은 'CSP=미설정' 출력(마커 CSP)으로 한다."
     expected_output: |
       X-Frame-Options: SAMEORIGIN
+      Feature-Policy: payment 'self'
       CSP=미설정 → XSS 2차 방어선 부재(X-Frame-Options만 있어 클릭재킹만 완화)
-      → juice: X-Frame-Options 있음 / CSP 없음 → XSS 출력인코딩 한 곳만 뚫려도 막을 2차 방어선 부재
     verify:
       type: output_contains
       expect: 'CSP'
@@ -294,7 +293,7 @@ steps:
       semantic:
         intent: "CSP 헤더 점검"
         success_criteria: ["CSP 유무"]
-        acceptable_methods: ["**[OSS] CSP 헤더 (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 7

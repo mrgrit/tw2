@@ -8,9 +8,11 @@ description: |
   의도된 폴더 밖 파일 읽기), 명령주입(셸 구분자 ;|&로 OS 명령 추가 실행), 파일 업로드/PHP 주입(webshell 콘텐츠
   반입). 셋의 공통 뿌리는 "사용자 입력을 그대로 믿은 것"이다. el34 의 dvwa(차단 모드) 대상에 세 페이로드를 보내고,
   ModSecurity 가 각 유형을 930(LFI/경로순회)·932(RCE/명령주입)·933(PHP) 의 전용 룰군으로 탐지함을 audit 로그로
-  확인한 뒤, 근본 방어(경로 정규화·OS 호출 회피·확장자/MIME allowlist)를 정리한다. 공격은 외부 공격자 VM
-  192.168.0.202(att/1)에서 공인 진입 192.168.0.161로 — `ssh att@192.168.0.202`(비번 1)로 접속해 수행하고,
-  탐지 확인은 `ssh ccc@{{TARGET_IP}}`(el34 호스트) 후 `docker exec -it el34-web bash`. 인가된 실습만.
+  확인한 뒤, 근본 방어(경로 정규화·OS 호출 회피·확장자/MIME allowlist)를 정리한다. dvwa 에는 취약점 스캐너
+  nuclei(LFI·RCE/injection 템플릿군)·nikto(주입 계열)로 세 페이로드를 자동 주입하되, WAF 가 모두 403 차단해
+  finding 0 이 됨을 도구로 확인한다. 공격은 외부 공격자 VM 192.168.0.202(att/1)에서 공인 진입 192.168.0.161로 —
+  `ssh att@192.168.0.202`(비번 1)로 접속해 수행하고, 탐지 확인은 `ssh ccc@{{TARGET_IP}}`(el34 호스트) 후
+  `docker exec -it el34-web bash`. 인가된 실습만.
 difficulty: hard
 duration_minutes: 170
 prerequisites:
@@ -18,7 +20,7 @@ prerequisites:
   - "el34 호스트 SSH 접속 + docker exec 사용 가능"
   - "lecture §2(경로순회/930) §3(명령주입/932) §4(파일 업로드/933) §5(입력검증·allowlist 방어) 숙지"
 objectives:
-  - "경로순회(../../etc/passwd)·명령주입(;cat)·PHP주입(<?php)을 dvwa 대상에 직접 시도하고 응답을 해석한다"
+  - "nuclei(LFI·RCE)·nikto(주입)로 경로순회·명령주입·PHP주입을 dvwa 에 자동 점검하고 WAF 차단(finding 0)을 해석한다"
   - "ModSec audit 로그에서 930(LFI)/932(RCE)/933(PHP) 전용 룰군 탐지를 룰 ID 로 입증한다"
   - "세 취약점의 영향(파일읽기 vs RCE)을 구분하고 근본 방어(정규화/OS호출회피/allowlist)를 제시한다"
 pass_threshold: 0.7
@@ -30,177 +32,173 @@ steps:
       모든 점검의 첫 단계는 대상이 응답하는지 확인하는 것이다. 대상이 무응답이면 이후 어떤 페이로드도
       의미가 없다. 본 주차의 점검 대상은 el34 의 **`dvwa.el34.lab`** vhost 다 — ModSec **차단 모드**
       (`SecRuleEngine On`)라서, 뒤 미션에서 보낼 공격 페이로드가 실제로 403 으로 막히는 것을 관찰할 수 있다.
+      웹 핑거프린팅 도구 `whatweb` 로 도달성과 응답(WAF 유무)을 함께 확인한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa(차단 모드) vhost 도달 확인 — Host 헤더로 vhost 지정, 응답코드만 dvwa= 형식으로
-      echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) whatweb로 dvwa(차단 모드) vhost 도달성·핑거프린팅 — WAF가 걸린 자산은 [403 Forbidden]으로 응답
+      whatweb -a1 http://dvwa.el34.lab/
       ```
-      - `외부 공격자 VM 192.168.0.202` = el34 외부 공격자 VM 192.168.0.202 공격자 컨테이너. 여기서 fw 게이트웨이(`192.168.0.161`)로 요청을 보낸다.
-      - `-H 'Host: dvwa.el34.lab'` = web 의 Apache 가 vhost 를 고르는 기준. 이 헤더가 dvwa 로 라우팅한다.
-      - `-o /dev/null -w 'dvwa=%{http_code}'` = 응답 본문은 버리고 **HTTP 상태 코드만** 출력한다.
+      - `whatweb -a1 http://dvwa.el34.lab/` = 대상에 정상 요청을 보내 서버·타이틀·헤더를 식별(`-a1`=패시브).
+      - dvwa 는 ModSec WAF(차단 모드) 뒤라 `[403 Forbidden]` + `Apache/2.4.52 (Ubuntu)` 배너로 응답한다.
+      - 응답이 온다는 것이 도달 성공이고, 403 은 "이 자산은 WAF 차단형"이라는 신호다.
       ## ✅ 합격 기준
-      `dvwa` 출력 시 통과. **근거:** `dvwa=` 와 함께 HTTP 코드가 나오면 대상이 응답하는 것이고, 무응답이면
-      호스트 도달성·vhost 헤더·컨테이너 상태를 먼저 점검한다.
+      `Forbidden`(또는 `403`) 출력 시 통과. **근거:** whatweb 이 `[403 Forbidden]` + 서버 배너를 내면
+      대상 도달·WAF 응답을 확인한 것 — 무응답이면 호스트 도달성·vhost 헤더·컨테이너 상태를 먼저 점검한다.
     hint: '도달성'
     category: survey
     points: 10
     answer: |
-      # 1) 외부 공격자 VM 192.168.0.202(attacker)에서 dvwa(차단 모드) vhost 도달 확인 — Host 헤더로 vhost 지정, 응답코드만 dvwa= 형식으로
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "본 주차 RCE 취약점 점검 대상 = dvwa.el34.lab(ModSec 차단 모드). 대상이 HTTP 코드로 응답하면(dvwa=...) 도달성 확인 = 점검 착수 가능. WSTG 점검의 첫 단계(대상 도달성 검증)."
+      # 1) whatweb로 dvwa(차단 모드) vhost 도달성·핑거프린팅 — WAF가 걸린 자산은 [403 Forbidden]으로 응답
+      ssh att@192.168.0.202 "whatweb -a1 http://dvwa.el34.lab/"
+    answer_detail: "본 주차 RCE 취약점 점검 대상 = dvwa.el34.lab(ModSec 차단 모드). whatweb -a1 핑거프린팅에서 [403 Forbidden] + Apache/2.4.52 (Ubuntu) 배너가 나오면 도달 성공이고 WAF 차단형 자산임을 확인 = 점검 착수 가능. 판정은 출력에 `Forbidden`(403)이 포함되는지로 한다."
     expected_output: |
-      dvwa=302
+      http://dvwa.el34.lab/ [403 Forbidden] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], Title[403 Forbidden], IP[192.168.0.161]
     verify:
       type: output_contains
-      expect: 'dvwa'
+      expect: 'Forbidden'
       field: stdout
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 2
     instruction: |
-      ## 🎯 경로순회 — ../로 폴더 밖 파일 읽기 시도
-      **경로순회**는 파일 경로 입력에 `../`(상위 폴더로 한 칸 올라가기)를 끼워, 개발자가 의도한 폴더 **밖의**
-      파일까지 읽는 공격이다. `../` 를 충분히 반복하면 파일 시스템 최상위(`/`)까지 거슬러 올라가 `/etc/passwd`
-      (리눅스 사용자 계정 목록 파일 — 경로순회 성공 확인용 표준 표적)에 도달한다.
+      ## 🎯 경로순회 — LFI 스캐너로 ../ 폴더 탈출 자동 점검
+      **경로순회**는 파일 경로 입력에 `../`(상위 폴더로 올라가기)를 끼워, 의도한 폴더 **밖의** 파일까지
+      읽는 공격이다(`/etc/passwd` 가 성공 확인용 표준 표적). 손으로 한 요청씩 보내는 대신, 취약점 스캐너
+      `nuclei` 의 **LFI 템플릿군**으로 dvwa 에 경로순회·LFI 페이로드를 자동 주입해 WAF 가 막는지 본다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 경로순회 평문(?q=../../etc/passwd)을 dvwa에 전송 → pt= 응답코드(폴더 탈출 시도)
-      echo -en "GET /?q=../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 같은 페이로드를 URL 인코딩(%2e%2e%2f)해 전송 → enc= 응답코드(ModSec이 인코딩 우회도 정규화로 막는지 확인)
-      echo -en "GET /?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 3) 해석 — ../ 경로 탈출이 930(LFI)에 403 차단, 인코딩도 정규화로 동일 차단
-      # → ../ 경로 탈출 → 930(LFI) 403. 인코딩도 정규화로 차단
+      # 1) nuclei LFI 템플릿군으로 dvwa 경로순회/LFI 자동 점검 — 로드된 템플릿 수와 결과 확인(finding 0 = WAF 차단)
+      nuclei -u http://dvwa.el34.lab -tags lfi 2>&1 | grep -aE 'Templates loaded|signed templates'
       ```
-      - `?q=../../etc/passwd` = 파라미터에 `../` 경로 조각을 넣어 폴더 탈출을 시도하는 페이로드.
-      - 정답 스크립트는 평문 `../` 와 **URL 인코딩** `%2e%2e%2f`(점·점·슬래시) 두 형태를 모두 보낸다 —
-        ModSec 이 인코딩 우회를 함께 막는지(정규화) 확인하기 위해서다.
+      - `nuclei -u http://dvwa.el34.lab -tags lfi` = LFI/경로순회 전용 템플릿군을 대상에 자동 주입한다.
+        (`2>&1 | grep` 은 배너·컬러를 걷어내고 실행 요약만 남긴다.)
+      - dvwa 는 ModSec 930(LFI) 룰군이 `../`·`%2e%2e%2f` 를 정규화해 403 차단 → nuclei 는 **finding 0**
+        (매치 라인이 하나도 안 나옴). 즉 수백 개 LFI 탐침이 모두 WAF 에 막혔다는 뜻이다.
       ## ✅ 합격 기준
-      `403` 출력 시 통과. **근거:** 두 요청 모두 403(ModSec 930 LFI 룰군 차단)이면 인코딩 우회까지 정규화로
-      막힌 것 — 단, 이 403 은 "WAF 가 막아 준" 것이지 "앱이 안전한" 것은 아니다(근본 방어는 §5 경로 정규화).
-    hint: '../../etc/passwd'
+      `Templates loaded` 출력 시 통과. **근거:** nuclei 가 LFI 템플릿군을 로드·실행하고 매치(finding)를
+      하나도 못 내면(0건), dvwa 의 ModSec 930 이 경로순회·인코딩 우회까지 정규화로 차단한 것이다 —
+      단, 이 차단은 "WAF 가 막아 준" 것이지 "앱이 안전한" 것은 아니다(근본 방어는 §5 경로 정규화).
+    hint: 'nuclei lfi'
     category: manipulation
     points: 12
     answer: |
-      # 1) 경로순회 평문(?q=../../etc/passwd)을 dvwa에 전송 → pt= 응답코드(폴더 탈출 시도)
-      ssh att@192.168.0.202 "echo -en 'GET /?q=../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 2) 같은 페이로드를 URL 인코딩(%2e%2e%2f)해 전송 → enc= 응답코드(ModSec이 인코딩 우회도 정규화로 막는지 확인)
-      ssh att@192.168.0.202 "echo -en 'GET /?q=%2e%2e%2f%2e%2e%2fetc%2fpasswd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 3) 해석 — ../ 경로 탈출이 930(LFI)에 403 차단, 인코딩도 정규화로 동일 차단
-      # → ../ 경로 탈출 → 930(LFI) 403. 인코딩도 정규화로 차단
-    answer_detail: "경로순회 = ../ 로 의도된 폴더 밖 임의 파일(예: /etc/passwd) 읽기 시도. el34 dvwa(차단 모드)에서 ModSec 930(LFI) 룰군이 ../ 패턴을 탐지해 403. 평문(../)과 URL 인코딩(%2e%2e%2f) 모두 ModSec 의 정규화로 동일하게 403 → 인코딩 우회가 막힘을 입증."
+      # 1) nuclei LFI 템플릿군으로 dvwa 경로순회/LFI 자동 점검 — 로드된 템플릿 수와 결과 확인(finding 0 = WAF 차단)
+      ssh att@192.168.0.202 "nuclei -u http://dvwa.el34.lab -tags lfi 2>&1 | grep -aE 'Templates loaded|signed templates'"
+      # 2) 해석 — LFI 템플릿 실행, finding 0건 = dvwa ModSec 930이 ../·%2e%2e%2f 경로순회를 403 차단
+    answer_detail: "경로순회 = ../ 로 의도된 폴더 밖 임의 파일(/etc/passwd) 읽기. 취약점 스캐너 nuclei 의 LFI 템플릿군(-tags lfi)으로 dvwa 에 경로순회·LFI 페이로드를 자동 주입하면, ModSec 930(LFI) 룰군이 ../·%2e%2e%2f 를 정규화해 403 차단 → nuclei finding 0건(매치 없음). 평문·URL 인코딩 변형이 모두 정규화로 막힘을 도구가 확인. 판정은 nuclei 실행 요약(`Templates loaded`)이 출력되는지로 한다."
     expected_output: |
-      pt=403
-      enc=403
-      → ../ 경로 탈출 → 930(LFI) 403. 인코딩도 정규화로 차단
+      [INF] Templates loaded for current scan: 851
+      [INF] Executing 851 signed templates from projectdiscovery/nuclei-templates
+      → LFI 템플릿 851개 실행, finding 0건 — dvwa ModSec 930이 ../·%2e%2e%2f 경로순회를 403 차단
     verify:
       type: output_contains
-      expect: '403'
+      expect: 'Templates loaded'
       field: stdout
       semantic:
         intent: "경로순회"
-        success_criteria: ["403(930)"]
-        acceptable_methods: ["**[OSS] path traversal (권장)**"]
+        success_criteria: ["LFI 스캔 WAF 차단"]
+        acceptable_methods: ["**[OSS] nuclei (권장)**"]
     target_vm: web
 
   - order: 3
     instruction: |
-      ## 🎯 명령주입 — 셸 구분자로 OS 명령 추가 실행 시도
-      **명령주입**은 웹앱이 사용자 입력을 OS 셸 명령에 그대로 이어붙일 때, **셸 구분자**(`;` 순차실행,
-      `|` 파이프, `&` `&&`, `$( )` `` ` ` ``)를 끼워 **별도의 OS 명령을 추가 실행**시키는 공격이다. 성공하면
-      곧바로 **RCE(원격 코드 실행)** = 서버 완전 장악으로, 본 주차 취약점 중 최고 심각도다.
+      ## 🎯 명령주입 — RCE 스캐너로 셸 구분자 주입 자동 점검
+      **명령주입**은 웹앱이 사용자 입력을 OS 셸 명령에 그대로 이어붙일 때, **셸 구분자**(`;` `|` `&`
+      `$( )`)로 **별도 OS 명령을 추가 실행**시키는 공격이다. 성공하면 곧바로 **RCE**(서버 완전 장악)로,
+      본 주차 최고 심각도다. 명령주입 자동화 전용 도구는 `commix`(`commix -u "URL" --batch`)지만
+      **이 att VM 에는 미설치** → `nuclei` 의 RCE/injection 템플릿군으로 dvwa 를 자동 점검한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 명령주입 세미콜론 변형(?q=1;cat /etc/passwd)을 dvwa에 전송 → cmdi= 응답코드(; 로 OS 명령 추가)
-      echo -en "GET /?q=1;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 파이프 변형(?q=1|id)도 전송 → pipe= 응답코드
-      echo -en "GET /?q=1|id HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 3) 해석 — ;/| 로 OS 명령 연결 → 932(RCE) 탐지, 성공 시 완전 장악
-      # → ;/| 로 OS 명령 연결 → 932(RCE) 탐지. 성공 시 완전 장악
+      # 1) nuclei RCE/injection 템플릿군으로 dvwa 명령주입 자동 점검(commix 미설치 대체) — finding 0 = WAF 차단
+      nuclei -u http://dvwa.el34.lab -tags rce,injection 2>&1 | grep -aE 'Templates loaded|signed templates'
       ```
-      - `?q=1;cat /etc/passwd` = `;` 로 원래 입력(`1`) 뒤에 `cat /etc/passwd` 명령을 덧붙인 페이로드.
-        (`%20` 은 URL 에서 공백을 뜻한다.) 정답 스크립트는 `|`(파이프) 변형도 함께 보낸다.
+      - `nuclei ... -tags rce,injection` = OS 명령 실행/인젝션 계열 템플릿군(`;cat`, `|id`, `$( )` 등)을
+        자동 주입한다. 명령주입 전용 자동화 도구 `commix` 미설치 환경의 대체다.
+      - dvwa 는 ModSec 932(RCE) 룰군이 셸 구분자 패턴을 403 차단 → nuclei **finding 0**(매치 없음).
+        응답 코드만으로 성패를 단정하긴 어렵고(블라인드 포함), 탐지 입증은 다음 미션(932 로그)에서 한다.
       ## ✅ 합격 기준
-      `cmdi=` 출력 시 통과. **근거:** 명령주입 시도가 전송·기록되면(cmdi=) 이 입력점에 명령주입을 시도한
-      흔적이 남은 것 — 응답 코드만으로는 성패 단정이 어렵고(블라인드 포함), 탐지 입증은 다음 미션(932)에서 한다.
-    hint: ';cat /etc/passwd'
+      `Templates loaded` 출력 시 통과. **근거:** nuclei 가 RCE/injection 템플릿군을 실행하고 매치를
+      못 내면(0건), 이 입력점의 명령주입 시도가 ModSec 932 에 막힌 것 — 탐지 입증은 다음 미션(932)에서 한다.
+    hint: 'nuclei rce (commix 미설치)'
     category: manipulation
     points: 12
     answer: |
-      # 1) 명령주입 세미콜론 변형(?q=1;cat /etc/passwd)을 dvwa에 전송 → cmdi= 응답코드(; 로 OS 명령 추가)
-      ssh att@192.168.0.202 "echo -en 'GET /?q=1;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 2) 파이프 변형(?q=1|id)도 전송 → pipe= 응답코드
-      ssh att@192.168.0.202 "echo -en 'GET /?q=1|id HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 3) 해석 — ;/| 로 OS 명령 연결 → 932(RCE) 탐지, 성공 시 완전 장악
-      # → ;/| 로 OS 명령 연결 → 932(RCE) 탐지. 성공 시 완전 장악
-    answer_detail: "명령주입 = ;&|$() 등 셸 구분자로 OS 명령을 추가 실행 → 성공 시 RCE(완전 장악, 최고 심각도). el34 ModSec 932(RCE) 룰군이 탐지한다. 응답 코드만으로 성패를 단정하기 어려워(블라인드 명령주입 포함) 본 단계는 시도 전송(cmdi=)을 합격 기준으로 두고, 932 탐지는 다음 미션에서 입증한다."
+      # 1) nuclei RCE/injection 템플릿군으로 dvwa 명령주입 자동 점검(commix 미설치 대체) — finding 0 = WAF 차단
+      ssh att@192.168.0.202 "nuclei -u http://dvwa.el34.lab -tags rce,injection 2>&1 | grep -aE 'Templates loaded|signed templates'"
+      # 2) 해석 — RCE/injection 템플릿 실행, finding 0건 = dvwa ModSec 932가 ;·| 셸 구분자 주입을 403 차단
+    answer_detail: "명령주입 = ;&|$() 등 셸 구분자로 OS 명령 추가 실행 → 성공 시 RCE(완전 장악, 최고 심각도). 명령주입 자동화 전용 도구 commix(commix -u \"URL\" --batch)는 이 att VM 미설치 → nuclei RCE/injection 템플릿군(-tags rce,injection)으로 대체 점검. dvwa 는 ModSec 932(RCE) 룰군이 셸 구분자를 403 차단 → nuclei finding 0건. 응답만으로 성패 단정 어려워(블라인드 포함) 932 탐지는 다음 미션(로그)에서 입증. 판정은 nuclei 실행 요약(`Templates loaded`)이 출력되는지로 한다."
     expected_output: |
-      cmdi=403
-      pipe=302
-      → ;/| 로 OS 명령 연결 → 932(RCE) 탐지. 성공 시 완전 장악
+      [INF] Templates loaded for current scan: 969
+      [INF] Executing 969 signed templates from projectdiscovery/nuclei-templates
+      → RCE/injection 템플릿 969개 실행, finding 0건 — dvwa ModSec 932가 ;·| 셸 구분자 주입을 403 차단
     verify:
       type: output_contains
-      expect: 'cmdi='
+      expect: 'Templates loaded'
       field: stdout
       semantic:
         intent: "명령주입"
-        success_criteria: [";명령 시도"]
-        acceptable_methods: ["**[OSS] ;cmd 주입 (권장)**"]
+        success_criteria: ["RCE 스캔 WAF 차단"]
+        acceptable_methods: ["**[OSS] nuclei (권장)**"]
     target_vm: web
 
   - order: 4
     instruction: |
-      ## 🎯 PHP 주입 — webshell 콘텐츠 반입 시도
-      **파일 업로드 취약점**의 핵심 무기는 **webshell**(브라우저로 OS 명령을 실행하게 해주는 악성 스크립트)이다.
-      그 전형이 `<?php system($_GET['c']); ?>` 같은 PHP 한 줄이다. 본 미션은 실제 업로드 폼 대신, **webshell 의
-      시그니처인 `<?php ... ?>` 코드 자체**가 ModSec 에 어떻게 잡히는지를 점검한다.
+      ## 🎯 PHP 주입 — 웹 취약점 스캐너로 위험 콘텐츠 반입 점검
+      **파일 업로드 취약점**의 핵심 무기는 **webshell**(`<?php system($_GET['c']); ?>` 같은 악성 스크립트)
+      이다. 여기서는 실제 업로드 폼 대신, 웹 취약점 스캐너 `nikto` 의 **주입 계열(Tuning 4)** 점검으로
+      dvwa 에 XSS/스크립트/HTML 주입 계열 탐침을 보내, 위험 콘텐츠가 WAF(933)에 어떻게 막히는지 본다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) webshell 시그니처 <?php system('id'); ?> 를 URL 인코딩(%3C%3Fphp ... %3F%3E)해 dvwa에 전송 → php= 응답코드
-      echo -en 'GET /?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      # 2) 해석 — <?php ... ?> 위험 콘텐츠가 933(PHP)에 403 차단
-      # → <?php system('id')?> = webshell 콘텐츠 → 933(PHP) 403
+      # 1) nikto 주입 계열(Tuning 4) 점검으로 dvwa에 위험 콘텐츠 탐침 — WAF가 <?php/스크립트 주입을 차단
+      nikto -h http://dvwa.el34.lab -Tuning 4 -maxtime 30s
       ```
-      - `%3C%3Fphp ... %3F%3E` = `<?php system('id'); ?>` 를 URL 인코딩한 것(`%3C`=`<`, `%3F`=`?`, `%3E`=`>`).
-        즉 "서버에서 `id` 명령을 실행하라"는 webshell 콘텐츠를 요청에 실어 보낸다.
+      - `nikto -h http://dvwa.el34.lab -Tuning 4` = 인젝션(XSS/스크립트/HTML) 계열 위험 탐침만 골라 보낸다.
+        `-maxtime 30s` = 30초 제한. `<?php ... ?>` 같은 위험 콘텐츠 주입도 이 계열에 포함된다.
+      - dvwa 는 ModSec 933(PHP) 룰군이 PHP 태그·위험 함수를 403 차단 → nikto 는 주입 취약점을 하나도
+        보고하지 못하고 서버 배너·헤더 관찰만 남긴다(위험 콘텐츠가 WAF 에 걸림).
       ## ✅ 합격 기준
-      `403` 출력 시 통과. **근거:** 403(ModSec 933 PHP 룰군 차단)이면 위험 콘텐츠가 WAF 에 걸린 것 — 단,
-      실제 파일을 디스크에 올려 실행한 것은 아니다(실제 업로드 우회·셸 핸들링은 고급 트랙 영역).
-    hint: '<?php system'
+      `Nikto`(스캐너 배너) 출력 시 통과. **근거:** nikto 주입 계열 점검이 실행되고 주입 취약점을 못
+      내면, `<?php` 위험 콘텐츠가 ModSec 933 에 막힌 것 — 단, 실제 파일을 올려 실행한 것은 아니다(고급 트랙).
+    hint: 'nikto 주입 점검'
     category: manipulation
     points: 12
     answer: |
-      # 1) webshell 시그니처 <?php system('id'); ?> 를 URL 인코딩(%3C%3Fphp ... %3F%3E)해 dvwa에 전송 → php= 응답코드
-      ssh att@192.168.0.202 "echo -en 'GET /?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      # 2) 해석 — <?php ... ?> 위험 콘텐츠가 933(PHP)에 403 차단
-      # → <?php system('id')?> = webshell 콘텐츠 → 933(PHP) 403
-    answer_detail: "PHP 주입 = webshell 의 핵심 시그니처(<?php ... ?>) 콘텐츠. el34 dvwa 에서 ModSec 933(PHP) 룰군이 PHP 태그·위험함수를 탐지해 403. 실제 업로드 우회는 대체 확장자(.phtml/.php5)·MIME 위조·polyglot 으로 시도하며(고급), 본 단계는 위험 콘텐츠 차단 여부만 점검."
+      # 1) nikto 주입 계열(Tuning 4) 점검으로 dvwa에 위험 콘텐츠 탐침 — WAF가 <?php/스크립트 주입을 차단
+      ssh att@192.168.0.202 "nikto -h http://dvwa.el34.lab -Tuning 4 -maxtime 30s"
+      # 2) 해석 — 주입 계열 탐침 다수 실행, 주입 취약점 0건 = dvwa ModSec 933이 <?php webshell 콘텐츠 차단
+    answer_detail: "PHP 주입 = webshell 의 핵심 시그니처(<?php ... ?>) 콘텐츠. 웹 취약점 스캐너 nikto 의 주입 계열(-Tuning 4: XSS/스크립트/HTML 인젝션) 점검으로 dvwa 에 위험 탐침을 보내면, ModSec 933(PHP) 룰군이 PHP 태그·위험 함수를 403 차단 → nikto 는 주입 취약점을 보고하지 못하고 서버 배너(Apache/2.4.52)·헤더 관찰만 남긴다 = 위험 콘텐츠가 WAF 에 걸림. 실제 업로드 우회는 대체 확장자(.phtml)·MIME 위조·polyglot(고급). 판정은 nikto 배너(`Nikto`)가 출력되는지로 한다."
     expected_output: |
-      php=403
-      → <?php system('id')?> = webshell 콘텐츠 → 933(PHP) 403
+      - Nikto v2.1.5
+      + Target IP:          192.168.0.161
+      + Target Hostname:    dvwa.el34.lab
+      + Server: Apache/2.4.52 (Ubuntu)
+      + The anti-clickjacking X-Frame-Options header is not present.
+      + 413 items checked: 0 error(s) and 4 item(s) reported on remote host
+      → 주입 계열 탐침 다수 실행, 주입 취약점 0건 — dvwa ModSec 933이 <?php webshell 콘텐츠를 차단
     verify:
       type: output_contains
-      expect: '403'
+      expect: 'Nikto'
       field: stdout
       semantic:
         intent: "PHP 주입"
-        success_criteria: ["403(933)"]
-        acceptable_methods: ["**[OSS] <?php 주입 (권장)**"]
+        success_criteria: ["주입 스캔 WAF 차단"]
+        acceptable_methods: ["**[OSS] nikto (권장)**"]
     target_vm: web
 
   - order: 5

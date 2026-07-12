@@ -22,12 +22,12 @@
 
 1. HTTP 요청·응답의 구조(요청 라인 / 헤더 / 본문, 상태 코드)를 그림으로 그리고, 점검에서
    "무엇을 봐야 하는지"를 메서드·상태 코드·헤더의 세 축으로 설명한다.
-2. el34 의 점검 대상 웹 서버(`dvwa.el34.lab` vhost)에 `nc`(넷캣)로 도달하고, `OPTIONS` 메서드로
-   허용 메서드(`Allow` 헤더)를 **열거**한다.
-3. 위험 메서드(`PUT` / `DELETE` / `TRACE`)를 시도해 응답 코드를 읽고, 차단(405/403)인지
-   허용(200/201)인지를 판별해 위험도를 매긴다.
-4. 응답 헤더에서 **보안 헤더**(HSTS / CSP / X-Frame-Options / X-Content-Type-Options)의 누락을
-   식별하고, `Host` 인젝션·`X-Forwarded-For` 위조 같은 **헤더 악용**의 결과를 관찰한다.
+2. el34 의 점검 대상 웹 서버(`dvwa.el34.lab` vhost)를 `whatweb` 로 핑거프린팅해 도달성을 확인하고,
+   `nmap http-methods` 로 허용 메서드(`Supported Methods`)를 **열거**한다.
+3. 위험 메서드(`PUT` / `DELETE` / `TRACE`)를 `nmap http-methods test-all` 로 실제 전송해, 차단(WAF/405)인지
+   허용(광고)인지를 판별해 위험도를 매긴다.
+4. `nikto` 로 응답의 **보안 헤더**(HSTS / CSP / X-Frame-Options / X-Content-Type-Options) 누락을
+   식별하고, `whatweb --header` 로 `Host` 인젝션·`X-Forwarded-For` 위조 같은 **헤더 악용**의 결과를 관찰한다.
 5. 위 점검 행위가 대상의 access.log 에 남기는 흔적을 확인하고, 메서드·헤더 점검 결과와 방어
    권고를 담은 1페이지 **HTTP 점검 보고서**를 작성한다.
 
@@ -53,7 +53,9 @@
 | **Host 헤더** | Host header | 요청이 어느 사이트(도메인)를 향하는지 알리는 헤더 | 주문서에 적는 "어느 지점인지" |
 | **X-Forwarded-For** | XFF | 프록시를 거친 요청의 원래 클라이언트 IP 를 담는 헤더 | "원래 손님은 누구였는지" 메모 |
 | **WSTG** | Web Security Testing Guide | OWASP 의 웹 보안 점검 표준 방법론 | 웹 진단의 표준 점검 체크리스트 |
-| **nc** | — | TCP 소켓에 raw HTTP 요청을 손수 흘려보내는 도구(브라우저의 수동 버전) | 손으로 주문서를 직접 쓰는 펜 |
+| **whatweb** | — | 대상에 요청을 보내 서버·기술 스택·상태 코드를 핑거프린팅하는 정찰 스캐너 | 가게를 훑어 무슨 가게인지 알아내는 눈 |
+| **nmap http-methods** | — | OPTIONS·실전송으로 허용·위험 HTTP 메서드를 열거·판별하는 점검 스크립트 | 어떤 주문을 받아주는지 목록으로 확인 |
+| **nikto** | — | 서버 배너·설정 문제·누락된 보안 헤더를 자동 보고하는 웹 취약점 스캐너 | 표준 체크리스트로 훑는 점검원 |
 | **vhost** | Virtual Host | 같은 IP/포트에서 도메인별로 다른 사이트를 응답하는 방식 | 한 건물의 여러 매장 |
 | **WAF** | Web Application Firewall | HTTP 페이로드를 검사해 공격을 차단하는 응용 계층 방화벽 | 입구 금속탐지기 |
 
@@ -87,7 +89,7 @@
 
 ### 0.5.2 HTTP 요청의 구조 — 세 부분
 
-HTTP 요청은 세 부분으로 나뉜다. `nc` 로 raw 요청을 보내면 실제로 이 순서대로 전송된다.
+HTTP 요청은 세 부분으로 나뉜다. 점검 도구(whatweb·nmap·nikto)가 보내는 요청도 실제로 이 순서대로 구성된다.
 
 ```mermaid
 graph TD
@@ -175,31 +177,38 @@ graph TD
     style INPV fill:#8b949e,color:#fff
 ```
 
-### 0.5.5 nc — 손으로 쓰는 HTTP 주문서
+### 0.5.5 점검 도구 — 요청을 자동으로 만들어 보내는 스캐너
 
-브라우저는 주문서(요청)를 자동으로 만들어 보내준다. 그런데 점검자는 메서드를 PUT 으로 바꾸거나
-헤더를 위조하는 등 **주문서를 마음대로 손으로 써야** 한다. 이때 쓰는 도구가 **nc**(netcat) 다.
+브라우저는 주문서(요청)를 자동으로 만들어 보내준다. 점검자는 메서드를 PUT 으로 바꾸거나 헤더를
+위조하는 등 요청을 마음대로 조작해야 하는데, 이 조작을 **손으로 raw HTTP 를 쓰는 대신 전문 점검
+도구로 자동화**한다. 이번 주에 쓰는 세 도구는 다음과 같다.
 
-**nc** 는 TCP 소켓에 바이트를 그대로 흘려보내는 도구다. HTTP 요청 라인·헤더를 `echo -en` 으로 손수
-작성해 `nc` 로 보내면, 브라우저가 가려주는 요청·응답의 원본을 날것 그대로 다룰 수 있어 점검의 기본기다.
-요청 골격은 `echo -en 'GET /경로 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80`
-이고, 이번 주에 반복해서 쓰는 조각은 다음과 같다.
+- **whatweb** — 대상에 요청을 보내 서버·기술 스택·타이틀·상태 코드를 한 줄로 핑거프린팅한다.
+  `--header` 옵션으로 Host·X-Forwarded-For 같은 요청 헤더를 임의 값으로 바꿔 보낼 수도 있어, 도달성
+  점검과 헤더 악용 점검에 함께 쓴다.
+- **nmap http-methods** — `nmap --script http-methods` 로 서버가 허용하는 메서드를 열거하고,
+  `test-all` 인자를 주면 각 메서드를 실제로 전송해 PUT/DELETE/TRACE 같은 위험 메서드가 살아 있는지를
+  `Potentially risky methods:` 로 보고한다.
+- **nikto** — 대상에 다수의 점검 요청을 보내 서버 배너·설정 문제·누락된 보안 헤더(X-Frame-Options 등)를
+  자동으로 보고하는 웹 취약점 스캐너다.
 
-| 요청 조각 | 의미 | 점검에서의 쓰임 |
-|-----------|------|----------------|
-| 요청 라인 `<메서드> /경로 HTTP/1.0` | 메서드·경로 지정 | `OPTIONS` / `PUT` / `TRACE` 로 위험 메서드 시도 |
-| 헤더 `키: 값\r\n` | 헤더 추가 | `Host: dvwa.el34.lab` 로 vhost 지정, `X-Forwarded-For: 127.0.0.1` 로 위조 |
-| `\r\n\r\n` (빈 줄) | 헤더 끝 | 여기까지가 요청 헤더, 이후가 본문 |
-| `nc -w3 192.168.0.161 80` | 웹 진입점으로 전송 | `-w3` 은 3초 타임아웃 |
-| `head -1` | 응답 첫 줄(상태 라인) | 상태 코드·`Allow` 헤더 확인 |
-| `grep -oE '[0-9]{3}'` | 상태 코드 추출 | 응답 코드만 깔끔히 뽑아 보기 |
+이번 주에 이 도구들로 수행하는 점검 항목과 대표 명령은 다음과 같다.
 
-> 이번 주의 모든 점검 명령은 이 raw HTTP 요청의 조합이다. 요청 라인과 헤더의 의미만 알면 명령이
-> 길어도 "메서드를 바꿔 보낸다 / 헤더를 위조해 보낸다 / 코드만 본다"의 단순한 행위임을 알 수 있다.
+| 점검 항목 | 도구·명령 | 무엇을 보는가 |
+|-----------|-----------|--------------|
+| 도달·핑거프린팅 | `whatweb -a1 http://dvwa.el34.lab/` | 서버·기술 스택·상태 코드(`[403 Forbidden]`) |
+| 허용 메서드 열거 | `nmap -p80 --script http-methods --script-args http-methods.url-path=/ HOST` | `Supported Methods:` 목록 |
+| 위험 메서드 판별 | `nmap ... --script-args http-methods.url-path=/,http-methods.test-all HOST` | `Potentially risky methods:`(PUT/DELETE/TRACE) |
+| 보안 헤더 누락 | `nikto -h http://dvwa.el34.lab -maxtime 30s` | `X-Frame-Options header is not present` 등 |
+| 헤더 악용 | `whatweb -a1 --header 'Host: evil.attacker.com' http://dvwa.el34.lab/` | 조작 헤더에 대한 서버 반응(상태 코드) |
+
+> 실제 점검 도구가 요청 생성·전송·해석을 자동화해 주므로, 점검자는 "무엇을 물어보는 요청인가(메서드)·
+> 서버가 어떻게 답했나(상태 코드)·어떤 헤더가 오갔나"의 해석에 집중하면 된다. 이번 주의 모든 미션이
+> 이 세 도구의 출력을 읽는 훈련이다.
 
 ---
 
-이 다섯 개념(요청·응답 구조, 상태 코드, WSTG, nc)이 W01 본격 내용의 기반이다. 이제 실제 점검
+이 다섯 개념(요청·응답 구조, 상태 코드, WSTG, 점검 도구)이 W01 본격 내용의 기반이다. 이제 실제 점검
 항목으로 들어간다.
 
 ---
@@ -250,7 +259,7 @@ vhost 다.
 
 ```mermaid
 graph TD
-    ATK["외부 공격자 VM 192.168.0.202 (점검자)<br/>출처 192.168.0.202<br/>nc 로 raw 요청 작성"]
+    ATK["외부 공격자 VM 192.168.0.202 (점검자)<br/>출처 192.168.0.202<br/>whatweb·nmap·nikto 로 점검 요청"]
     FW["el34-fw (nftables)<br/>192.168.0.161<br/>L3/L4 통과 (메서드/헤더는 안 봄)"]
     WEB["el34-web (Apache + ModSecurity)<br/>Host 헤더로 vhost 라우팅<br/>+ WAF 검사"]
     APP["dvwa.el34.lab<br/>차단 모드(403)"]
@@ -301,34 +310,35 @@ DELETE 가 열려 있으면 콘텐츠를 지울 수 있다. TRACE 는 보낸 요
 `Allow:` 헤더에 허용 메서드 목록을 담아 돌려준다.
 
 ```bash
-echo -en 'OPTIONS / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -iE '^Allow|^HTTP'
+nmap -p80 --script http-methods --script-args http-methods.url-path=/ dvwa.el34.lab
 ```
 
-이 명령은 `-X OPTIONS` 로 메서드를 지정하고, `-i` 로 응답 헤더를 출력한 뒤, `Allow` 와 상태 라인
-(`HTTP`)만 골라 본다. `Allow:` 에 PUT/DELETE/TRACE 가 보이면 점검 대상이고, 보이지 않거나 405 가
-오면 그 메서드는 제한된 것이다.
+이 명령은 `--script http-methods` 로 OPTIONS 기반 메서드 열거를 수행해 응답의 `Supported Methods:` 를
+정리해 본다. 목록에 PUT/DELETE/TRACE 가 보이면 점검 대상이고, 보이지 않으면 그 메서드는 광고되지
+않은 것이다. dvwa 는 앞단 WAF 가 이 열거 프로브를 403 으로 막아 목록이 안 나온다(대조로 juice 에
+같은 명령을 보내면 `Supported Methods: GET HEAD POST OPTIONS` 가 나온다).
 
-다음으로 위험 메서드를 **직접 시도**해 실제 응답 코드를 확인한다. OPTIONS 가 알려주는 `Allow` 가
-실제 동작과 다를 수 있으므로(서버가 거짓 광고를 하거나, vhost별 설정이 다를 수 있으므로) 점검자는
-반드시 실제로 보내 본다.
+다음으로 위험 메서드를 **직접 전송**해 실제 동작을 확인한다. OPTIONS 열거의 `Supported Methods` 가
+실제 동작과 다를 수 있으므로(서버가 신고하지 않은 메서드가 살아 있거나, vhost별 설정이 다를 수
+있으므로) 점검자는 `test-all` 로 각 메서드를 실제로 보내 본다.
 
 ```bash
-echo "PUT=$(echo -en 'PUT /wvtest.txt HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-echo "TRACE=$(echo -en 'TRACE / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+nmap -p80 --script http-methods --script-args http-methods.url-path=/,http-methods.test-all juice.el34.lab
 ```
 
-**결과 해석.** `-w 'PUT=%{http_code}'` 로 응답 코드만 뽑아 본다. dvwa.el34.lab 은 차단형 WAF 가
-걸려 있으므로, 위험 메서드 시도가 **403/405** 로 막히면 그 자산은 안전 신호다. 반대로 **200/201** 이
-돌아오면 그 메서드가 실제로 열려 있다는 뜻으로, 즉시 보고해야 할 취약점이다.
+**결과 해석.** `test-all` 은 각 메서드를 실제로 전송하고, 위험 메서드가 살아 있으면
+`Potentially risky methods:` 로 보고한다. juice 는 OPTIONS 신고엔 GET HEAD POST OPTIONS 만 있었지만
+test-all 로 보내니 `DELETE PUT` 가 살아 있어 **위험**(웹셸 업로드·콘텐츠 삭제)이다. 반대로 dvwa 는
+앞단 WAF 가 PUT/DELETE/TRACE 를 막아 위험 메서드가 광고되지 않는 것(안전 신호)이다.
 
 ```mermaid
 graph TD
-    OPT["① OPTIONS 요청<br/>nc raw OPTIONS"]
-    ALLOW["Allow 헤더 확인<br/>허용 메서드 목록 노출"]
-    TRY["② 위험 메서드 실제 시도<br/>PUT / DELETE / TRACE"]
-    JUDGE{"응답 코드?"}
-    SAFE["403 / 405<br/>차단됨 = 안전"]
-    RISK["200 / 201<br/>열려 있음 = 위험"]
+    OPT["① OPTIONS 열거<br/>nmap http-methods"]
+    ALLOW["Supported Methods 확인<br/>허용 메서드 목록"]
+    TRY["② 위험 메서드 실제 전송<br/>nmap ... test-all"]
+    JUDGE{"결과?"}
+    SAFE["WAF 차단 / 미광고<br/>= 안전"]
+    RISK["Potentially risky methods<br/>= 위험"]
     OPT --> ALLOW --> TRY --> JUDGE
     JUDGE -->|차단| SAFE
     JUDGE -->|허용| RISK
@@ -370,17 +380,17 @@ OPTIONS 의 `Allow` 헤더는 **서버가 스스로 신고한 값**이라 실제
 
 ### 3.2 el34 에서 어떻게
 
-응답 헤더만 빠르게 보려면 `-I`(HEAD 요청, 본문 없이 헤더만)를 쓰고, 관심 있는 보안 헤더 이름만
-골라 본다.
+응답의 보안 헤더 누락은 nikto 로 자동 점검한다. nikto 는 대상을 스캔하며 서버 배너와 함께 누락된
+보안 헤더를 명시적으로 보고한다.
 
 ```bash
-echo -en 'HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -iE 'strict-transport|content-security|x-frame|x-content' || echo '보안 헤더 누락'
+nikto -h http://dvwa.el34.lab -maxtime 30s
 ```
 
-**결과 해석.** `grep` 이 보안 헤더를 하나도 못 찾으면 `||` 뒤의 `echo` 가 실행되어 "보안 헤더
-누락"이 출력된다. 헤더가 보이면 그 항목은 적용된 것이고, 안 보이면 누락이다. 누락된 헤더는 보통
-위험도 낮음~중간으로 평가하지만, HSTS·CSP 누락은 다른 취약점과 결합해 영향이 커질 수 있어 보고
-대상이다.
+**결과 해석.** nikto 가 `The anti-clickjacking X-Frame-Options header is not present.` 를 보고하면
+X-Frame-Options(클릭재킹 방지) 헤더가 누락된 것이고, `Server: Apache/2.4.52 (Ubuntu)` 는 서버 버전
+배너 노출이다. HSTS·CSP·nosniff 도 같은 방식으로 누락 여부를 본다. 누락된 헤더는 보통 위험도
+낮음~중간으로 평가하지만, HSTS·CSP 누락은 다른 취약점과 결합해 영향이 커질 수 있어 보고 대상이다.
 
 ### 3.3 한계 / 주의
 
@@ -415,21 +425,22 @@ echo -en 'HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' |
 
 ### 4.2 el34 에서 어떻게
 
-두 헤더 악용을 차례로 시도하고 응답 코드·동작 변화를 관찰한다.
+두 헤더 악용을 whatweb 의 `--header` 로 차례로 시도하고 핑거프린팅 결과·상태 코드를 관찰한다.
 
 ```bash
-echo -en "GET / HTTP/1.0\r\nHost: evil.attacker.com\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-echo "xff=$(echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+whatweb -a1 --header 'Host: evil.attacker.com' http://dvwa.el34.lab/
+whatweb -a1 --header 'X-Forwarded-For: 127.0.0.1' http://dvwa.el34.lab/
 ```
 
-**결과 해석.** 첫 줄은 정상 vhost 대신 `Host: evil.attacker.com` 을 보내 서버가 어떻게 반응하는지를
-본다(임의 Host 거부 여부). 둘째 줄은 정상 Host 를 유지한 채 XFF 만 `127.0.0.1` 로 위조해, 서버가
-이 값에 따라 동작·로깅을 바꾸는지를 본다. 응답 코드와 본문 변화를 비교해 "이 서버가 헤더 값을 얼마나
-신뢰하는가"를 진단한다.
+**결과 해석.** 첫 줄은 정상 vhost 대신 `Host: evil.attacker.com` 을 실어 보내 서버가 어떻게 반응하는지를
+본다(임의 Host 거부 여부). 둘째 줄은 정상 대상을 유지한 채 XFF 만 `127.0.0.1` 로 위조해, 서버가 이
+값에 따라 동작·로깅을 바꾸는지를 본다. 여기서는 앞단 WAF 가 조작 헤더와 무관하게 `[403 Forbidden]`
+으로 일관 차단해 서버가 헤더를 반영하지 않음을 확인한다. 실제 Host 인젝션 악용(재설정 링크 변조)은
+Burp Repeater 로 재설정 흐름까지 추적해 심화 검증한다.
 
 ```mermaid
 graph TD
-    REQ["조작된 요청<br/>nc 로 헤더 위조"]
+    REQ["조작된 요청<br/>whatweb --header 로 헤더 위조"]
     H1["Host: evil.attacker.com<br/>→ 비번 재설정 링크 변조·캐시 포이즌 노림"]
     H2["X-Forwarded-For: 127.0.0.1<br/>→ IP 통제·로깅 우회 노림"]
     OBS["응답 코드·동작 변화 관찰<br/>서버가 헤더를 신뢰하는가"]
@@ -459,12 +470,13 @@ graph TD
 이렇게 탐지된다"를 설명할 수 있다.
 
 ```bash
-ssh ccc@10.20.32.80 'sudo tail -50 /var/log/apache2/dvwa_access.log | grep -aE "OPTIONS|PUT|DELETE|TRACE" | tail -5 || sudo tail -30 /var/log/apache2/access.log | grep -aE "OPTIONS|PUT|TRACE"'
+ssh ccc@10.20.32.80 'sudo tail -200 /var/log/apache2/dvwa_access.log | grep -aiE "WhatWeb|Nikto|Nmap|OPTIONS|PUT|DELETE|TRACE" | tail -6 || echo "(dvwa_access 확인)"'
 ```
 
-**결과 해석.** Apache 의 access.log 에는 각 요청의 메서드가 그대로 기록된다. 정상 사용자 트래픽에는
-OPTIONS/PUT/DELETE/TRACE 가 거의 없으므로, 이 메서드들이 보이면 점검 또는 공격 신호다. 방어자는
-이런 비정상 메서드 빈도와 출처 IP 를 묶어 탐지 룰을 만든다.
+**결과 해석.** Apache 의 access.log 에는 각 요청의 메서드와 User-Agent 가 그대로 기록된다. 정상
+사용자 트래픽에는 스캐너 UA(WhatWeb/0.5.5·Nikto/2.1.5)나 비정상 메서드(OPTIONS/PUT/DELETE/TRACE)가
+거의 없으므로, 이들이 보이면 정찰·스캔 신호다. 방어자는 이런 스캐너 UA·비정상 메서드 빈도와 출처
+IP 를 묶어 탐지 룰을 만든다.
 
 ### 5.2 방어 — HTTP 표면 최소화(하드닝)
 
@@ -508,43 +520,44 @@ graph TD
 > `ssh att@192.168.0.202`(점검) 또는 `ssh ccc@10.20.32.80`(흔적 확인)로 실행한다. **인가된
 > 실습 환경(el34)에서만** 수행한다. 합격 임계값은 0.7 이다.
 
-### 미션 1 — 점검 대상 도달 (10점, survey)
+### 미션 1 — 점검 대상 도달·핑거프린팅 (10점, survey)
 
-> **왜 하는가?** 어떤 점검이든 첫 단계는 대상이 실제로 응답하는지 확인하는 것이다. 도달성이
-> 확보되어야 이후의 모든 점검이 의미를 가진다.
+> **왜 하는가?** 어떤 점검이든 첫 단계는 대상이 실제로 응답하는지, 무엇으로 만들어졌는지 확인하는
+> 것이다. 도달성이 확보되어야 이후의 모든 점검이 의미를 가진다.
 >
-> **무엇을 알 수 있는가?** `nc` 로 `dvwa.el34.lab` vhost 에 도달해 HTTP 응답 코드를 받는 법.
-> 점검 환경(attacker → fw → web 경로)이 정상인지.
+> **무엇을 알 수 있는가?** `whatweb -a1` 로 `dvwa.el34.lab` vhost 를 핑거프린팅해 서버·기술 스택·
+> 상태 코드를 받는 법. 점검 환경(attacker → fw → web 경로)이 정상인지.
 >
-> **결과 해석.** 정상: `dvwa=<응답코드>`(예: 200/302/403)가 출력되면 대상 도달. 비정상: 무응답이거나
-> 출력이 비면 경로·Host 헤더를 점검한다.
+> **결과 해석.** 정상: `[403 Forbidden] Apache[2.4.52]` 같은 핑거프린팅 결과가 출력되면 대상 도달.
+> `[403]`은 앞단 WAF 반응이다. 비정상: 무응답이거나 출력이 비면 경로·대상 vhost 를 점검한다.
 >
-> **실전 활용.** 모의해킹 착수 시 RoE(허용 범위) 확인 직후 가장 먼저 하는 도달성 점검.
+> **실전 활용.** 모의해킹 착수 시 RoE(허용 범위) 확인 직후 가장 먼저 하는 도달성·기술 스택 점검.
 
-### 미션 2 — 메서드 열거: OPTIONS (12점, recon)
+### 미션 2 — 메서드 열거: nmap http-methods (12점, recon)
 
 > **왜 하는가?** 서버가 어떤 메서드를 허용하는지 알아야 위험 메서드 점검의 후보를 좁힐 수 있다
 > (WSTG 설정 점검의 첫 항목).
 >
-> **무엇을 알 수 있는가?** `nc` raw OPTIONS 요청으로 `Allow` 헤더를 받아 허용 메서드를 열거하는 법. 상태
-> 라인(HTTP)으로 응답이 정상 수신됐는지.
+> **무엇을 알 수 있는가?** `nmap http-methods` 로 서버의 허용 메서드(`Supported Methods:`)를 열거하는
+> 법. dvwa(WAF 403)와 juice(열거 성공) 대조로 WAF 유무에 따른 차이를 읽는 법.
 >
-> **결과 해석.** 정상: `Allow:` 에 메서드 목록이 보이거나 상태 라인(HTTP)이 출력됨. PUT/DELETE/TRACE
-> 가 보이면 점검 대상, 없거나 405 면 제한된 것. 단, `Allow` 는 서버의 자기 신고라 실제 시도로 검증해야
-> 한다(미션 3).
+> **결과 해석.** 정상: juice 에서 `Supported Methods: GET HEAD POST OPTIONS` 가 출력됨. PUT/DELETE/TRACE
+> 가 보이면 점검 대상, 없으면 광고 안 된 것. dvwa 는 WAF 가 열거 프로브를 막아 목록이 안 나온다(차단
+> 시연). 단, OPTIONS 열거는 서버의 자기 신고라 실제 전송으로 검증해야 한다(미션 3).
 >
 > **실전 활용.** 낯선 서버를 만났을 때 메서드 표면을 30초에 그리는 정찰 기법.
 
-### 미션 3 — 위험 메서드 시도: PUT/DELETE/TRACE (12점, manipulation)
+### 미션 3 — 위험 메서드 실제 전송: nmap test-all (12점, manipulation)
 
-> **왜 하는가?** OPTIONS 의 신고와 무관하게, 위험 메서드가 실제로 동작하는지를 직접 보내 검증한다.
-> 열려 있으면 그 자체가 치명적 취약점이다.
+> **왜 하는가?** OPTIONS 의 신고와 무관하게, 위험 메서드가 실제로 동작하는지를 각 메서드를 직접
+> 전송해 검증한다. 살아 있으면 그 자체가 치명적 취약점이다.
 >
-> **무엇을 알 수 있는가?** PUT(파일 업로드)·DELETE(삭제)·TRACE(XST)의 실제 응답 코드. 같은 위험
-> 메서드라도 자산마다 차단/허용이 다를 수 있다는 것.
+> **무엇을 알 수 있는가?** `nmap http-methods test-all` 이 PUT(파일 업로드)·DELETE(삭제)·TRACE(XST)를
+> 실제로 보내 `Potentially risky methods:` 로 보고하는 것. 같은 위험 메서드라도 자산마다 차단/허용이
+> 다를 수 있다는 것.
 >
-> **결과 해석.** 정상(안전): `405`/`403`(제한됨). 비정상(위험): `200`/`201`(허용됨 — PUT 업로드/
-> DELETE 삭제/TRACE XST 가능). dvwa 는 차단형이라 보통 차단된다.
+> **결과 해석.** 위험: juice 는 `Potentially risky methods: DELETE PUT`(OPTIONS 신고엔 없던 메서드가
+> 실제로 살아 있음). 안전: dvwa 는 WAF 가 PUT/DELETE/TRACE 를 막아 위험 메서드가 광고되지 않는다.
 >
 > **실전 활용.** 서버 설정 미스로 PUT 이 열려 있으면 웹셸 업로드로 곧장 침투할 수 있다. 가장 값싼
 > 고위험 발견 중 하나.
@@ -554,11 +567,12 @@ graph TD
 > **왜 하는가?** 응답에 보안 헤더가 빠져 있으면 그 자체가 취약점이거나 다른 공격(XSS·클릭재킹)의
 > 피해를 키운다. 누락 식별은 빠르고 확실한 점검이다.
 >
-> **무엇을 알 수 있는가?** `nc` raw HEAD 요청으로 응답 헤더만 받아 HSTS/CSP/X-Frame-Options/nosniff 의
-> 존재·누락을 식별하는 법.
+> **무엇을 알 수 있는가?** `nikto` 스캔이 서버 배너와 함께 누락된 보안 헤더(X-Frame-Options 등)를
+> 자동 보고하는 것. HSTS/CSP/X-Frame-Options/nosniff 누락을 식별하는 법.
 >
-> **결과 해석.** 헤더가 보이면 적용된 것, 안 보여 "보안 헤더 누락"이 출력되면 누락이다. 누락은 낮음~중간
-> 위험으로 평가하되 보고 대상. 단, 존재만으로 안전을 단정하지 않는다(정책 품질은 심화 점검).
+> **결과 해석.** nikto 가 `The anti-clickjacking X-Frame-Options header is not present.` 를 보고하면
+> 그 헤더가 누락된 것이다. 누락은 낮음~중간 위험으로 평가하되 보고 대상. 단, 존재만으로 안전을
+> 단정하지 않는다(정책 품질은 심화 점검).
 >
 > **실전 활용.** 진단 보고서의 단골 항목. 적용·수정 비용이 낮아 권고가 잘 받아들여진다.
 
@@ -567,26 +581,27 @@ graph TD
 > **왜 하는가?** 서버가 요청 헤더 값을 신뢰해 동작을 바꾸는지를 본다. Host 인젝션·XFF 위조는 계정
 > 탈취·접근 통제 우회로 이어질 수 있다.
 >
-> **무엇을 알 수 있는가?** `Host: evil.attacker.com` 으로 임의 Host 거부 여부를, `X-Forwarded-For:
-> 127.0.0.1` 위조로 IP 통제·로깅 우회 가능성을 관찰하는 법.
+> **무엇을 알 수 있는가?** `whatweb --header 'Host: evil.attacker.com'` 으로 임의 Host 거부 여부를,
+> `whatweb --header 'X-Forwarded-For: 127.0.0.1'` 위조로 IP 통제·로깅 우회 가능성을 관찰하는 법.
 >
-> **결과 해석.** 응답 코드·본문 변화를 정상 요청과 비교한다. 변화가 크면 서버가 헤더를 과신하는
-> 것으로, 추가 점검(재설정 링크 추적 등)이 필요한 신호다.
+> **결과 해석.** 조작 헤더에 대한 핑거프린팅 결과(상태 코드)를 정상 요청과 비교한다. 여기서는 앞단
+> WAF 가 조작 헤더와 무관하게 403 으로 일관 차단한다. 반응이 달라지면 서버가 헤더를 과신하는 것으로,
+> 추가 점검(재설정 링크 추적 등)이 필요한 신호다.
 >
 > **실전 활용.** 비밀번호 재설정 흐름이 있는 서비스 점검 시 반드시 포함하는 항목.
 
-### 미션 6 — 탐지: 비정상 메서드 흔적 (12점, analysis)
+### 미션 6 — 탐지: 점검 도구 흔적 (12점, analysis)
 
-> **왜 하는가?** 점검자가 자기 행위가 남기는 흔적을 알아야, 방어자 관점에서 "이런 점검은 이렇게
+> **왜 하는가?** 점검자가 자기 도구가 남기는 흔적을 알아야, 방어자 관점에서 "이런 정찰·스캔은 이렇게
 > 탐지된다"를 설명하고 방어 권고로 이을 수 있다.
 >
-> **무엇을 알 수 있는가?** 대상 web 의 access.log 에 OPTIONS/PUT/DELETE/TRACE 가 기록되는 것을
-> 확인하는 법. 비정상 메서드가 점검·공격 신호인 이유.
+> **무엇을 알 수 있는가?** 대상 web 의 access.log 에 스캐너 UA(WhatWeb/Nikto)와 비정상 메서드
+> (OPTIONS/PUT/DELETE/TRACE)가 기록되는 것을 확인하는 법. 이들이 점검·공격 신호인 이유.
 >
-> **결과 해석.** 정상: access.log 에 앞 미션에서 보낸 비정상 메서드가 보임. 정상 트래픽에는 드물어
-> 곧 탐지 단서가 된다.
+> **결과 해석.** 정상: access.log 에 앞 미션 도구의 흔적(WhatWeb/Nikto UA·비정상 메서드)이 보임. 정상
+> 트래픽에는 드물어 곧 탐지 단서가 된다.
 >
-> **실전 활용.** 방어자가 access.log 의 비정상 메서드 빈도와 출처 IP 로 탐지 룰을 만드는 기초 데이터.
+> **실전 활용.** 방어자가 access.log 의 스캐너 UA·비정상 메서드 빈도와 출처 IP 로 탐지 룰을 만드는 기초 데이터.
 
 ### 미션 7 — 방어: 메서드 제한 + 보안 헤더 (10점, report)
 
@@ -613,21 +628,21 @@ graph TD
 
 ---
 
-## 7. 다음 주차 (W02) 예고 — 점검 도구(스캐너)로 표면을 빠르게 훑다
+## 7. 다음 주차 (W02) 예고 — 스캐너로 표면 전체를 빠르게 매핑하다
 
-이번 주(W01)는 `nc`(raw HTTP) 로 HTTP 요청·응답을 **한 줄씩 손으로** 점검하는 기초를 익혔다. 메서드·상태
-코드·헤더를 읽는 눈이 생겼다면, 다음은 이 점검을 **자동화·고속화**할 차례다.
+이번 주(W01)는 whatweb·nmap·nikto 로 HTTP 메서드·헤더를 **항목별로 콕 집어** 점검하는 기초를 익혔다.
+메서드·상태 코드·헤더를 읽는 눈이 생겼다면, 다음은 이 점검을 **표면 전체로 넓히고 고속화**할 차례다.
 
-W02 에서는 자동 점검 도구(**스캐너**)를 다룬다 — `nikto`(웹 취약점 스캐너), `whatweb`(기술 스택
-핑거프린팅), `ffuf`(숨은 경로 디렉터리 브루트포스). 공격자는 이 스캐너로 표면을 빠르게 훑고,
-방어자는 스캐너 특유의 시끄러운 패턴(다량 요청·스캐너 UA)을 탐지하며, 서버는 핑거프린팅으로부터
-버전·기술 정보를 숨긴다. 손으로 익힌 W01 의 점검 어휘가 있어야, W02 의 스캐너가 "무엇을 자동으로
-하고 있는지"를 정확히 읽을 수 있다.
+W02 에서는 표면 전체를 훑는 스캔·퍼징을 다룬다 — `nikto`/`nuclei` 로 광범위한 취약·설정 점검을,
+`ffuf`/`gobuster` 로 숨은 경로·디렉터리·백업 파일을 브루트포스로 찾아낸다. 공격자는 이 스캐너로
+표면을 빠르게 훑고, 방어자는 스캐너 특유의 시끄러운 패턴(다량 요청·스캐너 UA)을 탐지하며, 서버는
+핑거프린팅으로부터 버전·기술 정보를 숨긴다. W01 에서 익힌 도구별 점검 어휘가 있어야, W02 의 대규모
+스캔이 "무엇을 자동으로 하고 있는지"를 정확히 읽을 수 있다.
 
 ```mermaid
 graph TD
-    W01["W01 HTTP 수동 점검<br/>nc 로 메서드·헤더 한 줄씩"]
-    W02["W02 자동 점검 도구<br/>nikto·whatweb·ffuf 스캐너"]
+    W01["W01 항목별 점검 도구<br/>whatweb·nmap·nikto 로 메서드·헤더"]
+    W02["W02 표면 전체 스캔·퍼징<br/>nikto·nuclei·ffuf·gobuster"]
     NEXT["빠른 표면 매핑<br/>+ 스캐너 탐지·핑거프린팅 방어"]
     W01 --> W02 --> NEXT
     style W01 fill:#8b949e,color:#fff

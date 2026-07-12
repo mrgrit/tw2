@@ -5,25 +5,25 @@ course: web-vuln
 week: 12
 description: |
   OWASP API Security Top 10 점검 — API 는 화면(UI) 없는 또 다른 공격 표면이다. 화면에서 막은 통제도
-  서버가 API 요청에 대해 다시 검사하지 않으면 nc 한 줄로 우회된다. 본 실습은 JuiceShop REST API 를
+  서버가 API 요청에 대해 다시 검사하지 않으면 도구 한 줄로 우회된다. 본 실습은 JuiceShop REST API 를
   대상으로 ① 공개 자원(/api/Products 200)과 보호 자원(/api/Users 401)의 경계를 매핑하고, ② 무인증
-  엔드포인트(/api/Feedbacks)가 UserId 등 불필요 필드를 흘리는 과다 데이터 노출(API3)을 입증하며,
+  엔드포인트(/api/Feedbacks)가 이메일 등 불필요 필드(PII)를 흘리는 과다 데이터 노출(API3)을 입증하며,
   ③ 순차 객체 id(/api/Users/{id})로 BOLA(API1, 객체 수준 인가)를 점검(el34 JuiceShop 은 401 보호=양호)
   하고, ④ 요청 본문에 미허용 필드를 끼워 넣는 mass assignment(API6)의 원리·영향·방어를 정리한다.
   근본 방어는 "모든 통제는 서버에서, 객체마다, 입력·출력 양쪽에" — 객체 수준 인가 + 응답/입력 allowlist
   + 토큰 검증이다. 공격은 외부 공격자 VM 192.168.0.202(att/1, 출처 IP 192.168.0.202)에서 공인 진입
   192.168.0.161로 — `ssh att@192.168.0.202`(비번 1)로 접속해 수행한다. 인가된 표적(juice.el34.lab) vhost 만
-  점검한다. 신규 도구 설치는 없다(nc 기본 탑재).
+  점검한다. 도구는 whatweb(경계·노출 핑거프린팅)·ffuf(객체 id 퍼징) — att 192.168.0.202 에 탑재.
 difficulty: hard
 duration_minutes: 160
 prerequisites:
   - "W01–W11 통과"
-  - "el34 호스트 SSH + docker exec"
+  - "외부 공격자 VM 접속(ssh att@192.168.0.202, 비밀번호 1) — whatweb/ffuf 탑재"
   - "lecture §3(BOLA) §4(과다노출) §5(mass assignment) 숙지"
 objectives:
-  - "nc 로 JuiceShop REST API 에 직접 요청해 공개(/api/Products 200)·보호(/api/Users 401) 경계를 응답 코드로 매핑한다"
-  - "무인증 /api/Feedbacks 응답에서 UserId 등 불필요 필드를 추출해 과다 데이터 노출(API3)을 입증한다"
-  - "순차 객체 id(/api/Users/{id})로 BOLA(API1)를 점검하고 401 보호(양호)·200 노출(치명)을 구분한다"
+  - "whatweb 으로 JuiceShop REST API 를 핑거프린팅해 공개(/api/Products 200)·보호(/api/Users 401) 경계를 상태코드로 매핑한다"
+  - "무인증 /api/Feedbacks 응답에서 whatweb 이 이메일(PII)을 추출하는 것으로 과다 데이터 노출(API3)을 입증한다"
+  - "ffuf 로 순차 객체 id(/api/Users/{id})를 퍼징해 BOLA(API1)를 점검하고 401 보호(양호)·200 노출(치명)을 구분한다"
   - "mass assignment(API6)의 원리와 권한상승 영향을 설명한다"
   - "객체 수준 인가 + 응답/입력 allowlist + 토큰 검증으로 이어지는 서버측 API 인가 방어를 보고서로 정리한다"
 pass_threshold: 0.7
@@ -41,12 +41,12 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) JuiceShop REST API 도달 확인 — /api/Products 호출, Host로 vhost 지정, 본문 버리고 응답코드만 api= 형식으로
-      echo -en "GET /api/Products HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) whatweb으로 JuiceShop REST API(/api/Products) 도달 확인 + 상태코드([200 OK])·서버 핑거프린팅
+      whatweb -a1 --color=never http://juice.el34.lab/api/Products
       ```
-      - `-sk` = 진행표시 숨김(`-s`) + 자체서명 인증서 허용(`-k`). `-H 'Host: juice.el34.lab'` 로 어느
-        vhost(여기선 JuiceShop)를 점검할지 지정한다. `-o /dev/null -w 'api=%{http_code}'` 는 본문은 버리고
-        **응답 코드만** 출력하는 관용구다.
+      - `whatweb` 는 요청을 보내 상태코드(`[200 OK]`)·웹서버·헤더를 한 줄로 요약하는 웹 핑거프린팅
+        도구다(raw 소켓 nc 와 달리 곧바로 노출을 읽어준다). att 의 `/etc/hosts` 가 `juice.el34.lab →
+        192.168.0.161` 로 매핑돼 fw 게이트웨이로 나가고, REST API(`/api/...`)는 화면(UI) 없이 도구로 직접 두드린다.
 
       ## ✅ 합격 기준
       `api=` 출력 시 통과. **근거:** `api=<코드>`(예: `api=200`)가 나오면 REST API 에 도달한 것이다.
@@ -55,19 +55,19 @@ steps:
     category: survey
     points: 10
     answer: |
-      # 1) JuiceShop REST API 도달 확인 — /api/Products 호출, Host로 vhost 지정, 본문 버리고 응답코드만 api= 형식으로
-      ssh att@192.168.0.202 "echo -en 'GET /api/Products HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-    answer_detail: "API 보안 점검 대상 = JuiceShop REST API. 출력에 'api='(응답 코드)가 보이면 표적에 도달해 점검 가능한 상태임을 확인한 것 — 점검 착수의 첫 단계다."
+      # 1) whatweb으로 JuiceShop REST API(/api/Products) 도달 확인 + 상태코드([200 OK])·서버 핑거프린팅
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/api/Products"
+    answer_detail: "API 보안 점검 대상 = JuiceShop REST API. whatweb 출력에 /api/Products 와 [200 OK] 가 보이면 표적에 도달해 점검 가능한 상태임을 확인한 것 — 점검 착수의 첫 단계다."
     expected_output: |
-      api=200
+      http://juice.el34.lab/api/Products [200 OK] Apache[2.4.52], HTTPServer[Ubuntu Linux][Apache/2.4.52 (Ubuntu)], UncommonHeaders[access-control-allow-origin,x-content-type-options,feature-policy,x-recruiting], IP[192.168.0.161]
     verify:
       type: output_contains
-      expect: 'api='
+      expect: 'juice.el34.lab'
       field: stdout
       semantic:
         intent: "API 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 2
@@ -82,8 +82,8 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 공개 자원 경계 매핑 — /api/Products 호출 → prod= 응답코드(200이면 인증 없이 열린 공개 자원)
-      echo -en "GET /api/Products HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) 공개 자원 경계 매핑 — whatweb으로 /api/Products의 상태코드만 추림(200이면 인증 없이 열린 공개 자원)
+      whatweb -a1 --color=never http://juice.el34.lab/api/Products | grep -oE '[0-9]{3} (OK|Unauthorized|Forbidden)'
       # 2) 해석 — 200=공개 자원(카탈로그 등 정상 설계일 수 있음), 보호 자원(401)과 대비가 핵심
       # → 200 = 인증 없이 접근 가능한 공개 자원(정상 설계일 수 있음)
       ```
@@ -95,22 +95,22 @@ steps:
     category: recon
     points: 12
     answer: |
-      # 1) 공개 자원 경계 매핑 — /api/Products 호출 → prod= 응답코드(200이면 인증 없이 열린 공개 자원)
-      ssh att@192.168.0.202 "echo -en 'GET /api/Products HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
+      # 1) 공개 자원 경계 매핑 — whatweb으로 /api/Products의 상태코드만 추림(200이면 인증 없이 열린 공개 자원)
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/api/Products | grep -oE '[0-9]{3} (OK|Unauthorized|Forbidden)'"
       # 2) 해석 — 200=공개 자원(카탈로그 등 정상 설계일 수 있음), 보호 자원(401)과 대비가 핵심
       # → 200 = 인증 없이 접근 가능한 공개 자원(정상 설계일 수 있음)
-    answer_detail: "공개 자원 = 인증 불필요(200). 카탈로그 등 의도된 공개일 수 있어 200 자체가 취약은 아니다. 보호 자원(401)과 대비해 경계를 긋는 매핑의 출발점이다."
+    answer_detail: "공개 자원 = 인증 불필요(200). whatweb 이 [200 OK]로 확인해준다. 카탈로그 등 의도된 공개일 수 있어 200 자체가 취약은 아니다. 보호 자원(401)과 대비해 경계를 긋는 매핑의 출발점이다."
     expected_output: |
-      prod=200
+      200 OK
       → 200 = 인증 없이 접근 가능한 공개 자원(정상 설계일 수 있음)
     verify:
       type: output_contains
-      expect: 'prod=200'
+      expect: '200 OK'
       field: stdout
       semantic:
         intent: "공개 자원 식별"
         success_criteria: ["200 공개"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 3
@@ -125,8 +125,8 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 보호 자원 경계 매핑 — /api/Users 호출 → users= 응답코드(401이면 인증으로 보호=양호)
-      echo -en "GET /api/Users HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+      # 1) 보호 자원 경계 매핑 — whatweb으로 /api/Users의 상태코드만 추림(401이면 인증으로 보호=양호)
+      whatweb -a1 --color=never http://juice.el34.lab/api/Users | grep -oE '[0-9]{3} (OK|Unauthorized|Forbidden)'
       # 2) 해석 — 401=인증 필요(양호), 200이면 사용자 목록 무인증 노출(심각)
       # → 401 = 인증 필요(양호). 사용자 목록은 보호되어야 정상
       ```
@@ -138,22 +138,22 @@ steps:
     category: recon
     points: 12
     answer: |
-      # 1) 보호 자원 경계 매핑 — /api/Users 호출 → users= 응답코드(401이면 인증으로 보호=양호)
-      ssh att@192.168.0.202 "echo -en 'GET /api/Users HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
+      # 1) 보호 자원 경계 매핑 — whatweb으로 /api/Users의 상태코드만 추림(401이면 인증으로 보호=양호)
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/api/Users | grep -oE '[0-9]{3} (OK|Unauthorized|Forbidden)'"
       # 2) 해석 — 401=인증 필요(양호), 200이면 사용자 목록 무인증 노출(심각)
       # → 401 = 인증 필요(양호). 사용자 목록은 보호되어야 정상
-    answer_detail: "보호 자원 = 인증 필요(401). /api/Users가 401 로 보호됨 = 인증 경계가 그어져 있고 BOLA 1차 방어 양호. 여기서 200 이 나오면 사용자 목록 무인증 노출이라는 발견이 된다."
+    answer_detail: "보호 자원 = 인증 필요(401). whatweb 이 [401 Unauthorized] + Title[UnauthorizedError: No Authorization header was found]로 잡아준다 = 인증 경계가 그어져 있고 BOLA 1차 방어 양호. 여기서 200 이 나오면 사용자 목록 무인증 노출이라는 발견이 된다."
     expected_output: |
-      users=401
+      401 Unauthorized
       → 401 = 인증 필요(양호). 사용자 목록은 보호되어야 정상
     verify:
       type: output_contains
-      expect: 'users=401'
+      expect: '401 Unauthorized'
       field: stdout
       semantic:
         intent: "보호 자원 식별"
         success_criteria: ["401 보호"]
-        acceptable_methods: ["**[OSS] nc raw (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 4
@@ -169,39 +169,38 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) /api/Feedbacks 응답 본문을 받아(-o /dev/null 없이) UserId 필드만 추출 → 화면에 안 보이는 불필요 필드 노출 확인
-      echo -en "GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -oE 'UserId[^,]*' | head -3
-      # 2) 해석 — 무인증 200 응답에 UserId·이메일 조각까지 실림(응답이 필요 이상 = API3 과다 노출)
-      # → /api/Feedbacks 무인증 200 + UserId·이메일 조각 노출. 응답이 필요 이상(API3)
+      # 1) whatweb으로 무인증 /api/Feedbacks 응답을 분석 → Email 플러그인이 응답 본문에서 이메일을 추출(PII 노출 확인)
+      whatweb -a1 --color=never http://juice.el34.lab/api/Feedbacks | grep -oE 'Email\[[^]]*\]'
+      # 2) 해석 — 무인증 200 응답에 작성자 이메일(PII)까지 실림(응답이 필요 이상 = API3 과다 노출)
+      # → /api/Feedbacks 무인증 200 + 이메일(PII) 노출. 응답이 필요 이상(API3)
       ```
-      - 앞 미션들과 달리 `-o /dev/null` 을 빼고 **본문을 받아** `grep -oE 'UserId[^,]*'` 로 `UserId` 필드를
-        뽑는다. `/api/Feedbacks` 는 고객 피드백 엔드포인트로 **무인증 200** 을 준다.
+      - whatweb 은 응답 본문을 파싱하다 이메일 형태를 발견하면 `Email[...]` 로 뽑아낸다. 피드백 내용만
+        보여주면 될 응답에 작성 사용자의 이메일이 함께 실려 있다 — 화면엔 안 보이지만 응답엔 있다.
+        `/api/Feedbacks` 는 고객 피드백 엔드포인트로 **무인증 200** 을 준다.
 
       ## ✅ 합격 기준
-      `UserId` 출력 시 통과. **근거:** 출력에 UserId 가 보이면 과다 데이터 노출(API3) 입증 — 피드백
-      내용만 보이면 될 응답에 작성 사용자의 UserId(와 이메일 조각)가 함께 실려 있다(화면엔 안 보이지만 응답엔 있음).
-    hint: 'Feedbacks UserId'
+      `Email[...]`(이메일) 출력 시 통과. **근거:** 출력에 작성자 이메일이 보이면 과다 데이터 노출(API3) 입증 — 피드백
+      내용만 보이면 될 응답에 작성 사용자의 이메일(PII)이 함께 실려 있다(화면엔 안 보이지만 응답엔 있음).
+    hint: 'Feedbacks 이메일'
     category: manipulation
     points: 16
     answer: |
-      # 1) /api/Feedbacks 응답 본문을 받아(-o /dev/null 없이) UserId 필드만 추출 → 화면에 안 보이는 불필요 필드 노출 확인
-      ssh att@192.168.0.202 "echo -en 'GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -oE 'UserId[^,]*' | head -3"
-      # 2) 해석 — 무인증 200 응답에 UserId·이메일 조각까지 실림(응답이 필요 이상 = API3 과다 노출)
-      # → /api/Feedbacks 무인증 200 + UserId·이메일 조각 노출. 응답이 필요 이상(API3)
-    answer_detail: "과다 노출(API3) = 응답에 클라이언트가 안 쓰는 불필요 필드(UserId/이메일)까지 포함. /api/Feedbacks 가 무인증 200 으로 UserId 를 흘리는 것이 증거 — 화면이 아니라 응답 본문을 봐야 잡힌다. 방어는 직렬화 allowlist(필요한 필드만)."
+      # 1) whatweb으로 무인증 /api/Feedbacks 응답을 분석 → Email 플러그인이 응답 본문에서 이메일을 추출(PII 노출 확인)
+      ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/api/Feedbacks | grep -oE 'Email\[[^]]*\]'"
+      # 2) 해석 — 무인증 200 응답에 작성자 이메일(PII)까지 실림(응답이 필요 이상 = API3 과다 노출)
+      # → /api/Feedbacks 무인증 200 + 이메일(PII) 노출. 응답이 필요 이상(API3)
+    answer_detail: "과다 노출(API3) = 응답에 클라이언트가 안 쓰는 불필요·민감 필드(이메일/내부 id)까지 포함. /api/Feedbacks 가 무인증 200 으로 작성자 이메일을 흘리는 것을 whatweb 의 Email 플러그인이 추출하는 것이 증거 — 화면이 아니라 응답 본문을 봐야 잡힌다. 방어는 직렬화 allowlist(필요한 필드만)."
     expected_output: |
-      UserId":1
-      UserId":2
-      UserId":3
-      → /api/Feedbacks 무인증 200 + UserId·이메일 조각 노출. 응답이 필요 이상(API3)
+      Email[der@juice-sh.op,ereum@juice-sh.op,in@juice-sh.op]
+      → /api/Feedbacks 무인증 200 + 이메일(PII) 노출. 응답이 필요 이상(API3)
     verify:
       type: output_contains
-      expect: 'UserId'
+      expect: 'juice-sh.op'
       field: stdout
       semantic:
         intent: "과다 데이터 노출"
         success_criteria: ["불필요 필드 노출"]
-        acceptable_methods: ["**[OSS] API 응답 검사 (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb (권장)**"]
     target_vm: web
 
   - order: 5
@@ -218,45 +217,44 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 객체 id를 1,2,3으로 순차 교체하며 /api/Users/{id} 호출 → bola= 접두 후 각 id:응답코드 출력(객체 수준 인가 점검)
-      echo -n 'bola='
-      echo -en "GET /api/Users/1 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo -en "GET /api/Users/2 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo -en "GET /api/Users/3 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-      echo
-      # 2) 해석 — 401=객체수준 인가 양호(막혀 있음 확인도 결과), 200 섞이면 치명적 BOLA
+      # 1) ffuf로 객체 id(1~6)를 /api/Users/FUZZ 에 순차 퍼징 → 각 응답 상태코드 출력(객체 수준 인가 점검)
+      seq 1 6 > /tmp/ids.txt
+      ffuf -u http://juice.el34.lab/api/Users/FUZZ -w /tmp/ids.txt -mc all 2>/dev/null | grep -oE 'Status: [0-9]+'
+      # 2) 해석 — 전부 401=객체수준 인가 양호(막혀 있음 확인도 결과), 200 섞이면 치명적 BOLA
       # → 순차 객체 id로 남의 자원 접근 시도. 401 = 객체수준 인가 양호. 200이면 BOLA 치명
       ```
-      - `for id in 1 2 3` 로 객체 id 를 순차로 바꿔 `/api/Users/$id` 를 호출하고, 각 응답 코드를
-        `$id:%{http_code}` 형식으로 한 줄에 모아 출력한다.
+      - `ffuf` 는 URL 의 `FUZZ` 자리를 워드리스트로 치환하며 반복 요청하는 실전 퍼징 도구다. 여기선 객체
+        id(1~6)를 넣어 `/api/Users/{id}` 를 열거하고, `-mc all` 로 모든 상태를 매칭해 `grep` 으로 각
+        응답의 `Status:` 코드만 추린다. 전부 401 이면 무인증 접근이 객체마다 차단된 것.
 
       ## ✅ 합격 기준
-      `bola=` 출력 시 통과. **근거:** `bola=1:401 2:401 3:401` 처럼 401(보호)이면 객체 수준 인가가 작동
+      `Status: 401` 출력 시 통과. **근거:** ffuf가 열거한 id 가 전부 `Status: 401`(보호)이면 객체 수준 인가가 작동
       (el34 JuiceShop 양호) — 막혀 있음을 확인하는 것도 점검 결과다. 200 이 섞이면 그 id 객체의 치명적 BOLA 증거다.
     hint: 'Users/{id} 순차'
     category: manipulation
     points: 14
     answer: |
-      # 1) 객체 id를 1,2,3으로 순차 교체하며 /api/Users/{id} 호출 → bola= 접두 후 각 id:응답코드 출력(객체 수준 인가 점검)
-      echo -n 'bola='
-      ssh att@192.168.0.202 "echo -en 'GET /api/Users/1 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      ssh att@192.168.0.202 "echo -en 'GET /api/Users/2 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      ssh att@192.168.0.202 "echo -en 'GET /api/Users/3 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-      echo
-      # 2) 해석 — 401=객체수준 인가 양호(막혀 있음 확인도 결과), 200 섞이면 치명적 BOLA
+      # 1) ffuf로 객체 id(1~6)를 /api/Users/FUZZ 에 순차 퍼징 → 각 응답 상태코드 출력(객체 수준 인가 점검)
+      ssh att@192.168.0.202 "seq 1 6 > /tmp/ids.txt; ffuf -u http://juice.el34.lab/api/Users/FUZZ -w /tmp/ids.txt -mc all 2>/dev/null | grep -oE 'Status: [0-9]+'"
+      # 2) 해석 — 전부 401=객체수준 인가 양호(막혀 있음 확인도 결과), 200 섞이면 치명적 BOLA
       # → 순차 객체 id로 남의 자원 접근 시도. 401 = 객체수준 인가 양호. 200이면 BOLA 치명
-    answer_detail: "BOLA(API1) = 순차 객체 id로 타인 자원 접근 시도. el34 JuiceShop 은 401(보호)=객체 수준 인가 양호이며, 막혀 있음을 확인하는 것도 점검 결과다. 200 이면 치명적 노출. 근본 방어는 접근마다 객체 소유권을 검사하는 객체 수준 인가."
+    answer_detail: "BOLA(API1) = 순차 객체 id로 타인 자원 접근 시도. ffuf 로 /api/Users/{id} 를 퍼징하면 el34 JuiceShop 은 전부 401(보호)=객체 수준 인가 양호이며, 막혀 있음을 확인하는 것도 점검 결과다. 200 이면 치명적 노출. 근본 방어는 접근마다 객체 소유권을 검사하는 객체 수준 인가."
     expected_output: |
-      bola=1:401 2:401 3:401
+      Status: 401
+      Status: 401
+      Status: 401
+      Status: 401
+      Status: 401
+      Status: 401
       → 순차 객체 id로 남의 자원 접근 시도. 401 = 객체수준 인가 양호. 200이면 BOLA 치명
     verify:
       type: output_contains
-      expect: 'bola='
+      expect: 'Status: 401'
       field: stdout
       semantic:
         intent: "BOLA 시도"
         success_criteria: ["객체수준 인가 점검"]
-        acceptable_methods: ["**[OSS] 순차 id (권장)**"]
+        acceptable_methods: ["**[OSS] ffuf (권장)**"]
     target_vm: web
 
   - order: 6
