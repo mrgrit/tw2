@@ -178,20 +178,19 @@ JS 프론트엔드는 화면을 채우기 위해 수많은 API 를 호출한다.
 
 ### 2.3 el34 에서 어떻게
 
-먼저 단일 엔드포인트가 살아 있는지 `nc`/`whatweb` 로 확인한다. `juice.el34.lab` 은 vhost(가상 호스트)
-이므로 `Host:` 헤더로 어느 사이트인지 지정해야 한다.
+먼저 단일 엔드포인트가 살아 있는지 진짜 지문 도구 `whatweb` 으로 확인한다. `juice.el34.lab` 은
+vhost(가상 호스트)이므로 자연 URL 의 호스트명이 어느 사이트인지 지정한다(att `/etc/hosts`→192.168.0.161).
 
 ```bash
-echo -en 'GET /rest/products/search?q=test HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -c 200
+whatweb -a1 'http://juice.el34.lab/rest/products/search?q=test'
 ```
 
-- `echo -en 'GET ... HTTP/1.0\r\nHost: juice.el34.lab\r\n...' | nc -w3 192.168.0.161 80` — 요청 라인·헤더를 손으로 써서 raw HTTP 로 보낸다(꾸밈 없음).
-- `Host: juice.el34.lab` — vhost 지정. 같은 IP(192.168.0.161)라도 Host 헤더에 따라 web Apache 가 juice vhost 로 분기한다.
+- `whatweb -a1 'http://juice.el34.lab/...'` — 진짜 지문 도구가 대상에 요청을 보내 상태 코드·서버·기술 스택을 한 줄로 지문한다.
+- 자연 URL 의 호스트명 `juice.el34.lab` 가 vhost 지정 — 같은 IP(192.168.0.161)라도 Host 헤더에 따라 web Apache 가 juice vhost 로 분기한다.
 - `/rest/products/search?q=test` — Juice Shop 의 상품 검색 REST 엔드포인트.
 
-**해석.** 응답이 `{"status":"success","data":[...]}` 같은 **JSON** 이면 이 앱이 REST API 기반
-이라는 증거다. HTML 이 아니라 JSON 이 돌아온다는 점에 주목하라 — 공격 표면이 페이지가 아니라
-엔드포인트라는 §1 의 통찰이 눈으로 확인되는 순간이다.
+**해석.** whatweb 이 `[200 OK]` 로 응답하면 엔드포인트가 살아 있고, 이 앱이 REST API(JSON) 기반임을
+확인할 수 있다 — 공격 표면이 페이지가 아니라 엔드포인트라는 §1 의 통찰이 눈으로 확인되는 순간이다.
 
 다음으로 여러 후보 경로를 한 번에 떠보는 **fuzzing** 을 한다. 도구는 `ffuf`(Fuzz Faster
 U Fool) 로, 워드리스트의 각 단어를 URL 의 `FUZZ` 자리에 대입해 응답 코드를 모아준다.

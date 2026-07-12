@@ -87,10 +87,11 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) Reflected XSS 기본형(<script>alert(1)</script>) — 차단형 dvwa 응답코드
-      echo "xss=$(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # 진짜 XSS 스캐너 dalfox로 dvwa 공격 — 수백 개 XSS payload(<script>·이벤트핸들러 등) 자동 발사
+      dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|reflected|XSS found'
       ```
-      xss=403 이면 `<script>` XSS 가 941 탐지 → 949110 누적으로 차단된 것이다(200 이면 차단 모드 아님).
+      dalfox 가 `<script>alert(1)</script>` 을 포함한 XSS payload 를 자동으로 던지자 dvwa 는 전부 403 으로 막고,
+      dalfox 는 `WAF ... (HTTP 403) detected` 로 방화벽을 지문한다 — 941 탐지 → 949110 누적 차단이라 `XSS found 0`(막혀서 성립 못 함).
       > 💡 **화면으로 보기(운영 모드 차이):** 학생 PC 브라우저에서
       > `http://dvwa.el34.lab/?q=<script>alert(1)</script>` 를 열면 dvwa(차단형)는 **403 Forbidden 페이지**가
       > 뜬다(WAF 가 payload 를 막음). 같은 요청을 `http://juice.el34.lab/...` (탐지형)로 열면 **200 으로
@@ -106,19 +107,21 @@ steps:
     category: manipulation
     points: 12
     answer: |
-      # 1) Reflected XSS 기본형(<script>alert(1)</script>) — 차단형 dvwa 응답코드
-      ssh att@192.168.0.202 "echo "xss=$(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-    answer_detail: "Reflected XSS는 요청 파라미터가 즉시 응답에 반사되어 실행되는 유형이다(저장되지 않으므로 공격자는 악성 링크 클릭을 유도해야 한다). 기본 payload <script>alert(1)</script>를 차단 모드 vhost(dvwa)에 보내면 CRS 941 룰군(941100 등)이 탐지해 anomaly score를 누적하고, 949110이 임계 초과로 403 차단한다. 즉 '941이 직접 막은' 것이 아니라 '941 탐지 → 누적 → 949110 차단'의 2단계다. 채점은 출력에 '403'이 보이는지로 판정한다."
+      # 진짜 XSS 스캐너 dalfox로 dvwa 공격 — WAF가 XSS payload를 403 차단(dalfox가 WAF 지문)
+      ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|reflected|XSS found'"
+    answer_detail: "Reflected XSS는 요청 파라미터가 즉시 응답에 반사되어 실행되는 유형이다(저장되지 않으므로 공격자는 악성 링크 클릭을 유도해야 한다). 진짜 XSS 전용 스캐너 dalfox(dalfox url --url)는 <script>alert(1)</script>를 포함한 수백 개 XSS payload를 자동으로 던진다. 차단 모드 vhost(dvwa)에서는 CRS 941 룰군(941100 등)이 탐지·누적하고 949110이 403 차단하므로, dalfox는 'WAF ... (HTTP 403) detected'로 방화벽을 지문하고 'XSS found 0 XSS'(막혀서 성립 못 함)로 보고한다. 즉 '941이 직접 막은' 게 아니라 '941 탐지 → 누적 → 949110 차단'의 2단계다. 채점은 출력의 WAF 403 지문(HTTP 403)으로 판정한다."
     expected_output: |
-      xss=403
+      WAF Unknown (HTTP 403) detected (confidence: 40%, evidence: Provocation probe returned HTTP 403)
+      found reflected 0 params
+      XSS found 0 XSS
     verify:
       type: output_contains
       expect: '403'
       field: stdout
       semantic:
-        intent: "Reflected XSS + WAF 차단"
-        success_criteria: ["<script> XSS", "403"]
-        acceptable_methods: ["**[OSS] XSS → 403 (권장)**"]
+        intent: "dalfox XSS 스캔 + WAF 차단"
+        success_criteria: ["dalfox XSS payload 발사", "WAF 403 지문"]
+        acceptable_methods: ["**[OSS] dalfox XSS 스캔 (권장)**"]
     target_vm: web
 
   - order: 3
@@ -129,23 +132,23 @@ steps:
       onerror=...>`는 존재하지 않는 이미지 로딩이 실패할 때 `onerror` 이벤트로, `<svg onload=...>`는
       SVG가 로드될 때 `onload` 이벤트로 코드를 실행한다. 즉 **스크립트 태그가 없어도 이벤트
       핸들러만으로** XSS가 성립한다. 이 변형들이 CRS 941에 잡히는지 확인한다.
-      ## ⚠️ el34 사실 — payload 공백은 %20으로 인코딩
-      `<img src=x onerror=...>`처럼 payload에 **공백**이 들어가면, 그 공백이 URL·셸에서 인자
-      구분자로 잘못 해석되어 요청이 깨진다. 그래서 el34에서는 공백을 URL 인코딩 값 `%20`으로
-      바꿔 `<img%20src=x%20onerror=alert(1)>` 형태로 보낸다. WAF는 디코드 후 검사하므로 이는
-      우회가 아니라 단지 전송용 표기다.
+      ## ⚠️ el34 사실 — dalfox가 인코딩을 알아서 처리
+      수작업 raw 요청에서는 payload 공백이 셸·URL 파서에 깨져 `%20`으로 인코딩해야 했지만, 진짜 XSS
+      스캐너 dalfox 는 payload 인코딩·전송을 자동으로 처리한다. 그래서 `<img src=x onerror=alert(1)>`
+      같은 이벤트 핸들러 변형을 그대로 넣으면 dalfox 가 알아서 인코딩해 발사하고, WAF 는 디코드 후 검사한다.
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) img onerror 변형 — 이미지 로딩 실패 시 onerror로 실행(공백 %20)
-      echo "img=$(echo -en 'GET /?q=<img%20src=x%20onerror=alert(1)> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      # 2) svg onload 변형 — SVG 로드 시 onload로 실행(공백 %20)
-      echo "svg=$(echo -en 'GET /?q=<svg%20onload=alert(1)> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # 이벤트 핸들러 XSS 변형(img onerror·svg onload)만 dalfox custom-payload로 발사 — <script> 없이도 성립
+      printf '<img src=x onerror=alert(1)>\n<svg onload=alert(1)>\n' > /tmp/eh.txt
+      dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/eh.txt --only-custom-payload 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|reflected|XSS found'
+      rm -f /tmp/eh.txt
       ```
-      img·svg 두 변형 모두 403 이면, 스크립트 태그가 없어도 이벤트 핸들러(onerror/onload)만으로 성립하는
-      XSS 를 CRS 941(특히 941160 NoScript)이 잡은 것이다.
+      dalfox 가 이벤트 핸들러 변형(img onerror·svg onload)만 골라 던져도 dvwa 는 `WAF ... (HTTP 403) detected`
+      로 전부 막는다 — 스크립트 태그가 없어도 이벤트 핸들러(onerror/onload)만으로 성립하는 XSS 를 CRS 941
+      (특히 941160 NoScript)이 잡기 때문이다(`XSS found 0` = 막혀서 성립 못 함).
       > 💡 **화면으로 확인:** 브라우저에서 변형 URL `http://dvwa.el34.lab/?q=<img src=x onerror=alert(1)>` 를
       > 열면 dvwa(차단형)는 **403 페이지**를 돌려준다 — 이벤트 핸들러 변형도 실행되지 못한다.
 
@@ -156,22 +159,21 @@ steps:
     category: manipulation
     points: 12
     answer: |
-      # 1) img onerror 변형 — 이미지 로딩 실패 시 onerror로 실행(공백 %20)
-      ssh att@192.168.0.202 "echo "img=$(echo -en 'GET /?q=<img%20src=x%20onerror=alert(1)> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 2) svg onload 변형 — SVG 로드 시 onload로 실행(공백 %20)
-      ssh att@192.168.0.202 "echo "svg=$(echo -en 'GET /?q=<svg%20onload=alert(1)> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-    answer_detail: "XSS는 <script> 태그 외에도 이벤트 핸들러(img의 onerror, svg의 onload, body의 onload 등)나 스킴(javascript:)만으로 실행된다 — 그래서 '스크립트 태그만 거르기' 식 방어는 우회된다. el34에서는 payload 공백을 %20으로 인코딩해 전송해야 요청이 깨지지 않는다(%20은 우회가 아니라 전송용 표기이며 WAF는 디코드 후 검사). CRS 941 룰군은 onerror=/onload= 같은 이벤트 핸들러 패턴(941160 NoScript 등)도 탐지하므로 변형도 403으로 막힌다. 채점은 출력에 '403'이 보이는지로 판정한다."
+      # 이벤트 핸들러 XSS 변형(img onerror·svg onload)만 dalfox custom-payload로 발사 — dvwa WAF가 403 차단
+      ssh att@192.168.0.202 "printf '<img src=x onerror=alert(1)>\n<svg onload=alert(1)>\n' > /tmp/eh.txt; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/eh.txt --only-custom-payload 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|reflected|XSS found'; rm -f /tmp/eh.txt"
+    answer_detail: "XSS는 <script> 태그 외에도 이벤트 핸들러(img의 onerror, svg의 onload, body의 onload 등)나 스킴(javascript:)만으로 실행된다 — 그래서 '스크립트 태그만 거르기' 식 방어는 우회된다. dalfox의 --custom-payload/--only-custom-payload로 이벤트 핸들러 변형(<img src=x onerror=alert(1)>·<svg onload=alert(1)>)만 골라 발사하면(dalfox가 인코딩·전송 자동 처리), dvwa의 CRS 941 룰군(941160 NoScript 등)이 onerror=/onload= 패턴을 탐지·차단해 dalfox가 'WAF ... (HTTP 403) detected' + 'XSS found 0'로 보고한다(막혀서 성립 못 함). 채점은 출력의 WAF 403 지문으로 판정한다."
     expected_output: |
-      img=403
-      svg=403
+      WAF Unknown (HTTP 403) detected (confidence: 40%, evidence: Provocation probe returned HTTP 403)
+      found reflected 0 params
+      XSS found 0 XSS
     verify:
       type: output_contains
       expect: '403'
       field: stdout
       semantic:
-        intent: "XSS payload 변형"
-        success_criteria: ["img/svg 변형", "탐지/차단"]
-        acceptable_methods: ["**[OSS] 이벤트 핸들러 XSS (권장)**"]
+        intent: "이벤트 핸들러 XSS 변형 + WAF 차단"
+        success_criteria: ["dalfox 이벤트핸들러 payload", "WAF 403 지문"]
+        acceptable_methods: ["**[OSS] dalfox 이벤트핸들러 payload (권장)**"]
     target_vm: web
 
   - order: 4
@@ -188,36 +190,27 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 대소문자 우회 — <ScRiPt>(태그 대소문자 섞기)
-      echo "case=$(echo -en 'GET /?q=<ScRiPt>alert(1)</ScRiPt> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      # 2) URL 인코딩 우회 — %3Cscript%3E(<,>를 인코딩)
-      echo "enc=$(echo -en 'GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      # 3) 같은 일을 자동으로 — dalfox(XSS 전용 스캐너)가 수백 payload·인코딩 조합을 자동 발사 + WAF 지문 탐지
-      dalfox url --url 'http://dvwa.el34.lab/?q=test' --format plain 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|reflected|XSS found'
+      # dalfox가 대소문자(<ScRiPt>)·URL 인코딩(%3Cscript%3E) 등 수백 개 우회 변형을 자동 발사 + WAF 지문 탐지
+      dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|reflected|XSS found'
       ```
-      수동 우회 2건(case/enc)이 모두 403 으로 막히는 것을, `dalfox` 는 수백 개 payload·인코딩 조합을 자동으로
-      던져 한 번에 확인한다 — 출력의 `WAF ... HTTP 403 detected` 가 그 결과다(WAF 지문까지 탐지). `found
-      reflected 0 params` 는 이 엔드포인트가 반사하지 않음을 뜻한다(차단형이라 애초에 통과 못 함). 수동으로
-      원리를, dalfox 로 자동화를 익힌다 — 실무자는 손 우회로 감을 잡고 스캐너로 전수 확인한다.
+      dalfox 는 대소문자(`<ScRiPt>`)·URL 인코딩(`%3Cscript%3E`) 등 수백 개 payload·인코딩 조합을 자동으로
+      던진다 — 출력의 `WAF ... (HTTP 403) detected` 가 그 결과다(WAF 지문까지 탐지). `found reflected 0
+      params` 는 이 엔드포인트가 반사하지 않음을 뜻한다(차단형이라 애초에 통과 못 함). CRS 는 비교 전에
+      정규화(URL 디코드 + 대소문자 통일)로 원형을 복원하므로 단순 우회 변형이 전부 무력화된다(`XSS found 0`).
       > 💡 **화면으로 확인:** 브라우저에서 `http://dvwa.el34.lab/?q=<ScRiPt>alert(1)</ScRiPt>` 를 열어도 403 이다.
 
       ## ✅ 합격 기준
-      `403` 출력 시 통과. **근거:** CRS 정규화로 case·enc 모두 여전히 403(단순 우회 무력)이면 통과 —
-      단 고급 우회나 서버를 안 거치는 DOM-based XSS 는 WAF 로 잡기 어렵다(WAF 는 보조 방어선).
+      `403` 출력 시 통과. **근거:** dalfox 의 대소문자·인코딩 우회 변형이 CRS 정규화에 전부 막혀
+      `WAF ... (HTTP 403) detected` 가 뜨면 통과 — 단 고급 우회나 서버를 안 거치는 DOM-based XSS 는
+      WAF 로 잡기 어렵다(WAF 는 보조 방어선).
     hint: '<ScRiPt> 대소문자, URL 인코딩 우회'
     category: manipulation
     points: 12
     answer: |
-      # 1) 대소문자 우회 — <ScRiPt>(태그 대소문자 섞기)
-      ssh att@192.168.0.202 "echo "case=$(echo -en 'GET /?q=<ScRiPt>alert(1)</ScRiPt> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 2) URL 인코딩 우회 — %3Cscript%3E(<,>를 인코딩)
-      ssh att@192.168.0.202 "echo "enc=$(echo -en 'GET /?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-      # 3) dalfox(XSS 전용 스캐너)로 자동 우회 스캔 + WAF 지문 탐지
-      ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/?q=test' --format plain 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|reflected|XSS found'"
-    answer_detail: "단순 WAF 우회(대소문자 <ScRiPt>, URL 인코딩 %3Cscript%3E)는 ModSec CRS의 정규화에 무력하다 — CRS는 패턴 비교 전에 URL 디코드·대소문자 통일·엔티티 해제로 원형(<script>...)을 복원한 뒤 941 룰군과 매치하므로, 두 시도 모두 여전히 403으로 차단된다. 이 수동 우회를 XSS 전용 스캐너 dalfox(dalfox url --url)로 자동화하면 수백 개 payload·인코딩 조합을 한 번에 던지고 'WAF ... HTTP 403 detected'로 WAF 지문까지 탐지해 준다(found reflected 0 params = 차단형이라 반사 없음). 다만 단순 우회가 막힌다고 WAF가 만능은 아니다 — 특정 출력 컨텍스트에 맞춘 고급 우회나 서버를 안 거치는 DOM-based XSS는 WAF로 잡기 어렵다(WAF는 보조 방어선). 채점은 출력에 '403'이 보이는지로 판정한다."
+      # dalfox가 대소문자·URL 인코딩 등 수백 개 우회 변형을 자동 발사 + WAF 지문 탐지 — CRS 정규화로 전부 차단
+      ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|reflected|XSS found'"
+    answer_detail: "단순 WAF 우회(대소문자 <ScRiPt>, URL 인코딩 %3Cscript%3E)는 ModSec CRS의 정규화에 무력하다 — CRS는 패턴 비교 전에 URL 디코드·대소문자 통일·엔티티 해제로 원형(<script>...)을 복원한 뒤 941 룰군과 매치한다. XSS 전용 스캐너 dalfox(dalfox url --url)는 이 대소문자·인코딩 변형 수백 개를 자동으로 던지지만 전부 정규화 후 차단돼 'WAF ... (HTTP 403) detected'로 WAF 지문까지 탐지되고 'XSS found 0'로 보고된다(found reflected 0 params = 차단형이라 반사 없음). 다만 단순 우회가 막힌다고 WAF가 만능은 아니다 — 특정 출력 컨텍스트에 맞춘 고급 우회나 서버를 안 거치는 DOM-based XSS는 WAF로 잡기 어렵다(WAF는 보조 방어선). 채점은 출력의 WAF 403 지문으로 판정한다."
     expected_output: |
-      case=403
-      enc=403
       WAF Unknown (HTTP 403) detected (confidence: 40%, evidence: Provocation probe returned HTTP 403)
       found reflected 0 params
       XSS found 0 XSS
@@ -226,9 +219,9 @@ steps:
       expect: '403'
       field: stdout
       semantic:
-        intent: "WAF 우회 시도(수동+dalfox 자동) + CRS 한계"
-        success_criteria: ["수동 우회 시도", "dalfox 자동 스캔", "정규화로 차단"]
-        acceptable_methods: ["**[OSS] 대소문자/인코딩 우회 + dalfox (권장)**"]
+        intent: "dalfox 자동 우회 스캔 + CRS 정규화 한계"
+        success_criteria: ["dalfox 대소문자/인코딩 변형", "정규화로 WAF 403"]
+        acceptable_methods: ["**[OSS] dalfox 우회 스캔 (권장)**"]
     target_vm: web
 
   - order: 5
@@ -292,38 +285,40 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 같은 XSS payload를 dvwa(차단 모드)로 — 응답코드
-      echo -n "dvwa=$(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "
-      # 2) 같은 payload를 juice(DetectionOnly)로 — 응답코드
-      echo "juice=$(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # 같은 XSS 공격을 두 vhost에 — dvwa(차단)는 dalfox가 WAF 403 지문, juice(탐지만)는 200으로 통과
+      echo '[dvwa 차단]'; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|XSS found'
+      echo -n '[juice 탐지만] '; whatweb -a1 --color=never 'http://juice.el34.lab/?q=%3Cscript%3Ealert(1)%3C/script%3E' 2>&1 | grep -oE '\[[0-9]{3}[^]]*\]' | head -1
       ```
+      같은 XSS 공격을 두 vhost 에 보내면 결과가 갈린다 — dvwa 는 dalfox 가 `WAF ... (HTTP 403) detected` 로
+      막힘을 지문하고(`XSS found 0`), juice 는 whatweb 이 `[200 OK]` 로 payload 가 통과함을 보인다(WAF 는 탐지만).
       > 💡 **화면으로 확인(핵심):** 브라우저에서 같은 payload URL 을 두 vhost 로 각각 열면 차이가 눈에 보인다 —
       > `http://dvwa.el34.lab/?q=<script>alert(1)</script>` 는 **403 Forbidden 페이지**, `http://juice.el34.lab/...`
       > 는 **200 으로 통과**(WAF 는 로그만 남김). 같은 공격이 운영 모드에 따라 막히거나 통과함을 한눈에 본다.
-      - 두 명령의 payload(`<script>alert(1)</script>`)는 동일, 다른 것은 Host 헤더(대상 vhost)뿐이다.
+      - 같은 XSS payload 를 같은 web 컨테이너의 두 vhost 로 보내는데, 다른 것은 ModSec 모드(dvwa=차단, juice=탐지만)뿐이다.
 
       ## ✅ 합격 기준
-      `juice=200` 출력 시 통과. **근거:** 같은 XSS 가 dvwa=403(차단) vs juice=200(탐지만)으로 다르면
-      통과 — 버그가 아니라 의도된 운영 정책(DetectionOnly 는 오탐 관찰 단계, 안정 후 차단 전환).
-    hint: '같은 XSS dvwa 403 vs juice 200'
+      `200 OK` 출력 시 통과. **근거:** 같은 XSS 가 dvwa 는 dalfox WAF 403 지문(차단), juice 는 whatweb
+      `[200 OK]`(탐지만·통과)로 다르면 통과 — 버그가 아니라 의도된 운영 정책(DetectionOnly 는 오탐 관찰 단계, 안정 후 차단 전환).
+    hint: '같은 XSS: dvwa WAF 403 vs juice 200'
     category: analysis
     points: 12
     answer: |
-      # 1) 같은 XSS payload를 dvwa(차단 모드)로 — 응답코드
-      ssh att@192.168.0.202 "echo -n "dvwa=$(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') ""
-      # 2) 같은 payload를 juice(DetectionOnly)로 — 응답코드
-      ssh att@192.168.0.202 "echo "juice=$(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')""
-    answer_detail: "같은 XSS payload라도 vhost의 WAF 운영 모드에 따라 결과가 다르다 — dvwa(SecRuleEngine On)는 941 탐지 + 949110 누적으로 403 차단, juice(DetectionOnly)는 941이 탐지해 로그만 남기고 차단 없이 200 통과. 이는 버그가 아니라 의도된 정책이다: DetectionOnly는 신규 룰을 운영 배포 전 차단 없이 탐지만 하며 오탐(false-positive)을 먼저 관찰하는 단계로, 안정성 확인 후 차단 모드로 전환한다. 공격자 관점에서는 juice처럼 탐지만 하는 대상은 payload가 통과해 실제 피해자 브라우저에서 실행될 수 있어 위험하다. 채점은 출력에 'juice=200'이 보이는지로 판정한다."
+      # 같은 XSS 공격을 두 vhost에 — dvwa(차단)는 dalfox가 WAF 403 지문, juice(탐지만)는 whatweb 200 통과
+      ssh att@192.168.0.202 "echo '[dvwa 차단]'; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|XSS found'; echo -n '[juice 탐지만] '; whatweb -a1 --color=never 'http://juice.el34.lab/?q=%3Cscript%3Ealert(1)%3C/script%3E' 2>&1 | grep -oE '\[[0-9]{3}[^]]*\]' | head -1"
+    answer_detail: "같은 XSS 공격이라도 vhost의 WAF 운영 모드에 따라 결과가 다르다 — dvwa(SecRuleEngine On)에서는 dalfox가 941 탐지+949110 차단을 'WAF ... (HTTP 403) detected'로 지문하고(XSS found 0), juice(DetectionOnly)에서는 whatweb이 [200 OK]로 payload 통과를 보인다(941 탐지·로그만, 차단 없음). 이는 버그가 아니라 의도된 정책이다: DetectionOnly는 신규 룰을 운영 배포 전 차단 없이 탐지만 하며 오탐을 먼저 관찰하는 단계로, 안정성 확인 후 차단 모드로 전환한다. 공격자 관점에서는 juice처럼 탐지만 하는 대상은 payload가 통과해 실제 피해자 브라우저에서 실행될 수 있어 위험하다. 채점은 juice 쪽 '200 OK'로 판정한다."
     expected_output: |
-      dvwa=403 juice=200
+      [dvwa 차단]
+      WAF Unknown (HTTP 403) detected (confidence: 40%, evidence: Provocation probe returned HTTP 403)
+      XSS found 0 XSS
+      [juice 탐지만] [200 OK]
     verify:
       type: output_contains
-      expect: 'juice=200'
+      expect: '200 OK'
       field: stdout
       semantic:
-        intent: "차단 vs 탐지만"
-        success_criteria: ["dvwa 403", "juice 200"]
-        acceptable_methods: ["**[OSS] dvwa vs juice (권장)**"]
+        intent: "차단(dalfox WAF) vs 탐지만(whatweb 200)"
+        success_criteria: ["dvwa WAF 403 지문", "juice 200 통과"]
+        acceptable_methods: ["**[OSS] dalfox dvwa vs whatweb juice (권장)**"]
     target_vm: web
 
   - order: 7

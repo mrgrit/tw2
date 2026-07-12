@@ -526,10 +526,10 @@ printf "admin\nlogin\nftp\n" > /tmp/pt15.txt; ffuf -u http://juice.el34.lab/FUZZ
 SQLi 는 입력에 SQL 문법을 주입(W04), 강제 브라우징은 경로에 직접 접근(W06)하는 기법이다.
 
 ```bash
-# SQLi (dvwa=차단 모드 → 403 이 정상)
-echo -n "sqli=$(echo -en 'GET /?id=pt15%27%20UNION%20SELECT%201-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "
-# 강제 브라우징 (juice /ftp → 200 이 정상)
-echo "ftp=$(echo -en 'GET /ftp HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+# SQLi — 진짜 sqlmap (dvwa=차단 모드 → sqlmap 이 WAF/403 차단 보고)
+ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/?id=pt15" --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE "WAF|403|blocked|protected|not injectable"'
+# 강제 브라우징 — 진짜 ffuf (juice 숨은 경로 /ftp 발견)
+ssh att@192.168.0.202 'ffuf -u "http://juice.el34.lab/FUZZ" -w /tmp/paths.txt -mc 200,301,302 -s 2>&1 | grep -iE "ftp|rest|api"' 
 ```
 
 무엇을 보나 — `sqli=403`(dvwa 차단 모드라 WAF 가 942→949110 으로 차단=탐지), `ftp=200`(juice

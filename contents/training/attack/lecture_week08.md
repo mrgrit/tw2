@@ -427,10 +427,10 @@ SQLi 는 입력에 SQL 문법을 주입하는 공격이다(W03–W04). 스캐너
 페이로드를 보내면, 같은 요청이 정찰 신호(UA)와 침투 신호(SQLi)를 동시에 담는다.
 
 ```bash
-echo "exploit=$(echo -en 'GET /?id=ct8%27%20UNION%20SELECT%201--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+ssh att@192.168.0.202 'sqlmap -u "http://dvwa.el34.lab/?id=ct8" --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE "WAF|403|forbidden|blocked|protected|not injectable"' 
 ```
 
-무엇을 보나 — 응답 코드. dvwa(차단 모드)에서는 `403`(WAF 차단)이 정상이다. 403 은 "여기는 차단형"이라는
+무엇을 보나 — `sqlmap` 은 자신의 UA(`sqlmap`)와 SQLi 페이로드를 함께 보낸다(정찰 신호 UA + 침투 신호 SQLi 를 한 요청에). dvwa(차단 모드)에서는 ModSec 이 막아 sqlmap 이 `WAF`/`403` 차단을 보고한다. 403 은 "여기는 차단형"이라는
 신호이며, 실전에서는 차단되지 않는 경로로 방향을 튼다.
 
 > **용어 — 위 nc 요청은 어떻게 UA 위장·코드 추출을 하나.** raw HTTP 요청 줄에 `User-Agent: sqlmap/1.7`
