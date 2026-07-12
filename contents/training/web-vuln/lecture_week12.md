@@ -25,7 +25,7 @@
 
 1. API 가 화면(UI) 없는 또 다른 공격 표면이라는 점을 설명하고, 왜 화면에서 막은 통제가 API
    에서 우회될 수 있는지를 1분 안에 말한다.
-2. el34 의 `외부 공격자 VM 192.168.0.202` 컨테이너에서 `curl` 로 JuiceShop REST API 에 직접 요청을 보내,
+2. el34 의 `외부 공격자 VM 192.168.0.202` 컨테이너에서 `nc`(넷캣)로 JuiceShop REST API 에 직접 요청을 보내,
    **공개 자원(`/api/Products` 200)과 보호 자원(`/api/Users` 401)의 경계**를 응답 코드로 매핑한다.
 3. 무인증 엔드포인트(`/api/Feedbacks`)의 응답에 `UserId` 같은 불필요 필드가 섞여 내려오는 것을
    확인해 **과다 데이터 노출(OWASP API3)** 을 입증한다.
@@ -384,7 +384,7 @@ UserId 를 흘림(취약)** 을 입증하는 순서다.
 
 ```mermaid
 graph TD
-    ATK["점검자 외부 공격자 VM<br/>192.168.0.202<br/>curl -H 'Host: juice.el34.lab'"]
+    ATK["점검자 외부 공격자 VM<br/>192.168.0.202<br/>nc raw (Host: juice.el34.lab)"]
     FW["el34-fw (nftables)<br/>공개 80/443 → DNAT → web 10.20.32.80<br/>※ SNAT 없음 → 출처 IP 보존"]
     WEB["el34-web (Apache + ModSecurity)<br/>Host 헤더로 vhost 라우팅 + WAF(탐지만)"]
     APP["백엔드 표적 JuiceShop (int 10.20.40.81)<br/>REST API /api/... 응답"]
@@ -422,8 +422,8 @@ el34 의 4-tier 세그먼트는 `ext 10.20.30` / `pipe 10.20.31` / `dmz 10.20.32
 
 ```bash
 # 공개 자원(200)과 보호 자원(401)을 응답 코드로 구분
-curl -sk -o /dev/null -w 'prod=%{http_code}\n'  -H 'Host: juice.el34.lab' http://192.168.0.161/api/Products
-curl -sk -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http://192.168.0.161/api/Users
+echo "prod=$(echo -en 'GET /api/Products HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+echo -en "GET /api/Users HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
 ```
 
 무엇을 보나 — `/api/Products` 는 `200`(공개), `/api/Users` 는 `401`(보호). 이 두 코드로 API 의 공개/보호
@@ -433,7 +433,7 @@ curl -sk -o /dev/null -w 'users=%{http_code}\n' -H 'Host: juice.el34.lab' http:/
 
 ```bash
 # 무인증 엔드포인트 응답 본문에서 UserId 필드 추출
-curl -sk -H 'Host: juice.el34.lab' http://192.168.0.161/api/Feedbacks | grep -oE 'UserId[^,]*' | head -3
+echo -en "GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | grep -oE 'UserId[^,]*' | head -3
 ```
 
 무엇을 보나 — `/api/Feedbacks` 가 무인증 200 으로 응답하면서 본문에 `UserId`(와 일부 이메일 조각)를
@@ -443,7 +443,7 @@ curl -sk -H 'Host: juice.el34.lab' http://192.168.0.161/api/Feedbacks | grep -oE
 
 ```bash
 # /api/Users/{id} 를 순차로 호출해 객체 수준 인가 상태 확인
-echo -n 'bola='; for id in 1 2 3; do curl -sk -o /dev/null -w \"\$id:%{http_code} \" -H 'Host: juice.el34.lab' http://192.168.0.161/api/Users/\$id; done; echo
+echo -n 'bola='; for id in 1 2 3; do echo -n "$id:$(printf 'GET /api/Users/%s HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' "$id" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "; done; echo
 ```
 
 무엇을 보나 — 각 id 의 응답 코드. el34 JuiceShop 은 `1:401 2:401 3:401` 처럼 **401(보호)** 을 주어

@@ -31,6 +31,10 @@ CATS = [
  ('M-공격을 curl로(진짜 공격도구 써라)','★★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and re.search(r"UNION\s+SELECT|UNION%20SELECT|<script|%3Cscript|onerror\s*=|onerror%3d|OR\s+['\x27]?1['\x27]?\s*=\s*['\x27]?1|%27%20OR|\.\./\.\./|%2e%2e%2f|/etc/passwd|<\?php|%3C%3Fphp|;cat\s|%3Bcat|SLEEP\(|information_schema|-A\s+[\"']?(sqlmap|nikto|nmap|masscan|nuclei)", ln, re.I)),
  # ★★ curl 사용금지 — 꼭 필요한 경우(줄에 '# curl-ok') 아니면 진짜 도구/브라우저로. 노트 병기로는 해결 안 됨.
  ('M-curl 사용금지(진짜 도구/브라우저로)','★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and not re.search(r'localhost|127\.0\.0\.1', ln) and re.search(r'https?://|\.el34\.lab|192\.168\.0\.(161|202)', ln) and not re.search(r"UNION\s+SELECT|UNION%20SELECT|<script|%3Cscript|onerror|%27%20OR|\.\./\.\./|%2e%2e%2f|/etc/passwd|<\?php|%3C%3Fphp|;cat\s|SLEEP\(|information_schema|-A\s+[\"']?(sqlmap|nikto|nmap)", ln, re.I)),
+ # ★★ curl 을 채점 acceptable_methods/(권장) 라벨로 추천 — 진짜 도구(nc/whatweb/ffuf/hydra) 권장으로. 'curl-ok' 예외.
+ ('M-curl 채점권장 라벨(진짜 도구 권장으로)','★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and ('acceptable_methods' in ln or '(권장)' in ln)),
+ # ★★ 강의/프로즈의 실제 curl 명령(curl -flag / curl /path / curl http). 부정("curl 아니라 ssh로")·IOC/탐지 시그니처는 제외.
+ ('M-강의 curl 명령(nc/진짜 도구로)','★★', lambda ln: (re.search(r"\bcurl\s+[\"']?(-[A-Za-z]|/|https?://)", ln) or re.search(r'curl\s*·|·\s*curl|curl robots|curl 루프', ln)) and 'curl-ok' not in ln and not re.search(r'localhost|127\.0\.0\.1', ln) and not re.search(r'(아니라|아니고|않고|않는|않게|우회하지|말고|금지|대신|하지\s?않)', ln) and not re.search(r'user_agent|흔적|시그니처|탐지|IOC|남긴다|남는다', ln, re.I)),
  # output 파싱을 python-c 로 하는 기계식만 플래그. 공격 페이로드(nohup exec b64decode = 헌팅 대상 위협)·scapy 제외.
  ('M-python -c (scapy·정당사유 외)','★★', lambda ln: re.search(r'python3? -c ', ln) and 'scapy' not in ln and not re.search(r'nohup|exec\(|b64decode|c2_beacon|beacon|time\.sleep', ln) and not re.search(r'-c [\x27"]\s*$', ln)),
  ('M-cat<<EOF 보고서 텍스트 출력','★★', lambda ln: re.search(r"cat\s+<<'?EOF'?", ln)),

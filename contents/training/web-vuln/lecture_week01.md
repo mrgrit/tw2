@@ -22,7 +22,7 @@
 
 1. HTTP 요청·응답의 구조(요청 라인 / 헤더 / 본문, 상태 코드)를 그림으로 그리고, 점검에서
    "무엇을 봐야 하는지"를 메서드·상태 코드·헤더의 세 축으로 설명한다.
-2. el34 의 점검 대상 웹 서버(`dvwa.el34.lab` vhost)에 `curl` 로 도달하고, `OPTIONS` 메서드로
+2. el34 의 점검 대상 웹 서버(`dvwa.el34.lab` vhost)에 `nc`(넷캣)로 도달하고, `OPTIONS` 메서드로
    허용 메서드(`Allow` 헤더)를 **열거**한다.
 3. 위험 메서드(`PUT` / `DELETE` / `TRACE`)를 시도해 응답 코드를 읽고, 차단(405/403)인지
    허용(200/201)인지를 판별해 위험도를 매긴다.
@@ -87,7 +87,7 @@
 
 ### 0.5.2 HTTP 요청의 구조 — 세 부분
 
-HTTP 요청은 세 부분으로 나뉜다. `curl -v` 로 보면 실제로 이 순서대로 전송된다.
+HTTP 요청은 세 부분으로 나뉜다. `nc` 로 raw 요청을 보내면 실제로 이 순서대로 전송된다.
 
 ```mermaid
 graph TD
@@ -250,7 +250,7 @@ vhost 다.
 
 ```mermaid
 graph TD
-    ATK["외부 공격자 VM 192.168.0.202 (점검자)<br/>출처 192.168.0.202<br/>curl 로 요청 작성"]
+    ATK["외부 공격자 VM 192.168.0.202 (점검자)<br/>출처 192.168.0.202<br/>nc 로 raw 요청 작성"]
     FW["el34-fw (nftables)<br/>192.168.0.161<br/>L3/L4 통과 (메서드/헤더는 안 봄)"]
     WEB["el34-web (Apache + ModSecurity)<br/>Host 헤더로 vhost 라우팅<br/>+ WAF 검사"]
     APP["dvwa.el34.lab<br/>차단 모드(403)"]
@@ -301,7 +301,7 @@ DELETE 가 열려 있으면 콘텐츠를 지울 수 있다. TRACE 는 보낸 요
 `Allow:` 헤더에 허용 메서드 목록을 담아 돌려준다.
 
 ```bash
-curl -s -i -X OPTIONS -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | grep -iE '^Allow|^HTTP'
+echo -en 'OPTIONS / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -iE '^Allow|^HTTP'
 ```
 
 이 명령은 `-X OPTIONS` 로 메서드를 지정하고, `-i` 로 응답 헤더를 출력한 뒤, `Allow` 와 상태 라인
@@ -313,8 +313,8 @@ curl -s -i -X OPTIONS -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | grep -iE 
 반드시 실제로 보내 본다.
 
 ```bash
-curl -s -o /dev/null -w 'PUT=%{http_code} ' -X PUT -H 'Host: dvwa.el34.lab' http://192.168.0.161/wvtest.txt
-curl -s -o /dev/null -w 'TRACE=%{http_code}\n' -X TRACE -H 'Host: dvwa.el34.lab' http://192.168.0.161/
+echo "PUT=$(echo -en 'PUT /wvtest.txt HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+echo "TRACE=$(echo -en 'TRACE / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
 ```
 
 **결과 해석.** `-w 'PUT=%{http_code}'` 로 응답 코드만 뽑아 본다. dvwa.el34.lab 은 차단형 WAF 가
@@ -323,7 +323,7 @@ curl -s -o /dev/null -w 'TRACE=%{http_code}\n' -X TRACE -H 'Host: dvwa.el34.lab'
 
 ```mermaid
 graph TD
-    OPT["① OPTIONS 요청<br/>curl -X OPTIONS"]
+    OPT["① OPTIONS 요청<br/>nc raw OPTIONS"]
     ALLOW["Allow 헤더 확인<br/>허용 메서드 목록 노출"]
     TRY["② 위험 메서드 실제 시도<br/>PUT / DELETE / TRACE"]
     JUDGE{"응답 코드?"}
@@ -374,7 +374,7 @@ OPTIONS 의 `Allow` 헤더는 **서버가 스스로 신고한 값**이라 실제
 골라 본다.
 
 ```bash
-curl -sI -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | grep -iE 'strict-transport|content-security|x-frame|x-content' || echo '보안 헤더 누락'
+echo -en 'HEAD / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -iE 'strict-transport|content-security|x-frame|x-content' || echo '보안 헤더 누락'
 ```
 
 **결과 해석.** `grep` 이 보안 헤더를 하나도 못 찾으면 `||` 뒤의 `echo` 가 실행되어 "보안 헤더
@@ -418,8 +418,8 @@ curl -sI -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | grep -iE 'strict-trans
 두 헤더 악용을 차례로 시도하고 응답 코드·동작 변화를 관찰한다.
 
 ```bash
-curl -s -o /dev/null -w 'evilhost=%{http_code} ' -H 'Host: evil.attacker.com' http://192.168.0.161/
-curl -s -o /dev/null -w 'xff=%{http_code}\n' -H 'Host: dvwa.el34.lab' -H 'X-Forwarded-For: 127.0.0.1' http://192.168.0.161/
+echo -en "GET / HTTP/1.0\r\nHost: evil.attacker.com\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+echo "xff=$(echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nX-Forwarded-For: 127.0.0.1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
 ```
 
 **결과 해석.** 첫 줄은 정상 vhost 대신 `Host: evil.attacker.com` 을 보내 서버가 어떻게 반응하는지를
@@ -459,7 +459,7 @@ graph TD
 이렇게 탐지된다"를 설명할 수 있다.
 
 ```bash
-docker exec el34-web sh -c 'sudo tail -50 /var/log/apache2/dvwa_access.log 2>/dev/null | grep -aE "OPTIONS|PUT|DELETE|TRACE" | tail -5 || sudo tail -30 /var/log/apache2/access.log | grep -aE "OPTIONS|PUT|TRACE"'
+ssh ccc@10.20.32.80 'sudo tail -50 /var/log/apache2/dvwa_access.log | grep -aE "OPTIONS|PUT|DELETE|TRACE" | tail -5 || sudo tail -30 /var/log/apache2/access.log | grep -aE "OPTIONS|PUT|TRACE"'
 ```
 
 **결과 해석.** Apache 의 access.log 에는 각 요청의 메서드가 그대로 기록된다. 정상 사용자 트래픽에는
@@ -505,7 +505,7 @@ graph TD
 도달 → 메서드 열거 → 위험 메서드 → 보안 헤더 → 헤더 악용 → 탐지 흔적 → 방어 → 점검 보고서.
 
 > **진행 원칙.** 모든 명령은 el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서
-> `ssh att@192.168.0.202`(점검) 또는 `docker exec el34-web`(흔적 확인)로 실행한다. **인가된
+> `ssh att@192.168.0.202`(점검) 또는 `ssh ccc@10.20.32.80`(흔적 확인)로 실행한다. **인가된
 > 실습 환경(el34)에서만** 수행한다. 합격 임계값은 0.7 이다.
 
 ### 미션 1 — 점검 대상 도달 (10점, survey)
@@ -513,7 +513,7 @@ graph TD
 > **왜 하는가?** 어떤 점검이든 첫 단계는 대상이 실제로 응답하는지 확인하는 것이다. 도달성이
 > 확보되어야 이후의 모든 점검이 의미를 가진다.
 >
-> **무엇을 알 수 있는가?** `curl` 로 `dvwa.el34.lab` vhost 에 도달해 HTTP 응답 코드를 받는 법.
+> **무엇을 알 수 있는가?** `nc` 로 `dvwa.el34.lab` vhost 에 도달해 HTTP 응답 코드를 받는 법.
 > 점검 환경(attacker → fw → web 경로)이 정상인지.
 >
 > **결과 해석.** 정상: `dvwa=<응답코드>`(예: 200/302/403)가 출력되면 대상 도달. 비정상: 무응답이거나
@@ -526,7 +526,7 @@ graph TD
 > **왜 하는가?** 서버가 어떤 메서드를 허용하는지 알아야 위험 메서드 점검의 후보를 좁힐 수 있다
 > (WSTG 설정 점검의 첫 항목).
 >
-> **무엇을 알 수 있는가?** `curl -X OPTIONS` 로 `Allow` 헤더를 받아 허용 메서드를 열거하는 법. 상태
+> **무엇을 알 수 있는가?** `nc` raw OPTIONS 요청으로 `Allow` 헤더를 받아 허용 메서드를 열거하는 법. 상태
 > 라인(HTTP)으로 응답이 정상 수신됐는지.
 >
 > **결과 해석.** 정상: `Allow:` 에 메서드 목록이 보이거나 상태 라인(HTTP)이 출력됨. PUT/DELETE/TRACE
@@ -554,7 +554,7 @@ graph TD
 > **왜 하는가?** 응답에 보안 헤더가 빠져 있으면 그 자체가 취약점이거나 다른 공격(XSS·클릭재킹)의
 > 피해를 키운다. 누락 식별은 빠르고 확실한 점검이다.
 >
-> **무엇을 알 수 있는가?** `curl -sI` 로 응답 헤더만 받아 HSTS/CSP/X-Frame-Options/nosniff 의
+> **무엇을 알 수 있는가?** `nc` raw HEAD 요청으로 응답 헤더만 받아 HSTS/CSP/X-Frame-Options/nosniff 의
 > 존재·누락을 식별하는 법.
 >
 > **결과 해석.** 헤더가 보이면 적용된 것, 안 보여 "보안 헤더 누락"이 출력되면 누락이다. 누락은 낮음~중간

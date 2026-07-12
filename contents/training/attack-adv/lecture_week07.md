@@ -93,7 +93,7 @@ graph TD
 비콘이 정확히 60초마다 나가면 flow에 **칼 같은 규칙성**이 찍혀 탐지된다. **jitter**는 주기에 무작위 편차를 준다:
 
 ```
-sleep 60s, jitter 30%  →  60 ± 18s  →  실제 체크인 간격 42~78초(무작위)
+sleep=60s, jitter 30%  →  60 ± 18s  →  실제 체크인 간격 42~78초(무작위)
 ```
 
 이렇게 흐려도 **장기 통계로는 평균 주기가 드러난다** — jitter는 탐지를 늦출 뿐 못 막는다(§0.5.4).
@@ -176,8 +176,8 @@ graph TD
 
 ```bash
 python3 -u -m http.server 55007 >/tmp/c2.log 2>&1 & P=$!   # C2 리스너 기동
-sleep 1
-curl -s http://127.0.0.1:55007/tasks >/dev/null            # 비콘 체크인 1회 (×3 반복)
+# (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
+echo -en "GET /tasks HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null >/dev/null            # 비콘 체크인 1회 (×3 반복)
 ```
 
 **리스너**는 임플란트 접속을 받는 공격자측 서버다(실무는 Sliver·Mythic·Cobalt Strike). **비콘**은 sleep
@@ -194,7 +194,7 @@ graph TD
     A["은닉·위장 기법"]
     A --> R["리다이렉터<br/>임플란트→중계→실제 C2<br/>(실제 IP 은닉·차단 회복력)"]
     A --> DF["도메인 프론팅<br/>SNI=합법 CDN, Host=C2<br/>(신뢰 CDN으로 위장)"]
-    A --> J["jitter<br/>sleep 60s±30%<br/>(규칙적 주기 흐림)"]
+    A --> J["jitter<br/>sleep=60s±30%<br/>(규칙적 주기 흐림)"]
     A --> M["말리어블 프로파일<br/>UA·경로·헤더를 정상 모방"]
     style A fill:#f85149,color:#fff
     style R fill:#bc8cff,color:#fff
@@ -245,11 +245,11 @@ graph TD
 ## 5. 실습 안내 (8 미션)
 
 각 미션을 **① 왜 하는가 / ② 무엇을 알 수 있는가 / ③ 결과 해석 / ④ 실전 활용** 4축으로 설명한다. 명령은
-el34 호스트에서 `docker exec el34-attacker` 로. **인가된 실습 환경(el34)에서만**, C2는 자체완결 메커니즘
+공격자 VM(`ssh att@192.168.0.202`)에서 실행한다. **인가된 실습 환경(el34)에서만**, C2는 자체완결 메커니즘
 데모(로컬 리스너).
 
 ### STEP 1 — C2 도구
-- **왜**: C2 구축 도구(python3·curl·nc) 확인.
+- **왜**: C2 구축 도구(python3·nc·openssl) 확인.
 - **무엇을**: 도구 가용.
 - **해석**: 준비 확인(`c2_tools_ready`).
 - **실전**: 실무는 Sliver/Mythic/Cobalt Strike.

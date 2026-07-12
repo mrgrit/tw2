@@ -257,7 +257,7 @@ graph TD
 
 ```bash
 # el34-attacker: SQLi 한 발 (raw HTTP)
-echo -n "sqli="; echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}"
+echo -n "sqli="; echo -en "GET /?id=1%27%20UNION%20SELECT%20user,password-- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
 # el34-web: audit 로그에서 942 룰군만 집계
 sudo tail -400 /var/log/apache2/modsec_audit.log | grep -oE '942[0-9]{3}' | sort | uniq -c | head -3
 ```

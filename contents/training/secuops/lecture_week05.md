@@ -755,7 +755,7 @@ graph TD
 |---------|---------|------------------|---------------------|-----------|------------|
 | **① XSS** | `echo -en 'GET /search?q=<script>alert(1)</script> HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null` | 941100 (XSS) + 941110 (script tag) + 941160 (event handler) → score 15 → 403 | audit log 의 messages[] = 3 룰 매치 | paranoia 1 에서 941180 (DOM XSS) 누락 | paranoia 2 + tx.crs_exclusions_xenforo=1 |
 | **② SQLi UNION** | `echo -en 'GET /items?id=1 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null UNION SELECT 1,2,3'` | 942100 (SQLi detection lib) + 942270 (UNION SELECT) → score 10 → 403 | audit log 의 unique_id 로 추적 | paranoia 1 에서 942180 (basic SQLi keyword) 만 매치 = score 5 | paranoia 2 → 3 으로 UNION + comment + hex 룰 활성 |
-| **③ scanner UA** | `echo -en 'GET /` HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.6\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null | 913100 (SCANNER nikto/sqlmap UA) → score 2 (alert only, paranoia 1) | audit log 의 REQUEST_HEADERS 의 User-Agent | paranoia 1 의 anomaly threshold 5 → 미만 → 통과 | scanner UA 의 즉시 차단 = SecRuleUpdateActionById 913100 "deny,status:403" |
+| **③ scanner UA** | `echo -en 'GET /` HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.6\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | 913100 (SCANNER nikto/sqlmap UA) → score 2 (alert only, paranoia 1) | audit log 의 REQUEST_HEADERS 의 User-Agent | paranoia 1 의 anomaly threshold 5 → 미만 → 통과 | scanner UA 의 즉시 차단 = SecRuleUpdateActionById 913100 "deny,status:403" |
 
 ### 시간선 — XSS 공격 의 1 사건 흐름
 
@@ -789,7 +789,7 @@ T+10s  Blue 2차 분석 (Wazuh agent 의 forward)
 
 T+1m   Purple Gap 식별
        └→ Coverage Matrix 의 ① 항목 = "paranoia 1 의 941180 누락"
-       └→ 재현 = curl '/search?q=<a onmouseover="alert(1)">x</a>'
+       └→ 재현 = nc 로 GET /search?q=<a onmouseover="alert(1)">x</a>
        └→ paranoia 1 = 941160 만 매치 = score 5 = block (경계)
        └→ paranoia 2 = 941180 추가 매치 = score 10 = 명확 block
 
@@ -864,7 +864,7 @@ ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".au
 ```bash
 ssh att@192.168.0.202 "echo -en 'GET /?q=1%27 OR %271%27=%271 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
 # 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
-ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa "\\[id \" /var/log/apache2/modsec_audit.log; do :; done'" || true
+ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa 192.168.0.202 /var/log/apache2/modsec_audit.log; do :; done'" || true
 ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"942[0-9]+\"\\]"'
 ```
 
@@ -897,7 +897,7 @@ for payload in "?q=<script>alert(1)</script>" "?q=1'OR'1'='1" "?q=../../etc/pass
   ssh att@192.168.0.202 "echo -en \"GET /$payload HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n\" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
 done
 # 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
-ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa "\\[id \" /var/log/apache2/modsec_audit.log; do :; done'" || true
+ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa 192.168.0.202 /var/log/apache2/modsec_audit.log; do :; done'" || true
 
 # Blue — audit log 의 룰 카테고리 분포
 ssh ccc@10.20.32.80 'sudo tail -50 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"[0-9]+\"\\]" | sort | uniq -c | sort -rn | head'
@@ -975,11 +975,8 @@ attacker VM 내부에서 다음 두 줄을 짧은 간격으로 보낸다.
 
 ```bash
 # attacker VM 내부 (학습 환경 한정)
-curl -s -o /dev/null -w "%{http_code}\n" \
-    "http://juice.el34.lab/search?q=%3Cscript%3Ealert(1)%3C/script%3E"
-
-curl -s -o /dev/null -w "%{http_code}\n" \
-    "http://juice.el34.lab/search?q=%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E"
+echo -en 'GET /search?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+echo -en 'GET /search?q=%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
 ```
 
 각 줄의 의미는 다음과 같다.
@@ -1085,8 +1082,7 @@ attacker VM 에서 SQLi 페이로드 한 줄을 보낸다.
 ssh el34-attacker
 
 # attacker VM 내부 (학습 환경 한정)
-curl -s -o /dev/null -w "%{http_code}\n" \
-    "http://juice.el34.lab/login?username=admin%27%20OR%20%271%27%3D%271&password=any"
+echo -en 'GET /login?username=admin%27%20OR%20%271%27%3D%271&password=any HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
 ```
 
 URL-decoded 형태는 `?username=admin' OR '1'='1&password=any` 다. classic SQLi 시도다.
@@ -1171,13 +1167,11 @@ Kibana Discover 에서도 같은 흐름으로 본다.
 attacker VM 에서 그런 정상 입력 시뮬을 보낸다.
 
 ```bash
-ssh el34-attacker
+ssh att@192.168.0.202
 
-# attacker VM 내부 (학습 환경 한정)
-curl -s -o /dev/null -w "%{http_code}\n" \
-    -X POST \
-    -d "comment=오늘 SELECT 와 WHERE 절을 학습했어요. 정말 재미있네요." \
-    http://juice.el34.lab/api/comment
+# attacker VM 내부 (학습 환경 한정) — 정상 코멘트지만 SELECT/WHERE 키워드로 오탐 유발
+B='comment=오늘 SELECT 와 WHERE 절을 학습했어요. 정말 재미있네요.'
+printf 'POST /api/comment HTTP/1.0\r\nHost: juice.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' "$(printf %s "$B" | wc -c)" "$B" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
 ```
 
 ModSec 의 SQLi 룰 (942xxx) 중 일부가 "SELECT", "WHERE" 같은 키워드를 잡아 false positive 차단을 일으킨다. 응답 코드가 403 이면 false positive 발생이다.

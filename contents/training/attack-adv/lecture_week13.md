@@ -208,8 +208,8 @@ graph TD
 **실측 예 — 컨테이너 탈출 점검.**
 
 ```bash
-ls -la /var/run/docker.sock 2>/dev/null && echo "docker.sock 노출!" || echo "docker.sock 없음(양호)"
-ls /dev/sda 2>/dev/null && echo "블록장치 보임=특권 의심" || echo "비특권(양호)"
+ls -la /var/run/docker.sock >/dev/null 2>&1 && echo "docker.sock 노출!" || echo "docker.sock 없음(양호)"
+ls /dev/sda >/dev/null 2>&1 && echo "블록장치 보임=특권 의심" || echo "비특권(양호)"
 ```
 
 el34-attacker는 **docker.sock 없음·비특권·표준 cap**으로 잘 격리돼 있어 탈출 벡터가 없다(honest 결과) — 잘
@@ -251,7 +251,7 @@ graph TD
 ## 5. 실습 안내 (8 미션)
 
 각 미션을 **① 왜 하는가 / ② 무엇을 알 수 있는가 / ③ 결과 해석 / ④ 실전 활용** 4축으로 설명한다. 명령은
-el34 호스트에서 `docker exec el34-attacker` 로. **IAM/스토리지는 개념, 컨테이너 탈출은 el34 실점검**(읽기
+공격자 VM(`ssh att@192.168.0.202`)에서 실행한다. **IAM/스토리지는 개념, 컨테이너 탈출은 el34 실점검**(읽기
 전용). 실제 클라우드 공격은 인가 계정만.
 
 ### STEP 1 — 환경 스코핑

@@ -134,7 +134,7 @@ graph TD
     P4["④ 취약점 분석<br/>악용 가능한 입력 검증"]
     P5["⑤ 익스플로잇<br/>침투 → 코드 실행 거점"]
     P6["⑥ 포스트 익스플로잇<br/>권한상승·지속성·유출"]
-    R["W01–W02 정찰·열거<br/>nmap·curl·nikto·ffuf"]
+    R["W01–W02 정찰·열거<br/>nmap·nc·nikto·ffuf"]
     V["W03–W07 웹 취약점<br/>API/JWT·SQLi·XSS·접근제어·SSRF"]
     E["W08·W10 침투·우회<br/>익스플로잇 체인·필터 우회"]
     POST["W11–W14 포스트<br/>privesc·persistence·에뮬레이션·퍼플"]

@@ -182,11 +182,11 @@ JS 프론트엔드는 화면을 채우기 위해 수많은 API 를 호출한다.
 이므로 `Host:` 헤더로 어느 사이트인지 지정해야 한다.
 
 ```bash
-echo -en 'GET /rest/products/search?q=test HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null | head -c 200
+echo -en 'GET /rest/products/search?q=test HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -c 200
 ```
 
-- `curl -s` — 진행 표시줄 없이 조용히(silent) 요청.
-- 자연 URL `http://juice.el34.lab/...` — 호스트명이 곧 Host 헤더가 되어 web Apache 가 juice vhost 로 분기(공격 VM /etc/hosts 등록).
+- `echo -en 'GET ... HTTP/1.0\r\nHost: juice.el34.lab\r\n...' | nc -w3 192.168.0.161 80` — 요청 라인·헤더를 손으로 써서 raw HTTP 로 보낸다(꾸밈 없음).
+- `Host: juice.el34.lab` — vhost 지정. 같은 IP(192.168.0.161)라도 Host 헤더에 따라 web Apache 가 juice vhost 로 분기한다.
 - `/rest/products/search?q=test` — Juice Shop 의 상품 검색 REST 엔드포인트.
 
 **해석.** 응답이 `{"status":"success","data":[...]}` 같은 **JSON** 이면 이 앱이 REST API 기반

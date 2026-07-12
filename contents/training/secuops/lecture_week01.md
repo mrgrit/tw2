@@ -250,7 +250,7 @@ nftables rule 중 `ct state established,related accept` 가 의미하는 것은 
 
 ```bash
 # (개념) bastion 을 경유한 2-hop SSH — 외부에서 내부 server 로
-ssh -J ccc@192.168.0.80:2204 ccc@<내부-server>
+ssh -J ccc@192.168.0.80:2204 ccc@내부서버-IP
 ```
 
 - el34 에서 이 안내데스크 역할은 **el34-bastion** 컨테이너이며, 외부 노출 SSH 포트는 **2204** 다.
@@ -1209,7 +1209,7 @@ LISTEN 0  128  *:55000      *:*  users:(("python3",pid=...))
 **Step 5.4 — wazuh-indexer cluster health**
 
 ```bash
-ssh ccc@10.20.32.100 'curl -sk -u admin:SecretPassword https://10.20.32.110:9200/_cluster/health | jq  # curl-ok: SIEM REST API 조회(ES/Wazuh 표준 클라이언트, 방어자 텔레메트리)
+ssh ccc@10.20.32.100 'curl -sk -u "admin:$INDEXER_PW" https://10.20.32.110:9200/_cluster/health | jq'  # curl-ok: SIEM REST API 조회(ES/Wazuh 표준 클라이언트, 방어자 텔레메트리)
 ```
 
 **예상 출력**:

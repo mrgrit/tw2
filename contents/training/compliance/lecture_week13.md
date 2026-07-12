@@ -252,7 +252,7 @@ el34 의 **juice**(OWASP Juice Shop) 앱은 화면 폰트를 위해 **Google Fon
 지정해 페이지를 받아온 뒤, el34 내부 도메인이 아닌 외부 도메인만 추려서 본다.
 
 ```bash
-ssh att@192.168.0.202 "echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null | grep -oE 'https?://[a-zA-Z0-9.-]+' | grep -viE '10.20|el34' | sort -u | head -3"
+ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -oE 'https?://[a-zA-Z0-9.-]+' | grep -viE '10.20|el34' | sort -u | head -3"
 ```
 
 - `echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null` — fw 게이트웨이로 juice 의 첫 페이지를

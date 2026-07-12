@@ -260,7 +260,7 @@ sysmon 은 el34 기본 이미지에 없어 호스트에 직접 설치했다. 학
 
 ```bash
 # ① Microsoft 패키지 저장소 등록 (sysmon 은 MS 가 배포)
-curl -sSL -o /tmp/ms-prod.deb \
+wget -q -O /tmp/ms-prod.deb \
   https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
 dpkg -i /tmp/ms-prod.deb && apt-get update
 

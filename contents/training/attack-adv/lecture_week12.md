@@ -90,7 +90,7 @@ el34의 **호스트(.151)에 설치된 trivy 0.71.2**(컨테이너엔 없음)로
 
 ```bash
 # requirements.txt: requests==2.6.0, flask==0.5 (의도적 구버전)
-trivy fs --scanners vuln /path/to/proj 2>/dev/null | grep -E "Total|HIGH"
+trivy fs --scanners vuln /path/to/proj | grep -E "Total|HIGH"
 # → Total: 9 (HIGH: 4 ...) 처럼 실제 알려진 CVE 다수 탐지
 ```
 
@@ -239,7 +239,7 @@ graph TD
 ## 5. 실습 안내 (8 미션)
 
 각 미션을 **① 왜 하는가 / ② 무엇을 알 수 있는가 / ③ 결과 해석 / ④ 실전 활용** 4축으로 설명한다. **trivy는
-el34 호스트(.151)에서**(컨테이너엔 없음), 타이포·gpg 등은 `docker exec el34-attacker` 로. **인가된 실습 환경
+el34 호스트(.151)에서**(컨테이너엔 없음), 타이포·gpg 등은 공격자 VM(`ssh att@192.168.0.202`)에서. **인가된 실습 환경
 (el34)에서만**, 분석·방어 도구 중심.
 
 ### STEP 1 — 공급망 개념

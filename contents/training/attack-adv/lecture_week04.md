@@ -183,8 +183,7 @@ graph TD
 **실측 예 — el34에서.**
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}" -H "Host: admin.el34.lab" \
-  "http://10.20.30.1/files/read?url=http://169.254.169.254/latest/meta-data/aa04test"
+echo -en "GET /files/read?url=http://169.254.169.254/latest/meta-data/aa04test HTTP/1.0\r\nHost: admin.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
 # → 403
 ```
 
@@ -261,7 +260,7 @@ SSTI는 사용자 입력이 템플릿 문자열로 **평가**될 때 생긴다. 
 ## 6. 실습 안내 (8 미션)
 
 각 미션을 **① 왜 하는가 / ② 무엇을 알 수 있는가 / ③ 결과 해석 / ④ 실전 활용** 4축으로 설명한다. 명령은
-el34 호스트에서 `docker exec el34-attacker` 로. **인가된 표적(admin.el34.lab)에만.** 차단(403)·부재(404)·
+공격자 VM(`ssh att@192.168.0.202`)에서 실행한다. **인가된 표적(admin.el34.lab)에만.** 차단(403)·부재(404)·
 미반사도 유효한 학습 결과 — 페이로드 작성·전송·응답 해석까지가 목표다(실악용 미시연, §정직 고지).
 
 ### STEP 1 — 서버측 표면

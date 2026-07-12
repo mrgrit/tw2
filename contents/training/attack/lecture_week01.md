@@ -31,7 +31,7 @@
    탐지 위험을 구분한다.
 3. `nmap` 으로 대상의 열린 포트를 발견하고(`-p`), 각 포트에서 동작하는 서비스·버전을
    식별한다(`-sV`).
-4. `curl -I` / `whatweb` 로 웹 서버의 기술 스택(Server 헤더, 응용 프레임워크)을
+4. `whatweb` 로 웹 서버의 기술 스택(Server 헤더, 응용 프레임워크)을
    핑거프린팅하고, vhost(가상 호스트)별로 다른 애플리케이션이 응답함을 확인한다.
 5. 자신이 발생시킨 정찰 트래픽이 방어 스택(Suricata `eve.json`)에 출처 IP
    `192.168.0.202` 로 어떻게 탐지되는지 확인하고, "내 정찰이 얼마나 시끄러운가" 를
@@ -61,7 +61,7 @@
 | **포트 스캔** | Port scan | 어떤 포트가 열렸는지 패킷으로 점검 | 모든 문을 차례로 두드리기 |
 | **핑거프린팅** | Fingerprinting | 응답의 특징으로 SW 종류·버전을 식별 | 지문으로 신원 식별 |
 | **nmap** | Network Mapper | 포트 스캔·서비스 식별의 표준 OSS 도구 | 만능 문 점검 도구 |
-| **whatweb / curl -I** | — | 웹 기술 스택을 식별하는 도구 | 간판·내부 안내판 읽기 |
+| **whatweb** | — | 웹 기술 스택을 식별하는 도구 | 간판·내부 안내판 읽기 |
 | **vhost** | Virtual Host | 같은 IP/포트에서 도메인별 다른 사이트 | 한 건물 안 여러 매장 |
 | **DNAT** | Destination NAT | 공인 IP 포트를 내부 대상으로 전달 | 대표번호 → 내선 연결 |
 | **Suricata** | — | 트래픽을 검사하는 IDS/IPS(방어 측) | 보안 카메라 |
@@ -413,7 +413,7 @@ go install github.com/hahwul/dalfox/v2@latest      # dalfox(XSS). 또는 GitHub 
 which nmap nikto whatweb ffuf gobuster sqlmap dalfox
 ```
 
-- **apt 로 대부분 해결**: nmap·nikto·whatweb·curl·gobuster·sqlmap·scapy 는 배포판 패키지에 있다.
+- **apt 로 대부분 해결**: nmap·nikto·whatweb·gobuster·sqlmap·scapy 는 배포판 패키지에 있다.
 - **Go 도구(`ffuf`·`dalfox`)**: 최신판은 `go install ...@latest`(Go 필요: `sudo apt-get install -y golang`)
   로 받거나, 프로젝트 GitHub 의 **Releases** 에서 정적 바이너리를 내려받아 `PATH` 에 둔다.
 - 설치 후 `which <도구>` 로 경로가 나오면 준비 완료 — 실습 랩의 `which`/`command -v` 점검이 곧 이 확인이다.
@@ -471,9 +471,9 @@ PORT     STATE    SERVICE  VERSION
 **한계**: `-sV` 같은 능동 스캔은 IDS 에 또렷이 탐지된다(§5). 또한 fw 가 `filtered` 로
 응답을 막으면 정확한 식별이 어렵다.
 
-### 4.2 curl / whatweb — 웹 기술 스택 핑거프린팅
+### 4.2 whatweb / nc — 웹 기술 스택 핑거프린팅
 
-**한 줄 정의**: `curl -I` 와 `whatweb` 는 웹 서버의 응답에서 서버 종류·버전·프레임워크
+**한 줄 정의**: `whatweb` 와 `nc`(raw HTTP) 는 웹 서버의 응답에서 서버 종류·버전·프레임워크
 같은 기술 스택 단서를 추출하는 **웹 핑거프린팅** 도구다.
 
 **왜 중요한가**: nmap 이 "80번 포트에 웹이 있다" 까지 알려준다면, 핑거프린팅은 "그 웹이
@@ -492,8 +492,7 @@ whatweb -a1 http://dvwa.el34.lab/
 
 핵심 옵션:
 
-- `-I` — **헤더만 요청(HEAD)**. 본문 없이 응답 헤더만 받아 빠르게 기술 스택을 본다.
-- `-s` — **silent**. 진행률 표시를 끄고 결과만 출력한다.
+- `-a1` — **공격성 레벨 1(수동)**. 서버가 돌려준 응답만으로 판단하며 추가 탐침을 최소화해 로그를 덜 남긴다.
 - `http://dvwa.el34.lab/` — **자연 URL**. `/etc/hosts` 덕에 호스트명으로 바로 접속하며, 같은
   IP(192.168.0.161)라도 호스트명(vhost)에 따라 web Apache 가 다른 앱으로 분기한다. `juice.el34.lab`
   등으로 호스트명을 바꿔 보내면 vhost 를 열거할 수 있다(브라우저 주소창에 열어도 동일).
@@ -511,9 +510,9 @@ Set-Cookie: PHPSESSID=...
   백엔드 다운.
 - `Set-Cookie` 의 쿠키 이름(`PHPSESSID`) → 백엔드 언어(여기선 PHP) 단서.
 
-> **whatweb 도 같은 일을 자동화한다.** `whatweb` 는 위 단서들을 자동으로 분석해 "Apache,
-> PHP, jQuery" 식으로 기술 스택을 요약해 주는 도구다. 본 주차 실습은 더 투명한 `curl -I`
-> 로 헤더를 직접 읽는 방식을 표준으로 삼는다 — 무엇을 보고 판단하는지가 명확하기 때문이다.
+> **whatweb 가 이 일을 자동화한다.** `whatweb` 는 위 단서들을 자동으로 분석해 "Apache,
+> PHP, jQuery" 식으로 기술 스택을 요약해 준다. 원시 응답 헤더를 직접 눈으로 읽고 싶으면 `nc`
+> 로 raw HTTP 요청을 보내 헤더를 확인한다 — 무엇을 보고 판단하는지가 명확하기 때문이다.
 
 **한계**: 운영자가 `Server` 헤더를 일부러 숨기거나 위조하면(`ServerTokens Prod`)
 핑거프린팅이 어려워진다. curl 요청도 능동 정찰이라 웹 접근 로그에 남는다.
