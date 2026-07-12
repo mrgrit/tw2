@@ -226,8 +226,8 @@ alert ip 192.168.0.202 any -> any any (msg:\"SOC W09 IR contain - flag attacker 
 EOF"'
 ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
 
-# (검증) 출발지가 트래픽을 보내면 룰이 eve.json 에 찍히는지 확인
-echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+# (검증) 출발지(.202)에서 트래픽을 유발하면 룰이 eve.json 에 찍히는지 확인
+ssh att@192.168.0.202 'whatweb -a1 http://dvwa.el34.lab/ >/dev/null 2>&1'
 ssh ccc@10.20.31.2 'sudo grep 9509001 /var/log/suricata/eve.json | jq -s length'
 
 # (정리·self-clean) 시연이 끝나면 룰 삭제 → 리로드 (공유 인프라 보존)
@@ -297,7 +297,7 @@ ssh ccc@10.20.32.80 'sudo id socw9bd >/dev/null 2>&1 && userdel -r socw9bd; rm -
 
 ```bash
 # (복구-정상성) 웹 서비스가 정상 응답하는지 헬스체크
-ssh ccc@10.20.32.80 "echo \"web=$(echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 localhost 80 | head -1 | grep -oE '[0-9]{3}')\""
+ssh ccc@10.20.32.80 "curl -s -o /dev/null -w 'web=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://localhost/"
 
 # (복구-잔재0) 백도어 계정이 정말 사라졌는지 재확인
 ssh ccc@10.20.32.80 'id socw9bd >/dev/null 2>&1 && echo "계정 잔재!" || echo "clean"'
@@ -308,7 +308,7 @@ ssh ccc@10.20.32.80 'id socw9bd >/dev/null 2>&1 && echo "계정 잔재!" || echo
 찍힌다. **서비스 정상 + 발판 잔재 0** 이 동시에 충족돼야 복구 완료다.
 
 > **용어 — HTTP 상태 코드와 헬스체크.** 웹 서버는 응답마다 상태 코드를 돌려준다 — `200`
-> 정상, `302` 리다이렉트, `403` 차단, `5xx` 서버 오류. `nc` 로 raw HTTP 요청을 보내 응답 첫 줄(상태 코드)만
+> 정상, `302` 리다이렉트, `403` 차단, `5xx` 서버 오류. 웹 서버가 자기 자신을 `curl -s -o /dev/null -w '%{http_code}' http://localhost/` 로 점검해 상태 코드만
 > 뽑으면 서비스가 살아 있는지 빠르게 확인하는 **헬스체크** 가 된다.
 
 **한계.** 헬스체크 한 번이 "완전 정상"을 보장하지는 않는다 — 깊은 기능 손상은 추가 검증이
@@ -401,11 +401,11 @@ graph TD
 
 | IR 단계 | 무엇을 하나 | el34 컨테이너 | 핵심 도구·경로 |
 |---------|-------------|---------------|----------------|
-| 사고 재현 | SQLi + 발판 심기 | `외부 공격자 VM 192.168.0.202` / `el34-web` | nc(공격) / useradd·웹쉘 파일 |
+| 사고 재현 | SQLi + 발판 심기 | `외부 공격자 VM 192.168.0.202` / `el34-web` | sqlmap(공격) / useradd·웹쉘 파일 |
 | ① 식별 | 출발지·타임라인 + 발판 확인 | `el34-siem` / `el34-web` | `alerts.json` / osquery |
 | ② 격리 | 출발지 플래그 룰 | `el34-ips` | Suricata `local.rules`·`eve.json` |
 | ③ 제거 | 발판 삭제 | `el34-web` | osquery · `userdel` · `rm` |
-| ④ 복구 | 서비스·잔재 검증 | `el34-web` | nc 헬스체크 · `id` |
+| ④ 복구 | 서비스·잔재 검증 | `el34-web` | curl 헬스체크 · `id` |
 | ⑤ 교훈 | 타임라인·근본원인 정리 | (호스트) | 보고서 |
 
 > **참고 — 출발지 IP 가 보존되는 이유.** 식별·격리가 출발지 `192.168.0.202` 를 키로 삼을 수
@@ -541,7 +541,7 @@ graph TD
 > **왜 하는가?** 제거가 끝났다고 정상은 아니다. 서비스가 살아 있고 발판 잔재가 0 임을 두
 > 눈으로 검증해야 사고가 닫힌다.
 >
-> **무엇을 알 수 있는가?** 웹 헬스체크(`nc` raw HTTP 상태 코드)로 서비스 정상성을, `id`
+> **무엇을 알 수 있는가?** 웹 헬스체크(`curl` HTTP 상태 코드)로 서비스 정상성을, `id`
 > 재조회로 계정 잔재 0 을 검증하는 법. **정상 + 잔재 0** 이 동시에 충족돼야 복구 완료.
 >
 > **결과 해석.** 정상: 웹이 응답하고 `id socw9bd` 가 실패해 `clean` 출력. 비정상: 잔재가

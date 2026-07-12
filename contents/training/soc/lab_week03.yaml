@@ -91,10 +91,10 @@ steps:
     instruction: |
       ## 🎯 웹 공격 재현 — SQLi + XSS + 스캐너
 
-      분석할 흔적을 직접 만든다. 외부 공격자 VM 192.168.0.202에서 차단형 vhost `dvwa.el34.lab` 로 SQLi 와
-      XSS 를 보내고, 첫 요청에는 스캐너 User-Agent(`sqlmap/1.7`)를 실어 세 종류 공격을 한
-      공격자가 보낸 것으로 재현한다. 이 한 줄의 nc 요청들이 세 로그(access·audit·eve)에 동시에
-      흔적을 남긴다.
+      분석할 흔적을 직접 만든다. 외부 공격자 VM 192.168.0.202에서 진짜 공격 도구 `sqlmap`(SQLi)·
+      `dalfox`(XSS)로 차단형 vhost `dvwa.el34.lab` 를 친다 — sqlmap 은 기본 스캐너 User-Agent
+      (`sqlmap/1.x`)를 그대로 실어 세 종류(SQLi·XSS·스캐너) 공격을 한 공격자가 보낸 것으로 재현한다.
+      이 도구들이 보낸 수백 요청이 세 로그(access·audit·eve)에 동시에 대량의 흔적을 남긴다.
 
       ## 💡 개념 한 줄
       대상은 **차단형 vhost `dvwa`** (ModSec `On` → 403). juice 는 DetectionOnly 라 같은 공격이
@@ -105,10 +105,10 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 1) 로 접속해 실행한다.
 
       ```bash
-      # 1) SQLi — 스캐너 UA(sqlmap/1.7)로 UNION SELECT 주입(942 SQLi + 913 scanner 자극)
-      echo -en 'GET /?id=socw3%27%20UNION%20SELECT%201--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      # 2) XSS — <script> 페이로드 주입(941 XSS 자극)
-      echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # 1) SQLi — sqlmap 자동 공격(기본 UA sqlmap/1.x + UNION/OR 페이로드 → 942 SQLi + 913 scanner 자극)
+      sqlmap -u 'http://dvwa.el34.lab/?id=socw3' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear|403 \(Forbidden\)' | head -3
+      # 2) XSS — dalfox 자동 스캔(<script> 등 페이로드 → 941 XSS 자극)
+      dalfox url --url 'http://dvwa.el34.lab/?q=socw3' --silence --no-color >/dev/null 2>&1
       # 3) Wazuh agent ship 대기(수렴 확인 대비) 후 완료 마커
       # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
       echo "web attacks done"
@@ -116,26 +116,27 @@ steps:
 
       ## 🔧 도구·옵션 풀이
       - `외부 공격자 VM 192.168.0.202` — 외부 공격자 VM 192.168.0.202 공격자 컨테이너(출발지 192.168.0.202).
-      - `echo -en 'GET ...' | nc -w3 192.168.0.161 80` — raw HTTP 요청을 손으로 써서 보내고 응답만 확인(본문 불필요).
-      - `User-Agent: sqlmap/1.7` 헤더 — User-Agent 를 스캐너로 위장 → ModSec 913(스캐너) 룰군을 자극.
-      - `?id=...UNION SELECT...` = SQLi(942 룰군), `?q=<script>...` = XSS(941 룰군) payload.
+      - `sqlmap -u '...?id=socw3' --batch` — SQL 자동 공격 도구. UNION/OR 등 SQLi 페이로드를 자동 생성해 수백 요청을 보낸다(진짜 도구).
+      - `sqlmap` 기본 User-Agent(`sqlmap/1.x`) — 스캐너 UA 라 ModSec 913(스캐너) 룰군을 자극(도구가 자연히 남기는 IOC).
+      - `dalfox url --url '...?q=socw3'` — XSS 자동 스캐너. `<script>` 등 페이로드로 941(XSS) 룰군을 자극. sqlmap `?id`=942(SQLi), dalfox `?q`=941(XSS).
 
       ## ✅ 합격 기준
       `done` 출력 시 통과. **근거:** "web attacks done" 이 나오면 SQLi/XSS/스캐너 흔적이 세 로그에
       생성된 것 — 응답코드 자체는 다음 실습에서 로그로 확인한다.
-    hint: 'sqlmap UA SQLi + XSS nc'
+    hint: 'sqlmap SQLi + dalfox XSS'
     category: recon
     points: 10
     answer: |
-      # 1) SQLi — 스캐너 UA(sqlmap/1.7)로 UNION SELECT 주입(942 SQLi + 913 scanner 자극)
-      ssh att@192.168.0.202 "echo -en 'GET /?id=socw3%27%20UNION%20SELECT%201--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      # 2) XSS — <script> 페이로드 주입(941 XSS 자극)
-      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      # 1) SQLi — sqlmap 자동 공격(기본 UA sqlmap/1.x + UNION/OR 페이로드 → 942 SQLi + 913 scanner 자극)
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=socw3' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear|403 \(Forbidden\)' | head -3"
+      # 2) XSS — dalfox 자동 스캔(<script> 등 페이로드 → 941 XSS 자극)
+      ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/?q=socw3' --silence --no-color >/dev/null 2>&1"
       # 3) Wazuh agent ship 대기(수렴 확인 대비) 후 완료 마커
       # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
       echo "web attacks done"
     answer_detail: "한 공격자(192.168.0.202)가 SQLi(942)/XSS(941)/스캐너 UA(913)로 차단형 dvwa 를 친다. 같은 요청이 세 로그에 다르게 남는다 — Apache access(요청 라인+응답코드), ModSec audit(걸린 CRS 룰), Suricata eve(네트워크 시그니처·세션). 조건 폴링(로그 흔적 대기) 은 Wazuh agent 가 manager 로 ship 할 시간을 주기 위함(실습 7 의 수렴 확인 대비). 흔적이 생성되면 STEP 3~5 에서 각 로그를 열어 분석한다."
     expected_output: |
+      403 (Forbidden) - 445 times
       web attacks done
     verify:
       type: output_contains

