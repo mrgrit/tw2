@@ -722,7 +722,7 @@ ssh att@192.168.0.202 "nuclei -u http://juice.el34.lab -t /root/nuclei-templates
 ### 6.8 ⑧ 개인정보 (Feedbacks PII — W12)
 
 ```bash
-ssh att@192.168.0.202 "echo -en 'GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -oE '@[a-zA-Z0-9.-]+' | head -1; echo pii_check"
+ssh att@192.168.0.202 "echo -en 'GET /api/Feedbacks HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -oE '@[a-zA-Z0-9.-]+' | head -1; echo pii_check"  # nc-ok: 컴플라이언스 PII 노출 점검(공개 API 응답 JSON 검사)
 ```
 
 무엇을 보나 — 무인증 응답의 이메일 조각(`@도메인`) 노출 + `pii_check`. 개인정보 보호 갭(최우선 시정).

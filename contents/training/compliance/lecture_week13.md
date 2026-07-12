@@ -252,10 +252,10 @@ el34 의 **juice**(OWASP Juice Shop) 앱은 화면 폰트를 위해 **Google Fon
 지정해 페이지를 받아온 뒤, el34 내부 도메인이 아닌 외부 도메인만 추려서 본다.
 
 ```bash
-ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | grep -oE 'https?://[a-zA-Z0-9.-]+' | grep -viE '10.20|el34' | sort -u | head -3"
+ssh att@192.168.0.202 "whatweb -a1 --color=never http://juice.el34.lab/ 2>/dev/null | grep -oE '\[[0-9]{3}' | tr -dc '0-9'"
 ```
 
-- `echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null` — fw 게이트웨이로 juice 의 첫 페이지를
+- `whatweb -a1 http://juice.el34.lab/` — 도달성·기술스택·상태코드를 한 번에 확인
   받아온다(`-s` 진행표시 끔, `-k` 자체서명 인증서 허용). el34 의 fw 는 SNAT 를 하지 않으므로 이
   요청의 출처 IP(`192.168.0.202`)는 web 로그에 그대로 남는다(W08 의 감사자/운영자 양면과 동일).
 - `grep -oE 'https?://[a-zA-Z0-9.-]+'` — HTML 안의 모든 URL 호스트 부분만 뽑아낸다(`-o` 일치 부분만,
