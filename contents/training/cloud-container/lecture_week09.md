@@ -339,7 +339,7 @@ el34 호스트(`ssh ccc@192.168.0.80`, 비밀번호 1)에서 docker.sock 의 소
 
 ```bash
 ls -la /var/run/docker.sock
-P=$(stat -c '%a' /var/run/docker.sock 2>/dev/null)
+P=$(stat -c '%a' /var/run/docker.sock)
 case "$P" in 660|600) echo "compliant=sock_$P";; *) echo "gap=sock_$P";; esac
 ```
 
@@ -422,7 +422,7 @@ graph TD
 el34 호스트에서 daemon.json 의 존재와 내용을 다음과 같이 점검한다(미션 3).
 
 ```bash
-cat /etc/docker/daemon.json 2>/dev/null | head -8 || echo no_daemon_json
+cat /etc/docker/daemon.json | head -8 || echo no_daemon_json
 echo daemon_checked
 ```
 

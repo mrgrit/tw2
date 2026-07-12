@@ -25,7 +25,7 @@
 1. 컨테이너 격리가 **namespace(가시성 분리)** 와 **cgroups(자원 제한)** 라는 두 커널 기능으로 이루어짐을
    설명하고, 이 둘이 호스트의 **하나의 커널 위에 그은 소프트웨어 경계**임을 W01 의 공유 커널과 연결해
    말한다.
-2. `docker exec el34-web ... ls /proc/1/ns/` 로 컨테이너 PID 1 이 속한 **namespace 목록**(pid·net·mnt·
+2. `ssh ccc@10.20.32.80 ... ls /proc/1/ns/` 로 컨테이너 PID 1 이 속한 **namespace 목록**(pid·net·mnt·
    ipc·uts·user 등)을 읽고, 각 namespace 가 어떤 가시성을 격리하는지 항목별로 설명한다.
 3. **pid namespace 격리**를 `docker inspect` 의 `PidMode` 로 점검해, `PidMode=[]`(빈 값)이 곧 **자체 pid
    namespace = 격리(준수)** 이고 `host` 면 호스트 프로세스가 노출되는 갭임을 판정한다.
@@ -253,10 +253,10 @@ init 프로세스)이 어떤 namespace 들에 속해 있는지를 보면, 어느
 목록이 나온다. el34 호스트에서 다음과 같이 본다.
 
 ```bash
-docker exec el34-web sh -c "ls /proc/1/ns/"; echo ns_listed
+ssh ccc@10.20.32.80 "ls /proc/1/ns/"; echo ns_listed
 ```
 
-- `docker exec el34-web sh -c "..."` — el34-web 컨테이너 **안에서** 명령을 실행한다. 컨테이너 내부의
+- `ssh ccc@10.20.32.80 "..."` — el34-web 컨테이너 **안에서** 명령을 실행한다. 컨테이너 내부의
   `/proc/1/ns/` 를 봐야 그 컨테이너의 namespace 가 나오기 때문이다.
 - `/proc/1/ns/` — PID 1 이 속한 namespace 들의 링크 모음. 출력에 `pid`·`net`·`mnt`·`ipc`·`uts`·`user`
   (+`cgroup`·`time` 등 커널 버전에 따라)가 나온다. **각 항목이 격리 경계 하나**다.
@@ -266,7 +266,7 @@ docker exec el34-web sh -c "ls /proc/1/ns/"; echo ns_listed
 
 ```mermaid
 graph TD
-    EXEC["docker exec el34-web<br/>컨테이너 안에서 실행"]
+    EXEC["ssh ccc@10.20.32.80<br/>컨테이너 안에서 실행"]
     NSDIR["/proc/1/ns/ 조회<br/>PID 1 의 namespace 링크"]
     LIST["목록 확인<br/>pid · net · mnt · ipc · uts · user"]
     MEANING["해석<br/>각 항목 = 격리 경계 하나<br/>호스트와 다른 namespace 집합"]
@@ -331,7 +331,7 @@ el34-web 을 점검하면 **자체 pid namespace(격리)** 가 확인된다. 컨
 를 함께 본다.
 
 ```bash
-echo -n "container_procs="; docker exec el34-web sh -c "ps -e 2>/dev/null | wc -l"
+echo -n "container_procs="; ssh ccc@10.20.32.80 "ps -e "
 docker inspect el34-web --format 'PidMode=[{{.HostConfig.PidMode}}]'
 ```
 
@@ -598,7 +598,7 @@ echo "user namespace remap + seccomp(시스템콜 제한) + AppArmor/SELinux + c
 | 무엇을 | 명령 | 무엇을 보나 |
 |--------|------|-------------|
 | 대상 확인 | `docker inspect el34-web --format 'state={{.State.Status}}'` | el34-web 가동 여부(`target_ok`) |
-| namespace 목록 | `docker exec el34-web sh -c "ls /proc/1/ns/"` | pid/net/mnt/ipc/uts/user = 격리 경계들(`ns_listed`) |
+| namespace 목록 | `ssh ccc@10.20.32.80 "ls /proc/1/ns/"` | pid/net/mnt/ipc/uts/user = 격리 경계들(`ns_listed`) |
 | pid 격리 | `docker inspect el34-web --format 'PidMode=[{{.HostConfig.PidMode}}]'` | `PidMode=[]`(빈 값) = 자체 pid namespace(격리) |
 | net 격리 | `docker inspect el34-web --format 'NetMode={{.HostConfig.NetworkMode}}'` | `el34-dmz`(커스텀) = `compliant=isolated_net` |
 | cgroups 한도 | `docker inspect el34-web --format 'Memory={{.HostConfig.Memory}} NanoCpus={{.HostConfig.NanoCpus}}'` | `0`=무제한 갭 / 양수=한도(준수) |

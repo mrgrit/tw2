@@ -364,7 +364,7 @@ graph TD
 el34-web 이미지의 취약점은 호스트의 `trivy` 로 스캔한다(lab 미션 2).
 
 ```bash
-/usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'Total:'
+/usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest | grep -iE 'Total:'
 ```
 
 - `trivy image` — 지정한 이미지(`el34-web:latest`)의 패키지를 CVE DB 와 대조해 취약점을 찾는다.
@@ -442,7 +442,7 @@ capability(`NET_BIND_SERVICE` 등)만 다시 add 하는 것이다.
 el34-web 의 실행 사용자는 컨테이너 안에서 `id -u` 로 본다(lab 미션 5).
 
 ```bash
-docker exec el34-web id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "compliant=nonroot"
+ssh ccc@10.20.32.80 id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "compliant=nonroot"
 ```
 
 - `id -u` 는 현재 프로세스의 사용자 uid 를 숫자로 출력한다. `0` 이면 root 다.
@@ -471,7 +471,7 @@ el34-web 은 **root(uid 0)로 실행** 중 — 즉 이 항목은 **갭(CIS 4.1)*
 el34-web 의 namespace 격리는 컨테이너 안에서 PID 1 의 namespace 목록을 보아 확인한다(lab 미션 6).
 
 ```bash
-docker exec el34-web sh -c "ls /proc/1/ns/ | tr '\n' ' '"; echo; echo ns_ok
+ssh ccc@10.20.32.80 "ls /proc/1/ns/ | tr '\n' ' '"; echo; echo ns_ok
 ```
 
 - `/proc/1/ns/` 는 PID 1(컨테이너의 첫 프로세스)이 속한 namespace 들을 링크로 보여 주는 커널
@@ -545,7 +545,7 @@ el34-web 은 **el34 의 4-tier 분리 네트워크**(ext/pipe/dmz/int)의 일부
 el34-web 안에 docker.sock 이 마운트돼 있는지는 컨테이너 안에서 소켓 파일 존재를 본다(lab 미션 9).
 
 ```bash
-docker exec el34-web sh -c "ls -la /var/run/docker.sock 2>/dev/null || echo no_sock_in_container"; echo sock_checked
+ssh ccc@10.20.32.80 "ls -la /var/run/docker.sock >/dev/null 2>&1 || echo no_sock_in_container"; echo sock_checked
 ```
 
 - `ls -la /var/run/docker.sock` 은 컨테이너 안에 그 소켓이 있으면 권한·소유자와 함께 보여 주고, 없으면

@@ -168,7 +168,7 @@ OS 강화, 오케스트레이터(Kubernetes) 정책(W12), 클라우드 IAM·CSPM
 가장 먼저 봐야 할 **HIGH·CRITICAL** 만 집계한다(lab STEP 2).
 
 ```bash
-/usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest 2>/dev/null | grep -iE 'Total:'
+/usr/local/bin/trivy image --scanners vuln --severity HIGH,CRITICAL --no-progress el34-web:latest | grep -iE 'Total:'
 ```
 
 - `--scanners vuln` — 취약점 스캐너만 켠다(시크릿·설정 스캐너는 끔). `--severity HIGH,CRITICAL`
@@ -225,7 +225,7 @@ P=$(docker inspect el34-web --format '{{.HostConfig.Privileged}}'); [ "$P" = "fa
 
 ```bash
 D=$(docker inspect el34-web --format '{{.HostConfig.CapDrop}}'); echo "$D" | grep -qiE 'ALL|CAP_' && echo "caps_ok" || echo "gap=no_capdrop"
-docker exec el34-web id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "nonroot"
+ssh ccc@10.20.32.80 id -u | grep -q '^0$' && echo "gap=runs_as_root" || echo "nonroot"
 ```
 
 - 첫 줄: `CapDrop` 출력에 `ALL` 이나 `CAP_` 가 보이면 무언가 버렸다는 뜻(`caps_ok`), 비어 있으면
@@ -272,7 +272,7 @@ env + 이미지 레이어 + 마운트를 함께 본다.
 **어떤 명령으로.** 컨테이너 1 번 프로세스의 namespace 개수를 센다(lab STEP 6).
 
 ```bash
-docker exec el34-web sh -c "ls /proc/1/ns/ | wc -l"
+ssh ccc@10.20.32.80 "ls /proc/1/ns/ "
 ```
 
 - `/proc/1/ns/` 는 PID 1 프로세스에 적용된 namespace 들을 파일로 보여 주는 커널 인터페이스다.
@@ -328,7 +328,7 @@ docker inspect el34-web --format '{{range $k,$v := .NetworkSettings.Networks}}{{
 
 ```bash
 H=$(docker inspect el34-web --format '{{if .Config.Healthcheck}}yes{{else}}none{{end}}'); [ "$H" = "none" ] && echo "gap=no_healthcheck" || echo "healthcheck_ok"
-ls -la /var/run/docker.sock 2>/dev/null | awk '{print "sock="$1}'
+ls -la /var/run/docker.sock | awk '{print "sock="$1}'
 ```
 
 - 첫 줄: `Config.Healthcheck` 가 설정돼 있으면 `healthcheck_ok`, 없으면 `gap=no_healthcheck`.
@@ -356,7 +356,7 @@ HEALTHCHECK 추가** 다.
 **어떤 명령으로.** SIEM 에 경보가 적재되고 있는지 확인한다(lab STEP 9).
 
 ```bash
-docker exec el34-siem sh -c 'tail -1 /var/ossec/logs/alerts/alerts.json 2>/dev/null | head -c 40; echo; echo runtime_mon_ok'
+ssh ccc@10.20.32.100 'tail -1 /var/ossec/logs/alerts/alerts.json | head -c 40; echo; echo runtime_mon_ok'
 ```
 
 - `alerts.json` 의 마지막 한 줄(앞 40 바이트)을 찍어 경보가 실제로 쌓이는지 확인하고,

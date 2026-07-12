@@ -242,7 +242,7 @@ el34 의 `el34-web` 컨테이너는 **Ubuntu 22.04 풀베이스** 위에 Apache 
 확인한다.
 
 ```bash
-docker exec el34-web sh -c 'cat /etc/os-release | head -1'
+ssh ccc@10.20.32.80 'cat /etc/os-release | head -1'
 ```
 
 - `/etc/os-release` — 리눅스 배포판의 이름·버전을 담은 표준 파일. 첫 줄(`PRETTY_NAME`)에
@@ -474,7 +474,7 @@ graph TD
 
 > **점검 경로.** el34 의 모든 컨테이너는 타깃 VM(192.168.0.80) 한 대 위에서 돈다. 점검자는 호스트에
 > SSH 로 들어간 뒤, 이미지 메타데이터는 `docker history`·`docker inspect`·`docker images` 로 호스트에서
-> 직접 읽고, 베이스 OS 처럼 컨테이너 내부 파일이 필요한 항목만 `docker exec el34-web` 으로 진입해 본다.
+> 직접 읽고, 베이스 OS 처럼 컨테이너 내부 파일이 필요한 항목만 `ssh ccc@10.20.32.80` 으로 진입해 본다.
 
 ### 7.1 레이어/히스토리 (§2)
 
@@ -488,7 +488,7 @@ docker history el34-web --format '{{.Size}} {{.CreatedBy}}' | head
 ### 7.2 베이스 이미지 (§3)
 
 ```bash
-docker exec el34-web sh -c 'cat /etc/os-release | head -1'
+ssh ccc@10.20.32.80 'cat /etc/os-release | head -1'
 ```
 
 무엇을 보나 — 베이스 OS. el34-web 은 `Ubuntu 22.04`(풀베이스) → 표면이 넓다는 판정.
