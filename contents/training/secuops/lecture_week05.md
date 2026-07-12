@@ -397,7 +397,7 @@ graph TD
     "request_line": "GET /?q=<script>alert(1)</script> HTTP/1.1",
     "headers": {
       "host": "juice.el34.lab",
-      "user-agent": "curl/7.81.0",
+      "user-agent": "Mozilla/5.0 (dalfox)",
       "accept": "*/*",
       "x-forwarded-for": "192.168.0.202"
     }
@@ -753,18 +753,18 @@ graph TD
 
 | 시나리오 | Red 명령 | Blue 1차 (ModSec) | Blue 2차 (audit log) | Purple Gap | Purple 권장 |
 |---------|---------|------------------|---------------------|-----------|------------|
-| **① XSS** | `echo -en 'GET /search?q=<script>alert(1)</script> HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null` | 941100 (XSS) + 941110 (script tag) + 941160 (event handler) → score 15 → 403 | audit log 의 messages[] = 3 룰 매치 | paranoia 1 에서 941180 (DOM XSS) 누락 | paranoia 2 + tx.crs_exclusions_xenforo=1 |
-| **② SQLi UNION** | `echo -en 'GET /items?id=1 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null UNION SELECT 1,2,3'` | 942100 (SQLi detection lib) + 942270 (UNION SELECT) → score 10 → 403 | audit log 의 unique_id 로 추적 | paranoia 1 에서 942180 (basic SQLi keyword) 만 매치 = score 5 | paranoia 2 → 3 으로 UNION + comment + hex 룰 활성 |
-| **③ scanner UA** | `echo -en 'GET /` HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.6\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | 913100 (SCANNER nikto/sqlmap UA) → score 2 (alert only, paranoia 1) | audit log 의 REQUEST_HEADERS 의 User-Agent | paranoia 1 의 anomaly threshold 5 → 미만 → 통과 | scanner UA 의 즉시 차단 = SecRuleUpdateActionById 913100 "deny,status:403" |
+| **① XSS** | `dalfox url http://juice.el34.lab/search?q=FUZZ` | 941100 (XSS) + 941110 (script tag) + 941160 (event handler) → score 15 → 403 | audit log 의 messages[] = 3 룰 매치 | paranoia 1 에서 941180 (DOM XSS) 누락 | paranoia 2 + tx.crs_exclusions_xenforo=1 |
+| **② SQLi UNION** | `sqlmap -u http://juice.el34.lab/items?id=1 --technique=U` | 942100 (SQLi detection lib) + 942270 (UNION SELECT) → score 10 → 403 | audit log 의 unique_id 로 추적 | paranoia 1 에서 942180 (basic SQLi keyword) 만 매치 = score 5 | paranoia 2 → 3 으로 UNION + comment + hex 룰 활성 |
+| **③ scanner UA** | `sqlmap -u http://juice.el34.lab/ --level=1` (자체 UA sqlmap/1.x) | 913100 (SCANNER nikto/sqlmap UA) → score 2 (alert only, paranoia 1) | audit log 의 REQUEST_HEADERS 의 User-Agent | paranoia 1 의 anomaly threshold 5 → 미만 → 통과 | scanner UA 의 즉시 차단 = SecRuleUpdateActionById 913100 "deny,status:403" |
 
 ### 시간선 — XSS 공격 의 1 사건 흐름
 
 ```
-T+0    Red attacker 에서 XSS payload (nc raw HTTP: /search?q=<script>alert(1)</script>)
+T+0    Red attacker 에서 dalfox 로 XSS payload 발사 (/search?q= 에 <script> 계열 주입)
        └→ fw(nftables) → ips → web Apache → ModSec 5 phase 처리 시작
 
 T+1ms  ModSec phase 1 — REQUEST_HEADERS 검사
-       └→ User-Agent = curl/7.81.0 → 913100 매치 X (정상 UA)
+       └→ User-Agent = dalfox 의 브라우저형 UA(스캐너 시그니처 아님) → 913100 매치 X
 
 T+2ms  ModSec phase 2 — REQUEST_BODY 검사
        └→ ARGS:q = "<script>alert(1)</script>"
@@ -789,7 +789,7 @@ T+10s  Blue 2차 분석 (Wazuh agent 의 forward)
 
 T+1m   Purple Gap 식별
        └→ Coverage Matrix 의 ① 항목 = "paranoia 1 의 941180 누락"
-       └→ 재현 = nc 로 GET /search?q=<a onmouseover="alert(1)">x</a>
+       └→ 재현 = dalfox 가 event-handler 계열 payload(<a onmouseover="alert(1)">x</a>) 발사
        └→ paranoia 1 = 941160 만 매치 = score 5 = block (경계)
        └→ paranoia 2 = 941180 추가 매치 = score 10 = 명확 block
 
@@ -848,8 +848,8 @@ ssh ccc@10.20.32.80 'sudo grep -l "tx.paranoia_level" /etc/apache2/sites-enabled
 ### 실습 3 — XSS 공격 + audit log 분석 (20분)
 
 ```bash
-echo "$(ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null")"
-# 403 응답
+# dalfox 가 juice 에 XSS payload 를 발사 → ModSec 941 룰 매치. 탐지가 목적이라 WAF 감지 라인만 본다.
+ssh att@192.168.0.202 "dalfox url --url 'http://juice.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iaE 'WAF|XSS|403' | head -3"
 
 # 고정 sleep 대신 로그에 공격 흔적이 나타날 때까지 조건 대기(zero-sleep)
 ssh ccc@10.20.32.80 "timeout 12 bash -c 'until sudo grep -qa 192.168.0.202 /var/log/apache2/modsec_audit.log; do :; done'" || true
@@ -862,7 +862,7 @@ ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".au
 ### 실습 4 — SQLi 공격 + audit (20분)
 
 ```bash
-ssh att@192.168.0.202 "echo -en 'GET /?q=1%27 OR %271%27=%271 HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
+ssh att@192.168.0.202 "sqlmap -u 'http://juice.el34.lab/?q=1' --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3"
 # 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
 ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa 192.168.0.202 /var/log/apache2/modsec_audit.log; do :; done'" || true
 ssh ccc@10.20.32.80 'sudo tail -1 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" | grep -oE "\\[id \"942[0-9]+\"\\]"'
@@ -892,10 +892,8 @@ echo '<LocationMatch "/api/legacy/">
 ### 실습 7 — **R/B/P** 5 공격 + audit 분석 (25분)
 
 ```bash
-# Red — 5 공격 burst
-for payload in "?q=<script>alert(1)</script>" "?q=1'OR'1'='1" "?q=../../etc/passwd" "?q=;cat /etc/passwd" "?q=<?php system('id'); ?>"; do
-  ssh att@192.168.0.202 "echo -en \"GET /$payload HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n\" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-done
+# Red — nikto 로 다양한 공격 카테고리(XSS/SQLi/LFI/RCE/PHP 등 수백 probe)를 한 번에 발사 → ModSec 이 941/942/930/933 룰군을 다발 매치
+ssh att@192.168.0.202 "nikto -h http://juice.el34.lab -maxtime 30s"
 # 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
 ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo grep -qa 192.168.0.202 /var/log/apache2/modsec_audit.log; do :; done'" || true
 
@@ -958,7 +956,7 @@ ssh ccc@10.20.32.80 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".au
 
 **0a. 사용 도구 사전 안내.**
 
-- **nc** — raw HTTP 요청을 손수 보내는 도구.
+- **dalfox** — XSS 전용 스캐너. `<script>`·event-handler·img onerror 등 다양한 XSS payload 를 자동 발사하고 WAF 차단(403)을 감지한다.
 - **modsec_audit.log** — ModSecurity 의 audit 전용 로그. JSON 한 줄에 한 transaction.
 - **jq** — JSON 을 파싱해서 보는 표준 도구.
 
@@ -967,24 +965,23 @@ ssh ccc@10.20.32.80 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".au
 attacker VM 에 들어가서 학습 환경의 web 에 XSS payload 가 들어간 query 를 보낸다. 학습 환경 한정으로 실행한다.
 
 ```bash
-ssh el34-attacker
-# 비밀번호: ccc
+ssh att@192.168.0.202
+# 비밀번호: 1
 ```
 
-attacker VM 내부에서 다음 두 줄을 짧은 간격으로 보낸다.
+attacker VM 내부에서 dalfox 로 XSS payload 를 발사한다.
 
 ```bash
-# attacker VM 내부 (학습 환경 한정)
-echo -en 'GET /search?q=%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
-echo -en 'GET /search?q=%22%3E%3Cimg%20src=x%20onerror=alert(1)%3E HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+# attacker VM 내부 (학습 환경 한정) — dalfox 가 search 파라미터에 XSS 변형(<script>, img onerror 등)을 자동 발사
+dalfox url --url 'http://juice.el34.lab/search?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iaE 'WAF|XSS|403' | head -5
 ```
 
-각 줄의 의미는 다음과 같다.
+dalfox 가 쏘는 payload 의 대표 예는 다음과 같다.
 
-- 첫 번째 — `<script>alert(1)</script>` 의 URL-encoded 형태.
-- 두 번째 — `"><img src=x onerror=alert(1)>` 의 URL-encoded 형태. img 태그 우회 패턴.
+- `<script>alert(1)</script>` — 기본 script 태그 XSS.
+- `"><img src=x onerror=alert(1)>` — img 태그 event-handler 우회 패턴.
 
-두 시도가 ModSec 의 SecRuleEngine `On` 모드라면 응답 코드가 403 으로 나온다.
+ModSec 의 SecRuleEngine `On` 모드라면 이 payload 들이 941 룰군에 걸려 응답 코드가 403 으로 나온다.
 
 **2. 발생하는 로그/아티팩트.**
 
@@ -1079,13 +1076,13 @@ sudo tail -100 /var/log/apache2/modsec_audit.log \
 attacker VM 에서 SQLi 페이로드 한 줄을 보낸다.
 
 ```bash
-ssh el34-attacker
+ssh att@192.168.0.202
 
-# attacker VM 내부 (학습 환경 한정)
-echo -en 'GET /login?username=admin%27%20OR%20%271%27%3D%271&password=any HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+# attacker VM 내부 (학습 환경 한정) — sqlmap 이 username 파라미터에 OR tautology 등 SQLi 페이로드 주입
+sqlmap -u 'http://juice.el34.lab/login' --data='username=admin&password=any' -p username --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3
 ```
 
-URL-decoded 형태는 `?username=admin' OR '1'='1&password=any` 다. classic SQLi 시도다.
+sqlmap 이 주입하는 대표 페이로드는 `username=admin' OR '1'='1` 같은 classic tautology SQLi 다.
 
 **2. 발생하는 로그/아티팩트.**
 
@@ -1169,9 +1166,8 @@ attacker VM 에서 그런 정상 입력 시뮬을 보낸다.
 ```bash
 ssh att@192.168.0.202
 
-# attacker VM 내부 (학습 환경 한정) — 정상 코멘트지만 SELECT/WHERE 키워드로 오탐 유발
-B='comment=오늘 SELECT 와 WHERE 절을 학습했어요. 정말 재미있네요.'
-printf 'POST /api/comment HTTP/1.0\r\nHost: juice.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' "$(printf %s "$B" | wc -c)" "$B" | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'
+# attacker VM 내부 (학습 환경 한정) — 정상 코멘트지만 SELECT/WHERE 키워드로 오탐 유발. ffuf 로 POST body 를 실제 전송(?z=FUZZ 는 ffuf 필수 키워드용 더미)
+ffuf -u 'http://juice.el34.lab/api/comment?z=FUZZ' -X POST -H 'Content-Type: application/x-www-form-urlencoded' -d 'comment=오늘 SELECT 와 WHERE 절을 학습했어요. 정말 재미있네요.' -w <(echo x) -mc all -s
 ```
 
 ModSec 의 SQLi 룰 (942xxx) 중 일부가 "SELECT", "WHERE" 같은 키워드를 잡아 false positive 차단을 일으킨다. 응답 코드가 403 이면 false positive 발생이다.

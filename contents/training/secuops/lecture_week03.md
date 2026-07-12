@@ -598,8 +598,8 @@ ssh ccc@10.20.31.2 'echo "alert http any any -> any any (msg:\"el34 sqlmap UA\";
 # 2. reload (no downtime)
 ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
 
-# 3. 트리거
-ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+# 3. 트리거 — 진짜 SQLi 도구 sqlmap 이 자체 UA(sqlmap/1.x)로 요청 → content:"sqlmap" UA 룰 매치
+ssh att@192.168.0.202 "sqlmap -u 'http://juice.el34.lab/rest/products/search?q=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|WAF/IPS' | head -2"
 # 고정 sleep 대신 로그에 흔적이 나타날 때까지 조건 대기(zero-sleep)
 ssh ccc@10.20.31.2 "timeout 10 bash -c 'until sudo grep -qa "9004001" /var/log/suricata/eve.json; do :; done'" || true
 
@@ -640,10 +640,13 @@ graph TD
 
 ### 8.2 Red — sqlmap UA 5회
 
+sqlmap 을 그대로 돌리면 자체적으로 수십 요청을 보내 카운트가 들쭉날쭉하다. 여기서는 **정확히 5 요청** 의
+alert 상관을 보려는 것이므로, 진짜 퍼저 **ffuf** 로 UA 헤더에 `sqlmap` 스캐너 마커를 실어 5 요청만 통제
+발사한다(Burp Intruder Sniper 의 CLI 등가물). 룰 9004001 은 `http.user_agent; content:"sqlmap"` 이라
+UA 에 `sqlmap` 이 들어가면 매치된다.
+
 ```bash
-ssh att@192.168.0.202 'for i in 1 2 3 4 5; do
-    echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-done'
+ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: sqlmap/FUZZ' -w <(seq 1 5) -mc all -s"
 # (고정 sleep 제거: 이어지는 확인 명령이 재시도/즉시 반영)
 ```
 

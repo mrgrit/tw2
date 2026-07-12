@@ -311,8 +311,8 @@ steps:
       whatweb -a1 http://bastion.el34.lab/
       ```
       > 💡 **브라우저로도 확인:** 학생 PC 브라우저에서 `http://juice.el34.lab/`·`http://portal.el34.lab/` 를
-      > 열면 각 vhost 화면이 실제로 뜬다(host header 라우팅 육안 확인). 여기선 4 vhost 라우팅 응답코드만
-      > 한눈에 보려고 `-o /dev/null -w '%{http_code}'`(본문 버리고 코드만)로 확인한다.
+      > 열면 각 vhost 화면이 실제로 뜬다(host header 라우팅 육안 확인). 여기선 4 vhost 의 라우팅·서버 지문을
+      > `whatweb -a1`(HTTP 상태·서버 배너 식별)로 한눈에 확인한다.
 
       ## 📋 확인 사항
 
@@ -551,23 +551,23 @@ steps:
       # 2. ModSec engine + audit log 설정
       sudo grep -E "^SecRuleEngine|^SecAuditLog|^SecAuditEngine|^SecAuditLogFormat" /etc/modsecurity/modsecurity.conf
 
-      # ── el34-attacker 에서: XSS payload 전송 ──
-      # 3. XSS → 403 차단 검증
-      echo "XSS: $(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # ── el34-attacker 에서: XSS payload 전송 (진짜 XSS 스캐너 dalfox) ──
+      # 3. XSS → 403 차단 검증 — dalfox 가 dvwa 의 q 파라미터에 <script> 계열 payload 를 실제 발사
+      dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|403|blocked|XSS' | head -3
 
       # ── el34-web 에서: 차단 흔적 확인 ──
       # 4. error.log 의 매치 룰 ID 941/942 (audit JSON엔 룰 배열 없어 error.log 사용)
       grep -oE 'id "94[0-9]{4}"' /var/log/apache2/dvwa_error.log | sort -u | head
       ```
       > 💡 **화면으로 확인:** 브라우저에서 `http://dvwa.el34.lab/?q=<script>alert(1)</script>` 를 열면 ModSec 이
-      > 막은 **403 Forbidden 페이지**가 실제로 뜬다(WAF 차단 육안 확인). 여기선 차단 응답코드만 보려고
-      > `-o /dev/null -w '%{http_code}'` 로 확인하고, 매치 룰 ID(941xxx)는 error.log 에서 본다.
+      > 막은 **403 Forbidden 페이지**가 실제로 뜬다(WAF 차단 육안 확인). 여기선 dalfox 의 XSS payload 가 모두
+      > WAF/403 으로 차단되는 것을 도구 출력으로 보고, 매치 룰 ID(941xxx)는 error.log 에서 본다.
 
       ## 📋 확인 사항
 
       - 명령 1: `security2_module (shared)` + `proxy_module (shared)` + `ssl_module (shared)` 3 모듈 로드
       - 명령 2: `SecRuleEngine On` + `SecAuditEngine RelevantOnly` + `SecAuditLogFormat JSON` + `SecAuditLog /var/log/apache2/modsec_audit.log`
-      - 명령 3: 응답 `XSS: 403` (ModSec 차단)
+      - 명령 3: dalfox 출력에 `WAF`/`403` 라인 (모든 XSS payload 가 ModSec 차단)
       - 명령 4: 룰 ID `id "941100"`, `id "941110"`, `id "949110"` 같은 941xxx / 949xxx 출력
 
       ## 💡 왜 이걸 하는가?
@@ -591,8 +591,8 @@ steps:
       ssh ccc@10.20.32.80 'sudo grep -E "^SecRuleEngine|^SecAuditLog|^SecAuditEngine|^SecAuditLogFormat" /etc/modsecurity/modsecurity.conf'
       echo "=== 11 vhost ==="
       ssh ccc@10.20.32.80 'sudo ls /etc/apache2/sites-enabled/'
-      echo "=== XSS 페이로드 → 403 (dvwa = 차단형 vhost) ==="
-      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
+      echo "=== XSS 스캔 dalfox → 403 (dvwa = 차단형 vhost) ==="
+      ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|403|blocked|XSS' | head -3"
       # ModSec 은 응답 전에 error.log 를 쓰므로(요청 처리 중 로깅) 별도 대기 없이 바로 매치 룰 ID 확인
       ssh ccc@10.20.32.80 'sudo grep -oE "id \"94[0-9]{4}\"" /var/log/apache2/dvwa_error.log | tail -3'
     answer_detail: |
@@ -629,12 +629,12 @@ steps:
             예상 출력 `REQUEST-901-INITIALIZATION.conf / REQUEST-941-...-XSS.conf / REQUEST-942-...-SQLI.conf`(9xx 시리즈가 핵심 공격 룰).
             운영 해석: 31 룰 파일. 941 (XSS), 942 (SQLi), 930 (LFI), 932 (RCE) 핵심.
           - |
-            **[OSS] nc XSS → 403 응답** — 동작 검증.
-              ssh att@192.168.0.202 'echo "XSS: $(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"'
+            **[OSS] dalfox XSS 스캔 → 403 차단 (권장)** — 동작 검증.
+              ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|403|blocked' | head -3"
               # ModSec 은 요청 처리 중 audit.log 를 쓰므로 별도 대기 없이 최근 transaction 확인
               ssh ccc@10.20.32.80 'sudo tail -3 /var/log/apache2/modsec_audit.log | head -1 | jq "{code: .transaction.response.http_code, msgs: [.transaction.messages[]? | select(.id | startswith(\"941\")) | .id]}"'
-            예상 출력 `XSS: 403 / {"code":403,"msgs":["941100","941160"]}`.
-            운영 해석: 941100 = libinjection 매칭. 403 차단.
+            예상 출력 `WAF/403 라인 / {"code":403,"msgs":["941100","941160"]}`.
+            운영 해석: dalfox 의 <script> payload 를 libinjection(941100)이 매칭 → 403 차단.
           - |
             **[OSS] 11 vhost 검증** — reverse proxy.
               ssh ccc@10.20.32.80 'sudo ls /etc/apache2/sites-enabled/'
@@ -803,7 +803,7 @@ steps:
     instruction: |
       ## 🎯 MISSION (Red Team)
 
-      attacker 컨테이너에서 **sqlmap UA + XSS + SQLi 결합 페이로드** 1건을 발생시킨 후,
+      attacker VM 에서 **진짜 공격 도구(sqlmap SQLi·자체 UA + dalfox XSS) 결합 스캔**을 발생시킨 후,
       4 도구 (fw / ips / web / siem) 의 흔적을 STEP 8-10 에서 추적할 준비를 한다.
 
       ## 💻 실행 명령
@@ -811,10 +811,13 @@ steps:
       **공격 VM:** `ssh att@192.168.0.202`(비번 `1`)로 접속해 실행한다(자연 URL).
 
       ```bash
-      # Red 공격 — sqlmap UA + XSS + SQLi UNION SELECT 결합. 대상 vhost = dvwa
+      # Red 공격 — 진짜 공격 도구로 dvwa 를 스캔한다. 대상 vhost = dvwa
       # (전역 SecRuleEngine On 적용). juice 는 per-vhost DetectionOnly 라 200 통과
       # → W02 SQLi / W03 XSS 학생 학습용. W01 의 차단 검증은 dvwa/neobank 등 사용.
-      echo "응답: $(echo -en 'GET /?q=<script>alert(1)</script>&id=1+UNION+SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # ① sqlmap: 자체 UA(sqlmap/1.x) + UNION/OR SQLi payload → 942(SQLi) + 949(anomaly) 매치
+      sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3
+      # ② dalfox: q 파라미터에 <script> 계열 XSS payload → 941(XSS) 매치
+      dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|403|blocked|XSS' | head -3
 
       # 공격 시각 기록 (Blue/Purple step 에서 timestamp 매칭에 사용)
       ATTACK_TS=$(date -u +%Y-%m-%dT%H:%M:%S)
@@ -823,75 +826,78 @@ steps:
 
       ## 📋 확인 사항
 
-      - 응답 코드 = `403` (ModSec 가 941 XSS + 942 SQLi + 949 anomaly threshold 매치 후 차단)
-      - 시간 < 0.1s (ModSec 즉시 차단)
+      - sqlmap/dalfox 출력에 `403`/`WAF` 라인 — dvwa 의 모든 공격 요청이 ModSec 차단
+        (dalfox→941 XSS, sqlmap→942 SQLi, 누적 점수→949 anomaly threshold)
+      - 각 요청이 즉시 403 (ModSec 는 phase 2 에서 차단 → 백엔드 미도달)
       - ATTACK_TS 변수에 UTC ISO timestamp 저장 (Blue step 에서 활용)
 
       ## 💡 왜 이걸 하는가?
 
-      Defense in Depth 의 효과를 측정하려면 실제 공격이 필요하다. sqlmap UA + XSS +
-      SQLi 결합 페이로드 1건이 4 도구 (fw conntrack → ips Suricata → web ModSec → siem
+      Defense in Depth 의 효과를 측정하려면 실제 공격이 필요하다. sqlmap(SQLi·자체 UA) +
+      dalfox(XSS) 결합 스캔이 4 도구 (fw conntrack → ips Suricata → web ModSec → siem
       Wazuh) 에 동시 흔적을 남긴다. Red Team 의 표준 1 단계.
 
       ## 🔍 결과 해석
 
-      - **정상 (의도된 결과)**: 응답 `403` → ModSec 가 차단 → WAF 정상 동작
-      - **비정상 1**: 응답 `200` → ModSec engine `Off` 또는 룰셋 손실 → STEP 5 재점검
-      - **비정상 2**: 응답 `5xx` → backend(web) 다운 또는 라우팅 오류 → STEP 3 재점검
-      - **비정상 3**: 응답 `000` (timeout) → fw 의 input chain drop 또는 attacker 컨테이너
-        다운
-    hint: 'att 접속 후 — nc raw HTTP 로 sqlmap UA+XSS+SQLi 결합 요청 → dvwa 403(juice 는 DetectionOnly W02용)'
+      - **정상 (의도된 결과)**: sqlmap/dalfox 출력에 `403`/`WAF` → ModSec 가 차단 → WAF 정상 동작
+      - **비정상 1**: `200` (dalfox 가 XSS found 보고) → ModSec engine `Off` 또는 룰셋 손실 → STEP 5 재점검
+      - **비정상 2**: `5xx` → backend(web) 다운 또는 라우팅 오류 → STEP 3 재점검
+      - **비정상 3**: 연결 timeout → fw 의 input chain drop 또는 attacker VM 다운
+    hint: 'att 접속 후 — sqlmap(자체 UA+SQLi) + dalfox(XSS) 로 dvwa 스캔 → 403 차단; juice 는 DetectionOnly(W02용)'
     category: redteam
     points: 8
     answer: |
-      echo "=== Red Team: 공격 발생 (sqlmap UA + XSS + SQLi 결합) ==="
-      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script>&id=1+UNION+SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
+      echo "=== Red Team: SQLi 스캔 (sqlmap 자체 UA + UNION SELECT) → dvwa 403 ==="
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3"
+      echo "=== Red Team: XSS 스캔 (dalfox <script> payload) → dvwa 403 ==="
+      ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|403|blocked|XSS' | head -3"
       echo "=== 공격 시각 기록 ==="
       ATTACK_TS=$(ssh att@192.168.0.202 'date -u +%Y-%m-%dT%H:%M:%S')
       echo "ATTACK_TS=$ATTACK_TS"
       echo "이 시각 이후의 로그가 Blue/Purple step 에서 추적 대상"
     answer_detail: |
-      sqlmap/1.5 UA + XSS `<script>` + SQLi UNION SELECT 의 결합 페이로드. ModSec
-      의 941 (XSS) + 942 (SQLi) + 949 (anomaly threshold) 룰이 동시 매치 → score
+      sqlmap(자체 UA sqlmap/1.x + UNION/OR SQLi) + dalfox(<script> XSS) 결합 스캔. ModSec
+      의 941 (XSS, dalfox) + 942 (SQLi, sqlmap) + 949 (anomaly threshold) 룰이 매치 → score
       누적 → 403 차단. 본 step 의 ATTACK_TS 를 기록해 두면 Blue/Purple step 에서
-      timestamp 매칭 가능.
+      timestamp 매칭 가능(실제 도구는 다수 요청 → 흔적도 다수 라인).
     verify:
       type: output_contains
       expect: '403'
       field: stdout
       semantic:
         intent: |
-          Red Team 공격 시뮬. sqlmap UA + XSS + SQLi 결합 페이로드 → ModSec 403 차단.
+          Red Team 공격 시뮬. sqlmap(SQLi·자체 UA) + dalfox(XSS) 결합 스캔 → ModSec 403 차단.
         success_criteria:
           - 403 응답
           - sqlmap UA 사용
           - XSS payload 포함
         acceptable_methods:
           - |
-            **[OSS] nc 종합 페이로드** — 표준.
-              ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script>&id=1+UNION+SELECT HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-            예상 출력 `403`.
-            운영 해석: 다중 페이로드로 4 도구 동시 검증.
+            **[OSS] sqlmap + dalfox 결합 스캔 (권장)** — 표준.
+              ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3"
+              ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|403|blocked' | head -3"
+            예상 출력 `WAF/403 라인 (모든 요청 차단)`.
+            운영 해석: 진짜 SQLi/XSS 스캐너 2종으로 4 도구 동시 검증.
           - |
-            **[OSS] 페이로드 변형 — XSS only** — 단순.
-              ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-            예상 출력 `403`.
+            **[OSS] dalfox XSS 스캔 (권장)** — 단순.
+              ssh att@192.168.0.202 "dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' 2>&1 | sed -r 's/\x1b\[[0-9;]*m//g' | grep -iE 'WAF|403|blocked' | head -3"
+            예상 출력 `WAF/403 라인`.
             운영 해석: XSS 단독으로도 941 매치 → 403.
           - |
-            **[OSS] 페이로드 변형 — SQLi only** — 단순.
-              ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-            예상 출력 `403`.
+            **[OSS] sqlmap SQLi 스캔 (권장)** — 단순.
+              ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3"
+            예상 출력 `WAF/403 라인 (sqlmap OR/UNION payload 차단)`.
             운영 해석: SQLi 단독으로도 942 매치 → 403.
           - |
-            **[OSS] User-Agent only** — scanner detection.
-              ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"
-            예상 출력 `403`.
-            운영 해석: 913 (Scanner Detection) 룰셋 매치.
+            **[OSS] sqlmap 자체 UA — scanner detection (권장)** — UA 탐지.
+              ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level=1 --risk=1 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -2"
+            예상 출력 `sqlmap/1.x 배너 + WAF/403 라인`.
+            운영 해석: sqlmap 이 자체 UA(sqlmap/1.x)로 요청 → 913 (Scanner Detection) 룰셋 매치.
           - |
-            **[OSS] 연속 5회 — Wazuh 룰 발화 빈도** — burst.
-              ssh att@192.168.0.202 "for i in 1 2 3 4 5; do echo -en 'GET /?q=<script> HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'; done"
-            예상 출력 `403 / 403 / 403 / 403 / 403`.
-            운영 해석: 5회 burst → Wazuh 의 rule frequency 매칭 가능 (W09 학습).
+            **[OSS] ffuf 5회 버스트 — Wazuh 룰 발화 빈도 (권장)** — burst.
+              ssh att@192.168.0.202 "ffuf -u 'http://dvwa.el34.lab/?q=FUZZ' -w <(seq 1 5) -mc all -s"
+            예상 출력 `5 요청 모두 403 (dvwa 차단형)`.
+            운영 해석: ffuf 가 한 src 에서 5회 발사 → Wazuh 의 rule frequency 매칭 가능 (W09 학습).
           - |
             **[OSS] Burp / mitmproxy 대안** — GUI.
               # 학생 PC 에서 Burp Suite Repeater 로 동일 페이로드 + 변형
@@ -1043,8 +1049,8 @@ steps:
 
       ## 📋 확인 사항
 
-      - 명령 1: `{"client":"192.168.0.202","status":403,"ua":"sqlmap/1.5"}` 형식 (dvwa 403 transaction)
-      - 명령 2: `192.168.0.202 - - [<date>] "GET /?q=<script>... HTTP/1.1" 403 438 "-" "sqlmap/1.5"` 1+ 라인
+      - 명령 1: `{"client":"192.168.0.202","status":403,"ua":"sqlmap/1.x"}` 형식 (dvwa 403 transaction; UA 는 sqlmap 또는 dalfox)
+      - 명령 2: `192.168.0.202 - - [<date>] "GET /?q=...<XSS>... HTTP/1.1" 403 ... "..."` 형식의 403 라인 1+ (client=192.168.0.202 보존; UA 는 sqlmap/1.x 또는 dalfox)
       - 명령 3: 매치 룰 ID `941160`(XSS) / `942100`(SQLi) / `942190` / `942360` / `949110`(anomaly) / `980130`(correlation)
 
       ## 💡 왜 이걸 하는가?
@@ -1072,7 +1078,7 @@ steps:
     answer_detail: |
       audit log 의 한 transaction. messages 배열에 매치된 룰 ID. 941100 + 941160 (XSS)
       + 942100 (SQLi) + 949110 (anomaly threshold 5+ 도달 → 차단). access log 의
-      access.log 한 라인 = `192.168.0.202 - - [<date>] "GET /?q=... HTTP/1.1" 403 438 - "sqlmap/1.5"`.
+      access.log 한 라인 = `192.168.0.202 - - [<date>] "GET /?q=... HTTP/1.1" 403 438 - "sqlmap/1.x"`.
       client IP 가 실제 공격자(192.168.0.202)인 이유 — el34 는 fw 가 SNAT 하지 않아 출처 IP 가
       web 까지 보존된다. 매치 룰 ID(941/942/949)는 audit JSON 이 아니라 dvwa_error.log 에서 확인한다.
     verify:
@@ -1090,7 +1096,7 @@ steps:
           - |
             **[OSS] modsec_audit.log JSON 분석** — 표준.
               ssh ccc@10.20.32.80 'sudo tail -500 /var/log/apache2/modsec_audit.log | jq -c "select(.request.headers.Host==\"dvwa.el34.lab\")" | tail -1'
-            예상 출력 `{"transaction":{"remote_address":"192.168.0.202",...},"request":{"request_line":"GET /?q=...","headers":{"Host":"dvwa.el34.lab","User-Agent":"sqlmap/1.5"}},"response":{"status":403,...}}`.
+            예상 출력 `{"transaction":{"remote_address":"192.168.0.202",...},"request":{"request_line":"GET /?q=...","headers":{"Host":"dvwa.el34.lab","User-Agent":"sqlmap/1.x"}},"response":{"status":403,...}}`.
             운영 해석: audit JSON 은 transaction/request/response 구조. 매치 룰 ID 는
             dvwa_error.log 에서 별도 확인 (941 XSS, 942 SQLi).
           - |
@@ -1101,8 +1107,8 @@ steps:
           - |
             **[OSS] Apache access.log + grep** — 표준.
               ssh ccc@10.20.32.80 'grep -E "sqlmap|192.168.0.202" /var/log/apache2/dvwa_access.log | tail -3'
-            예상 출력 `192.168.0.202 - - [<date>] "GET /?q=<script>... HTTP/1.1" 403 ... "sqlmap/1.5"`.
-            운영 해석: client IP 가 실제 공격자(보존). UA 가 sqlmap 으로 가시화.
+            예상 출력 `192.168.0.202 - - [<date>] "GET /?q=<script>... HTTP/1.1" 403 ... "sqlmap/1.x"`.
+            운영 해석: client IP 가 실제 공격자(보존). UA 가 sqlmap/dalfox 로 가시화.
           - |
             **[OSS] 출처 IP 보존 확인** — el34 특성.
               ssh ccc@10.20.32.80 'sudo tail -20 /var/log/apache2/dvwa_access.log | awk "{print \$1}" | sort | uniq -c'
@@ -1392,7 +1398,7 @@ steps:
           - |
             **[관리적] AAR (After-Action Report)** — 표준.
               # AAR — el34 W01 Red/Blue/Purple Cycle
-              ## Operation 요약: sqlmap UA + XSS + SQLi payload 1건
+              ## Operation 요약: sqlmap SQLi(자체 UA) + dalfox XSS 결합 스캔
               ## Coverage: 4/5 (Wazuh decoder 미정의)
               ## Gap: ModSec → Wazuh decoder
               ## Action: W09 의 local_rules 추가
@@ -1487,7 +1493,7 @@ steps:
       ## 2. R/B/P 시나리오
       | Step | 팀 | 결과 |
       |------|-----|------|
-      | 7 | Red — sqlmap UA + XSS + SQLi | 403 차단 |
+      | 7 | Red — sqlmap(SQLi·UA) + dalfox(XSS) 스캔 | 403 차단 |
       | 8 | Blue — fw conntrack + ips eve.json | 흔적 ✓ |
       | 9 | Blue — web ModSec audit + access | 941/942 룰 매치 ✓ |
       | 10 | Blue — siem alerts.json | agent web alert ✓ |

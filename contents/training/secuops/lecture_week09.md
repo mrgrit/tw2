@@ -515,8 +515,8 @@ fw 가 SNAT(출처 IP 를 게이트웨이 IP 로 바꿈)를 하면 web·siem 에
 ### 7.3 el34 에서 어떻게 — SQLi 재현 → alerts.json ids 그룹
 
 ```bash
-# 웹공격 재현(외부 공격자 SQLi) → suricata eve + modsec 두 소스 발생
-ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20UNION%20SELECT%201,2--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+# 웹공격 재현(외부 공격자 sqlmap SQLi) → suricata eve + modsec 두 소스 발생
+ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=w09' --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3"
 # 고정 sleep 대신 로그에 공격 흔적이 나타날 때까지 조건 대기(zero-sleep)
 ssh ccc@10.20.32.100 "timeout 12 bash -c 'until sudo grep -q 192.168.0.202 /var/ossec/logs/alerts/alerts.json; do :; done'" || true
 # alerts.json 에 ids 그룹 경보(출처 보존) 적재 확인

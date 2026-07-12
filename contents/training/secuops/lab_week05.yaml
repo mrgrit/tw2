@@ -118,10 +118,10 @@ steps:
       각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
-      # ── el34-attacker 에서: 1) 공격을 한 발 보내 ModSec 기록을 만든다 ──
-      # 💡 이 payload URL 은 브라우저 주소창이나 Burp Repeater 로 열어도 ModSec 403 차단 페이지가 뜬다.
-      #    여기선 응답 화면이 아니라 로그(error.log) 구조 분석이 목적이라 nc 로 한 발만 보낸다.
-      echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 1) XSS 공격을 보내 ModSec 기록을 만든다 (진짜 XSS 스캐너 dalfox) ──
+      # 💡 dalfox 가 커스텀 페이로드 <script>alert(1)</script> 를 dvwa 에 발사한다(브라우저/Burp 로도 같은 payload 로 403 을 확인).
+      #    실제 도구라 몇 개의 요청이 갈 수 있으나 --only-custom-payload 로 이 payload 만 실어 로그 구조 분석에 적합하다.
+      printf '%s\n' '<script>alert(1)</script>' > /tmp/w05xss.txt; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/w05xss.txt --only-custom-payload --no-color 2>&1 | tail -3
 
       # ── el34-web 에서: 방법 A — audit log(단일라인 JSON)에서 내 요청을 골라 jq ──
       # 내 출처(192.168.0.202)의 마지막 트랜잭션 1줄 = 완전한 JSON → messages[]로 룰 ID 추출
@@ -159,7 +159,7 @@ steps:
     points: 15
     answer: |
       # el34 modsec_audit.log는 단일라인 JSON(Serial) → audit grep+jq(방법 A)와 error.log(방법 B) 둘 다 유효
-      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "printf '%s\n' '<script>alert(1)</script>' > /tmp/w05xss.txt; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/w05xss.txt --only-custom-payload --no-color 2>&1 | tail -3"
       # sleep 대신 error.log 에 이번 공격의 ModSec 경고가 실제로 기록될 때까지 조건 대기(zero-sleep)
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
       echo "=== 방법 A: audit log(단일라인 JSON) grep+jq — messages 룰 ID ==="
@@ -205,15 +205,14 @@ steps:
       # ── el34-web 에서: 공격 직전 error.log 라인 수 기록 (이번 요청만 격리) ──
       B=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
 
-      # ── el34-attacker 에서: XSS 페이로드 전송 ──
-      # 💡 브라우저/Burp Repeater 로 같은 URL 을 열면 403 차단 페이지를 눈으로 확인할 수 있다.
-      # 💡 다양한 도구: dalfox 로 WAF 지문 + XSS 자동 스캔 — 모든 payload 가 403 이면 WAF 효과 입증:
-      #      ssh att@192.168.0.202 "dalfox url 'http://dvwa.el34.lab/?q=FUZZ' --skip-bav --no-color"
-      #    (여기선 941xxx 매칭·anomaly score 를 정확히 보려고 nc 한 발로 페이로드를 고정한다.)
-      echo "응답: $(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # ── el34-attacker 에서: XSS 페이로드 전송 (진짜 XSS 스캐너 dalfox) ──
+      # 💡 브라우저/Burp Repeater 로 같은 payload 를 열면 403 차단 페이지를 눈으로 확인할 수 있다.
+      # 💡 dalfox 가 커스텀 페이로드 <script>alert(1)</script> 를 실어 발사 → 941100/941110/941160 매치 + Total Inbound Score 15.
+      #    (--only-custom-payload 로 이 payload 만 고정해 anomaly score 를 정확히 관찰. 광범위 스캔은 dalfox url --url '...?q=FUZZ' --no-color 로 전량 403 확인.)
+      printf '%s\n' '<script>alert(1)</script>' > /tmp/w05xss.txt; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/w05xss.txt --only-custom-payload --no-color 2>&1 | tail -3
 
-      # ── el34-web 에서: 이번 요청 신규 라인만 분석 (공격 1초 후) ──
-      # 매치 룰 ID
+      # ── el34-web 에서: 이번 요청 신규 라인만 분석 (dalfox 발사 직후) ──
+      # 매치 룰 ID (dalfox 가 여러 줄 남겨도 941xxx 카테고리 룰 ID 는 그대로 존재)
       sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id "9[0-9]{5}"' | sort -u
       # 익명점수 요약(Total Inbound Score + SQLI=,XSS=)
       sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'Total Inbound Score: [0-9]+|SQLI=[0-9]+,XSS=[0-9]+[^]]*' | head -2
@@ -221,7 +220,7 @@ steps:
 
       ## 📋 확인 사항
 
-      - **응답: 403** (block)
+      - **dalfox 발사 → dvwa 403 차단** (dalfox 출력에 WAF 반응; error.log 에 매치 라인 생성)
       - **매치 룰**: `id "941100"` `id "941110"` `id "941160"` + `id "949110"`(block) + `id "980130"`(correlation)
       - **익명점수**: `Total Inbound Score: 15` (XSS critical 3 × 5)
       - **summary**: `SQLI=0,XSS=15,...`
@@ -236,13 +235,14 @@ steps:
       - **정상**: 403 + 941 3 매치 + score 15 + XSS=15
       - **누적 의미**: XSS critical 3 × 5 = 15 ≥ threshold 5 → block
       - **paranoia 2 효과**: 941180 등 추가 룰 → score 더 누적
-    hint: 'nc(<script>) → 403 → 941xxx + score 15'
+    hint: 'dalfox XSS custom-payload → 403 → 941xxx + score 15'
     category: redblue
     points: 20
     answer: |
       # 공격 직전 error.log 라인 수 기록(이번 요청만 격리)
       B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
+      echo "=== dalfox XSS custom-payload 발사 ==="
+      ssh att@192.168.0.202 "printf '%s\n' '<script>alert(1)</script>' > /tmp/w05xss.txt; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/w05xss.txt --only-custom-payload --no-color 2>&1 | tail -3"
       # 이번 요청의 신규 error.log 라인이 나타날 때까지 조건 대기(zero-sleep)
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       echo "매치 룰(이번 요청 신규 라인만):"
@@ -258,7 +258,7 @@ steps:
         intent: "XSS 차단 + 941xxx 매치 + score 15"
         success_criteria: ["403", "941100+941110+941160", "Total Score: 15", "XSS=15"]
         acceptable_methods:
-          - "**[OSS] nc(<script>) 페이로드**"
+          - "**[OSS] dalfox XSS custom-payload (권장)**"
           - "**[OSS] grep -oE [id \"X\"]**"
           - "**[OSS] Total Score grep**"
           - "**[OSS] 949110 block + 980130 correlation**"
@@ -281,17 +281,15 @@ steps:
       각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
-      # ── el34-web 에서: SQLi 직전 error.log 라인 수 기록 (이번 요청만 격리) ──
+      # ── el34-web 에서: SQLi 직전 error.log 라인 수 기록 (이번 스캔만 격리) ──
       B=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
 
-      # ── el34-attacker 에서: SQLi 전송 — ' OR '1'='1 (URL 인코딩) ──
-      # 💡 브라우저/Burp Repeater 로도 같은 payload 를 보내 403 을 확인할 수 있다.
-      # 💡 다양한 도구: sqlmap 자동화 시 WAF 가 942xxx 로 전량 차단(= WAF 효과 입증):
-      #      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=1' --batch --level 1 2>&1 | tail -5"
-      #    (여기선 libinjection fingerprint 를 정확히 보려고 nc 로 페이로드를 고정한다.)
-      echo "응답: $(echo -en 'GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # ── el34-attacker 에서: SQLi 전송 — 진짜 SQLi 도구 sqlmap ──
+      # 💡 sqlmap 이 ?id 파라미터에 ' OR '1'='1 등 SQLi 페이로드를 자동 주입 → dvwa WAF 가 942xxx 로 전량 차단(= WAF 효과 입증).
+      #    실제 도구라 다수 요청을 보내지만 error.log 라인 격리로 이번 스캔의 942xxx 를 골라낸다(브라우저/Burp 로도 payload 별 403 확인 가능).
+      sqlmap -u 'http://dvwa.el34.lab/?id=w05s' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3
 
-      # ── el34-web 에서: 이번 요청 신규 라인만 분석 (공격 1초 후) ──
+      # ── el34-web 에서: 이번 스캔 신규 라인만 분석 (sqlmap 발사 직후) ──
       # 942xxx(SQLi) 매치 룰
       sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id "942[0-9]+"' | sort -u
       # SQLI 익명점수
@@ -300,10 +298,10 @@ steps:
 
       ## 📋 확인 사항
 
-      - **응답: 403** (block)
-      - **942xxx 매치**: `id "942100"` (libinjection) + `id "942190"`/`id "942360"`
+      - **sqlmap 스캔 → 942xxx 전량 403** (`949110` block 동반)
+      - **942xxx 매치**: `id "942100"` (libinjection, 지배적) + `id "942190"`/`id "942360"` 등
       - **SQLI 점수**: `SQLI=5` 이상 (libinjection critical → score 누적)
-      - **격리**: error.log 라인수 차이로 이번 요청만 추출(직전 공격과 안 섞임)
+      - **격리**: error.log 라인수 차이로 이번 스캔만 추출(직전 공격과 안 섞임; sqlmap 은 다수 요청)
 
       ## 💡 왜 이걸 하는가?
 
@@ -315,20 +313,21 @@ steps:
       - **정상**: 403 + 942xxx + fingerprint
       - **IR 활용**: fingerprint 가 attack vector 식별 단서
       - **paranoia 2 효과**: comment 우회 (`/*X*/UNION`) 매치
-    hint: "nc('1' OR '1'='1') → 942xxx + libinjection fingerprint"
+    hint: "sqlmap SQLi → 942xxx + libinjection fingerprint"
     category: redblue
     points: 18
     answer: |
-      # SQLi 페이로드 직전 error.log 라인 수 기록(이번 요청만 격리)
+      # SQLi 스캔 직전 error.log 라인 수 기록(이번 스캔만 격리)
       B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?id=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
-      # 이번 요청의 신규 error.log 라인이 나타날 때까지 조건 대기(zero-sleep)
+      echo "=== sqlmap SQLi 스캔 ==="
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=w05s' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3"
+      # 이번 스캔의 신규 error.log 라인이 나타날 때까지 조건 대기(zero-sleep)
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
-      echo "942xxx 매치(이번 요청 신규 라인):"
+      echo "942xxx 매치(이번 스캔 신규 라인):"
       ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"942[0-9]+\"' | sort -u"
       echo "SQLI 점수:"
       ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'SQLI=[0-9]+' | head -1"
-    answer_detail: 'SQLi → 403 + 942xxx(942100 libinjection 등) + SQLI 점수. error.log 라인수 격리로 이번 요청만. encoding 변형도 CRS normalize로 동일 매치.'
+    answer_detail: 'sqlmap SQLi → 403 + 942xxx(942100 libinjection 지배적) + 949110 block + SQLI 점수. error.log 라인수 격리로 이번 스캔만(sqlmap 다수 요청). encoding 변형도 CRS normalize로 동일 매치.'
     verify:
       type: output_contains
       expect: '942'
@@ -337,7 +336,7 @@ steps:
         intent: "SQLi 차단 + libinjection fingerprint"
         success_criteria: ["403", "942xxx", "Total Score", "SQLI"]
         acceptable_methods:
-          - "**[OSS] nc('1' OR '1'='1')**"
+          - "**[OSS] sqlmap SQLi (권장)**"
           - "**[OSS] libinjection fingerprint**"
           - "**[OSS] URL encoding bypass + CRS normalize**"
           - "**[OSS] paranoia 2/3 정교한 변형**"
@@ -361,41 +360,33 @@ steps:
       (el34-web 세션을 연 채 다른 터미널에서 공격하면 B/B2/B3 변수가 유지된다.)
 
       ```bash
-      # 💡 세 payload 모두 브라우저/Burp Repeater 로 열면 403 차단을 눈으로 볼 수 있다.
-      # 💡 다양한 도구: wfuzz 로 traversal 변종을 퍼징해 어떤 변형이 930xxx 에 걸리는지 관찰 가능:
-      #      ssh att@192.168.0.202 "wfuzz -z list,'../../etc/passwd-....//....//etc/passwd' -u 'http://dvwa.el34.lab/?p=FUZZ' --hc 0"
-      #    (여기선 카테고리별 룰 ID 를 정확히 분리하려고 nc 로 한 발씩 고정한다.)
-      # ── LFI → 930xxx ──
+      # 💡 세 공격을 진짜 취약점 스캐너 nuclei 로 발사한다(브라우저/Burp 로도 각 payload 를 열어 403 확인 가능).
+      #    nuclei 는 태그별 템플릿을 다수 요청으로 발사하지만 error.log 라인 격리로 카테고리별(930/932/933) 룰 ID 를 분리한다.
+      # ── LFI → 930xxx (nuclei -tags lfi) ──
       # el34-web: 라인 수 기록
       B=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
-      # el34-attacker: LFI 전송
-      echo "응답: $(echo -en 'GET /?p=../../../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # el34-attacker: LFI 스캔 (../../etc/passwd 등 path traversal 템플릿)
+      nuclei -u http://dvwa.el34.lab -tags lfi -silent 2>&1 | tail -3
       # el34-web: 신규 라인의 930xxx
       sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id "930[0-9]+"' | sort -u
 
-      # ── RCE → 932xxx ──
+      # ── RCE → 932xxx + PHP → 933xxx (nuclei -tags rce,injection — 한 스캔이 932·933 둘 다 생성) ──
       # el34-web:
       B2=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
-      # el34-attacker:
-      echo "응답: $(echo -en 'GET /?cmd=;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      # el34-web:
+      # el34-attacker: RCE/cmd injection + PHP injection 템플릿 (;cat /etc/passwd, <?php system('id') 등)
+      nuclei -u http://dvwa.el34.lab -tags rce,injection -silent 2>&1 | tail -3
+      # el34-web: 같은 스캔 window 의 RCE(932)
       sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id "932[0-9]+"' | sort -u
-
-      # ── PHP → 933xxx ──
-      # el34-web:
-      B3=$(sudo wc -l < /var/log/apache2/dvwa_error.log)
-      # el34-attacker:
-      echo "응답: $(echo -en 'GET /?x=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      # el34-web:
-      sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id "933[0-9]+"' | sort -u
+      # el34-web: 같은 스캔 window 의 PHP(933) — rce,injection 태그에 PHP-injection 템플릿 포함
+      sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id "933[0-9]+"' | sort -u
       ```
 
       ## 📋 확인 사항
 
-      - **LFI 응답: 403** + `id "930100"`/`id "930110"`/`id "930120"` (path traversal)
-      - **RCE 응답: 403** + `id "932xxx"` (unix command)
-      - **PHP 응답: 403** + `id "933xxx"` (PHP tag injection)
-      - **격리**: 각 공격 직전 라인수 기록 → 신규 라인만 → 공격별 카테고리 정확 분리
+      - **LFI (nuclei -tags lfi) → 403** + `id "930100"`/`id "930110"`/`id "930120"` (path traversal)
+      - **RCE (nuclei -tags rce,injection) → 403** + `id "932xxx"` (unix command)
+      - **PHP (같은 rce,injection 스캔) → 403** + `id "933xxx"` (PHP tag injection)
+      - **격리**: 각 스캔 직전 라인수 기록 → 신규 라인만 → 카테고리 정확 분리(nuclei 는 다수 요청; RCE·PHP 는 한 스캔 공유)
 
       ## 💡 왜 이걸 하는가?
 
@@ -406,26 +397,24 @@ steps:
       - **정상**: 3 공격 모두 403 + 각 카테고리 매치
       - **IR 활용**: 카테고리 top 10 이 우선순위 단서
       - **paranoia 2 효과**: null byte injection 등 정교한 LFI 변형 매치
-    hint: 'LFI ../../etc/passwd / RCE ;cat / PHP <?php'
+    hint: 'nuclei -tags lfi → 930 / nuclei -tags rce,injection → 932+933'
     category: redblue
     points: 20
     answer: |
-      echo "=== LFI → 930xxx (이번 요청만 격리) ==="
+      echo "=== LFI → 930xxx (nuclei -tags lfi, 이번 스캔만 격리) ==="
       B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?p=../../../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
+      ssh att@192.168.0.202 "nuclei -u http://dvwa.el34.lab -tags lfi -silent 2>&1 | tail -3"
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
       ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"930[0-9]+\"' | sort -u"
-      echo "=== RCE → 932xxx ==="
+      echo "=== RCE → 932xxx + PHP → 933xxx (nuclei -tags rce,injection — 한 스캔이 둘 다) ==="
       B2=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?cmd=;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
+      ssh att@192.168.0.202 "nuclei -u http://dvwa.el34.lab -tags rce,injection -silent 2>&1 | tail -3"
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
+      echo "RCE 932xxx:"
       ssh ccc@10.20.32.80 "sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"932[0-9]+\"' | sort -u"
-      echo "=== PHP → 933xxx ==="
-      B3=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/dvwa_error.log')
-      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /?x=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
-      ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -q .; do :; done'" || true
-      ssh ccc@10.20.32.80 "sudo tail -n +$((B3+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"933[0-9]+\"' | sort -u"
-    answer_detail: 'LFI 930xxx + RCE 932xxx + PHP 933xxx 매치(각 요청 error.log 라인수 격리). OWASP A03 sub-type별 CRS 카테고리.'
+      echo "PHP 933xxx (같은 rce,injection 스캔):"
+      ssh ccc@10.20.32.80 "sudo tail -n +$((B2+1)) /var/log/apache2/dvwa_error.log | grep -oE 'id \"933[0-9]+\"' | sort -u"
+    answer_detail: 'LFI 930xxx(nuclei -tags lfi) + RCE 932xxx + PHP 933xxx(nuclei -tags rce,injection 한 스캔 공유) 매치(각 스캔 error.log 라인수 격리). OWASP A03 sub-type별 CRS 카테고리.'
     verify:
       type: output_contains
       expect: '930'
@@ -434,9 +423,9 @@ steps:
         intent: "LFI/RCE/PHP 3 공격 + 카테고리 분포"
         success_criteria: ["LFI 930xxx", "RCE 932xxx", "PHP 933xxx", "카테고리 top 10"]
         acceptable_methods:
-          - "**[OSS] LFI ../../etc/passwd → 930**"
-          - "**[OSS] RCE ;cat → 932**"
-          - "**[OSS] PHP <?php → 933**"
+          - "**[OSS] nuclei -tags lfi (권장)**"
+          - "**[OSS] nuclei -tags rce,injection (권장)**"
+          - "**[OSS] nuclei rce,injection → PHP 933 (권장)**"
           - "**[OSS] OWASP Top 10 A03 매핑**"
           - "**[OSS] URL encoding 변형**"
           - "**[OSS] paranoia 2 — null byte / multi-byte**"
@@ -457,9 +446,9 @@ steps:
       각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
-      # ── el34-attacker 에서: 공격 1발 ──
-      # 💡 브라우저/Burp 로 열어도 audit log 에 같은 remote_address 가 기록된다(el34 는 출처 보존).
-      echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: XSS 공격 1발 (진짜 XSS 스캐너 dalfox) ──
+      # 💡 dalfox 가 <script>alert(1)</script> 를 발사 → audit log 에 이 스캔의 remote_address 가 기록된다(el34 는 출처 보존; 브라우저/Burp 로도 동일).
+      printf '%s\n' '<script>alert(1)</script>' > /tmp/w05xss.txt; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/w05xss.txt --only-custom-payload --no-color 2>&1 | tail -3
 
       # ── el34-web 에서: remote_address / XFF 확인 (공격 2초 후) ──
       sudo tail -1 /var/log/apache2/modsec_audit.log | jq '{remote:.transaction.remote_address, xff:.request.headers."x-forwarded-for"}'
@@ -499,7 +488,7 @@ steps:
     category: analysis
     points: 12
     answer: |
-      ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "printf '%s\n' '<script>alert(1)</script>' > /tmp/w05xss.txt; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/w05xss.txt --only-custom-payload --no-color 2>&1 | tail -3"
       # audit 기록이 flush 될 때까지 error.log 의 ModSec 경고로 조건 대기(zero-sleep)
       ssh ccc@10.20.32.80 "timeout 8 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
       echo "=== remote_address (el34 출처 보존) ==="
@@ -634,9 +623,10 @@ steps:
       이후 exception 작성·운영 절차·자가 점검은 개념(시뮬)이라 출력만 본다.
 
       ```bash
-      # ── el34-attacker 에서: baseline 요청 ──
-      # 💡 브라우저/Burp Repeater 로 열어 exception 전/후 응답 코드(403↔200) 변화를 눈으로 비교하면 좋다.
-      echo "응답: $(echo -en 'GET /admin/comments?text=<b>hi</b> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # ── el34-attacker 에서: baseline 요청 (진짜 퍼저 ffuf 로 <b>hi</b> benign 태그 발사) ──
+      # 💡 <b>hi</b> 는 exception 룰을 시험하기 위한 benign 태그다. ffuf 가 이 값을 text 파라미터에 실어 요청 →
+      #    exception 전에는 941100 매치로 403, exception 적용 후에는 통과(200). 브라우저/Burp 로도 응답 코드 변화를 비교할 수 있다.
+      ffuf -u 'http://dvwa.el34.lab/admin/comments?text=FUZZ' -w <(printf '<b>hi</b>\n') -mc all -s
 
       # === exception 작성 (초안 파일 → 검토·적용) ===
       cat > ~/w05_exception.conf <<'EOF'
@@ -694,7 +684,8 @@ steps:
     category: operations
     points: 12
     answer: |
-      echo "응답: $(ssh att@192.168.0.202 "echo -en 'GET /admin/comments?text=<b>hi</b> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'")"
+      echo "=== baseline 요청 (ffuf <b>hi</b> benign 태그) ==="
+      ssh att@192.168.0.202 "ffuf -u 'http://dvwa.el34.lab/admin/comments?text=FUZZ' -w <(printf '<b>hi</b>\n') -mc all -s"
       echo "=== exception (초안 파일) ==="
       cat > ~/w05_exception.conf <<'EOF'
       <LocationMatch "^/admin/comments$">
@@ -748,25 +739,24 @@ steps:
       (el34-web 세션을 연 채 다른 터미널에서 공격 → baseline 라인수를 눈으로 비교)
 
       ```bash
-      # ── el34-web 에서: baseline audit log 라인수 (적어둔다) ──
-      sudo wc -l /var/log/apache2/modsec_audit.log | awk '{print $1}'
+      # ── el34-web 에서: baseline audit log 라인수(=트랜잭션 수) 기록 (이번 5 공격만 격리) ──
+      B=$(sudo wc -l < /var/log/apache2/modsec_audit.log)
 
-      # ── el34-attacker 에서: Red 5 공격 (XSS/SQLi/LFI/RCE/PHP) ──
-      # 💡 각 payload 는 브라우저/Burp Intruder(payload 리스트 5종) 로도 순차 전송 가능 — 5/5 403 을 눈으로 확인.
-      #    Burp Intruder 는 5 공격을 한 번에 배치로 돌려 응답 코드 표를 뽑기 좋다. 여기선 로그 상관을 위해 nc 배치로.
-      echo "XSS  -> $(echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      echo "SQLi -> $(echo -en 'GET /?q=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      echo "LFI  -> $(echo -en 'GET /?q=../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      echo "RCE  -> $(echo -en 'GET /?q=;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
-      echo "PHP  -> $(echo -en 'GET /?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}')"
+      # ── el34-attacker 에서: Red 5 카테고리 — 진짜 도구 4종(dalfox/sqlmap/nuclei×2)이 발사 ──
+      # 💡 dalfox(XSS)·sqlmap(SQLi)·nuclei lfi(LFI)·nuclei rce,injection(RCE+PHP). Burp Intruder 배치의 CLI 등가물.
+      #    실제 도구라 각자 다수 요청을 보내지만 baseline 라인수 격리로 이번 5 카테고리의 분포를 뽑는다(5/5 차단).
+      printf '%s\n' '<script>alert(1)</script>' > /tmp/w05xss.txt; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/w05xss.txt --only-custom-payload --no-color 2>&1 | tail -2
+      sqlmap -u 'http://dvwa.el34.lab/?id=w05s' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3
+      nuclei -u http://dvwa.el34.lab -tags lfi -silent 2>&1 | tail -2
+      nuclei -u http://dvwa.el34.lab -tags rce,injection -silent 2>&1 | tail -2
 
-      # ── el34-web 에서: Blue/Purple 분석 (공격 5초 후) ──
-      # 카테고리 분포 (최근 5 transaction)
-      sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE '\[id "[0-9]+"\]' | sort | uniq -c | sort -rn | head -15
-      # 980130 summary (각 transaction)
-      sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE 'SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+'
-      # 5 차단 결과
-      sudo tail -5 /var/log/apache2/modsec_audit.log | jq ".response.status"
+      # ── el34-web 에서: Blue/Purple 분석 (이번 5 공격의 신규 트랜잭션만) ──
+      # 카테고리 분포 (941 XSS / 942 SQLi / 930 LFI / 932 RCE / 933 PHP / 949 block / 980 summary)
+      sudo tail -n +$((B+1)) /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE '\[id "[0-9]+"\]' | sort | uniq -c | sort -rn | head -15
+      # 980130 summary (신규 트랜잭션의 카테고리 score)
+      sudo tail -n +$((B+1)) /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE 'SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+' | tail -5
+      # 차단 결과 (신규 트랜잭션 status 분포 — 모두 403)
+      sudo tail -n +$((B+1)) /var/log/apache2/modsec_audit.log | jq ".response.status" | sort | uniq -c
 
       # Purple — paranoia tuning 5 권장 (노트 파일로 남긴다)
       cat > ~/w05_paranoia_tuning.md <<'EOF'
@@ -781,9 +771,9 @@ steps:
 
       ## 📋 확인 사항
 
-      - 5 공격 모두 403 (성공률 5/5)
-      - 카테고리 분포 top 15 — 941+942+930+932+933+949+980 모두
-      - 980130 summary — 각 transaction 의 XSS/SQLI/LFI/RCE/PHP score
+      - 5 카테고리(dalfox/sqlmap/nuclei) 모두 차단 — status 분포 전부 403 (실제 도구라 요청 수는 다수)
+      - 카테고리 분포 top 15 — 941+942+930+932+933+949+980 모두 등장
+      - 980130 summary — 신규 트랜잭션의 XSS/SQLI/LFI/RCE/PHP score
       - response.status: 모두 403
       - paranoia tuning 5 권장
 
@@ -803,25 +793,24 @@ steps:
     category: redblue
     points: 25
     answer: |
-      BEFORE=$(ssh ccc@10.20.32.80 'sudo wc -l /var/log/apache2/modsec_audit.log | awk "{print \$1}"')
-      echo "baseline: $BEFORE"
-      echo "=== Red 5 ==="
-      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=<script>alert(1)</script> HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=<script>alert(1)</script> → $code"
-      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=1%27%20OR%20%271%27=%271 HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=1'%20OR%20'1'='1 → $code"
-      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=../../etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=../../etc/passwd → $code"
-      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=;cat%20/etc/passwd HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=;cat%20/etc/passwd → $code"
-      code=$(ssh att@192.168.0.202 "echo -en 'GET /?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E HTTP/1.0\r\nHost: dvwa.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 | head -1 | grep -oE '[0-9]{3}'"); echo "  ?q=%3C%3Fphp%20system(%27id%27)%3B%20%3F%3E → $code"
-      # 5 공격이 모두 audit/error.log 에 반영될 때까지 조건 대기(zero-sleep) — 마지막 공격의 ModSec 경고 확인
-      ssh ccc@10.20.32.80 "timeout 10 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
-      echo "=== Blue — 카테고리 ==="
-      ssh ccc@10.20.32.80 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "\[id \"[0-9]+\"\]" | sort | uniq -c | sort -rn | head -15'
-      echo "=== Blue — 980130 ==="
-      ssh ccc@10.20.32.80 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq -r ".audit_data.messages[]" 2>/dev/null | grep -oE "SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+"'
-      echo "=== Purple — status ==="
-      ssh ccc@10.20.32.80 'sudo tail -5 /var/log/apache2/modsec_audit.log | jq ".response.status"'
+      B=$(ssh ccc@10.20.32.80 'sudo wc -l < /var/log/apache2/modsec_audit.log')
+      echo "baseline transactions: $B"
+      echo "=== Red 5 카테고리 (dalfox/sqlmap/nuclei×2) ==="
+      ssh att@192.168.0.202 "printf '%s\n' '<script>alert(1)</script>' > /tmp/w05xss.txt; dalfox url --url 'http://dvwa.el34.lab/?q=FUZZ' --custom-payload /tmp/w05xss.txt --only-custom-payload --no-color 2>&1 | tail -2"
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=w05s' --batch --level=2 --risk=2 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head -3"
+      ssh att@192.168.0.202 "nuclei -u http://dvwa.el34.lab -tags lfi -silent 2>&1 | tail -2"
+      ssh att@192.168.0.202 "nuclei -u http://dvwa.el34.lab -tags rce,injection -silent 2>&1 | tail -2"
+      # 5 카테고리가 모두 audit/error.log 에 반영될 때까지 조건 대기(zero-sleep) — 마지막 스캔의 ModSec 경고 확인
+      ssh ccc@10.20.32.80 "timeout 12 bash -c 'until sudo tail -3 /var/log/apache2/dvwa_error.log | grep -q ModSecurity; do :; done'" || true
+      echo "=== Blue — 카테고리 분포(이번 5 공격 신규 트랜잭션) ==="
+      ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/modsec_audit.log | jq -r '.audit_data.messages[]' 2>/dev/null | grep -oE '\[id \"[0-9]+\"\]' | sort | uniq -c | sort -rn | head -15"
+      echo "=== Blue — 980130 summary ==="
+      ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/modsec_audit.log | jq -r '.audit_data.messages[]' 2>/dev/null | grep -oE 'SQLI=[0-9]+,XSS=[0-9]+,RFI=[0-9]+,LFI=[0-9]+,RCE=[0-9]+,PHPI=[0-9]+' | tail -5"
+      echo "=== Purple — status 분포(모두 403) ==="
+      ssh ccc@10.20.32.80 "sudo tail -n +$((B+1)) /var/log/apache2/modsec_audit.log | jq '.response.status' | sort | uniq -c"
       echo "=== Purple — paranoia 권장 5 ==="
       echo "1. paranoia 1 유지 / 2. vhost 별 2 / 3. 3+ 금지 / 4. 분기 검토 / 5. Wazuh 통합"
-    answer_detail: 'Red 5 공격 → 5/5 차단 + 카테고리 분포 + 980130 + paranoia 5 권장.'
+    answer_detail: 'Red 5 카테고리(dalfox/sqlmap/nuclei×2) → 전량 403 차단 + 카테고리 분포(신규 트랜잭션 격리) + 980130 + paranoia 5 권장. 실제 도구라 요청 수는 다수.'
     verify:
       type: output_contains
       expect: '980'
@@ -830,7 +819,7 @@ steps:
         intent: "R/B/P — 5 공격 + summary + paranoia 권장"
         success_criteria: ["5/5 403", "카테고리 분포", "980130", "paranoia 5"]
         acceptable_methods:
-          - "**[OSS] 5 공격 burst**"
+          - "**[OSS] dalfox/sqlmap/nuclei 5 카테고리 (권장)**"
           - "**[OSS] grep -oE [id]**"
           - "**[OSS] 980130 summary**"
           - "**[OSS] response.status 검증**"

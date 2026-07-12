@@ -306,12 +306,10 @@ steps:
       각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
-      # ── el34-attacker 에서: 0. 새 HTTP 트래픽 3건 발생 (분석 대상 확보) ──
-      # 💡 이 HTTP 트래픽은 브라우저로 http://juice.el34.lab/ 를 열어도 발생한다(특정 UA 는 Burp Repeater 로).
-      #    여기선 eve.json 분석 대상 확보가 목적이라 응답은 -o /dev/null 로 버린다.
-      echo -en 'GET /w04_test_1 HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: TestUA/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET /w04_test_2 HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: TestUA/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET /w04_test_3 HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: TestUA/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 0. 새 HTTP 트래픽 3건 발생 (분석 대상 확보) — 진짜 도구 ffuf ──
+      # 💡 ffuf 가 경로와 UA 에 동시에 FUZZ(1..3)를 대입해 /w04_test_1..3 (UA TestUA/1..3) 3 요청을 발사한다.
+      #    브라우저/Burp 로도 가능. eve.json 분석 대상 확보가 목적이라 -s. -t 1 로 순차(마지막=3).
+      ffuf -u 'http://juice.el34.lab/w04_test_FUZZ' -H 'User-Agent: TestUA/FUZZ' -w <(seq 1 3) -mc all -s -t 1
 
       # ── el34-ips 에서: eve.json 분석 (트래픽 후 4초쯤 대기) ──
       # 1. event_type 분포 (최근 200 event)
@@ -359,9 +357,7 @@ steps:
     points: 18
     answer: |
       echo "=== 0. 새 트래픽 발생 ==="
-      ssh att@192.168.0.202 "echo -en 'GET /w04_test_1 HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: TestUA/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      ssh att@192.168.0.202 "echo -en 'GET /w04_test_2 HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: TestUA/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      ssh att@192.168.0.202 "echo -en 'GET /w04_test_3 HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: TestUA/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/w04_test_FUZZ' -H 'User-Agent: TestUA/FUZZ' -w <(seq 1 3) -mc all -s -t 1"
       # 새 트래픽이 eve.json 에 기록될 때까지 조건 폴링(고정 sleep 대신, 최대 10초)
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q w04_test /var/log/suricata/eve.json; do :; done"' || true
       echo
@@ -434,8 +430,8 @@ steps:
       sudo grep "local.rules" /etc/suricata/suricata.yaml   # rule-files 등록 확인
       sudo suricatasc -c reload-rules                        # downtime 0
 
-      # ── el34-attacker 에서: 5. 트리거 — sqlmap UA nc (UA 를 sqlmap 으로 바꿔 보내는 건 Burp Repeater 로도 가능, 여기선 탐지 트리거가 목적이라 응답 버림) ──
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 5. 트리거 — 진짜 SQLi 도구 sqlmap 이 자체 UA(sqlmap/x.y)로 요청 → 룰 매치 ──
+      sqlmap -u 'http://juice.el34.lab/rest/products/search?q=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|checking if the target|WAF/IPS' | head -2
 
       # ── el34-ips 에서: 6-7. alert 검증 + 룰 로드 카운트 (트리거 5초 후) ──
       sudo grep 9004001 /var/log/suricata/eve.json | tail -1 | jq .alert
@@ -499,8 +495,8 @@ steps:
       echo "=== 4. reload (suricatasc 동기 반환이라 별도 대기 불필요) ==="
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
       echo
-      echo "=== 5. 트리거 ==="
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      echo "=== 5. 트리거 (진짜 sqlmap — 자체 UA sqlmap/x.y) ==="
+      ssh att@192.168.0.202 "sqlmap -u 'http://juice.el34.lab/rest/products/search?q=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|checking if the target|WAF/IPS' | head -2"
       # alert 가 eve 에 기록될 때까지 조건 폴링(고정 sleep 대신, 최대 10초)
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9004001 /var/log/suricata/eve.json; do :; done"' || true
       echo
@@ -511,7 +507,7 @@ steps:
       ssh ccc@10.20.31.2 'sudo grep "Loaded.*rules" /var/log/suricata/suricata.log | tail -3'
     answer_detail: |
       9004001 룰 작성 (http.user_agent + content "sqlmap" + nocase) → reload OK →
-      nc 트리거 → alert event 적재 (severity 2, category Web Application Attack).
+      진짜 sqlmap 트리거(자체 UA sqlmap/x.y) → alert event 적재 (severity 2, category Web Application Attack).
       reload 가 downtime 0. 양 NIC sniff 라 alert 1-2 event.
     verify:
       type: output_contains
@@ -631,9 +627,9 @@ steps:
     instruction: |
       ## 🎯 MISSION — **R/B/P** sqlmap UA × 5 burst → 양 NIC alert count → threshold 권장
 
-      **Red** 가 attacker 에서 sqlmap UA 5회 burst → **Blue** 가 eve.json 의 9004001
-      alert 카운트 (5 ~ 10 예상, 양 NIC sniff) → **Purple** 이 false-positive 분석 +
-      threshold/suppression 권장 + cleanup.
+      **Red** 가 attacker 에서 진짜 sqlmap 스캔(자체 UA sqlmap/x.y, 수십 요청) → **Blue** 가
+      eve.json 의 9004001 alert 카운트(스캔 flood 라 다수, 양 NIC sniff) → **Purple** 이
+      false-positive 분석 + threshold/suppression 권장 + cleanup.
 
       ## 💻 사전 조건
 
@@ -652,15 +648,12 @@ steps:
       # 1. baseline — 현재 9004001 alert 카운트 (이 숫자를 적어둔다)
       sudo grep -c "9004001" /var/log/suricata/eve.json
 
-      # ── el34-attacker 에서: 2. Red — sqlmap UA 5회 burst (rate 룰 트리거용. Burp Intruder 로도 반복 가능) ──
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 2. Red — 진짜 sqlmap 스캔 (자체 UA sqlmap/x.y 로 수십 요청 → rate 룰 트리거) ──
+      # 💡 nc 5회 대신 진짜 스캐너 sqlmap 이 한 번에 수십 요청을 자체 UA 로 발사한다 = 실제 스캔 flood.
+      sqlmap -u 'http://juice.el34.lab/rest/products/search?q=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|checking if the target|WAF/IPS' | head -3
 
       # ── el34-ips 에서: 3-5. Blue/Purple — 카운트 변화 + context (burst 6초 후) ──
-      # 3. after 카운트 (baseline 과의 차 = delta, 5~10 예상)
+      # 3. after 카운트 (baseline 과의 차 = delta, sqlmap 스캔이라 다수)
       sudo grep -c "9004001" /var/log/suricata/eve.json
       # 4. in_iface 분포 (양 NIC 효과)
       sudo grep "9004001" /var/log/suricata/eve.json | tail -10 | jq -r .in_iface | sort | uniq -c
@@ -682,15 +675,15 @@ steps:
 
       ## 📋 확인 사항
 
-      - **DELTA**: 5 ~ 10 (양 NIC sniff 효과 — 1 burst 가 1~2 alert 생성)
-      - **in_iface 분포**: `eth0` + `eth1` 모두 표시 (각각 5+ alert)
-      - **명령 5 출력**: `{ts, src:"192.168.0.202", url:"/", ua:"sqlmap/1.5", severity:2}`
+      - **DELTA**: 다수 (실제 sqlmap 스캔은 수십 요청 → 수십 alert; 양 NIC sniff 로 더 증가)
+      - **in_iface 분포**: `eth0` + `eth1` 모두 표시 (양 NIC)
+      - **명령 5 출력**: `{ts, src:"192.168.0.202", url:"/rest/products/search", ua:"sqlmap/1.x", severity:2}`
         - src 가 **실제 attacker IP (192.168.0.202)** — el34 는 fw 가 SNAT 하지 않아 출처 보존 (xff 불요)
 
       ## 💡 왜 이걸 하는가?
 
-      Purple Team 표준 cycle — 룰 작성 후 운영 효과 측정. delta 가 5 미만 = sniff 누락 또는
-      reload 안 됨. delta 10 초과 = retry traffic 또는 양 NIC 외 추가 sniff.
+      Purple Team 표준 cycle — 룰 작성 후 운영 효과 측정. delta 가 0 = sniff 누락 또는
+      reload 안 됨. sqlmap 스캔은 수십 요청이라 delta 가 크게 나오며 이게 곧 alert flood = threshold 필요성의 근거.
 
       ## 🔍 결과 해석 + 운영 권장
 
@@ -699,7 +692,7 @@ steps:
       - **권장 1**: threshold.config 의 `rate_filter` (60초 안 5건만)
       - **권장 2**: 또는 룰 modifier `threshold:type both, track by_src, count 5, seconds 60`
       - **권장 3**: production 의 `event_filter` 가 외부 통제 → 룰 수정 없이 변경 가능 (정석)
-    hint: 'att 접속 후 — nc(sqlmap UA) ... 5회; el34-ips 접속 후 — grep -c 9004001 eve.json (delta 5~10)'
+    hint: 'att 접속 후 — sqlmap 스캔(자체 UA sqlmap/x.y); el34-ips 접속 후 — grep -c 9004001 eve.json (스캔 flood 라 다수)'
     category: redblue
     points: 25
     answer: |
@@ -710,12 +703,8 @@ steps:
       BEFORE=$(ssh ccc@10.20.31.2 'sudo grep "9004001" /var/log/suricata/eve.json | jq -s length')
       echo "baseline: $BEFORE"
       echo
-      echo "=== 2. Red 5 burst ==="
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      echo "=== 2. Red — 진짜 sqlmap 스캔 (자체 UA, 수십 요청) ==="
+      ssh att@192.168.0.202 "sqlmap -u 'http://juice.el34.lab/rest/products/search?q=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|checking if the target|WAF/IPS' | head -3"
       # eve 에 새 alert 가 반영될 때까지 조건 폴링(고정 sleep 대신 카운트 증가를 대기, 최대 12초)
       ssh ccc@10.20.31.2 "timeout 12 bash -c 'until [ \$(sudo grep 9004001 /var/log/suricata/eve.json | jq -s length) -gt $BEFORE ]; do :; done'" || true
       echo
@@ -740,7 +729,7 @@ steps:
       ssh ccc@10.20.31.2 'sudo sed -i "/sid:9004001/d" /etc/suricata/rules/local.rules'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
     answer_detail: |
-      Red 5 burst → 5~10 alert (양 NIC). in_iface eth0 + eth1 균등. src=fw IP, xff=attacker.
+      Red 진짜 sqlmap 스캔 → 다수 alert (양 NIC). in_iface eth0 + eth1. src=attacker IP(192.168.0.202, 보존).
       severity 2. threshold 권장 — event_filter rate_filter (track by_src, 60s 5건).
     verify:
       type: output_contains
@@ -749,12 +738,12 @@ steps:
       semantic:
         intent: "R/B/P — 5 burst → 10 alert + threshold 권장"
         success_criteria:
-          - "delta 5~10"
+          - "delta 다수 (스캔 flood)"
           - "in_iface 양 NIC"
-          - "xff = attacker IP"
+          - "src = attacker IP 보존"
           - "threshold 권장"
         acceptable_methods:
-          - "**[OSS] 5 burst nc** — Red"
+          - "**[OSS] sqlmap 스캐너 스캔 (권장)** — Red"
           - "**[OSS] grep -c 9004001 eve.json** — Blue 카운트"
           - "**[OSS] jq + alert context** — Purple 분석"
           - "**[OSS] in_iface 별 분포** — 양 NIC 효과"
@@ -791,7 +780,7 @@ steps:
       sudo suricatasc -c reload-rules
 
       # ── el34-attacker 에서: 3. 트리거 (alert 안 발생할 것. UA 지정은 Burp Repeater 로도 가능) ──
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: WrongPathTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: WrongPathTest/FUZZ' -w <(echo 1) -mc all -s
 
       # ── el34-ips 에서: 4-5. alert 없음 검증 + suricata.log 진단 ──
       echo "9004099 alert 카운트 (0 이 예상):"
@@ -804,7 +793,7 @@ steps:
       sudo suricatasc -c reload-rules
 
       # ── el34-attacker 에서: 7. 재 트리거 ──
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: WrongPathTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: WrongPathTest/FUZZ' -w <(echo 1) -mc all -s
 
       # ── el34-ips 에서: 검증 (1+ 가 정상) + cleanup (트리거 4초 후) ──
       echo "9004099 alert 카운트 (1+ 가 정상):"
@@ -848,7 +837,7 @@ steps:
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
       echo
       echo "=== 3-4. 트리거 + alert 없음 검증 (잘못된 경로라 룰 미로드) ==="
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: WrongPathTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: WrongPathTest/FUZZ' -w <(echo 1) -mc all -s"
       echo "9004099 카운트 (0 예상 — 룰 미로드):"
       ssh ccc@10.20.31.2 'sudo grep "9004099" /var/log/suricata/eve.json | jq -s length'
       echo
@@ -858,7 +847,7 @@ steps:
       echo "=== 6. 복구 — 올바른 경로 ==="
       ssh ccc@10.20.31.2 'sudo bash -c "cat /tmp/wrong_path.rules >> /etc/suricata/rules/local.rules"'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: WrongPathTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: WrongPathTest/FUZZ' -w <(echo 1) -mc all -s"
       # alert 가 eve 에 기록될 때까지 조건 폴링(고정 sleep 대신, 최대 10초)
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9004099 /var/log/suricata/eve.json; do :; done"' || true
       echo "9004099 카운트 (1+ 정상):"

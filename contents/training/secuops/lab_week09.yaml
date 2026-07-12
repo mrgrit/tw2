@@ -276,13 +276,13 @@ steps:
       각 장비에 `ssh ccc@<장비IP>`(fw 10.20.30.1 / ips 31.2 / web 32.80 / siem 32.100)로 접속해 실행한다.
 
       ```bash
-      # ── el34-attacker 에서: 웹공격 재현 (sqlmap UA + SQLi) ──
-      echo -en 'GET /?id=wz9%27%20UNION%20SELECT%201,2--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 웹공격 재현 (진짜 SQLi 도구 sqlmap — 자체 UA + id 파라미터 인젝션) ──
+      sqlmap -u 'http://dvwa.el34.lab/?id=wz9' --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head
 
       # ── el34-siem 에서: alerts.json ids 그룹 ingest (공격 8초 후, 출처 보존) ──
       tail -300 /var/ossec/logs/alerts/alerts.json | jq -c 'select(.rule.groups|index("ids"))|{r:.rule.id,d:.rule.description,s:.data.src_ip}' | tail -2
       ```
-      - nc raw HTTP(User-Agent: sqlmap/1.7 헤더 + UNION SELECT SQLi 페이로드)로 dvwa vhost 를 두드린다.
+      - sqlmap 은 자체 UA(sqlmap/1.x)로 dvwa vhost 의 id 파라미터에 SQLi 페이로드(UNION/OR 등)를 실제 주입한다 — 진짜 공격 도구라 Suricata/ModSec 가 그대로 탐지한다.
       - 조건 폴링(로그 흔적 대기) : 공격이 Suricata eve → ips agent → manager → alerts.json 에 반영되기까지의 파이프라인 지연 대기.
       - `jq select(.rule.groups|index("ids"))` : 평결 중 ids(네트워크) 그룹만 골라 rule.id/설명/출처 IP 추출.
 
@@ -293,8 +293,8 @@ steps:
     category: detect
     points: 15
     answer: |
-      echo "=== 웹공격 재현 ==="
-      ssh att@192.168.0.202 "echo -en 'GET /?id=wz9%27%20UNION%20SELECT%201,2--%20- HTTP/1.0\r\nHost: dvwa.el34.lab\r\nUser-Agent: sqlmap/1.7\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      echo "=== 웹공격 재현 (sqlmap SQLi) ==="
+      ssh att@192.168.0.202 "sqlmap -u 'http://dvwa.el34.lab/?id=wz9' --batch --level=2 --risk=2 --disable-coloring 2>&1 | grep -iE 'sqlmap|403|WAF/IPS' | head"
       # 고정 sleep 대신 로그에 공격 흔적이 나타날 때까지 조건 대기(zero-sleep)
       ssh ccc@10.20.32.100 "timeout 12 bash -c 'until sudo grep -q 192.168.0.202 /var/ossec/logs/alerts/alerts.json; do :; done'" || true
       echo "=== alerts.json ids 그룹 ingest (출처 보존) ==="

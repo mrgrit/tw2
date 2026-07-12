@@ -53,10 +53,9 @@ steps:
       # 4. reload
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: 5. 트리거 — /admin + /ADMIN (nocase 검증) ──
-      # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET /ADMIN HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 5. 트리거 — /admin + /ADMIN (nocase 검증) — 진짜 디렉터리 열거 도구 ffuf ──
+      # 💡 ffuf 가 2-워드 목록(admin, ADMIN)을 FUZZ 에 대입해 실제 GET /admin·/ADMIN 요청을 발사한다(브라우저/Burp 로도 가능). 탐지(eve.json)가 목적이라 -s 로 조용히.
+      ffuf -u 'http://juice.el34.lab/FUZZ' -w <(printf 'admin\nADMIN\n') -mc all -s
 
       # ── el34-ips 에서: 6. alert 검증 (트리거 4초 후) ──
       sudo grep "9005041" /var/log/suricata/eve.json | jq -s length
@@ -67,7 +66,7 @@ steps:
 
       - syntax 검증: `Notice: ...successfully loaded. Exiting.`
       - reload: `{"message":"done","return":"OK"}`
-      - 명령 6 카운트: **4** (2 요청 × 2 NIC sniff)
+      - 명령 6 카운트: **2–4** (ffuf 가 admin·ADMIN 2 요청 → NIC 미러링에 따라 2~4 alert)
       - alert 출력: `{sig:"el34 admin path access", severity:2, url:"/admin" 또는 "/ADMIN"}`
 
       ## 💡 왜 이걸 하는가?
@@ -91,8 +90,7 @@ steps:
       EOF"'
       ssh ccc@10.20.31.2 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      ssh att@192.168.0.202 "echo -en 'GET /ADMIN HTTP/1.0\r\nHost: juice.el34.lab\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/FUZZ' -w <(printf 'admin\nADMIN\n') -mc all -s"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005041 /var/log/suricata/eve.json; do :; done"' || true
       ssh ccc@10.20.31.2 'sudo grep "9005041" /var/log/suricata/eve.json | jq -s length'
       ssh ccc@10.20.31.2 'sudo grep "9005041" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature, severity:.alert.severity, url:.http.url}"'
@@ -147,9 +145,9 @@ steps:
       sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: 3. 트리거 (POST body 에 가짜 RRN) ──
-      # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 42\r\nConnection: close\r\n\r\nname=hong&rrn=901231-1234567&email=h@a.com' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 3. 트리거 (ffuf 로 POST body 에 가짜 RRN 전송) ──
+      # 💡 ffuf 로 POST body 를 실제 전송한다(-d 로 body 고정, ?z=FUZZ 는 ffuf 필수 키워드용 더미). 탐지(eve.json)가 목적이라 -s.
+      ffuf -u 'http://juice.el34.lab/?z=FUZZ' -X POST -H 'Content-Type: application/x-www-form-urlencoded' -d 'name=hong&rrn=901231-1234567&email=h@a.com' -w <(echo x) -mc all -s
 
       # ── el34-ips 에서: 4. alert 검증 (트리거 4초 후) ──
       sudo grep "9005002" /var/log/suricata/eve.json | jq -s length
@@ -190,7 +188,7 @@ steps:
       EOF"'
       ssh ccc@10.20.31.2 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 42\r\nConnection: close\r\n\r\nname=hong&rrn=901231-1234567&email=h@a.com' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/?z=FUZZ' -X POST -H 'Content-Type: application/x-www-form-urlencoded' -d 'name=hong&rrn=901231-1234567&email=h@a.com' -w <(echo x) -mc all -s"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005002 /var/log/suricata/eve.json; do :; done"' || true
       ssh ccc@10.20.31.2 'sudo grep "9005002" /var/log/suricata/eve.json | jq -s length'
       ssh ccc@10.20.31.2 'sudo grep "9005002" /var/log/suricata/eve.json | tail -1 | jq "{sig:.alert.signature, classtype:.alert.category}"'
@@ -245,10 +243,10 @@ steps:
       sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: step1(UA, state set, alert 없음) → step2(같은 conn 의 /admin, alert 발생) ──
-      # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/nulladmin
+      # ── el34-attacker 에서: step1(UA FlowbitTest → state set, alert 없음) → step2(/admin + UA → alert 발생) ──
+      # 💡 step1 = ffuf 가 UA 헤더에 FlowbitTest 마커를 실어 GET / 발사(flowbit set, noalert). step2 = ffuf 가 GET /admin 을 같은 마커 UA 로 발사(step1 set → isset 매치 → alert). 탐지(eve.json)가 목적이라 -s.
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: FlowbitTest/FUZZ' -w <(echo 1) -mc all -s
+      ffuf -u 'http://juice.el34.lab/FUZZ' -H 'User-Agent: FlowbitTest/s2' -w <(echo admin) -mc all -s
 
       # ── el34-ips 에서: alert 검증 (트리거 4초 후) ──
       echo "step1 alert (noalert 이므로 0):"
@@ -293,10 +291,9 @@ steps:
       alert http any any -> any any (msg:\"step2 admin after step1\"; http.uri; content:\"/admin\"; flowbits:isset,fb_test_step1; classtype:successful-recon; priority:1; sid:9005011; rev:1;)
       EOF"'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
-      ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005010 /var/log/suricata/eve.json; do :; done"' || true
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/nulladmin'
-      ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005010 /var/log/suricata/eve.json; do :; done"' || true
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: FlowbitTest/FUZZ' -w <(echo 1) -mc all -s"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/FUZZ' -H 'User-Agent: FlowbitTest/s2' -w <(echo admin) -mc all -s"
+      ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005011 /var/log/suricata/eve.json; do :; done"' || true
       echo "step1 alert event count (noalert ~ 0):"
       ssh ccc@10.20.31.2 'sudo grep "9005010" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"'
       echo "step2 alert event count (양 NIC = 2):"
@@ -352,12 +349,12 @@ steps:
       EOF"
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: 각 mode 별 10 burst (한 src; 10회는 ≥10 이라 루프 유지) ──
-      # 💡 반복 요청은 Burp Intruder(UA 위치에 payload, Sniper 10회) 로도 낸다 — threshold/rate 테스트의
-      #    표준 도구. 여기선 탐지(eve.json)만 볼 거라 nc 루프로 응답을 -o /dev/null 로 버린다.
-      for i in 1 2 3 4 5 6 7 8 9 10; do echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: ThreshLimit/$i\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; done
-      for i in 1 2 3 4 5 6 7 8 9 10; do echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: ThreshThr/$i\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; done
-      for i in 1 2 3 4 5 6 7 8 9 10; do echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: ThreshBoth/$i\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; done
+      # ── el34-attacker 에서: 각 mode 별 10 burst (한 src) — 진짜 퍼저 ffuf 가 UA 마커를 실어 발사 ──
+      # 💡 ffuf 가 UA 헤더에 ThreshXxx/FUZZ 마커를 실어 seq 1..10 을 대입해 10 요청을 한 src 에서 burst 로 발사한다
+      #    (Burp Intruder Sniper 의 CLI 등가물 — threshold/rate 테스트의 표준). 탐지(eve.json)만 볼 거라 -s.
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: ThreshLimit/FUZZ' -w <(seq 1 10) -mc all -s
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: ThreshThr/FUZZ' -w <(seq 1 10) -mc all -s
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: ThreshBoth/FUZZ' -w <(seq 1 10) -mc all -s
 
       # ── el34-ips 에서: 각 sid 의 alert count ──
       echo "sid 9005020 (limit) alert count:"; sudo grep 9005020 /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
@@ -400,10 +397,10 @@ steps:
       alert http any any -> any any (msg:\"thr_both 10s 5\"; http.user_agent; content:\"ThreshBoth\"; nocase; threshold:type both, track by_src, count 5, seconds 10; sid:9005022; rev:1;)
       EOF"'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      # 반복 요청은 Burp Intruder(Sniper, UA payload 10회) 로도 대체 가능 — 응답은 -o /dev/null 로 버린다(탐지만 관찰).
-      ssh att@192.168.0.202 'for i in 1 2 3 4 5 6 7 8 9 10; do echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: ThreshLimit/$i\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; done'
-      ssh att@192.168.0.202 'for i in 1 2 3 4 5 6 7 8 9 10; do echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: ThreshThr/$i\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; done'
-      ssh att@192.168.0.202 'for i in 1 2 3 4 5 6 7 8 9 10; do echo -en "GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: ThreshBoth/$i\r\nConnection: close\r\n\r\n" | nc -w3 192.168.0.161 80 >/dev/null; done'
+      # 반복 요청은 진짜 퍼저 ffuf 로 발사(Burp Intruder Sniper 의 CLI 등가물) — UA 마커에 seq 1..10 대입, 탐지만 관찰(-s).
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: ThreshLimit/FUZZ' -w <(seq 1 10) -mc all -s"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: ThreshThr/FUZZ' -w <(seq 1 10) -mc all -s"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: ThreshBoth/FUZZ' -w <(seq 1 10) -mc all -s"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005020 /var/log/suricata/eve.json; do :; done"' || true
       echo "sid 9005020 alert count: $(ssh ccc@10.20.31.2 'sudo grep 9005020 /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')"
       echo "sid 9005021 alert count: $(ssh ccc@10.20.31.2 'sudo grep 9005021 /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')"
@@ -455,16 +452,16 @@ steps:
       EOF"
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: baseline 트리거 ──
-      # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: SuppTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: baseline 트리거 (ffuf 가 UA 마커 SuppTest 로 GET / 발사) ──
+      # 💡 ffuf 가 UA 헤더에 SuppTest 마커를 실어 요청한다(브라우저/Burp 로도 가능). 탐지(eve.json)가 목적이라 -s.
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: SuppTest/FUZZ' -w <(echo 1) -mc all -s
 
       # ── el34-ips 에서: baseline alert 카운트 (suppress 없음) ──
       sudo grep "9005030" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
 
       # ── el34-ips 에서: 3-4. threshold.config 에 suppress 추가 (attacker IP 만) + 활성화 ──
       sudo bash -c "cat > /etc/suricata/threshold.config <<EOF
-      suppress gen_id 1, sig_id 9005030, track by_src, ip 10.20.31.1
+      suppress gen_id 1, sig_id 9005030, track by_src, ip 192.168.0.202
       EOF"
       sudo grep "threshold-file" /etc/suricata/suricata.yaml | head -2
       # 주석 처리되어 있다면 활성화:
@@ -473,9 +470,9 @@ steps:
       # ── el34-ips 에서: 5. reload ──
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: 재트리거 ──
-      # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: SuppTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 재트리거 (suppress 적용 후 같은 SuppTest 요청) ──
+      # 💡 ffuf 가 같은 SuppTest 마커 UA 로 다시 발사 — suppress 가 이 src 의 alert 를 막는지 확인. -s.
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: SuppTest/FUZZ' -w <(echo 1) -mc all -s
 
       # ── el34-ips 에서: suppress 적용 후 alert (attacker IP 라 추가 0 예상) + cleanup ──
       sudo grep "9005030" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
@@ -503,7 +500,7 @@ steps:
       - **정상**: baseline alert 있음 + suppress 후 추가 alert 없음
       - **비정상 1**: threshold-file 미활성 → suricata.yaml 의 `# threshold-file:` 주석 제거
       - **비정상 2**: suppress 후에도 alert → IP range 매칭 오류 (track by_src 확인)
-    hint: 'threshold.config 의 suppress gen_id 1, sig_id 9005030, track by_src, ip 10.20.31.1'
+    hint: 'threshold.config 의 suppress gen_id 1, sig_id 9005030, track by_src, ip 192.168.0.202'
     category: operations
     points: 17
     answer: |
@@ -511,17 +508,17 @@ steps:
       alert http any any -> any any (msg:\"el34 suppress test UA\"; http.user_agent; content:\"SuppTest\"; nocase; sid:9005030; rev:1;)
       EOF"'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: SuppTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: SuppTest/FUZZ' -w <(echo 1) -mc all -s"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005030 /var/log/suricata/eve.json; do :; done"' || true
       BEFORE=$(ssh ccc@10.20.31.2 'sudo grep "9005030" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')
       echo "baseline alert: $BEFORE"
       # suppress 추가
       ssh ccc@10.20.31.2 'sudo bash -c "cat > /etc/suricata/threshold.config <<EOF
-      suppress gen_id 1, sig_id 9005030, track by_src, ip 10.20.31.1
+      suppress gen_id 1, sig_id 9005030, track by_src, ip 192.168.0.202
       EOF"'
       ssh ccc@10.20.31.2 'sudo sed -i "s|^# threshold-file:|threshold-file:|" /etc/suricata/suricata.yaml'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: SuppTest/1.0\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: SuppTest/FUZZ' -w <(echo 1) -mc all -s"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005030 /var/log/suricata/eve.json; do :; done"' || true
       AFTER=$(ssh ccc@10.20.31.2 'sudo grep "9005030" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')
       echo "suppress 적용 후 alert: $AFTER  delta: $((AFTER - BEFORE))"
@@ -579,9 +576,10 @@ steps:
       # 3. reload
       sudo suricatasc -c reload-rules
 
-      # ── el34-attacker 에서: 4. 트리거 — sqlmap UA + UNION SELECT body ──
-      # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 4. 트리거 — 진짜 SQLi 도구 sqlmap 이 UA=sqlmap + UNION SELECT body 를 POST ──
+      # 💡 sqlmap 은 자체 UA(sqlmap/x.y)로 요청하고, POST 파라미터 union 주입 시 body 에 UNION SELECT 를 실어 보낸다
+      #    → 이 룰(UA sqlmap + body union select)이 자연히 매치. 탐지(eve.json)가 목적.
+      sqlmap -u 'http://juice.el34.lab/' --data='q=1' --batch --level=2 --risk=2 --technique=U --disable-coloring 2>&1 | grep -iE 'sqlmap|union|WAF/IPS' | head -3
 
       # ── el34-ips 에서: 5. alert 검증 (트리거 4초 후) ──
       echo "9005099 alert count:"
@@ -592,8 +590,8 @@ steps:
       ## 📋 확인 사항
 
       - syntax pass
-      - alert 1-2 발생 (양 NIC; threshold limit 1 per 60s 라 1만 보일 수도)
-      - alert 의 sig, severity 1, ua=sqlmap/1.5, body 에 UNION SELECT, metadata 의 mitre_tactic_id
+      - alert 1+ 발생 (실제 sqlmap 은 union POST 를 여러 발 보냄 → threshold limit 1/60s 는 창별로 캡하지만 스캔이 여러 창에 걸치면 다수 alert; **룰이 매치하는지**가 핵심)
+      - alert 의 sig, severity 1, ua=sqlmap/1.x (실제 sqlmap UA), body 에 UNION SELECT, metadata 의 mitre_tactic_id
 
       ## 💡 왜 이걸 하는가?
 
@@ -622,7 +620,7 @@ steps:
       EOF"'
       ssh ccc@10.20.31.2 'sudo suricata -T -S /etc/suricata/rules/local.rules 2>&1 | tail -3'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "sqlmap -u 'http://juice.el34.lab/' --data='q=1' --batch --level=2 --risk=2 --technique=U --disable-coloring 2>&1 | grep -iE 'sqlmap|union|WAF/IPS' | head -3"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005099 /var/log/suricata/eve.json; do :; done"' || true
       echo "9005099 alert count:"
       ssh ccc@10.20.31.2 'sudo grep "9005099" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"'
@@ -680,13 +678,11 @@ steps:
       # ── el34-ips 에서: 1. baseline (이 숫자를 적어둔다) ──
       sudo grep "9005011" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
 
-      # ── el34-attacker 에서: 2. Red — 다단계 공격 5 cycle (step1 UA → step2 /admin) ──
-      # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/4\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/4\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      # ── el34-attacker 에서: 2. Red — 다단계 공격 5 cycle (step1 UA → step2 /admin) — 진짜 퍼저 ffuf ──
+      # 💡 ffuf 가 step1(GET / + UA FlowbitTest/1..5)로 flowbit 5개 set → step2(GET /admin + 같은 UA)로 5회 isset 매치.
+      #    Burp Intruder Sniper 의 CLI 등가물. 탐지(eve.json)가 목적이라 -s.
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: FlowbitTest/FUZZ' -w <(seq 1 5) -mc all -s
+      ffuf -u 'http://juice.el34.lab/admin?c=FUZZ' -H 'User-Agent: FlowbitTest/FUZZ' -w <(seq 1 5) -mc all -s
 
       # ── el34-ips 에서: 3-4. after 카운트(delta = after - baseline, 5~10) + severity 분포 ──
       sudo grep "9005011" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
@@ -696,7 +692,7 @@ steps:
       # 권장 config 를 파일로 남겨 리뷰/적용한다 (threshold.config 에 병합할 초안).
       cat > ~/w04_suppress_recommend.config <<'EOF'
       # /etc/suricata/threshold.config
-      suppress gen_id 1, sig_id 9005011, track by_src, ip 10.20.31.1
+      suppress gen_id 1, sig_id 9005011, track by_src, ip 192.168.0.202
       event_filter gen_id 1, sig_id 9005011, type limit, track by_src, count 1, seconds 60
       EOF
       cat ~/w04_suppress_recommend.config
@@ -740,18 +736,15 @@ steps:
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
       BEFORE=$(ssh ccc@10.20.31.2 'sudo grep "9005011" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')
       echo "baseline: $BEFORE"
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null'
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null'
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null'
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/4\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/4\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null'
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null'
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: FlowbitTest/FUZZ' -w <(seq 1 5) -mc all -s"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/admin?c=FUZZ' -H 'User-Agent: FlowbitTest/FUZZ' -w <(seq 1 5) -mc all -s"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005011 /var/log/suricata/eve.json; do :; done"' || true
       AFTER=$(ssh ccc@10.20.31.2 'sudo grep "9005011" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')
       echo "after: $AFTER  delta: $((AFTER - BEFORE))"
       ssh ccc@10.20.31.2 'sudo grep "9005011" /var/log/suricata/eve.json | tail -10 | jq -r .alert.severity | sort | uniq -c'
       echo
       echo "권장 suppression (시뮬):"
-      echo "  suppress gen_id 1, sig_id 9005011, track by_src, ip 10.20.31.1"
+      echo "  suppress gen_id 1, sig_id 9005011, track by_src, ip 192.168.0.202"
       echo "  event_filter gen_id 1, sig_id 9005011, type limit, track by_src, count 1, seconds 60"
       ssh ccc@10.20.31.2 'sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
@@ -806,7 +799,7 @@ steps:
 
       # ── el34-attacker 에서: 트리거 ──
       # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      sqlmap -u 'http://juice.el34.lab/rest/products/search?q=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|checking if the target|WAF/IPS' | head -2
 
       # ── el34-ips 에서: 5.x 후위 문법 alert (0 또는 매우 적음 예상) ──
       echo "5.x 후위 문법 alert:"
@@ -820,7 +813,7 @@ steps:
 
       # ── el34-attacker 에서: 재트리거 ──
       # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null
+      sqlmap -u 'http://juice.el34.lab/rest/products/search?q=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|checking if the target|WAF/IPS' | head -2
 
       # ── el34-ips 에서: 6.x 전위 문법 alert (1+ 정상) ──
       echo "6.x 전위 문법 alert:"
@@ -866,7 +859,7 @@ steps:
       alert http any any -> any any (msg:\"5x 후위\"; content:\"sqlmap\"; http_user_agent; nocase; sid:9005091; rev:1;)
       EOF"'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "sqlmap -u 'http://juice.el34.lab/rest/products/search?q=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|WAF/IPS' | head -2"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005091 /var/log/suricata/eve.json; do :; done"' || true
       echo "5.x alert (silent fail 가능):"
       ssh ccc@10.20.31.2 'sudo grep "9005091" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"'
@@ -876,7 +869,7 @@ steps:
       alert http any any -> any any (msg:\"6x 전위\"; http.user_agent; content:\"sqlmap\"; nocase; sid:9005091; rev:2;)
       EOF"'
       ssh ccc@10.20.31.2 'sudo suricatasc -c reload-rules'
-      ssh att@192.168.0.202 "echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null"
+      ssh att@192.168.0.202 "sqlmap -u 'http://juice.el34.lab/rest/products/search?q=1' --batch --level=1 --risk=1 --flush-session --disable-coloring 2>&1 | grep -iE 'sqlmap|WAF/IPS' | head -2"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005091 /var/log/suricata/eve.json; do :; done"' || true
       echo "6.x alert (1+ 정상):"
       ssh ccc@10.20.31.2 'sudo grep "9005091" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"'
@@ -944,17 +937,16 @@ steps:
       sudo grep "9005099" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'
 
       # ── el34-attacker 에서: 5. Red — 5 burst 다단계(step1 → step2 → sqlmap) ──
-      # 💡 이 트리거 트래픽은 브라우저(자연 URL)나 Burp Repeater 로도 발생시킬 수 있다 — 탐지(eve.json)가 목적이라 응답은 -o /dev/null 로 버린다.
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/4\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/4\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null
-      echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null
+      # 💡 ffuf 가 flowbit 다단계(step1 GET / + UA FlowbitTest/1..5 → step2 GET /admin) + 진짜 SQLi 도구 sqlmap 이 UA=sqlmap+UNION body POST.
+      #    threshold/event_filter 가 alert flood 를 억제하는지 관찰(-s). Burp Intruder 의 CLI 등가물.
+      ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: FlowbitTest/FUZZ' -w <(seq 1 5) -mc all -s
+      ffuf -u 'http://juice.el34.lab/admin?c=FUZZ' -H 'User-Agent: FlowbitTest/FUZZ' -w <(seq 1 5) -mc all -s
+      sqlmap -u 'http://juice.el34.lab/' --data='q=1' --batch --level=2 --risk=2 --technique=U --disable-coloring 2>&1 | grep -iE 'sqlmap|union|WAF/IPS' | head -3
 
       # ── el34-ips 에서: 6-7. after 카운트 + flood 차단 판정 ──
-      sudo grep "9005011" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'    # delta 1~4 (event_filter limit 1/30s)
-      sudo grep "9005099" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'    # delta 1~2 (룰 threshold limit 1/60s)
-      # 두 delta 가 각각 ≤4 / ≤2 면 alert flood 차단 성공
+      sudo grep "9005011" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'    # delta 작음 (event_filter limit 1/30s 가 ffuf 5-burst flood 를 억제)
+      sudo grep "9005099" /var/log/suricata/eve.json | grep -c '"event_type":"alert"'    # 실 sqlmap union 다발 → 룰이 매치(다수), threshold 는 창별 캡
+      # 9005011 delta 가 5-cycle 보다 작으면(event_filter 억제) flowbit flood 차단 성공
 
       # ── el34-ips 에서: Cleanup ──
       sudo sed -i '/sid:9005/d' /etc/suricata/rules/local.rules /etc/suricata/threshold.config
@@ -963,9 +955,9 @@ steps:
 
       ## 📋 확인 사항
 
-      - 9005011 delta: 1~4 (5 cycle 이지만 event_filter limit 1/30s 라 1, 양 NIC 까지 2)
-      - 9005099 delta: 1~2 (룰 자체 threshold limit 1/60s 라 1, 양 NIC 2)
-      - alert flood 차단 성공 출력
+      - 9005011 delta: 작음 (ffuf 5 cycle 이지만 event_filter limit 1/30s 가 flood 를 억제)
+      - 9005099 delta: 1+ (실제 sqlmap 이 union POST 를 다발로 → 룰이 매치; threshold 는 창별 캡)
+      - flowbit flood(9005011) 가 event_filter 로 억제됨을 확인
 
       ## 💡 왜 이걸 하는가?
 
@@ -994,11 +986,9 @@ steps:
       BEFORE_11=$(ssh ccc@10.20.31.2 'sudo grep "9005011" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')
       BEFORE_99=$(ssh ccc@10.20.31.2 'sudo grep "9005099" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')
       echo "baseline 11: $BEFORE_11 / 99: $BEFORE_99"
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/1\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null'
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/2\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null'
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/3\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null'
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/4\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/4\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null'
-      ssh att@192.168.0.202 'echo -en 'GET / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; echo -en 'GET /admin HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: FlowbitTest/5\r\nConnection: close\r\n\r\n' | nc -w3 192.168.0.161 80 >/dev/null; printf 'POST / HTTP/1.0\r\nHost: juice.el34.lab\r\nUser-Agent: sqlmap/1.5\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 36\r\nConnection: close\r\n\r\nq=1 UNION SELECT password FROM users' | nc -w3 192.168.0.161 80 >/dev/null'
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/' -H 'User-Agent: FlowbitTest/FUZZ' -w <(seq 1 5) -mc all -s"
+      ssh att@192.168.0.202 "ffuf -u 'http://juice.el34.lab/admin?c=FUZZ' -H 'User-Agent: FlowbitTest/FUZZ' -w <(seq 1 5) -mc all -s"
+      ssh att@192.168.0.202 "sqlmap -u 'http://juice.el34.lab/' --data='q=1' --batch --level=2 --risk=2 --technique=U --disable-coloring 2>&1 | grep -iE 'sqlmap|union|WAF/IPS' | head -3"
       ssh ccc@10.20.31.2 'timeout 10 bash -c "until sudo grep -q 9005011 /var/log/suricata/eve.json; do :; done"' || true
       AFTER_11=$(ssh ccc@10.20.31.2 'sudo grep "9005011" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')
       AFTER_99=$(ssh ccc@10.20.31.2 'sudo grep "9005099" /var/log/suricata/eve.json | jq -s "map(select(.event_type==\"alert\"))|length"')
