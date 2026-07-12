@@ -11,6 +11,14 @@ import re, sys, glob, json
 VHOSTS = r'(juice|dvwa|neobank|govportal|mediforum|adminconsole|ai)\.el34\.lab'
 INTERNAL_IPS = ['10.20.30.1','10.20.31.2','10.20.32.80','10.20.32.100','10.20.32.110']
 
+# Group B(AI/LLM 과목) 정당 API: GPU Ollama(211.170.162.139:10934 / .109:11434)·AICompanion(localhost:9100).
+# 프롬프트 인젝션 "공격"은 프롬프트 내용이고 curl/python 은 정당한 REST API 전송수단(sqlmap 대체 대상 아님).
+def _llm_api(ln):
+    return bool(re.search(r'211\.170\.162\.(139:10934|109:11434)|:9100/|localhost:9100|X-API-Key: ccc-api-key-2026|/api/(generate|chat|tags|embeddings|pull|show)|gemma3', ln))
+
+def _mal_example(ln):
+    return bool(re.search(r'evil|POISON|SUSPICIOUS|\bBLOCK\b|악성|DANGER|공급망|supply.?chain|denylist|reqeusts|typosquat|185\.|example\.com|cdn\.|normal\s*:|정상 도구|LOLBin|rm -rf|git push|config\.py|cmds=\[|for a in \[', ln, re.I))
+
 def _attacker_internal(ln):
     if 'ssh att@192.168.0.202' not in ln: return False
     return any(('http://'+ip in ln or 'https://'+ip in ln or ('-h http://'+ip) in ln
@@ -24,25 +32,25 @@ CATS = [
  ('F-구IP 10.20.30.202(→192.168.0.202)','★★', lambda ln: '10.20.30.202' in ln and 'ssh' in ln),
  ('F-sudo 없는 root명령','★★', lambda ln: re.search(r"ssh ccc@[0-9.]+ ['\"]?(nft |suricatasc|apache2ctl|wazuh-control|agent_control|conntrack |osqueryi|tail /var/log|/var/ossec)", ln) and 'sudo' not in ln.split('ssh ccc@')[1] if 'ssh ccc@' in ln else False),
  # ── 기계식 (사람 방식으로 바꿔야) ──
- ('M-docker exec 기계식','★★★', lambda ln: 'docker exec el34-' in ln and 'docker-ok' not in ln),
+ ('M-docker exec 기계식','★★★', lambda ln: 'docker exec el34-' in ln and 'docker-ok' not in ln and 'el34-bastion' not in ln),
  ('M-매직 -H Host+생IP','★★★', lambda ln: re.search(r'-H .Host:', ln) and re.search(r'(10\.20\.30\.1|192\.168\.0\.161|192\.168\.136)', ln)),
- ('M-제어API curl(기계 인터페이스)','★★★', lambda ln: re.search(r'curl.*(192\.168\.136|/api/(rule|scenario|status|config|siem|eve|conntrack|audit)|X-API-Key|:9201|scenario/check)', ln) and 'curl-ok' not in ln),
+ ('M-제어API curl(기계 인터페이스)','★★★', lambda ln: re.search(r'curl.*(192\.168\.136|/api/(rule|scenario|status|config|siem|eve|conntrack|audit)|X-API-Key|:9201|scenario/check)', ln) and 'curl-ok' not in ln and not _llm_api(ln)),
  # ★★★ 공격을 curl/nc(netcat) 로 (진짜 도구 sqlmap/dalfox/nikto/nuclei/ffuf/wfuzz/hydra/commix/nmap/hping3 써야). nc 는 raw전송일 뿐 공격도구 아님. 꼭 필요하면 '# curl-ok:'/'# nc-ok:<이유>'.
- ('M-공격을 curl/nc로(진짜 공격도구 써라)','★★★', lambda ln: (re.search(r'\bcurl\b', ln) or re.search(r'\|\s*nc -w?\d* [\d.]+ 80\b', ln)) and 'curl-ok' not in ln and 'nc-ok' not in ln and re.search(r"UNION\s+SELECT|UNION%20SELECT|<script|%3Cscript|onerror\s*=|onerror%3d|onload\s*=|onload%3d|OR\s+['\x27]?1['\x27]?\s*=\s*['\x27]?1|%27%20OR|\.\./\.\./|%2e%2e%2f|/etc/passwd|<\?php|%3C%3Fphp|;cat\s|%3Bcat|SLEEP\(|information_schema|-A\s+[\"']?(sqlmap|nikto|nmap|masscan|nuclei)|User-Agent: (sqlmap|nikto|masscan|nuclei)", ln, re.I)),
+ ('M-공격을 curl/nc로(진짜 공격도구 써라)','★★★', lambda ln: (re.search(r'\bcurl\b', ln) or re.search(r'\|\s*nc -w?\d* [\d.]+ 80\b', ln)) and 'curl-ok' not in ln and 'nc-ok' not in ln and not _llm_api(ln) and re.search(r"UNION\s+SELECT|UNION%20SELECT|<script|%3Cscript|onerror\s*=|onerror%3d|onload\s*=|onload%3d|OR\s+['\x27]?1['\x27]?\s*=\s*['\x27]?1|%27%20OR|\.\./\.\./|%2e%2e%2f|/etc/passwd|<\?php|%3C%3Fphp|;cat\s|%3Bcat|SLEEP\(|information_schema|-A\s+[\"']?(sqlmap|nikto|nmap|masscan|nuclei)|User-Agent: (sqlmap|nikto|masscan|nuclei)", ln, re.I)),
  # ★★ nc(netcat) 로 raw HTTP 요청 = curl 대체일 뿐 진짜 도구 아님. 도달성/핑거프린팅은 whatweb/nuclei/httpx/nmap. 꼭 raw소켓이 필요하면 '# nc-ok:<이유>'.
- ('M-nc raw HTTP(진짜 recon 도구 써라)','★★', lambda ln: re.search(r'\|\s*nc -w?\d* [\d.]+ 80\b', ln) and 'nc-ok' not in ln and not re.search(r"UNION\s+SELECT|UNION%20SELECT|<script|%3Cscript|onerror|onload|OR\s+['\x27]?1['\x27]?\s*=|%27%20OR|\.\./\.\./|%2e%2e%2f|/etc/passwd|<\?php|%3C%3Fphp|;cat\s|SLEEP\(|information_schema|User-Agent: (sqlmap|nikto|masscan|nuclei)", ln, re.I)),
+ ('M-nc raw HTTP(진짜 recon 도구 써라)','★★', lambda ln: re.search(r'\|\s*nc -w?\d* [\d.]+ 80\b', ln) and 'nc-ok' not in ln and not _llm_api(ln) and not re.search(r"UNION\s+SELECT|UNION%20SELECT|<script|%3Cscript|onerror|onload|OR\s+['\x27]?1['\x27]?\s*=|%27%20OR|\.\./\.\./|%2e%2e%2f|/etc/passwd|<\?php|%3C%3Fphp|;cat\s|SLEEP\(|information_schema|User-Agent: (sqlmap|nikto|masscan|nuclei)", ln, re.I)),
  # ★★ curl 사용금지 — 꼭 필요한 경우(줄에 '# curl-ok') 아니면 진짜 도구/브라우저로. 노트 병기로는 해결 안 됨.
- ('M-curl 사용금지(진짜 도구/브라우저로)','★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and not re.search(r'localhost|127\.0\.0\.1', ln) and re.search(r'https?://|\.el34\.lab|192\.168\.0\.(161|202)', ln) and not re.search(r"UNION\s+SELECT|UNION%20SELECT|<script|%3Cscript|onerror|%27%20OR|\.\./\.\./|%2e%2e%2f|/etc/passwd|<\?php|%3C%3Fphp|;cat\s|SLEEP\(|information_schema|-A\s+[\"']?(sqlmap|nikto|nmap)", ln, re.I)),
+ ('M-curl 사용금지(진짜 도구/브라우저로)','★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and not re.search(r'localhost|127\.0\.0\.1', ln) and not _llm_api(ln) and not _mal_example(ln) and re.search(r'https?://|\.el34\.lab|192\.168\.0\.(161|202)', ln) and not re.search(r"UNION\s+SELECT|UNION%20SELECT|<script|%3Cscript|onerror|%27%20OR|\.\./\.\./|%2e%2e%2f|/etc/passwd|<\?php|%3C%3Fphp|;cat\s|SLEEP\(|information_schema|-A\s+[\"']?(sqlmap|nikto|nmap)", ln, re.I)),
  # ★★ curl 을 채점 acceptable_methods/(권장) 라벨로 추천 — 진짜 도구(nc/whatweb/ffuf/hydra) 권장으로. 'curl-ok' 예외.
  ('M-curl/nc 채점권장 라벨(진짜 도구 권장으로)','★★', lambda ln: re.search(r'\b(curl|nc)\b', ln) and 'curl-ok' not in ln and 'nc-ok' not in ln and ('acceptable_methods' in ln or '(권장)' in ln)),
  # ★★ 강의/프로즈의 실제 curl 명령(curl -flag / curl /path / curl http). 부정("curl 아니라 ssh로")·IOC/탐지 시그니처는 제외.
- ('M-강의 curl 명령(nc/진짜 도구로)','★★', lambda ln: (re.search(r"\bcurl\s+[\"']?(-[A-Za-z]|/|https?://)", ln) or re.search(r'curl\s*·|·\s*curl|curl robots|curl 루프', ln)) and 'curl-ok' not in ln and not re.search(r'localhost|127\.0\.0\.1', ln) and not re.search(r'(아니라|아니고|않고|않는|않게|우회하지|말고|금지|대신|하지\s?않)', ln) and not re.search(r'user_agent|흔적|시그니처|탐지|IOC|남긴다|남는다', ln, re.I)),
+ ('M-강의 curl 명령(nc/진짜 도구로)','★★', lambda ln: (re.search(r"\bcurl\s+[\"']?(-[A-Za-z]|/|https?://)", ln) or re.search(r'curl\s*·|·\s*curl|curl robots|curl 루프', ln)) and 'curl-ok' not in ln and not _llm_api(ln) and not _mal_example(ln) and not re.search(r'localhost|127\.0\.0\.1', ln) and not re.search(r'(아니라|아니고|않고|않는|않게|우회하지|말고|금지|대신|하지\s?않)', ln) and not re.search(r'user_agent|흔적|시그니처|탐지|IOC|남긴다|남는다', ln, re.I)),
  # ★★ curl 을 '표준/주력 도구' 로 소개·정의하는 프로즈(튜토리얼 섹션) — nc(raw HTTP) 소개로 재집필. 부정문·탐지·curl-ok 제외.
- ('M-curl 개념정의/주력도구(nc 소개로 재집필)','★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and re.search(r'(\*\*curl\*\*|`curl`|용어\s*—\s*curl|curl\s*—|주력 도구는[^.\n]*curl|쓰는 도구가[^.\n]*curl)', ln) and re.search(r'도구|클라이언트|주력|표준|HTTP 요청|주문서', ln) and not re.search(r'(아니라|아니고|않고|않는|않게|우회하지|말고|금지|대신|하지\s?않)', ln) and not re.search(r'user_agent|흔적|시그니처|탐지|IOC|남긴|스캐너|cmdline', ln, re.I) and not re.search(r'악성코드|내려받|다운로드|공격자|침투|베이스 이미지|distroless|미니멀|이미지에', ln)),
+ ('M-curl 개념정의/주력도구(nc 소개로 재집필)','★★', lambda ln: re.search(r'\bcurl\b', ln) and 'curl-ok' not in ln and re.search(r'(\*\*curl\*\*|`curl`|용어\s*—\s*curl|curl\s*—|주력 도구는[^.\n]*curl|쓰는 도구가[^.\n]*curl)', ln) and re.search(r'도구|클라이언트|주력|표준|HTTP 요청|주문서', ln) and not re.search(r'(아니라|아니고|않고|않는|않게|우회하지|말고|금지|대신|하지\s?않)', ln) and not re.search(r'user_agent|흔적|시그니처|탐지|IOC|남긴|스캐너|cmdline', ln, re.I) and not re.search(r'악성코드|내려받|다운로드|공격자|침투|베이스 이미지|distroless|미니멀|이미지에|urllib|정상 도구|LOLBin|프로토콜', ln)),
  # output 파싱을 python-c 로 하는 기계식만 플래그. 공격 페이로드(nohup exec b64decode = 헌팅 대상 위협)·scapy 제외.
- ('M-python -c (scapy·정당사유 외)','★★', lambda ln: re.search(r'python3? -c ', ln) and 'scapy' not in ln and not re.search(r'nohup|exec\(|b64decode|c2_beacon|beacon|time\.sleep', ln) and not re.search(r'-c [\x27"]\s*$', ln)),
+ ('M-python -c (scapy·정당사유 외)','★★', lambda ln: re.search(r'python3? -c ', ln) and 'scapy' not in ln and not _llm_api(ln) and not re.search(r'\b(import|from)\b|urllib\.request|json\.load|\.get\(|prompt|response|message|model|=\{|=\[|=set\(|print\(|\bKG\b|statistics|reqeusts|typosquat', ln) and not re.search(r'nohup|exec\(|b64decode|c2_beacon|beacon|time\.sleep', ln) and not re.search(r'-c [\x27"]\s*$', ln)),
  ('M-cat<<EOF 보고서 텍스트 출력','★★', lambda ln: re.search(r"cat\s+<<'?EOF'?", ln)),
- ('M-echo 캔드 해석/결론(분석 박스체크)','★★★', lambda ln: re.search(r'echo "(→|해석|결론|정리)', ln) and '$' not in ln),
+ ('M-echo 캔드 해석/결론(분석 박스체크)','★★★', lambda ln: re.search(r'echo "(→|해석|결론|정리)', ln) and '$' not in ln and '||' not in ln and '&&' not in ln),
  ('M-2>/dev/null 에러 숨김','★', lambda ln: '2>/dev/null' in ln and re.search(r'\bssh ccc@', ln) and not re.search(r'\b(nmap|ffuf|gobuster|sqlmap|nikto|osqueryi|conntrack|find|jq)\b', ln)),
  ('M-sleep 인위적 대기','★', lambda ln: re.search(r'\bsleep \d', ln)),
  # 표시용 카운트만 플래그. VAR=$(…wc -l…) 는 오프셋/델타 캡처(tail -n + 격리·delta)라 계산 입력 → 제외.
