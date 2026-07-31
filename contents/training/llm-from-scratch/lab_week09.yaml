@@ -1,0 +1,527 @@
+lab_id: llm-from-scratch-week09
+title: "W09 — 내 모델의 첫 학습: 손실 해부·train/val 분리·10에폭 사전훈련·과적합 물증·속도 실험"
+version: ai
+course: llm-from-scratch
+week: 9
+description: |
+  크로스 엔트로피를 확률 단계부터 수동 재구성해 초기 손실이 ln(50257) 근처임을 이론으로 예언하고
+  측정으로 확인한다. train/val 을 나눠 10 에폭을 훈련하고, train 손실은 1 아래로 내려가는데 val
+  손실은 6에서 정체하다 다시 올라가는 과적합을 관찰한다. 그리고 생성문이 원문과 10단어 이상
+  연속 일치한다는 물증으로 "이해가 아니라 암기"를 입증한다. 마지막으로 CPU/GPU/bf16/배치 크기를
+  바꿔 처리량을 측정해 "작은 배치는 GPU를 굶긴다"를 확인한다.
+difficulty: hard
+duration_minutes: 180
+audience: LLM 밑바닥 구현 (9주차)
+prerequisites:
+  - W07 완료 — GPTModel, generate_text_simple
+  - "`/work/week09/` 에 the-verdict.txt, week03·week07 모듈 import 가능"
+  - GPU 사용 규약 — device 이동, torch.cuda.synchronize, del + empty_cache
+  - W09 강의안 정독 — ln(50257) 예언, 퍼플렉시티 해석, stride=128 경고
+objectives:
+  - "수동 크로스 엔트로피와 F.cross_entropy 가 10.7940 으로 일치함을 확인한다"
+  - "퍼플렉시티 48,726 과 ln(50257)=10.8249 를 대조한다"
+  - "train 9배치 / val 1배치, 커버 토큰 4,608 / 512 를 손계산으로 유도한다"
+  - "훈련 전 손실이 약 10.98 임을 확인한다"
+  - "10 에폭 훈련 후 train < 1, val 6 초반대 정체·상승을 관찰한다"
+  - "생성문이 원문과 10단어 이상 연속 일치함을 검색으로 입증한다"
+  - "GPU/CPU 배속과 배치 크기별 tokens/sec 를 측정한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 손실 해부: 수동 재구성 == F.cross_entropy (10.7940)
+
+      크로스 엔트로피를 **확률 단계부터** 손으로 다시 만들어 라이브러리 함수와 대조한다.
+
+      ## 💡 계산 순서
+      ```
+      로짓 → softmax → 정답 토큰의 확률만 추출 → −log → 평균
+      ```
+
+      ## 💡 `flatten(0, 1)` 이 왜 필요한가
+      `F.cross_entropy` 는 `(N, C)` 로짓과 `(N,)` 정답을 받는데 우리 로짓은 `[2, 3, 50257]` 이다.
+      ```
+      logits.flatten(0, 1)  → [6, 50257]   (배치 2 × 토큰 3 = 6개 예측)
+      targets.flatten()     → [6]
+      ```
+      배치와 토큰 축을 하나로 뭉갠다. 각 예측은 독립적으로 채점되므로 문제없다 —
+      "6개 문제를 한 줄로 세워 채점한다".
+
+      ## 💡 왜 context_length 를 1024 → 256 으로 줄이나
+      훈련 데이터가 5,145 토큰뿐이다. 1024 로 두면 샘플이 4개, 256 이면 20개가 나온다.
+      **⚠️ 이 설정 변경 때문에 파라미터 총계가 W07 의 163,009,536 과 달라진다.**
+      정답지 수치는 항상 "어떤 설정에서"인지 함께 기억하라.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys, math, torch; sys.path.insert(0, '.')
+      import torch.nn.functional as F
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      torch.manual_seed(123); m = GPTModel(cfg); m.eval()
+      inputs  = torch.tensor([[16833, 3626, 6100], [40, 1107, 588]])
+      targets = torch.tensor([[3626, 6100, 345], [1107, 588, 11311]])
+      with torch.no_grad(): logits = m(inputs)
+      probs = torch.softmax(logits, dim=-1)
+      tp = torch.stack([probs[i, torch.arange(3), targets[i]] for i in range(2)])
+      manual = -torch.log(tp).mean()
+      auto = F.cross_entropy(logits.flatten(0,1), targets.flatten())
+      print('MANUAL    ', round(manual.item(), 4))
+      print('AUTO      ', round(auto.item(), 4))
+      print('PERPLEXITY', round(torch.exp(auto).item(), 2))
+      print('LN_50257  ', round(math.log(50257), 4))
+      ok = abs(manual.item()-auto.item()) < 1e-4 and abs(auto.item()-10.7940) < 0.001
+      print('LOSS_ANATOMY_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `MANUAL 10.794`, `AUTO 10.794`, `PERPLEXITY 48725.82`, `LN_50257 10.8249`,
+      `LOSS_ANATOMY_OK`.
+    hint: '이론 예언 ln(50257)=10.8249 와 측정 10.7940 의 차이 0.03 이 W07 의 "10배 잡음"의 결과다'
+    answer: |
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys, math, torch; sys.path.insert(0, '.')
+      import torch.nn.functional as F
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      torch.manual_seed(123); m = GPTModel(cfg); m.eval()
+      inputs  = torch.tensor([[16833, 3626, 6100], [40, 1107, 588]])
+      targets = torch.tensor([[3626, 6100, 345], [1107, 588, 11311]])
+      with torch.no_grad(): logits = m(inputs)
+      probs = torch.softmax(logits, dim=-1)
+      tp = torch.stack([probs[i, torch.arange(3), targets[i]] for i in range(2)])
+      manual = -torch.log(tp).mean()
+      auto = F.cross_entropy(logits.flatten(0,1), targets.flatten())
+      print('MANUAL    ', round(manual.item(), 4))
+      print('AUTO      ', round(auto.item(), 4))
+      print('PERPLEXITY', round(torch.exp(auto).item(), 2))
+      print('LN_50257  ', round(math.log(50257), 4))
+      ok = abs(manual.item()-auto.item()) < 1e-4 and abs(auto.item()-10.7940) < 0.001
+      print('LOSS_ANATOMY_OK' if ok else 'NG')"
+    answer_detail: "숫자를 보고 놀라는 게 아니라 먼저 예언하고 측정으로 확인한다 — 이것이 이 수업이 가르치는 사고방식이다. 퍼플렉시티 48,726 이 어휘 크기 50,257 근처인 것도 '아무것도 모르는 상태'의 정의 그대로다."
+    verify:
+      type: output_contains
+      expect: LOSS_ANATOMY_OK
+      field: stdout
+      semantic:
+        intent: "크로스 엔트로피 수동 재구성과 이론 예언 대조"
+        success_criteria: ["수동==자동 10.7940", "퍼플렉시티 48,726", "ln(50257) 비교"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 손실 성질을 pytest 로 고정
+
+      ## 💡 두 테스트
+      | 테스트 | 지키는 성질 |
+      |---|---|
+      | 수동 == 내장 | 확률 단계부터 재구성한 값이 `F.cross_entropy` 와 일치 |
+      | 초기 손실 범위 | 무작위 초기화 모델의 손실이 `ln(50257) ± 0.5` 안 |
+
+      ## 💡 두 번째 테스트가 강력한 이유
+      **이것은 모델 전체를 검사하는 게이트다.** 위치 임베딩이 빠져도, 잔차가 빠져도, 초기화가
+      이상해도 이 범위를 벗어난다. W08 버그 은행 #8(잔차 누락)이 실제로 이 게이트에 걸렸다:
+      ```
+      정상 모델      : 10.6388  → 통과
+      잔차 누락 모델 : 10.3156  → FAIL (검출됨)
+      ```
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week09 llm-lab python3 -m pytest test_loss.py -q
+      ```
+      ## ✅ 합격 기준
+      `2 passed`.
+    hint: '초기 손실 게이트는 모델 전체를 훑는 저비용 스모크 테스트다 — 큰 훈련 전에 항상 돌려라'
+    answer: |
+      docker exec -w /work/week09 llm-lab python3 -m pytest test_loss.py -q
+    answer_detail: "훈련을 시작하기 전에 초기 손실이 ln(vocab) 근처인지 확인하는 것은 실무 표준 습관이다. 여기서 벗어나면 훈련을 돌려도 시간만 버린다."
+    verify:
+      type: output_contains
+      expect: 2 passed
+      field: stdout
+      semantic:
+        intent: "손실 계산 성질을 pytest 로 고정 (초기 손실 게이트 포함)"
+        success_criteria: ["수동==내장 테스트", "ln(50257)±0.5 게이트"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — train/val 분리와 로더 구성 (9 / 1 배치)
+
+      ## 💡 정답지
+      | 로더 | 배치 수 | shape | 커버 토큰 |
+      |---|---|---|---|
+      | train | **9** | `[2, 256]` | **4,608** |
+      | val | **1** | `[2, 256]` | **512** |
+
+      ## 📝 손계산 과제
+      배치 수를 데이터 크기에서 직접 유도해 대조하라. `the-verdict.txt` 를 90:10 으로 나눈 뒤
+      각 조각의 BPE 토큰 수를 세고, W03 의 샘플 수 공식과 `batch_size=2`, `drop_last` 설정을
+      적용하면 9 와 1 이 나온다.
+
+      ## 💡 `stride = 256 = max_length` 의 의미
+      W03 그리드 실험에서 **"중복 0"** 이던 그 설정이다. 데이터가 이렇게 적은데 왜 중복을
+      늘리지 않았을까? **이번 주 끝에서 과적합을 본 뒤 다시 생각해 보라.**
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import common  # week03/week07 경로를 sys.path 에 등록
+      from dataset import create_dataloader_v1
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      n = int(0.9*len(raw)); tr, va = raw[:n], raw[n:]
+      trl = create_dataloader_v1(tr, batch_size=2, max_length=256, stride=256, drop_last=True,  shuffle=True)
+      val = create_dataloader_v1(va, batch_size=2, max_length=256, stride=256, drop_last=False, shuffle=False)
+      tb, vb = len(trl), len(val)
+      tt = sum(x.numel() for x, _ in trl); vt = sum(x.numel() for x, _ in val)
+      print('TRAIN_BATCHES', tb, 'VAL_BATCHES', vb)
+      print('TRAIN_TOKENS ', tt, 'VAL_TOKENS ', vt)
+      print('LOADER_OK' if tb==9 and vb==1 and tt==4608 and vt==512 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `TRAIN_BATCHES 9 VAL_BATCHES 1`, `TRAIN_TOKENS 4608 VAL_TOKENS 512`, `LOADER_OK`.
+    hint: '커버 토큰 = 배치 수 × batch_size × max_length 다 (9 × 2 × 256 = 4,608)'
+    answer: |
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import common  # week03/week07 경로를 sys.path 에 등록
+      from dataset import create_dataloader_v1
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      n = int(0.9*len(raw)); tr, va = raw[:n], raw[n:]
+      trl = create_dataloader_v1(tr, batch_size=2, max_length=256, stride=256, drop_last=True,  shuffle=True)
+      val = create_dataloader_v1(va, batch_size=2, max_length=256, stride=256, drop_last=False, shuffle=False)
+      tb, vb = len(trl), len(val)
+      tt = sum(x.numel() for x, _ in trl); vt = sum(x.numel() for x, _ in val)
+      print('TRAIN_BATCHES', tb, 'VAL_BATCHES', vb)
+      print('TRAIN_TOKENS ', tt, 'VAL_TOKENS ', vt)
+      print('LOADER_OK' if tb==9 and vb==1 and tt==4608 and vt==512 else 'NG')"
+    answer_detail: "훈련 데이터가 4,608 토큰뿐이다. 모델은 1.63억 파라미터다 — 파라미터가 토큰의 3만 배다. 이 대비가 이번 주 과적합의 근본 원인이다."
+    verify:
+      type: output_contains
+      expect: LOADER_OK
+      field: stdout
+      semantic:
+        intent: "train/val 로더 구성과 배치 수 손계산 대조"
+        success_criteria: ["9/1 배치", "4,608/512 토큰", "shape [2,256]"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — 훈련 전 손실: 이론 예언과 같은 동네인가
+
+      훈련을 시작하기 전에 기준선을 잰다.
+
+      ## 💡 예상 결과
+      train **10.9876** / val **10.9811** — 미션 1의 이론 예언 `ln(50257) = 10.8249` 와
+      **같은 동네**다. 실제 데이터·실제 로더로 재도 이론값 근처가 나온다는 것이 확인 포인트다.
+
+      ## ⚠️ eval 모드와 no_grad 를 짝으로
+      드롭아웃이 켜져 있으면 손실이 매번 달라진다(W05). 평가 코드에는 항상
+      `model.eval()` + `torch.no_grad()` 를 함께 넣는다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys, torch; sys.path.insert(0, '.')
+      import torch.nn.functional as F
+      from common import device
+      from dataset import create_dataloader_v1
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      n = int(0.9*len(raw))
+      trl = create_dataloader_v1(raw[:n], batch_size=2, max_length=256, stride=256, drop_last=True,  shuffle=False)
+      val = create_dataloader_v1(raw[n:], batch_size=2, max_length=256, stride=256, drop_last=False, shuffle=False)
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      torch.manual_seed(123); m = GPTModel(cfg).to(device); m.eval()
+      def loader_loss(dl):
+          tot = 0.0
+          with torch.no_grad():
+              for x, y in dl:
+                  x, y = x.to(device), y.to(device)
+                  tot += F.cross_entropy(m(x).flatten(0,1), y.flatten()).item()
+          return tot/len(dl)
+      tr, va = loader_loss(trl), loader_loss(val)
+      print(f'PRE_TRAIN_LOSS={tr:.4f}  PRE_VAL_LOSS={va:.4f}')
+      print('PRETRAIN_BASELINE_OK' if 10.5 < tr < 11.5 and 10.5 < va < 11.5 else 'NG')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      두 손실이 모두 **10.5 ~ 11.5** 범위이고 `PRETRAIN_BASELINE_OK`.
+      6 근처가 나오면 이미 학습된 가중치를 쓴 것이다.
+    hint: 'device 로 모델과 입력을 모두 옮겼는지 확인하라 — 하나만 옮기면 런타임 오류가 난다'
+    answer: |
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys, torch; sys.path.insert(0, '.')
+      import torch.nn.functional as F
+      from common import device
+      from dataset import create_dataloader_v1
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      n = int(0.9*len(raw))
+      trl = create_dataloader_v1(raw[:n], batch_size=2, max_length=256, stride=256, drop_last=True,  shuffle=False)
+      val = create_dataloader_v1(raw[n:], batch_size=2, max_length=256, stride=256, drop_last=False, shuffle=False)
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      torch.manual_seed(123); m = GPTModel(cfg).to(device); m.eval()
+      def loader_loss(dl):
+          tot = 0.0
+          with torch.no_grad():
+              for x, y in dl:
+                  x, y = x.to(device), y.to(device)
+                  tot += F.cross_entropy(m(x).flatten(0,1), y.flatten()).item()
+          return tot/len(dl)
+      tr, va = loader_loss(trl), loader_loss(val)
+      print(f'PRE_TRAIN_LOSS={tr:.4f}  PRE_VAL_LOSS={va:.4f}')
+      print('PRETRAIN_BASELINE_OK' if 10.5 < tr < 11.5 and 10.5 < va < 11.5 else 'NG')" 2>/dev/null
+    answer_detail: "훈련 전 기준선이 있어야 '얼마나 배웠는가'를 말할 수 있다. 10.98 → 0.89 라는 변화가 그 자체로 학습의 증거다."
+    verify:
+      type: output_contains
+      expect: PRETRAIN_BASELINE_OK
+      field: stdout
+      semantic:
+        intent: "훈련 전 손실 기준선 측정과 이론값 대조"
+        success_criteria: ["train/val 모두 약 10.98", "eval + no_grad"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 10 에폭 사전 훈련: 곡선이 갈라지는 것을 보라
+
+      드디어 훈련이다. GPU 에서 약 **45초** 걸린다.
+
+      ## 💡 관찰 포인트 ① 에폭별 생성문의 변화
+      | 에폭 | 생성문 (앞부분) |
+      |---|---|
+      | 1 | `Every effort moves you,,,,,,,,,,,,.` |
+      | 3 | `... and, and the to the of the to the ... Stroud, an` |
+      | 7 | `... know the picture, and pushed one of the deep arm-chairs.` |
+      | **10** | **`Every effort moves you?"  "Yes--quite insensible to the irony. ..."`** |
+
+      **모델은 빈도가 높은 것부터 배운다** — 쉼표 → 흔한 단어 → 구문 → 문장.
+
+      ## 💡 관찰 포인트 ② 두 곡선이 갈라진다
+      | 항목 | 값 |
+      |---|---|
+      | 최종 train | **0.8908** (퍼플렉시티 **2.44**) |
+      | 최종 val | **6.3130** (퍼플렉시티 **551.69**) |
+      | val 최소값 | **6.0994** (에폭 7.1) |
+      | 최소 이후 상승 | **+0.2136** ← 과적합 |
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week09 llm-lab python3 pretrain.py
+      ```
+      ## ✅ 합격 기준
+      최종 `train < 1`, `val` 6 초반대, `loss_curve.png` 와 `model_10ep.pth` 생성.
+      그리고 val 손실이 **최소점 이후 다시 올라간** 것을 곡선에서 확인한다.
+
+      ## 📝 해석 과제 (report.md 에 **직접** 작성)
+      val 손실이 내려가다 멈추고 train 과 벌어지는 이유를 **데이터 크기(5,145 토큰)와 모델
+      크기(1.63억 파라미터)의 대비**로 3~5문장 설명하라. 파라미터가 토큰의 **3만 배**다.
+    hint: 'AdamW(lr=4e-4, weight_decay=0.1), 시드 123, 에폭 10 — 하나라도 다르면 값이 달라진다'
+    answer: |
+      docker exec -w /work/week09 llm-lab python3 pretrain.py
+    answer_detail: "train 0.89 / val 6.31 은 과적합의 교과서적 그림이다. 그리고 이 model_10ep.pth 가 10주차 디코딩 실험과 4모델 비교표의 재료가 된다."
+    verify:
+      type: output_contains
+      expect: model_10ep.pth
+      field: stdout
+      semantic:
+        intent: "10 에폭 사전 훈련 실행과 과적합 곡선 관찰"
+        success_criteria: ["train < 1", "val 6 초반대", "곡선·체크포인트 저장"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 암기의 물증: 최장 연속 일치 (10단어 이상)
+
+      **"비슷해 보인다"로는 부족하다.** 생성문이 원문 **그대로**인지 검색으로 입증한다.
+
+      ## 🔴 왜 "최장 연속 일치"가 핵심 지표인가
+      조각 비율(예: 4/9 = 44%)만 보면 **"흔한 표현이 우연히 겹쳤다"** 는 반론이 가능하다.
+      그리고 조각을 어떻게 자르느냐(7단어씩? 겹쳐서? 건너뛰며?)에 따라 22%~44% 로 흔들린다.
+
+      **13단어가 연속으로 일치하는 것은 우연일 수 없다.** 그래서 이 실습의 통과 기준은
+      **최장 연속 일치 ≥ 10단어**로 잡는다.
+
+      ## 🔴 가장 강한 증거 — 봉합 지점
+      실측에서 모델은 원문 오프셋 **13,218** 구간을 재현한 뒤 **멀리 떨어진 오프셋 14,294**
+      구간으로 건너뛰어 이어 붙였다. **서로 떨어진 두 구절을 각각 외워 봉합한 것이다.**
+      여러분의 생성문에서도 이런 봉합 지점을 찾아보라.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys, torch, tiktoken; sys.path.insert(0, '.')
+      from common import text_to_token_ids, token_ids_to_text
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      from generate import generate_text_simple
+      enc = tiktoken.get_encoding('gpt2')
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      m = GPTModel(cfg)
+      m.load_state_dict(torch.load('model_10ep.pth', map_location='cpu', weights_only=True)); m.eval()
+      ids = generate_text_simple(m, text_to_token_ids('Every effort moves you', enc), 50, 256)
+      gen = token_ids_to_text(ids, enc)
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      w = gen.split()
+      frags = [' '.join(w[i:i+7]) for i in range(0, len(w)-6, 5)]
+      hits = [f for f in frags if f in raw]
+      best = 0
+      for i in range(len(w)):
+          for j in range(i+1, len(w)+1):
+              if ' '.join(w[i:j]) in raw: best = max(best, j-i)
+              else: break
+      print('GEN:', gen[:150])
+      print(f'FRAGMENTS {len(hits)}/{len(frags)} = {len(hits)/len(frags)*100:.1f}%')
+      print(f'LONGEST_CONSECUTIVE {best} words')
+      print(f'TRAIN_PERPLEXITY_HINT exp(0.8908) = 2.44')
+      print('OVERFIT_EVIDENCE_OK' if best >= 10 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `LONGEST_CONSECUTIVE` 가 **10 이상**이고 `OVERFIT_EVIDENCE_OK`.
+      (조각 비율은 참고값이다 — 자르는 방식에 따라 흔들린다.)
+
+      ## 💡 퍼플렉시티로 해석하기
+      train 손실 < 1 → 퍼플렉시티 `exp(1) ≈ 2.718` 이하. 즉 모델이 매 순간 **후보 3개 미만에서
+      고민**한다. 5만 개 어휘 중에서 사실상 다음 토큰을 **알고 있다 — 이해가 아니라 암기다.**
+    hint: '3~4단어만 일치한다면 훈련이 덜 된 것이다. 10 에폭을 끝까지 돌렸는지 확인하라'
+    answer: |
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys, torch, tiktoken; sys.path.insert(0, '.')
+      from common import text_to_token_ids, token_ids_to_text
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      from generate import generate_text_simple
+      enc = tiktoken.get_encoding('gpt2')
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      m = GPTModel(cfg)
+      m.load_state_dict(torch.load('model_10ep.pth', map_location='cpu', weights_only=True)); m.eval()
+      ids = generate_text_simple(m, text_to_token_ids('Every effort moves you', enc), 50, 256)
+      gen = token_ids_to_text(ids, enc)
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      w = gen.split()
+      frags = [' '.join(w[i:i+7]) for i in range(0, len(w)-6, 5)]
+      hits = [f for f in frags if f in raw]
+      best = 0
+      for i in range(len(w)):
+          for j in range(i+1, len(w)+1):
+              if ' '.join(w[i:j]) in raw: best = max(best, j-i)
+              else: break
+      print('GEN:', gen[:150])
+      print(f'FRAGMENTS {len(hits)}/{len(frags)} = {len(hits)/len(frags)*100:.1f}%')
+      print(f'LONGEST_CONSECUTIVE {best} words')
+      print(f'TRAIN_PERPLEXITY_HINT exp(0.8908) = 2.44')
+      print('OVERFIT_EVIDENCE_OK' if best >= 10 else 'NG')"
+    answer_detail: "10단어 이상 연속 일치는 우연으로 설명할 수 없다. 이것이 '이해가 아니라 암기'의 가장 강한 증거다. 조각 비율보다 최장 연속 길이가 신뢰할 수 있는 지표인 이유는, 후자가 자르는 방식에 의존하지 않기 때문이다."
+    verify:
+      type: output_contains
+      expect: OVERFIT_EVIDENCE_OK
+      field: stdout
+      semantic:
+        intent: "생성문과 원문의 연속 일치로 암기를 정량 입증"
+        success_criteria: ["최장 연속 10단어 이상", "조각 검색 수행", "퍼플렉시티 해석"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — 속도 실험: "작은 배치는 GPU를 굶긴다"
+
+      같은 훈련을 CPU·GPU·bf16 으로 돌리고, 배치 크기를 키워 처리량을 본다.
+
+      ## ⚠️ **이 실험만 stride=128 로 바꿔야 한다** (반드시 지킬 것)
+      P9-2 설정(`max_length = stride = 256`)으로는 train 샘플이 18개뿐이라 `batch=32` 에서
+      `drop_last=True` 가 배치를 **0개**로 만든다 — 루프가 아예 돌지 않아 tokens/sec 가 0 이거나
+      `ZeroDivisionError` 가 난다. `stride=128` 이면 샘플이 35개가 되어 세 조건 모두 측정된다.
+      (W03 그리드 표의 `(256, 128)` 행이 바로 이 설정이다.)
+
+      **로더를 만든 직후 `len(loader)` 를 세 조건 모두 출력해 확인하라.** 이 습관이 사고를 막는다.
+
+      ## 💡 예상 결과 (참고 실측 GB10)
+      | 장치 | CPU 대비 |
+      |---|---|
+      | CPU | 1× |
+      | **GPU (fp32)** | **11.5×** |
+      | GPU + bf16 | 1.13× (GPU fp32 대비) |
+
+      | batch | tokens/sec | batch=2 대비 |
+      |---|---|---|
+      | 2 | 4,155 | 1.00× |
+      | 32 | **7,166** | **1.72×** |
+
+      **bf16 의 이득이 크지 않다.** 이 규모(124M, ctx 256, batch 2)에서는 **배치가 작아 GPU가
+      놀고 있기** 때문이다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys, time, torch; sys.path.insert(0, '.')
+      import torch.nn.functional as F
+      import common  # week03/week07 경로 등록
+      from dataset import create_dataloader_v1
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      n = int(0.9*len(raw)); cfg = dict(GPT_CONFIG_124M, context_length=256)
+      dev = torch.device('cuda')
+      rows = []
+      for bs in [2, 8, 32]:
+          dl = create_dataloader_v1(raw[:n], batch_size=bs, max_length=256, stride=128,
+                                    drop_last=True, shuffle=False)
+          print(f'batch={bs:2d}  len(loader)={len(dl)}')
+          if len(dl) == 0: print('EMPTY_LOADER'); continue
+          torch.manual_seed(123); m = GPTModel(cfg).to(dev)
+          opt = torch.optim.AdamW(m.parameters(), lr=4e-4, weight_decay=0.1)
+          x, y = next(iter(dl)); x, y = x.to(dev), y.to(dev)
+          opt.zero_grad(); F.cross_entropy(m(x).flatten(0,1), y.flatten()).backward(); opt.step()
+          torch.cuda.synchronize(); t0 = time.time(); toks = 0
+          for x, y in dl:
+              x, y = x.to(dev), y.to(dev)
+              opt.zero_grad(); F.cross_entropy(m(x).flatten(0,1), y.flatten()).backward(); opt.step()
+              toks += x.numel()
+          torch.cuda.synchronize(); dt = time.time()-t0
+          print(f'   time={dt:.2f}s  tokens/sec={toks/dt:.0f}')
+          rows.append(toks/dt); del m, opt; torch.cuda.empty_cache()
+      print(f'THROUGHPUT_RATIO={rows[-1]/rows[0]:.2f}x')
+      print('SPEED_EXPERIMENT_OK' if rows[-1] > rows[0] else 'NG')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      세 배치 모두 `len(loader) > 0`, `batch=32` 의 tokens/sec 가 `batch=2` 보다 크고,
+      `SPEED_EXPERIMENT_OK`.
+
+      ## 📝 해석 과제 (직접 작성)
+      "모델 적재 621MB(W07)면 충분한 줄 알았는데 훈련은 왜 메모리가 더 필요한가?" —
+      기울기, 옵티마이저 상태(AdamW는 파라미터당 **2개**), 활성값을 들어 3~4문장으로 설명하라.
+      (`nvidia-smi` 로 훈련 중 메모리를 직접 관찰해 근거로 삼아도 좋다.)
+    hint: 'stride=256 으로 두고 batch=32 를 돌려 보라 — len(loader)=0 이 나오는 것을 직접 확인할 수 있다'
+    answer: |
+      docker exec -w /work/week09 llm-lab python3 -c "
+      import sys, time, torch; sys.path.insert(0, '.')
+      import torch.nn.functional as F
+      import common  # week03/week07 경로 등록
+      from dataset import create_dataloader_v1
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      n = int(0.9*len(raw)); cfg = dict(GPT_CONFIG_124M, context_length=256)
+      dev = torch.device('cuda')
+      rows = []
+      for bs in [2, 8, 32]:
+          dl = create_dataloader_v1(raw[:n], batch_size=bs, max_length=256, stride=128,
+                                    drop_last=True, shuffle=False)
+          print(f'batch={bs:2d}  len(loader)={len(dl)}')
+          if len(dl) == 0: print('EMPTY_LOADER'); continue
+          torch.manual_seed(123); m = GPTModel(cfg).to(dev)
+          opt = torch.optim.AdamW(m.parameters(), lr=4e-4, weight_decay=0.1)
+          x, y = next(iter(dl)); x, y = x.to(dev), y.to(dev)
+          opt.zero_grad(); F.cross_entropy(m(x).flatten(0,1), y.flatten()).backward(); opt.step()
+          torch.cuda.synchronize(); t0 = time.time(); toks = 0
+          for x, y in dl:
+              x, y = x.to(dev), y.to(dev)
+              opt.zero_grad(); F.cross_entropy(m(x).flatten(0,1), y.flatten()).backward(); opt.step()
+              toks += x.numel()
+          torch.cuda.synchronize(); dt = time.time()-t0
+          print(f'   time={dt:.2f}s  tokens/sec={toks/dt:.0f}')
+          rows.append(toks/dt); del m, opt; torch.cuda.empty_cache()
+      print(f'THROUGHPUT_RATIO={rows[-1]/rows[0]:.2f}x')
+      print('SPEED_EXPERIMENT_OK' if rows[-1] > rows[0] else 'NG')" 2>/dev/null
+    answer_detail: "작은 배치는 GPU를 굶긴다 — 이 관찰이 이후 모든 훈련(W11~W13)에서 배치·정밀도를 정하는 근거가 된다. 그리고 len(loader) 를 먼저 찍는 습관이 '배치 0개' 사고를 막는다."
+    verify:
+      type: output_contains
+      expect: SPEED_EXPERIMENT_OK
+      field: stdout
+      semantic:
+        intent: "배치 크기별 GPU 처리량 측정과 stride 경고 준수"
+        success_criteria: ["len(loader) 확인", "워밍업 + synchronize", "tokens/sec 증가"]

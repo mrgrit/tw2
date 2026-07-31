@@ -1,0 +1,494 @@
+lab_id: llm-from-scratch-week10
+title: "W10 — 말투를 조절하다: temperature·top-k·체크포인트·OpenAI 가중치 이식·4모델 비교"
+version: ai
+course: llm-from-scratch
+week: 10
+description: |
+  greedy 생성의 단조로움을 temperature 와 top-k 로 푼다. 장난감 어휘로 두 손잡이의 효과를 샘플링
+  빈도와 엔트로피로 측정하고, -inf 마스킹이 세 번째로 등장하는 것을 확인한다. 모델+옵티마이저
+  체크포인트로 훈련을 매끄럽게 재개한 뒤, OpenAI GPT-2 공식 가중치(safetensors)를 내 GPTModel 에
+  이식한다 — QKV chunk 분할과 전치가 W04 연습문제 3.1 그대로 회수된다. 마지막으로 4모델 val 손실
+  비교표로 "차이는 데이터의 양"을 확인한다.
+difficulty: hard
+duration_minutes: 190
+audience: LLM 밑바닥 구현 (10주차)
+prerequisites:
+  - W09 완료 — model_10ep.pth, train/val 로더
+  - "`/work/week10/` 에서 week03·week07·week09 모듈 import 가능"
+  - 네트워크 연결 (가중치 다운로드 548MB / 1520MB)
+  - W10 강의안 정독 — -inf 트릭, chunk 분할, 전치, qkv_bias
+objectives:
+  - "argmax 단어 forward(로짓 6.75)를 확인한다"
+  - "T 별 샘플링 빈도와 엔트로피 단조 증가를 측정한다"
+  - "top-3 마스킹 후 나머지 확률이 정확히 0, 합이 1임을 확인한다"
+  - "generate 의 greedy 폴백·시드 재현·top-k 제약을 pytest 로 고정한다"
+  - "체크포인트 로드 후 val 손실이 저장 직전과 일치함을 확인한다"
+  - "OpenAI 124M 가중치를 이식해 유창한 영어 생성을 얻는다"
+  - "qkv_bias=False 로는 로드가 실패함을 확인한다"
+  - "4모델 val 손실 비교표를 만든다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — temperature 해부: 로짓을 나누는 한 줄
+
+      ## 💡 temperature 는 이것뿐이다
+      ```python
+      probs = torch.softmax(logits / temperature, dim=-1)
+      ```
+      | T | 효과 |
+      |---|---|
+      | **작다** (0.1) | 로짓 차이가 **커져** 최고값에 확률이 몰림 |
+      | 1.0 | 원래 분포 |
+      | **크다** (5.0) | 로짓 차이가 **작아져** 평평해짐 |
+
+      ## 💡 예상 결과 (장난감 어휘 9개, 1000회 샘플링)
+      | T | forward | pizza | 엔트로피 |
+      |---|---|---|---|
+      | 0.01 | **1000** | 0 | 0.0000 |
+      | 0.1 | 995 | 0 | 0.0514 |
+      | 1.0 | 576 | 0 | 0.9127 |
+      | **5.0** | 237 | **41 (약 4%)** | **1.9990** |
+
+      `pizza` 는 로짓이 **−1.89** 로 최하위권이다. T=1 에서는 사실상 0회지만 T=5 에서는 약 4%.
+      **temperature 를 올린다는 것은 "말도 안 되는 후보에게도 기회를 준다"는 뜻이다.**
+
+      ## ⚠️ 어휘 순서 주의
+      장난감 어휘는 **알파벳순이 아니다**(`every` < `effort` 가 아님). 인덱스를 눈으로 확인하라.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from decoding import VOCAB, NEXT_TOKEN_LOGITS, softmax_with_temperature
+      inv = {v: k for k, v in VOCAB.items()}
+      print('ARGMAX_WORD', inv[torch.argmax(NEXT_TOKEN_LOGITS).item()],
+            'LOGIT', NEXT_TOKEN_LOGITS.max().item())
+      torch.manual_seed(123); ents = []
+      for T in [0.01, 0.1, 1.0, 5.0]:
+          p = softmax_with_temperature(NEXT_TOKEN_LOGITS, T)
+          s = torch.multinomial(p, num_samples=1000, replacement=True)
+          fw = (s == VOCAB['forward']).sum().item(); pz = (s == VOCAB['pizza']).sum().item()
+          ent = -(p*torch.log(p+1e-12)).sum().item(); ents.append(ent)
+          print(f'T={T:5.2f} forward={fw:4d} pizza={pz:4d} entropy={ent:.4f}')
+      mono = all(ents[i] < ents[i+1] for i in range(len(ents)-1))
+      print('TEMPERATURE_OK' if inv[torch.argmax(NEXT_TOKEN_LOGITS).item()]=='forward' and mono else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `ARGMAX_WORD forward LOGIT 6.75`, 엔트로피가 T 증가에 **단조 증가**, `TEMPERATURE_OK`.
+    hint: 'T=0.01 에서 1000/1000 forward 가 나오면 사실상 greedy 와 같아진 것이다'
+    answer: |
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from decoding import VOCAB, NEXT_TOKEN_LOGITS, softmax_with_temperature
+      inv = {v: k for k, v in VOCAB.items()}
+      print('ARGMAX_WORD', inv[torch.argmax(NEXT_TOKEN_LOGITS).item()],
+            'LOGIT', NEXT_TOKEN_LOGITS.max().item())
+      torch.manual_seed(123); ents = []
+      for T in [0.01, 0.1, 1.0, 5.0]:
+          p = softmax_with_temperature(NEXT_TOKEN_LOGITS, T)
+          s = torch.multinomial(p, num_samples=1000, replacement=True)
+          fw = (s == VOCAB['forward']).sum().item(); pz = (s == VOCAB['pizza']).sum().item()
+          ent = -(p*torch.log(p+1e-12)).sum().item(); ents.append(ent)
+          print(f'T={T:5.2f} forward={fw:4d} pizza={pz:4d} entropy={ent:.4f}')
+      mono = all(ents[i] < ents[i+1] for i in range(len(ents)-1))
+      print('TEMPERATURE_OK' if inv[torch.argmax(NEXT_TOKEN_LOGITS).item()]=='forward' and mono else 'NG')"
+    answer_detail: "엔트로피 단조 증가가 '분포가 평평해진다'의 정량 표현이다. T=5 에서 pizza 가 4% 나오는 것은 창의성의 대가가 헛소리 확률이라는 것을 보여준다."
+    verify:
+      type: output_contains
+      expect: TEMPERATURE_OK
+      field: stdout
+      semantic:
+        intent: "temperature 가 분포에 미치는 영향을 샘플링·엔트로피로 정량 측정"
+        success_criteria: ["argmax forward 6.75", "T별 빈도 변화", "엔트로피 단조 증가"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — top-k: `-inf` 트릭의 세 번째 등장
+
+      ## 💡 구현
+      ```python
+      top_logits, _ = torch.topk(logits, k)
+      min_val = top_logits[..., -1]
+      logits = torch.where(logits < min_val, torch.tensor(float('-inf')), logits)
+      ```
+      **5주차 인과 마스크와 정확히 같은 트릭이다.** 0으로 만들면 `e⁰=1` 이라 남지만
+      `-inf` 로 만들면 `e^(-inf)=0` 이라 사라진다. 이 수업에서 세 번째로 나오는 패턴이다.
+
+      ## 💡 예상 결과 (k=3)
+      남는 로짓 = **6.75(forward), 6.28(toward), 4.51(closer)**.
+      나머지 6개는 softmax 후 **정확히 0**, 확률 합 **1.0**.
+
+      ## ⚠️ top-k 와 temperature 를 함께 쓸 때 순서
+      **먼저 top-k 마스킹 → temperature 나눗셈 → softmax.** 순서를 바꾸면 `-inf / T` 가 되어
+      (여전히 `-inf` 라 결과는 같지만) 의도가 흐려진다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from decoding import VOCAB, NEXT_TOKEN_LOGITS, topk_mask
+      inv = {v: k for k, v in VOCAB.items()}
+      top = topk_mask(NEXT_TOKEN_LOGITS, 3)
+      kept = [(inv[i], round(v,2)) for i, v in enumerate(top.tolist()) if v != float('-inf')]
+      print('TOPK3_KEPT', kept)
+      pk = torch.softmax(top, dim=-1)
+      print('ZERO_COUNT', (pk == 0).sum().item(), '(9 - 3 = 6 이어야 한다)')
+      print('PROB_SUM  ', round(pk.sum().item(), 6))
+      ok = (pk == 0).sum().item() == 6 and abs(pk.sum().item()-1.0) < 1e-6
+      print('TOPK_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `ZERO_COUNT 6`, `PROB_SUM 1.0`, `TOPK_OK`.
+      **0이 아닌 작은 값이 남으면 `-inf` 대신 0 마스킹을 한 것이다.**
+    hint: '나머지를 -inf 로 만든 뒤 다시 softmax 하므로 확률이 재분배된다 — 그래서 합이 1이다'
+    answer: |
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from decoding import VOCAB, NEXT_TOKEN_LOGITS, topk_mask
+      inv = {v: k for k, v in VOCAB.items()}
+      top = topk_mask(NEXT_TOKEN_LOGITS, 3)
+      kept = [(inv[i], round(v,2)) for i, v in enumerate(top.tolist()) if v != float('-inf')]
+      print('TOPK3_KEPT', kept)
+      pk = torch.softmax(top, dim=-1)
+      print('ZERO_COUNT', (pk == 0).sum().item(), '(9 - 3 = 6 이어야 한다)')
+      print('PROB_SUM  ', round(pk.sum().item(), 6))
+      ok = (pk == 0).sum().item() == 6 and abs(pk.sum().item()-1.0) < 1e-6
+      print('TOPK_OK' if ok else 'NG')"
+    answer_detail: "-inf 트릭은 W05 인과 마스크 → W10 top-k 로 이어진다. '후보에서 완전히 제외한다'는 의미를 수학적으로 표현하는 표준 방법이다."
+    verify:
+      type: output_contains
+      expect: TOPK_OK
+      field: stdout
+      semantic:
+        intent: "top-k 마스킹을 -inf 로 구현하고 확률 재분배 확인"
+        success_criteria: ["상위 3개 유지", "나머지 정확히 0", "합 1.0"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — generate 통합: greedy 폴백과 성질 테스트
+
+      ## 💡 핵심 구조
+      ```python
+      if top_k is not None:
+          logits = topk_mask(logits, top_k)
+      if temperature > 0.0:
+          probs = torch.softmax(logits / temperature, dim=-1)
+          idx_next = torch.multinomial(probs, num_samples=1)
+      else:
+          idx_next = torch.argmax(logits, dim=-1, keepdim=True)   # greedy 폴백
+      ```
+
+      ## 💡 세 테스트가 지키는 것
+      | 테스트 | 성질 |
+      |---|---|
+      | greedy 폴백 | `temperature=0` 이면 W07 `generate_text_simple` 과 **동일 출력** |
+      | 시드 재현 | 같은 시드·같은 T 면 **같은 출력** |
+      | top-k 제약 | 생성된 토큰이 항상 상위 k 안에 있음 |
+
+      **첫 번째 테스트가 중요하다.** W07 의 결정성이 여기서 "특수한 경우"로 보존된다 —
+      새 기능을 추가해도 기존 동작이 깨지지 않는지 확인하는 **회귀 테스트**다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week10 llm-lab python3 -m pytest test_decoding.py -q
+      ```
+      ## ✅ 합격 기준
+      `passed` 가 출력되고 실패 0.
+    hint: 'temperature=0 일 때 argmax 로 폴백하지 않으면 0으로 나누게 되어 NaN 이 난다'
+    answer: |
+      docker exec -w /work/week10 llm-lab python3 -m pytest test_decoding.py -q
+    answer_detail: "새 기능(temperature/top-k)을 넣어도 기존 동작(greedy)이 특수 케이스로 보존되는지 확인하는 회귀 테스트다. W07 에서 고정한 결정성이 여기서 회수된다."
+    verify:
+      type: output_contains
+      expect: passed
+      field: stdout
+      semantic:
+        intent: "generate 의 greedy 폴백·재현성·top-k 제약을 pytest 로 고정"
+        success_criteria: ["greedy 폴백 동일", "시드 재현", "top-k 제약"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — (T × k) 그리드: 말투가 바뀌는 것을 눈으로
+
+      W09 에서 훈련한 `model_10ep.pth` 로 (temperature × top_k) 조합별 생성문을 만든다.
+
+      ## 💡 예상 관찰
+      | 설정 | 결과 |
+      |---|---|
+      | 낮은 T · 작은 k | W09 에서 **외운 문장**으로 수렴 |
+      | 높은 T · 큰 k | **문장 붕괴** (헛소리) |
+
+      ## ⚠️ T=0.5 행에서 k를 바꿔도 출력이 같을 수 있다 — **정상이다**
+      온도가 낮으면 확률이 최상위 몇 개에 몰려서, k를 5로 하든 25로 하든 뽑히는 토큰이 같아진다.
+      **버그로 오인하지 마라.** k가 의미를 갖는 것은 분포가 평평할 때(높은 T)다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, tiktoken
+      from common import device, text_to_token_ids, token_ids_to_text, MODEL_10EP
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      from decoding import generate
+      enc = tiktoken.get_encoding('gpt2')
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      m = GPTModel(cfg)
+      m.load_state_dict(torch.load(MODEL_10EP, map_location='cpu', weights_only=True))
+      m.to(device).eval()
+      start = text_to_token_ids('Every effort moves you', enc).to(device)
+      for T in [0.5, 1.0, 2.0]:
+          for k in [5, 25]:
+              torch.manual_seed(123)
+              out = generate(m, start, 20, 256, temperature=T, top_k=k)
+              print(f'T={T:3.1f} k={k:2d} | ' + token_ids_to_text(out, enc).replace(chr(10), ' ')[:90])
+      print('SAMPLING_GRID_OK')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      6개 조합의 생성문이 출력되고 `SAMPLING_GRID_OK`.
+      T가 커질수록 문장이 무너지는 경향을 눈으로 확인한다.
+    hint: '같은 시드를 쓰면 같은 설정에서 항상 같은 문장이 나온다 — 비교의 전제다'
+    answer: |
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, tiktoken
+      from common import device, text_to_token_ids, token_ids_to_text, MODEL_10EP
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      from decoding import generate
+      enc = tiktoken.get_encoding('gpt2')
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      m = GPTModel(cfg)
+      m.load_state_dict(torch.load(MODEL_10EP, map_location='cpu', weights_only=True))
+      m.to(device).eval()
+      start = text_to_token_ids('Every effort moves you', enc).to(device)
+      for T in [0.5, 1.0, 2.0]:
+          for k in [5, 25]:
+              torch.manual_seed(123)
+              out = generate(m, start, 20, 256, temperature=T, top_k=k)
+              print(f'T={T:3.1f} k={k:2d} | ' + token_ids_to_text(out, enc).replace(chr(10), ' ')[:90])
+      print('SAMPLING_GRID_OK')" 2>/dev/null
+    answer_detail: "낮은 T 에서 k 변화가 무의미한 것은 정상이다 — 이 사실을 미리 알려주지 않으면 학생이 버그를 찾느라 시간을 쓴다. 검증 설계에서 '정상인데 이상해 보이는 것'을 미리 표시하는 것도 중요하다."
+    verify:
+      type: output_contains
+      expect: SAMPLING_GRID_OK
+      field: stdout
+      semantic:
+        intent: "temperature × top_k 그리드로 말투 변화 관찰"
+        success_criteria: ["6개 조합 생성", "T 증가 시 붕괴 경향", "낮은 T에서 k 무관 이해"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 체크포인트: 모델 **+ 옵티마이저** 상태
+
+      ## 💡 왜 옵티마이저 상태도 저장하는가
+      AdamW 는 파라미터마다 **1차·2차 모멘텀 2개**를 들고 있다(W09 메모리 계산의 그것).
+      모델만 저장하고 재개하면 **관성이 사라져 손실이 잠시 튀어 오른다.**
+      "매끄럽게 이어지는가"가 이 미션의 통과 기준인 이유다.
+
+      ## 💡 저장 형식
+      ```python
+      torch.save({'model_state_dict': model.state_dict(),
+                  'optimizer_state_dict': optimizer.state_dict()}, path)
+      ```
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys, json, os; sys.path.insert(0, '.')
+      import torch, common  # week07 경로 등록
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      ck = torch.load('checkpoint_5ep.pth', map_location='cpu', weights_only=True)
+      print('CHECKPOINT_KEYS', sorted(ck.keys()))
+      has_model = 'model_state_dict' in ck; has_opt = 'optimizer_state_dict' in ck
+      print('HAS_MODEL', has_model, 'HAS_OPTIMIZER', has_opt)
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      m = GPTModel(cfg); m.load_state_dict(ck['model_state_dict'])
+      if os.path.exists('checkpoint_5ep_meta.json'):
+          print('META', json.load(open('checkpoint_5ep_meta.json')))
+      print('CHECKPOINT_OK' if has_model and has_opt else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `HAS_MODEL True HAS_OPTIMIZER True` 와 `CHECKPOINT_OK`.
+      그리고 로드 직후 val 손실이 저장 직전 값과 **소수 3~4자리까지** 일치하는지 확인한다.
+    hint: 'optimizer_state_dict 없이 재개하면 손실 곡선에 튐(spike)이 생긴다 — 직접 해 보라'
+    answer: |
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys, json, os; sys.path.insert(0, '.')
+      import torch, common  # week07 경로 등록
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      ck = torch.load('checkpoint_5ep.pth', map_location='cpu', weights_only=True)
+      print('CHECKPOINT_KEYS', sorted(ck.keys()))
+      has_model = 'model_state_dict' in ck; has_opt = 'optimizer_state_dict' in ck
+      print('HAS_MODEL', has_model, 'HAS_OPTIMIZER', has_opt)
+      cfg = dict(GPT_CONFIG_124M, context_length=256)
+      m = GPTModel(cfg); m.load_state_dict(ck['model_state_dict'])
+      if os.path.exists('checkpoint_5ep_meta.json'):
+          print('META', json.load(open('checkpoint_5ep_meta.json')))
+      print('CHECKPOINT_OK' if has_model and has_opt else 'NG')"
+    answer_detail: "실무에서 긴 훈련이 중단되는 일은 흔하다. 모델만 저장하면 재개 시 옵티마이저가 처음부터 시작해 몇 스텝 동안 손실이 튄다 — 긴 훈련일수록 손해가 크다."
+    verify:
+      type: output_contains
+      expect: CHECKPOINT_OK
+      field: stdout
+      semantic:
+        intent: "모델+옵티마이저 체크포인트 구조 확인"
+        success_criteria: ["두 state_dict 모두 저장", "로드 성공", "손실 일치 확인"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — OpenAI 가중치 이식 (이번 주의 절정)
+
+      **내가 만든 클래스에 OpenAI 가 훈련한 1억 2천만 개의 숫자를 부어 넣는다.**
+
+      ## 🔴 다운로드 경로에 함정이 셋 있다
+      | 경로 | 문제 |
+      |---|---|
+      | 교재의 TensorFlow 체크포인트 | 이 환경에 **TF 가 없다** (aarch64 + CUDA 13) |
+      | **`.safetensors`** | ✅ **이 경로를 쓴다** |
+      | 변환된 `.pth` | 🔴 **미션이 무력화된다** — `load_state_dict()` 한 줄로 끝난다 |
+
+      실제로 확인해 봤다 — 702MB `.pth` 를 받아 `load_state_dict(..., strict=True)` 를 돌리니
+      **한 줄로 성공**했다. chunk 분할도 전치도 배우지 못한다. **safetensors 를 필수로 쓴다.**
+
+      ## 💡 두 가지 변환
+      **(a) QKV chunk 분할** — OpenAI 는 `c_attn.weight` 하나에 Q/K/V 를 붙여 저장한다
+      (`[768, 2304]`). `torch.chunk(w, 3, dim=-1)` 로 셋으로 나눈다.
+
+      **(b) 전치** — TF 규약은 `(입력, 출력)`, PyTorch `nn.Linear` 는 `(출력, 입력)` 이다.
+      **W04 연습문제 3.1 그 자체다.** 6주 전의 연습이 오늘 회수된다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, tiktoken
+      from openai_load import build
+      from common import device, text_to_token_ids, token_ids_to_text
+      from decoding import generate
+      enc = tiktoken.get_encoding('gpt2')
+      m, cfg, _ = build('gpt2-small (124M)')
+      out = generate(m, text_to_token_ids('Every effort moves you', enc).to(device),
+                     25, cfg['context_length'], temperature=0.0)
+      txt = token_ids_to_text(out, enc)
+      print('GEN:', txt)
+      print('OPENAI_LOAD_OK' if len(txt) > 30 else 'NG')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      **유창한 영어 문장**이 생성되고 `OPENAI_LOAD_OK`.
+      (W09 의 10에폭 모델은 소설 문장을 외워 뱉었지만, 이 모델은 처음 보는 주제로도 말한다.)
+    hint: 'assign() 에서 shape 불일치 시 즉시 ValueError 를 내게 하면 어느 키에서 틀렸는지 바로 안다'
+    answer: |
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, tiktoken
+      from openai_load import build
+      from common import device, text_to_token_ids, token_ids_to_text
+      from decoding import generate
+      enc = tiktoken.get_encoding('gpt2')
+      m, cfg, _ = build('gpt2-small (124M)')
+      out = generate(m, text_to_token_ids('Every effort moves you', enc).to(device),
+                     25, cfg['context_length'], temperature=0.0)
+      txt = token_ids_to_text(out, enc)
+      print('GEN:', txt)
+      print('OPENAI_LOAD_OK' if len(txt) > 30 else 'NG')" 2>/dev/null
+    answer_detail: "아키텍처는 우리가 만든 것과 똑같다. 클래스도 층 수도 파라미터 분해표도 동일하다. 다른 것은 오직 훈련 데이터의 양이다 — 이것이 다음 단계 비교표의 결론이다."
+    verify:
+      type: output_contains
+      expect: OPENAI_LOAD_OK
+      field: stdout
+      semantic:
+        intent: "OpenAI GPT-2 공식 가중치를 자체 구현 모델에 이식"
+        success_criteria: ["safetensors 사용", "QKV chunk 분할", "전치 적용", "유창한 생성"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — `qkv_bias` 게이트 + 4모델 비교표
+
+      ## 💡 (a) `qkv_bias=False` 로는 **실패해야 정상이다**
+      OpenAI 의 GPT-2 에는 QKV bias 가 **있는데** 우리 모델에 그 자리가 없으면 넣을 데가 없다.
+      W05 에서 계산한 `2,360,064` vs `2,362,368` 의 **2,304 = 3 × 768** 차이가 바로 이것이다.
+
+      ## 💡 (b) 4모델 비교표 — 이번 주의 결론
+      | 모델 | val 손실 | 퍼플렉시티 | 무엇이 다른가 |
+      |---|---|---|---|
+      | 무작위 초기화 | **10.98** | 58,900 | 아무것도 모름 |
+      | 내 10에폭 모델 | **6.31** | 551 | 5,145 토큰을 외움 |
+      | **OpenAI 124M** | **3.56** | 35 | 수백억 토큰 학습 |
+      | **OpenAI 355M** | **3.36** | 29 | 같은 데이터, 더 큰 모델 |
+
+      **아키텍처는 우리가 만든 것과 똑같다. 다른 것은 오직 데이터의 양이다.**
+      그리고 124M → 355M 은 파라미터가 **2.85배**인데 손실은 3.56 → 3.36 (**0.2 감소**)뿐이다 —
+      **모델을 키우는 것보다 데이터를 늘리는 것이 압도적으로 효과적**이다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, torch.nn.functional as F
+      from openai_load import build, build_loaders
+      from common import device, VERDICT
+      print('--- (a) qkv_bias=False 로 로드 시도 (실패해야 정상)')
+      try:
+          build('gpt2-small (124M)', qkv_bias=False); print('NO_ERROR_UNEXPECTED')
+      except Exception as e:
+          print(type(e).__name__ + ':', str(e)[:80]); print('QKV_BIAS_GATE_OK')
+      print('--- (b) 4모델 비교')
+      raw = open(VERDICT, encoding='utf-8').read()
+      _, val, _, _ = build_loaders(raw)
+      def loss(m):
+          t = 0.0
+          with torch.no_grad():
+              for x, y in val:
+                  x, y = x.to(device), y.to(device)
+                  t += F.cross_entropy(m(x).flatten(0,1), y.flatten()).item()
+          return t/len(val)
+      for name in ['gpt2-small (124M)', 'gpt2-medium (355M)']:
+          m, cfg, _ = build(name)
+          v = loss(m); print(f'{name:22s} val_loss={v:.4f}  perplexity={torch.exp(torch.tensor(v)).item():.1f}')
+          del m; torch.cuda.empty_cache()
+      print('FOUR_MODEL_TABLE_OK')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      `QKV_BIAS_GATE_OK`(오류가 나야 정상), 124M **3점대 중반**, 355M 이 124M 보다 낮음,
+      `FOUR_MODEL_TABLE_OK`.
+    hint: '355M 은 1.5GB 다운로드가 필요하다. 측정 후 del + empty_cache 를 잊지 마라'
+    answer: |
+      docker exec -w /work/week10 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, torch.nn.functional as F
+      from openai_load import build, build_loaders
+      from common import device, VERDICT
+      print('--- (a) qkv_bias=False 로 로드 시도 (실패해야 정상)')
+      try:
+          build('gpt2-small (124M)', qkv_bias=False); print('NO_ERROR_UNEXPECTED')
+      except Exception as e:
+          print(type(e).__name__ + ':', str(e)[:80]); print('QKV_BIAS_GATE_OK')
+      print('--- (b) 4모델 비교')
+      raw = open(VERDICT, encoding='utf-8').read()
+      _, val, _, _ = build_loaders(raw)
+      def loss(m):
+          t = 0.0
+          with torch.no_grad():
+              for x, y in val:
+                  x, y = x.to(device), y.to(device)
+                  t += F.cross_entropy(m(x).flatten(0,1), y.flatten()).item()
+          return t/len(val)
+      for name in ['gpt2-small (124M)', 'gpt2-medium (355M)']:
+          m, cfg, _ = build(name)
+          v = loss(m); print(f'{name:22s} val_loss={v:.4f}  perplexity={torch.exp(torch.tensor(v)).item():.1f}')
+          del m; torch.cuda.empty_cache()
+      print('FOUR_MODEL_TABLE_OK')" 2>/dev/null
+    answer_detail: "이 표가 10주차의 백미다. 무작위(10.98) → 10에폭(6.31) → 124M(3.56) → 355M(3.36). 아키텍처도 파라미터 수도 같은 급인데 다른 것은 데이터의 양뿐이라는 사실이 한 표에 담긴다."
+    verify:
+      type: output_contains
+      expect: FOUR_MODEL_TABLE_OK
+      field: stdout
+      semantic:
+        intent: "qkv_bias 필요성 확인과 4모델 val 손실 비교"
+        success_criteria: ["qkv_bias=False 실패", "124M 3점대", "355M < 124M"]

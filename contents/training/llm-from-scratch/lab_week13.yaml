@@ -1,0 +1,484 @@
+lab_id: llm-from-scratch-week13
+title: "W13 — 지시를 따르는 모델, 그리고 심판: SFT·LLM-as-judge 검증·LoRA"
+version: ai
+course: llm-from-scratch
+week: 13
+description: |
+  355M 모델을 지시 튜닝해 손실 3.8 → 0.61 로 낮추고 응답 형식을 갖추게 한다. 그다음 자유 형식
+  응답을 어떻게 채점할 것인가라는 평가 문제를 LLM-as-judge(로컬 Ollama llama3.1:8b)로 푼다.
+  단, 심판의 상한·하한·결정성을 직접 검증한다 — temperature=0 인데도 8.2% 가 흔들리고, 무관한
+  문장이 95점을 받는 것을 실측한다. 마지막으로 LoRA 로 파라미터의 1% 만 훈련해 같은 품질을 얻는다.
+difficulty: hard
+duration_minutes: 200
+audience: LLM 밑바닥 구현 (13주차)
+prerequisites:
+  - W12 완료 — 지시 데이터 935/110/55, collate -100 마스킹
+  - W10 완료 — OpenAI 355M 가중치 이식
+  - 호스트에 Ollama 실행 + `llama3.1:8b` 준비 (`ollama pull llama3.1:8b`)
+  - W13 강의안 정독 — 172.17.0.1 접속, 저지 검증 3종, B=0 항등 게이트
+objectives:
+  - "튜닝 전 355M 손실이 3.8 안팎임을 기록한다"
+  - "2 에폭 지시 튜닝 후 train 0.31 / val 0.61 을 확인한다"
+  - "테스트셋 110개 응답에 빈 응답이 0건임을 확인한다"
+  - "컨테이너에서 172.17.0.1:11434 로 Ollama 에 접속한다"
+  - "저지 채점 110/110, 파싱 실패 0, 평균 60.92 를 얻는다"
+  - "저지의 상한·하한·결정성을 직접 검증한다"
+  - "LoRA B=0 항등 게이트를 증명한다"
+  - "LoRA 와 풀 튜닝을 파라미터·메모리·시간·품질 4축으로 비교한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 튜닝 **전** 상태 기록
+
+      **"전"을 기록하지 않으면 "후"를 말할 수 없다.** W09 훈련 전 손실, W11 훈련 전 정확도와
+      같은 습관이다.
+
+      ## 💡 예상 결과
+      | 항목 | 값 |
+      |---|---|
+      | 355M train/val 손실 | **3.8 안팎** |
+      | 생성 | 지시를 따르지 않음 (문장을 이어 씀) |
+
+      W10 에서 확인한 OpenAI 355M 의 the-verdict val 손실 3.36 과 비슷한 동네다 —
+      **사전훈련 모델은 지시 데이터를 특별히 잘 예측하지도, 못 예측하지도 않는다.**
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      d = json.load(open('before_tuning.json'))
+      print('BEFORE_TUNING', json.dumps(d, ensure_ascii=False)[:400])
+      loss = d.get('val_loss') or d.get('val') or d.get('loss')
+      print('BEFORE_LOSS', loss)
+      print('BEFORE_TUNING_OK' if loss and 3.0 < float(loss) < 4.5 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      튜닝 전 손실이 **3.0~4.5** 범위이고 `BEFORE_TUNING_OK`.
+      6점대가 나오면 사전훈련 가중치를 로드하지 않은 것이다.
+    hint: '이 값이 뒤에서 LoRA 항등 게이트의 기준값(3.8172)이 된다'
+    answer: |
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      d = json.load(open('before_tuning.json'))
+      print('BEFORE_TUNING', json.dumps(d, ensure_ascii=False)[:400])
+      loss = d.get('val_loss') or d.get('val') or d.get('loss')
+      print('BEFORE_LOSS', loss)
+      print('BEFORE_TUNING_OK' if loss and 3.0 < float(loss) < 4.5 else 'NG')"
+    answer_detail: "튜닝 전 기준선이 있어야 '얼마나 달라졌는가'를 말할 수 있다. 그리고 이 값은 W13 후반 LoRA 의 B=0 항등 게이트 검증에서 정확히 재사용된다."
+    verify:
+      type: output_contains
+      expect: BEFORE_TUNING_OK
+      field: stdout
+      semantic:
+        intent: "지시 튜닝 전 기준선 기록"
+        success_criteria: ["손실 3.8 안팎", "지시 미추종 확인"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 지시 튜닝 (2 에폭) 결과 확인
+
+      ## 💡 무엇이 바뀌나
+      **구조는 하나도 안 바뀐다.** 같은 GPTModel, 같은 파라미터 수다. 바뀌는 것은
+      **가중치의 값**과 그로 인한 **행동**이다.
+
+      | 항목 | 튜닝 전 | 튜닝 후 |
+      |---|---|---|
+      | train 손실 | 3.8 안팎 | **0.3146** |
+      | val 손실 | 3.8 안팎 | **0.6131** |
+      | 훈련 시간 | — | **98초** |
+      | peak 메모리 | — | **8.28 GB** |
+
+      ## 💡 train < val 에 주목
+      과적합의 시작이지만 W09 처럼 val 이 다시 올라갈 정도는 아니다. 데이터가 935건으로
+      5,145 토큰보다 훨씬 많기 때문이다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      m = json.load(open('sft_meta.json'))
+      print(f\"TRAIN_LOSS {m['train_loss']:.4f}\")
+      print(f\"VAL_LOSS   {m['val_loss']:.4f}\")
+      print(f\"ELAPSED    {m['elapsed_sec']:.1f}s\")
+      print(f\"PEAK_GB    {m['peak_gb']:.2f}\")
+      ok = m['train_loss'] < 1.0 and m['val_loss'] < 1.0 and m['train_loss'] < m['val_loss']
+      print('SFT_TRAIN_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      두 손실 모두 **1 미만**, `train < val`, `SFT_TRAIN_OK`.
+    hint: '손실이 1 이상이면 에폭 수나 학습률을 확인하라'
+    answer: |
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      m = json.load(open('sft_meta.json'))
+      print(f\"TRAIN_LOSS {m['train_loss']:.4f}\")
+      print(f\"VAL_LOSS   {m['val_loss']:.4f}\")
+      print(f\"ELAPSED    {m['elapsed_sec']:.1f}s\")
+      print(f\"PEAK_GB    {m['peak_gb']:.2f}\")
+      ok = m['train_loss'] < 1.0 and m['val_loss'] < 1.0 and m['train_loss'] < m['val_loss']
+      print('SFT_TRAIN_OK' if ok else 'NG')"
+    answer_detail: "peak 8.28GB 는 다음 단계 LoRA 비교(4.5GB)의 기준값이 된다. 시간 98초도 마찬가지 — 4축 비교(파라미터·메모리·시간·품질)의 재료를 여기서 확보한다."
+    verify:
+      type: output_contains
+      expect: SFT_TRAIN_OK
+      field: stdout
+      semantic:
+        intent: "지시 튜닝 결과 손실·자원 지표 확인"
+        success_criteria: ["손실 1 미만", "train < val", "시간·메모리 기록"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — 테스트셋 응답 일괄 생성 (110개, 빈 응답 0건)
+
+      ## 💡 왜 "빈 응답 0건"이 게이트인가
+      하나라도 비어 있으면 **EOS 처리나 생성 길이 설정에 문제**가 있는 것이다.
+      W12 의 "EOS 하나 남기기"가 여기서 회수된다 — EOS 를 못 배운 모델은 멈추지 못하거나
+      즉시 멈춘다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      r = json.load(open('test_responses.json'))
+      empty = sum(1 for x in r if not x.get('model_response','').strip())
+      lens = [len(x.get('model_response','')) for x in r]
+      print('RESPONSES', len(r))
+      print('EMPTY    ', empty)
+      print('LEN_MIN/MEAN/MAX', min(lens), round(sum(lens)/len(lens),1), max(lens))
+      print('--- 샘플')
+      for x in r[:2]:
+          print('  Q:', x['instruction'][:60])
+          print('  A:', x['model_response'][:80])
+      print('RESPONSES_OK' if len(r) == 110 and empty == 0 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `RESPONSES 110`, `EMPTY 0`, `RESPONSES_OK`.
+    hint: '빈 응답이 있으면 generate 의 eos_id 처리와 max_new_tokens 를 확인하라'
+    answer: |
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      r = json.load(open('test_responses.json'))
+      empty = sum(1 for x in r if not x.get('model_response','').strip())
+      lens = [len(x.get('model_response','')) for x in r]
+      print('RESPONSES', len(r))
+      print('EMPTY    ', empty)
+      print('LEN_MIN/MEAN/MAX', min(lens), round(sum(lens)/len(lens),1), max(lens))
+      print('--- 샘플')
+      for x in r[:2]:
+          print('  Q:', x['instruction'][:60])
+          print('  A:', x['model_response'][:80])
+      print('RESPONSES_OK' if len(r) == 110 and empty == 0 else 'NG')"
+    answer_detail: "110개 응답이 다음 단계 저지 채점의 대상이다. 빈 응답이 섞이면 저지가 0점을 주고 평균이 왜곡된다 — 평가 전에 입력 데이터를 검사하는 것이 순서다."
+    verify:
+      type: output_contains
+      expect: RESPONSES_OK
+      field: stdout
+      semantic:
+        intent: "테스트셋 응답 일괄 생성 결과 검사"
+        success_criteria: ["110개 생성", "빈 응답 0", "형식 확인"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — 심판 소환: 컨테이너에서 호스트 Ollama 접속
+
+      ## 🔴 `http://localhost:11434` 는 컨테이너 안에서 **동작하지 않는다**
+      컨테이너의 `localhost` 는 **컨테이너 자신**이다. Ollama 는 호스트에서 돈다.
+
+      | 주소 | 결과 |
+      |---|---|
+      | `http://localhost:11434` | ❌ 연결 거부 (`exit=7`) |
+      | **`http://172.17.0.1:11434`** | ✅ **동작** (docker0 브리지 게이트웨이) |
+
+      `172.17.0.1` 은 기본 Docker 브리지에서 **호스트를 가리키는 주소**다. 환경에 따라 다를 수
+      있으니 `ip route | grep default` 나 `docker network inspect bridge` 로 확인하라.
+
+      ## 💡 저지 설정 — 재현을 위한 옵션
+      ```python
+      options = {"seed": 123, "temperature": 0, "num_ctx": 2048}
+      ```
+      **저지 모델은 반드시 명시한다** — 어떤 모델을 쓰느냐가 점수를 크게 바꾼다.
+      이 실습은 `llama3.1:8b` 를 쓴다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json, urllib.request; sys.path.insert(0, '.')
+      from common import OLLAMA_URL, JUDGE_MODEL
+      print('JUDGE_URL  ', OLLAMA_URL)
+      print('JUDGE_MODEL', JUDGE_MODEL)
+      payload = {'model': JUDGE_MODEL,
+                 'messages': [{'role':'user','content':'Reply with the integer 42 only.'}],
+                 'stream': False, 'options': {'seed':123,'temperature':0,'num_ctx':2048}}
+      req = urllib.request.Request(OLLAMA_URL, data=json.dumps(payload).encode(),
+                                   headers={'Content-Type':'application/json'})
+      with urllib.request.urlopen(req, timeout=120) as r: out = json.load(r)
+      print('REPLY', repr(out['message']['content'][:60]))
+      print('JUDGE_CONNECT_OK')"
+      ```
+      ## ✅ 합격 기준
+      `JUDGE_URL http://172.17.0.1:11434/api/chat`, 응답이 돌아오고 `JUDGE_CONNECT_OK`.
+      **`localhost` 로 바꿔서 실패하는 것도 직접 확인해 보라.**
+    hint: 'ip route | grep default 로 컨테이너에서 본 호스트 주소를 확인할 수 있다'
+    answer: |
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json, urllib.request; sys.path.insert(0, '.')
+      from common import OLLAMA_URL, JUDGE_MODEL
+      print('JUDGE_URL  ', OLLAMA_URL)
+      print('JUDGE_MODEL', JUDGE_MODEL)
+      payload = {'model': JUDGE_MODEL,
+                 'messages': [{'role':'user','content':'Reply with the integer 42 only.'}],
+                 'stream': False, 'options': {'seed':123,'temperature':0,'num_ctx':2048}}
+      req = urllib.request.Request(OLLAMA_URL, data=json.dumps(payload).encode(),
+                                   headers={'Content-Type':'application/json'})
+      with urllib.request.urlopen(req, timeout=120) as r: out = json.load(r)
+      print('REPLY', repr(out['message']['content'][:60]))
+      print('JUDGE_CONNECT_OK')"
+    answer_detail: "컨테이너-호스트 네트워크 경계는 실무에서 가장 흔한 함정 중 하나다. 그리고 W01 에서 확인한 'Ollama 가 0.0.0.0:11434 에 열려 있다'는 사실이 여기서 양날의 검이 된다 — 편리하지만 외부에도 열려 있다."
+    verify:
+      type: output_contains
+      expect: JUDGE_CONNECT_OK
+      field: stdout
+      semantic:
+        intent: "컨테이너에서 호스트 Ollama 로 접속 (172.17.0.1)"
+        success_criteria: ["localhost 아님", "응답 수신", "저지 모델 명시"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 저지 채점 결과와 **교재 예상값의 문제**
+
+      ## 💡 실측 결과 (llama3.1:8b)
+      | 항목 | 값 |
+      |---|---|
+      | 채점 성공 | **110 / 110** |
+      | 파싱 실패 | **0** |
+      | 평균 | **60.92점** |
+      | 표준편차 | 29.34 |
+      | 중앙값 | 62.5 |
+
+      파싱 실패 0건은 프롬프트의 `"Respond with the integer number only."` 가 잘 작동한 결과다.
+
+      ## 🔴 교재는 "50점 안팎"을 예상했지만 실측은 60.92 다
+      교재가 **저지 모델명을 플레이스홀더로 두었기 때문에 예상값 자체가 성립할 수 없다.**
+      저지가 바뀌면 점수가 바뀐다.
+      **평가 지표를 제시할 때는 반드시 "어떤 심판으로"를 함께 적어야 한다.**
+
+      ## 💡 점수 앵커링 — 저지의 특성
+      110개 점수 중 **61.8%** 가 `{0, 50, 75, 95, 100}` 다섯 값에 몰렸고, 서로 다른 값은
+      **15개**뿐이었다. 저지는 연속적인 점수를 주지 않고 몇 개의 **앵커**에 붙는다.
+      **이것이 25점 단위 점프의 원인이다.**
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      from collections import Counter
+      f = json.load(open('judge_full.json'))
+      scores = f['scores']
+      print('SCORED  ', len(scores), '/ 110')
+      print('MEAN    ', round(f['mean'], 2))
+      print('SD      ', round(f['sd'], 2))
+      print('FAILURES', f['failures'])
+      print('DISTINCT_VALUES', len(set(scores)))
+      c = Counter(scores).most_common(5)
+      top5 = sum(n for _, n in c)
+      print('TOP5_ANCHORS', c)
+      print(f'TOP5_SHARE {top5/len(scores)*100:.1f}%')
+      print('JUDGE_SCORING_OK' if len(scores) == 110 and f['failures'] == 0 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `SCORED 110 / 110`, 평균이 출력되고, 앵커 5개가 **60% 이상**을 차지, `JUDGE_SCORING_OK`.
+    hint: '점수 분포 히스토그램을 그려 보면 앵커링이 한눈에 보인다'
+    answer: |
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      from collections import Counter
+      f = json.load(open('judge_full.json'))
+      scores = f['scores']
+      print('SCORED  ', len(scores), '/ 110')
+      print('MEAN    ', round(f['mean'], 2))
+      print('SD      ', round(f['sd'], 2))
+      print('FAILURES', f['failures'])
+      print('DISTINCT_VALUES', len(set(scores)))
+      c = Counter(scores).most_common(5)
+      top5 = sum(n for _, n in c)
+      print('TOP5_ANCHORS', c)
+      print(f'TOP5_SHARE {top5/len(scores)*100:.1f}%')
+      print('JUDGE_SCORING_OK' if len(scores) == 110 and f['failures'] == 0 else 'NG')"
+    answer_detail: "저지 점수는 연속값이 아니라 앵커에 붙는다. 경계선상의 응답은 실행마다 인접 앵커로 튄다 — 다음 단계에서 볼 8.2% 변동의 구조적 원인이다."
+    verify:
+      type: output_contains
+      expect: JUDGE_SCORING_OK
+      field: stdout
+      semantic:
+        intent: "저지 채점 결과 집계와 점수 앵커링 관찰"
+        success_criteria: ["110건 채점", "파싱 실패 0", "앵커 편중 확인"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 🔴 **심판을 검증하라** (이번 주의 핵심)
+
+      **심판의 점수를 믿기 전에, 심판이 믿을 만한지 확인한다.**
+
+      ## 💡 세 가지 검증
+      | 검증 | 방법 | 기대 | 실측 |
+      |---|---|---|---|
+      | **상한** | 정답 자체를 채점 | 90점 이상 | ✅ 통과 |
+      | **하한** | 엉터리 문장을 채점 | 낮아야 | ⚠️ **부분 실패** |
+      | **결정성** | 같은 (항목,응답) 재채점 | 동일 점수 | ⚠️ **부분 실패** |
+
+      ## 🔴 하한 검증의 발견
+      `"The weather is nice today."` 라는 **완전히 무관한 문장**이 소수·합성수 분류 문제에서
+      **95점**을 받았다. **저지도 실수한다.**
+
+      ## 🔴 결정성 검증의 발견
+      `temperature=0` 인데도 110개 재채점에서 **9건(8.2%)** 이 달라졌다.
+      ```
+      평균 변동폭: 31점 (최대 83점)
+      그런데 전체 평균은 60.92 → 61.13 (0.21점만 이동)
+      ```
+      **개별 점수는 흔들리지만 평균은 안정적이다.** 이것이 이 발견의 핵심이다.
+      **"이 응답은 75점"** 이라고 말하면 안 되고, **"이 모델의 평균은 61점"** 이라고 해야 한다.
+
+      원인은 서버 측 실행 경로(배치 구성, KV 캐시 상태 등)로 추정되며 **클라이언트에서
+      seed/temperature 로 제거할 수 없다.**
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      f = json.load(open('judge_full.json')); r = json.load(open('judge_recheck.json'))
+      a, b = f['scores'], r['rescore_second']
+      diff = [(i, x, y) for i, (x, y) in enumerate(zip(a, b)) if x != y]
+      print('COMPARED', len(a))
+      print('CHANGED ', len(diff), f'({len(diff)/len(a)*100:.1f}%)')
+      if diff:
+          print('MAX_SWING', max(abs(x-y) for _, x, y in diff))
+          print('SAMPLES  ', diff[:3])
+      ma = sum(a)/len(a); mb = sum(b)/len(b)
+      print(f'MEAN_RUN1 {ma:.2f}  MEAN_RUN2 {mb:.2f}  SHIFT {abs(ma-mb):.2f}')
+      rel = f['reliability']
+      print('CEILING(정답 채점 평균)', rel['upper_mean'], '(90 이상이어야 통과)')
+      print('FLOOR  (엉터리 평균)  ', rel['lower_mean'], '| 최고점', max(rel['lower']))
+      print('ALL_SAME(3회 동일)    ', rel['all_same'])
+      print('JUDGE_NONDETERMINISM_OK' if len(diff) > 0 and abs(ma-mb) < 2.0 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      **변동이 0이 아니고**(비결정성 확인), **평균 이동은 2점 미만**(평균은 안정적),
+      `JUDGE_NONDETERMINISM_OK`.
+
+      ## 📝 해석 과제 (report.md 에 **직접** 작성)
+      "temperature=0 이면 재현된다"는 교재의 전제가 왜 성립하지 않는지, 그리고 그럼에도
+      이 저지를 계속 쓸 수 있는 이유가 무엇인지 3~5문장으로 쓰라.
+    hint: '개별 점수와 평균의 안정성을 구분하는 것이 이 단계의 핵심 통찰이다'
+    answer: |
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      f = json.load(open('judge_full.json')); r = json.load(open('judge_recheck.json'))
+      a, b = f['scores'], r['rescore_second']
+      diff = [(i, x, y) for i, (x, y) in enumerate(zip(a, b)) if x != y]
+      print('COMPARED', len(a))
+      print('CHANGED ', len(diff), f'({len(diff)/len(a)*100:.1f}%)')
+      if diff:
+          print('MAX_SWING', max(abs(x-y) for _, x, y in diff))
+          print('SAMPLES  ', diff[:3])
+      ma = sum(a)/len(a); mb = sum(b)/len(b)
+      print(f'MEAN_RUN1 {ma:.2f}  MEAN_RUN2 {mb:.2f}  SHIFT {abs(ma-mb):.2f}')
+      rel = f['reliability']
+      print('CEILING(정답 채점 평균)', rel['upper_mean'], '(90 이상이어야 통과)')
+      print('FLOOR  (엉터리 평균)  ', rel['lower_mean'], '| 최고점', max(rel['lower']))
+      print('ALL_SAME(3회 동일)    ', rel['all_same'])
+      print('JUDGE_NONDETERMINISM_OK' if len(diff) > 0 and abs(ma-mb) < 2.0 else 'NG')"
+    answer_detail: "LLM-as-judge 는 측정 오차가 있는 도구다. 오차의 크기를 모르면 결과를 해석할 수 없다 — '개별 점수는 못 믿지만 평균은 쓸 수 있다'는 결론이 이 검증에서 나온다. 교재가 V13-1 에서 '어긋나면 그것 자체가 훌륭한 발견'이라고 쓴 것이 정확히 이 상황이다."
+    verify:
+      type: output_contains
+      expect: JUDGE_NONDETERMINISM_OK
+      field: stdout
+      semantic:
+        intent: "저지의 결정성을 재채점 비교로 검증하고 평균의 안정성 확인"
+        success_criteria: ["변동 건수 집계", "최대 변동폭", "평균 이동은 작음"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — LoRA: 항등 게이트와 4축 비교
+
+      ## 💡 아이디어
+      원본 가중치는 얼리고 `A @ B` 라는 **저차원 곁가지**만 훈련한다.
+      `768 × 768 = 589,824` 대신 `768 × 16 + 16 × 768 = 24,576` 만 학습한다.
+
+      ## 🔴 B=0 초기화가 왜 결정적인가
+      ```python
+      self.A = nn.Parameter(torch.empty(in_dim, rank))
+      nn.init.kaiming_uniform_(self.A, a=math.sqrt(5))
+      self.B = nn.Parameter(torch.zeros(rank, out_dim))   # ← 0!
+      ```
+      `B = 0` 이므로 `x @ A @ B = 0` 이다. **LoRA 를 붙인 직후의 출력은 원본과 완전히 같다.**
+
+      **이것이 "항등 게이트"다.** 훈련을 시작하기 전 모델이 망가지지 않았음을 보장한다.
+      실측 게이트 손실 **3.8172** — 1단계에서 기록한 튜닝 전 손실과 **동일**하다.
+
+      ## ⚠️ 스케일은 α 인가 α/r 인가
+      원 논문은 `α/r`, 이 교재 구현은 **`α`** 를 쓴다. `r = α = 16` 이면 두 방식이 **16배**
+      차이난다. **어느 쪽이든 상관없지만 일관되게 쓰고 명시해야 한다.**
+
+      ## 💡 4축 비교 (실측)
+      | 방식 | 훈련 파라미터 | 비율 | 시간 | peak 메모리 | val 손실 | 저지 평균 |
+      |---|---|---|---|---|---|---|
+      | **풀 튜닝** | 406,286,336 | 100% | **98초** | **8.28 GB** | **0.613** | **60.93** |
+      | **LoRA r=16** | 7,898,384 | **1.94%** | **40초** | **4.58 GB** | 0.649 | **60.87** |
+      | **LoRA r=8** | 3,949,192 | **0.97%** | **39초** | **4.52 GB** | 0.658 | **62.14** |
+
+      ## ⚠️ "LoRA 가 더 좋다"고 결론 내리지 마라
+      저지 평균 차이(60.87 / 62.14 / 60.93)는 **6단계에서 본 측정 오차 범위 안**이다.
+      맞는 결론은 **"품질 저하 없이 비용을 크게 줄였다"** 이다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      import torch
+      from lora import LinearWithLoRA
+      lin = torch.nn.Linear(8, 4); w = LinearWithLoRA(lin, rank=2, alpha=16)
+      x = torch.randn(3, 8)
+      b_zero = bool((w.lora.B == 0).all()); ident = torch.allclose(w(x), lin(x))
+      print('B_IS_ZERO       ', b_zero)
+      print('IDENTITY_AT_INIT', ident)
+      meta = json.load(open('lora_meta.json'))
+      full = json.load(open('sft_meta.json'))
+      print(f\"full        trainable=406,286,336 (100.00%) time={full['elapsed_sec']:.0f}s peak={full['peak_gb']:.2f}GB val={full['val_loss']:.3f}\")
+      for m in meta:
+          print(f\"{m['tag']:16s} trainable={m['trainable']:,} ({m['ratio']:.2f}%) time={m['elapsed']:.0f}s peak={m['peak']:.2f}GB val={m['val_loss']:.3f} judge={m['judge_mean']:.2f} gate_loss={m['gate_loss']:.4f}\")
+      gates = all(m['gate'] for m in meta)
+      print('LORA_OK' if b_zero and ident and gates else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `B_IS_ZERO True`, `IDENTITY_AT_INIT True`, 모든 LoRA 설정의 게이트 통과, `LORA_OK`.
+      그리고 `gate_loss` 가 1단계의 튜닝 전 손실과 **일치**하는지 눈으로 확인한다.
+    hint: 'B 를 무작위로 초기화해 보라 — 적용 직후 손실이 튀어 게이트가 깨진다'
+    answer: |
+      docker exec -w /work/week13 llm-lab python3 -c "
+      import sys, json; sys.path.insert(0, '.')
+      import torch
+      from lora import LinearWithLoRA
+      lin = torch.nn.Linear(8, 4); w = LinearWithLoRA(lin, rank=2, alpha=16)
+      x = torch.randn(3, 8)
+      b_zero = bool((w.lora.B == 0).all()); ident = torch.allclose(w(x), lin(x))
+      print('B_IS_ZERO       ', b_zero)
+      print('IDENTITY_AT_INIT', ident)
+      meta = json.load(open('lora_meta.json'))
+      full = json.load(open('sft_meta.json'))
+      print(f\"full        trainable=406,286,336 (100.00%) time={full['elapsed_sec']:.0f}s peak={full['peak_gb']:.2f}GB val={full['val_loss']:.3f}\")
+      for m in meta:
+          print(f\"{m['tag']:16s} trainable={m['trainable']:,} ({m['ratio']:.2f}%) time={m['elapsed']:.0f}s peak={m['peak']:.2f}GB val={m['val_loss']:.3f} judge={m['judge_mean']:.2f} gate_loss={m['gate_loss']:.4f}\")
+      gates = all(m['gate'] for m in meta)
+      print('LORA_OK' if b_zero and ident and gates else 'NG')"
+    answer_detail: "LoRA 는 오늘날 오픈 모델 파인튜닝의 표준이다. B=0 항등 게이트는 '적용해도 아직 아무것도 안 바뀌었다'를 보장하는 안전장치이며, 이 게이트가 통과해야 이후 학습 결과를 LoRA 덕분이라고 말할 수 있다."
+    verify:
+      type: output_contains
+      expect: LORA_OK
+      field: stdout
+      semantic:
+        intent: "LoRA B=0 항등 게이트 증명과 풀 튜닝 4축 비교"
+        success_criteria: ["B 전부 0", "적용 직후 항등", "게이트 손실 일치", "4축 비교표"]

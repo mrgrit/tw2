@@ -1,0 +1,376 @@
+lab_id: llm-from-scratch-week01
+title: "W01 — 나의 AI 슈퍼컴퓨터 개통: 장비 파악·하드닝·골든 컨테이너·스모크 테스트"
+version: ai
+course: llm-from-scratch
+week: 1
+description: |
+  DGX Spark(GB10 / aarch64 / CUDA 13 / 통합 메모리 128GB)를 개통한다. 장비 사양을 증거와 함께
+  문서화하고, 최소 하드닝 상태를 점검하며, 골든 이미지 llm-course:v1 로 llm-lab 컨테이너를 띄워
+  torch.cuda.is_available() == True 를 증명한다. 마지막으로 교재 2장 노트북 스모크 테스트를 돌려
+  "의도된 실패 1개를 제외한 무결 실행"을 확인한다. 모든 실습 코드는 llm-lab 컨테이너 안에서 돈다.
+difficulty: easy
+duration_minutes: 120
+audience: LLM 밑바닥 구현 입문 (1주차)
+prerequisites:
+  - DGX Spark 호스트 SSH 접속 가능 (작업용·비상용 세션 2개 확보)
+  - 코딩 에이전트 CLI 사용 가능 (Claude Code 등)
+  - 골든 이미지 `llm-course:v1` 빌드 완료 (조교 배포 Dockerfile 사용)
+  - 교재 저장소 clone — `https://github.com/rickiepark/llm-from-scratch`
+  - W01 강의안 정독 — 프롬프트 5원칙, 위험 작업 3요소, 계층별 GPU 진단
+objectives:
+  - "LC_ALL=C 를 붙여 한국어 로케일 함정을 피하고 aarch64 를 확인한다"
+  - "GB10 GPU·드라이버·통합 메모리를 증거 명령으로 확인한다"
+  - "골든 이미지와 llm-lab 컨테이너에서 CUDA 가용성을 증명한다"
+  - "볼륨 마운트가 실제로 호스트에 파일을 남기는지 확인한다"
+  - "SSH 패스워드 인증 상태와 외부 노출 포트를 조회 전용으로 점검한다"
+  - "Docker 퍼블리시 포트가 UFW 를 우회한다는 사실을 실측으로 확인한다"
+  - "ch02 노트북 스모크 테스트에서 '의도된 오류 1개'를 판정 기준으로 삼는다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 아키텍처 확인 (한국어 로케일 함정 통과)
+
+      이 장비는 ARM 64비트(`aarch64`)다. 인터넷 설치 가이드 대부분은 x86_64 기준이라 그대로 따라
+      하면 실패한다. 앞으로의 모든 트러블슈팅은 "내 환경이 무엇인가"에서 출발한다.
+
+      ## 💡 왜 `LC_ALL=C` 인가
+      이 장비는 한국어 로케일이라 `lscpu` 의 필드명이 **한글**로 나온다. 그래서
+      `lscpu | grep Architecture` 는 **아무것도 출력하지 않는다**. `LC_ALL=C` 는 그 명령 한 번만
+      로케일을 C(영어)로 강제하는 환경변수 prefix다. 에이전트에게 조회를 시킬 때 이걸 제약으로
+      명시해야 한다.
+
+      ## 💻 실행 명령
+      ```bash
+      LC_ALL=C lscpu | awk -F: '/^Architecture/{gsub(/ /,"",$2); print "ARCH_"$2}'
+      ```
+      ## ✅ 합격 기준
+      `ARCH_aarch64` 가 출력된다. `x86_64` 가 나오면 접속한 장비가 다른 것이니 조교에게 문의한다.
+    hint: 'LC_ALL=C 없이 실행해 보고 출력이 사라지는 것을 먼저 확인해 보라'
+    answer: |
+      LC_ALL=C lscpu | awk -F: '/^Architecture/{gsub(/ /,"",$2); print "ARCH_"$2}'
+    answer_detail: "aarch64 는 ARM 64비트다. 이 한 줄이 '왜 pip 설치가 실패하는가'의 근거가 되고, 호스트 대신 컨테이너에서만 작업하는 이유가 된다. LC_ALL=C 는 로케일 의존 출력에 대한 표준 방어책."
+    verify:
+      type: output_contains
+      expect: ARCH_aarch64
+      field: stdout
+      semantic:
+        intent: "장비 아키텍처를 로케일 함정 없이 확인 — 환경 파악의 출발점"
+        success_criteria: ["LC_ALL=C 사용", "aarch64 확인"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — GPU 모델명과 드라이버 확인
+
+      `NVIDIA GB10`(Grace Blackwell)은 CUDA 13 세대다. 오래된 PyTorch 빌드는 이 GPU를 아예
+      인식하지 못한다. 그래서 이 수업은 CUDA 13 런타임 기반 골든 이미지를 쓴다.
+
+      ## 💡 처음 나오는 도구 — nvidia-smi
+      NVIDIA System Management Interface. GPU 상태를 조회·모니터링하는 표준 도구다.
+      `--query-gpu=name,driver_version --format=csv,noheader` 는 표 전체가 아니라 필요한 필드만
+      CSV 한 줄로 뽑는 옵션이다(스크립트에서 파싱하기 좋다).
+
+      ## 💻 실행 명령
+      ```bash
+      nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+      nvidia-smi --query-gpu=name --format=csv,noheader | grep -q "GB10" && echo "GPU_GB10_OK"
+      ```
+      ## ✅ 합격 기준
+      모델명에 `NVIDIA GB10` 이 보이고 `GPU_GB10_OK` 가 출력된다.
+    hint: 'nvidia-smi 가 없다면 드라이버 미설치 — 호스트 계층에서 이미 끊긴 것이다'
+    answer: |
+      nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+      nvidia-smi --query-gpu=name --format=csv,noheader | grep -q "GB10" && echo "GPU_GB10_OK"
+    answer_detail: "호스트에서 nvidia-smi 가 도는 것은 GPU 진단 4계층 중 ①번이다. 여기가 되어야 ②docker --gpus all → ③컨테이너 안 nvidia-smi → ④torch CUDA 빌드로 진행할 수 있다."
+    verify:
+      type: output_contains
+      expect: GPU_GB10_OK
+      field: stdout
+      semantic:
+        intent: "호스트 계층에서 GPU 인식 확인 — 계층 진단의 1단계"
+        success_criteria: ["nvidia-smi 동작", "GB10 확인"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — 통합 메모리 확인
+
+      일반 그래픽카드는 VRAM이 따로 있고 넘치면 즉시 OOM이다. Spark는 **통합 메모리**라 CPU와
+      GPU가 같은 128GB 풀을 공유한다. 커널·펌웨어 예약분 때문에 `free -g` 로는 119GiB 내외로
+      보인다 — 정상이다.
+
+      ## 💡 왜 이 숫자를 지금 재는가
+      9주차에서 "모델을 올리는 메모리"와 "모델을 훈련하는 메모리"가 전혀 다르다는 것을 계산으로
+      확인한다. 훈련에는 가중치 + 기울기 + 옵티마이저 모멘텀 2벌 + 활성값이 모두 필요하다.
+      그 계산의 분모가 지금 재는 이 값이다.
+
+      ## 💻 실행 명령
+      ```bash
+      LC_ALL=C free -g | awk '/^Mem:/{ if ($2>=100) print "UNIFIED_MEM_OK_"$2"GiB"; else print "MEM_LOW_"$2 }'
+      ```
+      ## ✅ 합격 기준
+      `UNIFIED_MEM_OK_119GiB` 형태로 출력된다(정확한 숫자는 장비마다 ±수 GiB 다를 수 있다).
+    hint: 'free 의 출력도 한국어 로케일이면 Mem: 대신 다른 라벨일 수 있다 — LC_ALL=C 를 붙였다'
+    answer: |
+      LC_ALL=C free -g | awk '/^Mem:/{ if ($2>=100) print "UNIFIED_MEM_OK_"$2"GiB"; else print "MEM_LOW_"$2 }'
+    answer_detail: "통합 메모리 100GiB 이상이면 통과. 이 값이 후반부(GPT-2 355M 지시 튜닝, LoRA 비교)에서 큰 모델을 한 대에서 다룰 수 있는 근거가 된다."
+    verify:
+      type: output_contains
+      expect: UNIFIED_MEM_OK
+      field: stdout
+      semantic:
+        intent: "통합 메모리 총량 확인 — 후반부 모델 크기 계획의 근거"
+        success_criteria: ["free 로 총량 확인", "100GiB 이상"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — 골든 이미지 존재 확인
+
+      교재 실습은 **전원이 같은 컨테이너 이미지**에서 돈다. "제 환경에선 되는데요"를 원천 차단하기
+      위해서다.
+
+      ## 💡 골든 이미지 `llm-course:v1` 구성
+      | 계층 | 내용 | 왜 |
+      |---|---|---|
+      | 베이스 | `nvidia/cuda:13.0.1-runtime-ubuntu24.04` | GB10(CUDA 13) 인식 |
+      | PyTorch | `torch 2.9.1+cu130` | cu130 빌드여야 CUDA가 켜진다 |
+      | 실습 패키지 | tiktoken / matplotlib / pandas / pytest | 2·4·6·9주차 필수 |
+      | 한글 폰트 | fonts-nanum + MATPLOTLIBRC | 없으면 그래프 한글 라벨이 전부 `□` |
+
+      ## 💻 실행 명령
+      ```bash
+      docker images llm-course:v1 --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+      docker images llm-course:v1 --format '{{.Repository}}:{{.Tag}}' | grep -q 'llm-course:v1' && echo "IMAGE_OK"
+      ```
+      ## ✅ 합격 기준
+      `llm-course:v1` 과 `IMAGE_OK` 가 출력된다. 없으면 조교 배포 Dockerfile 로 먼저 빌드한다.
+    hint: 'docker images 에 아무것도 안 나오면 아직 빌드 전이다'
+    answer: |
+      docker images llm-course:v1 --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+      docker images llm-course:v1 --format '{{.Repository}}:{{.Tag}}' | grep -q 'llm-course:v1' && echo "IMAGE_OK"
+    answer_detail: "골든 이미지는 이 수업의 재현성 기반이다. 한글 폰트 한 줄이 이미지에 들어간 이유는 4·6·9주차 그래프의 한글 라벨이 깨지기 때문 — '돌려보고 나서야 아는 환경 결함'의 전형이다."
+    verify:
+      type: output_contains
+      expect: IMAGE_OK
+      field: stdout
+      semantic:
+        intent: "수업 표준 컨테이너 이미지 확보 확인"
+        success_criteria: ["llm-course:v1 존재", "이미지 크기 확인"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 컨테이너에서 CUDA 가용성 증명
+
+      "GPU가 있다"와 "PyTorch가 GPU를 쓸 수 있다"는 **다른 문제**다. 드라이버·컨테이너 런타임·
+      PyTorch 빌드가 전부 맞아야 `True` 가 나온다.
+
+      ## 💡 컨테이너 실행 옵션
+      ```bash
+      docker run -d --name llm-lab --gpus all --ipc=host \
+        -v ~/work:/work -v ~/textbook:/textbook llm-course:v1 sleep infinity
+      ```
+      - `--gpus all` 없으면 컨테이너 안 `nvidia-smi` 부터 실패한다.
+      - `--ipc=host` 없으면 3주차 이후 `num_workers>0` DataLoader 에서 `Bus error` 가 난다.
+
+      ## ⚠️ 정상인데 무섭게 생긴 경고
+      `UserWarning: Found GPU0 NVIDIA GB10 which is of cuda capability 12.1. ... supported ...
+      is (8.0) - (12.0)` — GB10의 compute capability가 PyTorch가 적어둔 상한보다 높아서 나온다.
+      **동작은 정상이다.** 이걸 보고 에이전트가 "PyTorch를 다운그레이드하겠습니다"라고 하면 막아라.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec llm-lab python3 -c "
+      import torch
+      print('TORCH_' + torch.__version__)
+      print('CUDA_OK' if torch.cuda.is_available() else 'CUDA_NG')
+      print('DEV_' + torch.cuda.get_device_name(0).replace(' ','_'))
+      "
+      ```
+      ## ✅ 합격 기준
+      `TORCH_2.9.1+cu130` / `CUDA_OK` / `DEV_NVIDIA_GB10` 세 줄이 출력된다.
+    hint: 'CUDA_NG 가 나오면 ①호스트 nvidia-smi ②--gpus all ③컨테이너 안 nvidia-smi ④torch.version.cuda 순으로 계층 진단'
+    answer: |
+      docker exec llm-lab python3 -c "
+      import torch
+      print('TORCH_' + torch.__version__)
+      print('CUDA_OK' if torch.cuda.is_available() else 'CUDA_NG')
+      print('DEV_' + torch.cuda.get_device_name(0).replace(' ','_'))
+      "
+    answer_detail: "torch.cuda.is_available() == True 하나로 4계층이 모두 통과했음이 증명된다. False 일 때는 고치지 말고 어느 계층에서 끊겼는지부터 찾는 것이 V1-3 의 핵심."
+    verify:
+      type: output_contains
+      expect: CUDA_OK
+      field: stdout
+      semantic:
+        intent: "컨테이너 안 PyTorch 가 GPU 를 실제로 쓸 수 있는지 증명"
+        success_criteria: ["torch 버전 cu130", "is_available True", "GB10 장치명"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 볼륨 마운트 지속성 확인
+
+      컨테이너 안에서 만든 파일이 **호스트에 실제로 남는지** 확인한다. 마운트가 없으면 한 학기
+      산출물이 `docker rm` 한 번에 사라진다.
+
+      ## 💡 왜 이 확인이 필요한가
+      "컨테이너 안에서 작업했으니 안전하다"는 흔한 오해다. 컨테이너의 쓰기 계층은 컨테이너를 지우면
+      같이 사라진다. `-v ~/work:/work` 로 호스트 디렉토리를 겹쳐 놓아야 살아남는다. 이 실습에서
+      쓰는 경로는 컨테이너 `/work` ↔ 호스트 `~/work` 다(마운트 소스는 본인 설정에 맞춰 바꾼다).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec llm-lab sh -c 'mkdir -p /work/week01 && echo persist-check > /work/week01/.mount_probe'
+      test -f ~/work/week01/.mount_probe && echo "MOUNT_PERSIST_OK" && rm -f ~/work/week01/.mount_probe
+      ```
+      ## ✅ 합격 기준
+      `MOUNT_PERSIST_OK` 가 출력된다. 안 나오면 `docker inspect llm-lab --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'` 로 실제 마운트를 확인한다.
+    hint: 'docker inspect 로 Source -> Destination 을 직접 확인하는 것이 가장 빠르다'
+    answer: |
+      docker exec llm-lab sh -c 'mkdir -p /work/week01 && echo persist-check > /work/week01/.mount_probe'
+      test -f ~/work/week01/.mount_probe && echo "MOUNT_PERSIST_OK" && rm -f ~/work/week01/.mount_probe
+    answer_detail: "컨테이너에서 쓴 파일이 호스트 경로에 보이면 마운트가 살아 있다. 이 확인 없이 한 학기를 진행하면 어느 날 산출물이 통째로 사라진다."
+    verify:
+      type: output_contains
+      expect: MOUNT_PERSIST_OK
+      field: stdout
+      semantic:
+        intent: "볼륨 마운트로 작업 산출물이 호스트에 보존되는지 확인"
+        success_criteria: ["컨테이너에서 파일 생성", "호스트에서 동일 파일 확인"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — SSH 인증 상태 점검 (조회 전용)
+
+      하드닝은 "했다"가 아니라 "증명 가능하다"가 기준이다. 이 단계는 **현재 상태를 읽기만** 한다.
+
+      ## ⚠️ 이 단계에서 절대 하지 않는 것
+      `PasswordAuthentication no` 로 **바꾸지 않는다.** 원격 접속 중에 이 설정을 잘못 바꾸면
+      자기 장비에서 잠긴다(lockout). 변경은 반드시 ① 설정 백업 ② 키 로그인이 실제로 되는지 확인
+      ③ `sshd -t` 문법 검사 통과 — 3단계를 거친 뒤, **비상용 SSH 세션을 열어둔 채로** 한다.
+
+      ## 💡 처음 나오는 명령 — `sshd -T`
+      sshd 의 **최종 유효 설정**을 전부 출력한다(`-t` 는 문법 검사, `-T` 는 설정 덤프로 다르다).
+      설정 파일을 눈으로 읽는 것보다 정확하다 — Include 나 뒤쪽 재정의까지 반영된 값이 나온다.
+
+      ## 💻 실행 명령
+      ```bash
+      sudo sshd -T | grep -i '^passwordauthentication' && echo "SSHD_PWAUTH_CHECKED"
+      ```
+      ## ✅ 합격 기준
+      `passwordauthentication yes` 또는 `no` 중 현재 값이 출력되고 `SSHD_PWAUTH_CHECKED` 가 찍힌다.
+      **값 자체가 아니라 "증거를 뽑아 봤다"가 이 단계의 통과 조건이다.**
+    hint: 'sshd -T 는 root 권한이 필요하다. -t(문법검사)와 -T(설정덤프)를 혼동하지 말 것'
+    answer: |
+      sudo sshd -T | grep -i '^passwordauthentication' && echo "SSHD_PWAUTH_CHECKED"
+    answer_detail: "점검과 조치를 분리하는 것이 이 단계의 교육 목표다. 에이전트가 점검하면서 동시에 고쳐버리면 학생은 판단 기회를 잃는다. V1-2 의 [제약] '고치지 말고 원인 분석만' 이 같은 원칙이다."
+    verify:
+      type: output_contains
+      expect: SSHD_PWAUTH_CHECKED
+      field: stdout
+      semantic:
+        intent: "SSH 인증 정책을 조회 전용으로 점검 — 점검과 조치의 분리"
+        success_criteria: ["sshd -T 로 유효 설정 조회", "변경하지 않음"]
+
+  - order: 8
+    instruction: |
+      ## 🎯 미션 — 외부 노출 포트 감사: UFW가 못 막는 것
+
+      **"UFW가 켜져 있으니 안전하다"는 이 장비에서 거짓이다.** Docker는 iptables의 `DOCKER`
+      체인에 직접 규칙을 넣어 UFW의 `INPUT` 체인을 **우회**한다. `docker run -p 8080:8080` 으로
+      띄운 서비스는 UFW가 `deny` 여도 외부에서 접속된다.
+
+      ## 💡 무엇을 보는가
+      `ss -tln` 의 4번째 열이 **로컬 청취 주소**다. 여기서
+      - `127.0.0.1:PORT` / `[::1]:PORT` → 루프백 전용. 외부에서 못 붙는다. **안전.**
+      - `0.0.0.0:PORT` / `*:PORT` / `[::]:PORT` → **모든 인터페이스**. 외부 노출.
+
+      13주차에서 쓰는 **Ollama** 는 기본값이 `0.0.0.0:11434` 라 전 인터페이스에 열린다.
+
+      ## 💻 실행 명령
+      ```bash
+      ss -tln | awk 'NR>1{print $4}' | grep -Ev '^(127\.|\[::1\])' | sort -u
+      ss -tln | awk 'NR>1{print $4}' | grep -Ev '^(127\.|\[::1\])' | sort -u | wc -l | awk '{print "PORT_AUDIT_OK_"$1"_external"}'
+      ```
+      ## ✅ 합격 기준
+      외부 바인딩 목록이 출력되고 `PORT_AUDIT_OK_<개수>_external` 이 찍힌다.
+      목록에 있는 포트 하나하나에 대해 "이게 밖에 열려 있어야 하는가"를 스스로 답할 수 있어야 한다.
+      불필요하면 `-p 127.0.0.1:PORT:PORT` 처럼 루프백에 바인딩한다.
+    hint: 'ss -tlnp 로 실행하면 어느 프로세스가 그 포트를 잡고 있는지까지 나온다(root 권한 필요)'
+    answer: |
+      ss -tln | awk 'NR>1{print $4}' | grep -Ev '^(127\.|\[::1\])' | sort -u
+      ss -tln | awk 'NR>1{print $4}' | grep -Ev '^(127\.|\[::1\])' | sort -u | wc -l | awk '{print "PORT_AUDIT_OK_"$1"_external"}'
+    answer_detail: "방화벽 정책이 아니라 실제 청취 주소를 보는 것이 진짜 감사다. UFW status 는 '규칙'을 보여주고 ss 는 '사실'을 보여준다. 둘이 어긋나는 대표 사례가 Docker 퍼블리시 포트다."
+    verify:
+      type: output_contains
+      expect: PORT_AUDIT_OK
+      field: stdout
+      semantic:
+        intent: "실제 청취 주소 기준 외부 노출 감사 — UFW 우회 사실 확인"
+        success_criteria: ["ss 로 청취 주소 확인", "루프백/전 인터페이스 구분"]
+
+  - order: 9
+    instruction: |
+      ## 🎯 미션 — 스모크 테스트: "무결 실행"의 함정
+
+      다음 주에 쓸 교재 2장 노트북을 미리 끝까지 돌려 본다. ARM/의존성 문제가 있다면 **지금
+      터지는 것이 다행**이다.
+
+      ## 🔴 이번 주에서 가장 중요한 함정
+      `ch02.ipynb` 에는 **의도적으로 실패하는 셀**이 들어 있다. 2장은 "어휘에 없는 단어를 넣으면
+      `KeyError` 가 난다"는 OOV 문제를 보여주려고 일부러 예외를 발생시킨다. 그래서
+      `nbconvert --execute` 를 그냥 돌리면 **반드시 거기서 멈춘다.**
+
+      만약 프롬프트에 "무결 실행"이라고만 썼다면 에이전트는 통과시키려고 **그 셀을 지우거나
+      고치려 든다** — 교재 코드를 훼손하는 것이다. 그래서 판정 기준을 바꾼다:
+      **"오류 셀이 의도된 1개뿐인가."** 0개면 `--allow-errors` 를 안 붙인 것이고, 2개 이상이면
+      그때는 진짜 환경 문제다.
+
+      ## 💡 처음 나오는 도구 — nbconvert
+      주피터 노트북을 CLI 에서 일괄 실행·변환한다. `--execute` 는 실행, `--allow-errors` 는
+      오류가 나도 멈추지 않고 끝까지 진행하며 오류를 셀 출력에 기록한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec llm-lab bash -lc '
+      cp /textbook/ch02/01_main-chapter-code/ch02.ipynb /tmp/ch02_copy.ipynb
+      cd /tmp && jupyter nbconvert --to notebook --execute --allow-errors \
+        --output ch02_executed.ipynb ch02_copy.ipynb >/dev/null 2>&1
+      python3 - <<EOF
+      import json
+      nb=json.load(open("/tmp/ch02_executed.ipynb"))
+      errs=[i for i,c in enumerate(nb["cells"]) if any(o.get("output_type")=="error" for o in c.get("outputs",[]))]
+      print("TOTAL_CELLS",len(nb["cells"]))
+      print("ERROR_CELLS",errs)
+      print("SMOKE_OK_1ERROR" if len(errs)==1 else "SMOKE_UNEXPECTED_%d"%len(errs))
+      EOF'
+      ```
+      ## ✅ 합격 기준
+      `TOTAL_CELLS 139` / `ERROR_CELLS [59]` / `SMOKE_OK_1ERROR`.
+      (셀 번호는 교재 저장소 버전에 따라 달라질 수 있으나 **오류 셀은 1개**여야 한다.)
+
+      ## 📌 배울 것
+      **"무엇이 실패해도 되는가"를 먼저 정의하는 것이 검증 설계의 절반이다.**
+      이 원칙은 15주 내내 반복된다.
+    hint: '원본을 /tmp 로 복사해서 실행한다 — 교재 저장소를 더럽히지 않기 위해서다'
+    answer: |
+      docker exec llm-lab bash -lc '
+      cp /textbook/ch02/01_main-chapter-code/ch02.ipynb /tmp/ch02_copy.ipynb
+      cd /tmp && jupyter nbconvert --to notebook --execute --allow-errors \
+        --output ch02_executed.ipynb ch02_copy.ipynb >/dev/null 2>&1
+      python3 - <<EOF
+      import json
+      nb=json.load(open("/tmp/ch02_executed.ipynb"))
+      errs=[i for i,c in enumerate(nb["cells"]) if any(o.get("output_type")=="error" for o in c.get("outputs",[]))]
+      print("TOTAL_CELLS",len(nb["cells"]))
+      print("ERROR_CELLS",errs)
+      print("SMOKE_OK_1ERROR" if len(errs)==1 else "SMOKE_UNEXPECTED_%d"%len(errs))
+      EOF'
+    answer_detail: "오류 셀 1개(OOV KeyError 데모)만 나오면 환경은 정상이다. 이 미션의 진짜 목표는 노트북 실행이 아니라 '통과 기준을 스스로 정의하는 법'이다 — 기준을 '무결'로 잡으면 에이전트가 교재를 훼손하고, '의도된 1개'로 잡으면 정확히 환경만 검사한다."
+    verify:
+      type: output_contains
+      expect: SMOKE_OK_1ERROR
+      field: stdout
+      semantic:
+        intent: "교재 2장 노트북 스모크 테스트 — 의도된 실패를 제외한 무결 실행 확인"
+        success_criteria: ["--allow-errors 사용", "오류 셀 개수 집계", "정확히 1개"]

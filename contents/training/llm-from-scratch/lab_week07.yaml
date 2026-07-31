@@ -1,0 +1,484 @@
+lab_id: llm-from-scratch-week07
+title: "W07 — 1억 6천만 개의 무작위: GPTModel 조립·파라미터 분해표·weight tying·생성"
+version: ai
+course: llm-from-scratch
+week: 7
+description: |
+  6주 동안 만든 부품을 합쳐 GPT-2 를 완성한다. 출력 shape [2,4,50257] 과 전체 파라미터
+  163,009,536 을 확인하고, 즉시 5행 분해표를 만들어 그 숫자를 재구성한다. weight tying 을 적용해
+  124,412,160 이 나오는 것을 보고 "GPT-2 124M" 이름의 유래를 확인한 뒤, greedy 생성 루프로
+  무작위 가중치 모델의 목소리를 듣는다. 마지막으로 GPT-2 4가지 크기의 파라미터를 계산해
+  통칭(124M/355M/774M/1.5B)과 대조한다.
+difficulty: medium
+duration_minutes: 160
+audience: LLM 밑바닥 구현 (7주차)
+prerequisites:
+  - W06 완료 — TransformerBlock(7,085,568), LayerNorm, GELU, FFN
+  - "`/work/week07/` 에서 week05·week06 모듈 import 가능 (P7-0 스모크 테스트로 확인)"
+  - W07 강의안 정독 — 분해표, weight tying, greedy 4단계, 마지막 위치 로짓
+objectives:
+  - "GPTModel 출력 shape [2,4,50257] 과 세 차원의 의미를 확인한다"
+  - "전체 파라미터 163,009,536 을 재현한다"
+  - "5행 분해표 각 값을 모델에서 실제로 세어 대조한다"
+  - "weight tying 시 124,412,160 이 출력 헤드 직전 누적값과 같음을 확인한다"
+  - "float32 메모리 621.83MB 를 손계산한다"
+  - "greedy 생성으로 'Hello, I am Featureiman Byeswickattribute argue' 를 재현한다"
+  - "훈련 전 최고 확률이 균등분포의 약 10배에 불과함을 관찰한다"
+  - "GPT-2 4크기 파라미터가 통칭과 부합하는지 확인한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — GPTModel 조립 (shape [2,4,50257] / 163,009,536)
+
+      6주 동안 만든 부품을 전부 합친다.
+
+      ## 💡 조립 순서
+      ```
+      토큰 임베딩(50257×768) + 위치 임베딩(1024×768)
+        → Dropout
+        → TransformerBlock × 12 (nn.Sequential)
+        → 최종 LayerNorm
+        → 출력 헤드 Linear(768 → 50257, bias=False)
+      ```
+
+      ## 💡 출력 shape 세 차원의 의미
+      | 차원 | 값 | 의미 |
+      |---|---|---|
+      | 0 | 2 | **배치** — 동시에 처리한 문장 수 |
+      | 1 | 4 | **토큰 위치** — 각 문장의 토큰 수 |
+      | 2 | 50,257 | **어휘 로짓** — 각 위치에서 "다음 토큰이 무엇일까"의 점수 |
+
+      **모델은 마지막 위치뿐 아니라 모든 위치에서 다음 토큰을 예측한다.** 그래서 훈련 때 한
+      시퀀스로 4개의 학습 신호를 동시에 얻는다(W03 의 시프트 라벨과 연결).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      enc = tiktoken.get_encoding('gpt2')
+      b = torch.stack([torch.tensor(enc.encode('Every effort moves you')),
+                       torch.tensor(enc.encode('Every day holds a'))])
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M)
+      out = m(b); p = sum(q.numel() for q in m.parameters())
+      print('IN_SHAPE ', tuple(b.shape)); print('OUT_SHAPE', tuple(out.shape))
+      print('PARAMS', f'{p:,}')
+      print('GPT_ASSEMBLE_OK' if tuple(out.shape)==(2,4,50257) and p==163009536 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `OUT_SHAPE (2, 4, 50257)`, `PARAMS 163,009,536`, `GPT_ASSEMBLE_OK`.
+    hint: '두 문장이 모두 4토큰이어야 [2,4] 배치가 만들어진다 — encode 결과를 먼저 확인하라'
+    answer: |
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      enc = tiktoken.get_encoding('gpt2')
+      b = torch.stack([torch.tensor(enc.encode('Every effort moves you')),
+                       torch.tensor(enc.encode('Every day holds a'))])
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M)
+      out = m(b); p = sum(q.numel() for q in m.parameters())
+      print('IN_SHAPE ', tuple(b.shape)); print('OUT_SHAPE', tuple(out.shape))
+      print('PARAMS', f'{p:,}')
+      print('GPT_ASSEMBLE_OK' if tuple(out.shape)==(2,4,50257) and p==163009536 else 'NG')"
+    answer_detail: "W03 임베딩 + W04·W05 어텐션 + W06 블록이 여기서 하나로 합쳐진다. 163,009,536 이 안 나오면 다음 단계 분해표에서 어긋난 행을 역추적한다."
+    verify:
+      type: output_contains
+      expect: GPT_ASSEMBLE_OK
+      field: stdout
+      semantic:
+        intent: "GPT-2 전체 모델 조립과 출력 shape·파라미터 확인"
+        success_criteria: ["[2,4,50257] shape", "163,009,536 파라미터", "세 차원 의미 설명"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 파라미터 분해표: 숫자를 **재구성**하기
+
+      163,009,536 을 외울 필요는 없다. **백지에서 다시 만들어낼 수 있어야** 한다.
+
+      ## 💡 분해표 (정답지)
+      | 구성 요소 | 산식 | 파라미터 수 | 누적 합계 |
+      |---|---|---|---|
+      | 토큰 임베딩 | 50,257 × 768 | 38,597,376 | 38,597,376 |
+      | 위치 임베딩 | 1,024 × 768 | 786,432 | **39,383,808** |
+      | TransformerBlock × 12 | 7,085,568 × 12 | 85,026,816 | **124,410,624** |
+      | 최종 LayerNorm | 768 × 2 | 1,536 | **124,412,160** |
+      | 출력 헤드 | 768 × 50,257 | 38,597,376 | **163,009,536** |
+
+      ## 📌 누적 합계 열을 눈여겨 보라
+      출력 헤드 **직전** 누적값이 **124,412,160** 이다. 이 숫자가 다음 단계의 핵심이다.
+
+      ## 💡 분해표는 디버깅 도구다
+      총합이 안 맞으면 **어긋난 행을 찾아 역추적**하면 된다. "어딘가 틀렸다"가 아니라
+      "블록 행이 틀렸다 → `n_layers` 또는 `qkv_bias` 확인"으로 좁혀진다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M)
+      tok = m.tok_emb.weight.numel(); pos = m.pos_emb.weight.numel()
+      blk = sum(q.numel() for q in m.trf_blocks.parameters())
+      fln = sum(q.numel() for q in m.final_norm.parameters())
+      head = m.out_head.weight.numel()
+      rows = [('토큰임베딩', 50257*768, tok), ('위치임베딩', 1024*768, pos),
+              ('블록x12', 7085568*12, blk), ('최종LN', 768*2, fln), ('출력헤드', 768*50257, head)]
+      acc = 0
+      for name, formula, actual in rows:
+          acc += actual
+          print(f'{name:12s} 산식={formula:>11,}  실측={actual:>11,}  일치={formula==actual}  누적={acc:,}')
+      ok = [r[2] for r in rows] == [38597376, 786432, 85026816, 1536, 38597376] and acc == 163009536
+      print('BREAKDOWN_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      다섯 행 모두 `일치=True`, 누적이 `39,383,808 → 124,410,624 → 124,412,160 → 163,009,536`,
+      `BREAKDOWN_OK`.
+
+      ## 📝 과제
+      **백지에 분해표를 재구성**해 보라. 8주차 이론 시험의 출제 범위다.
+      (속성 이름은 본인 구현에 맞게 조정한다.)
+    hint: '블록 행이 다르면 n_layers 나 qkv_bias 를, 임베딩 행이 다르면 vocab_size/emb_dim 을 의심하라'
+    answer: |
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M)
+      tok = m.tok_emb.weight.numel(); pos = m.pos_emb.weight.numel()
+      blk = sum(q.numel() for q in m.trf_blocks.parameters())
+      fln = sum(q.numel() for q in m.final_norm.parameters())
+      head = m.out_head.weight.numel()
+      rows = [('토큰임베딩', 50257*768, tok), ('위치임베딩', 1024*768, pos),
+              ('블록x12', 7085568*12, blk), ('최종LN', 768*2, fln), ('출력헤드', 768*50257, head)]
+      acc = 0
+      for name, formula, actual in rows:
+          acc += actual
+          print(f'{name:12s} 산식={formula:>11,}  실측={actual:>11,}  일치={formula==actual}  누적={acc:,}')
+      ok = [r[2] for r in rows] == [38597376, 786432, 85026816, 1536, 38597376] and acc == 163009536
+      print('BREAKDOWN_OK' if ok else 'NG')"
+    answer_detail: "분해표는 '이 모델이 왜 이만큼 메모리를 먹는가'를 설명하는 실무 도구이기도 하다. 새 모델의 config.json 을 보고 규모를 추정할 수 있게 된다."
+    verify:
+      type: output_contains
+      expect: BREAKDOWN_OK
+      field: stdout
+      semantic:
+        intent: "파라미터를 구성 요소별로 분해해 산식과 실측을 대조"
+        success_criteria: ["5행 산식=실측", "누적 합계 4단계", "총합 163,009,536"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — "124M" 의 진실: weight tying 과 메모리
+
+      ## 💡 tying 후 파라미터는 어디서 오나 — **뺄셈이 아니다**
+      계산상으로는 `163,009,536 − 38,597,376 = 124,412,160` 이지만,
+      **분해표에서는 그냥 읽힌다** — 2단계 표의 "출력 헤드 직전 누적값"이 정확히 이 값이다.
+      출력 헤드를 임베딩과 공유하면 그 행이 사라지므로 누적값이 그대로 총합이 된다.
+
+      **이것이 "GPT-2 124M" 이라는 이름의 유래다.**
+
+      ## 💡 왜 공유해도 되는가
+      | 행렬 | 역할 | 크기 |
+      |---|---|---|
+      | 토큰 임베딩 | 토큰 ID → 768차원 벡터 | 50,257 × 768 |
+      | 출력 헤드 | 768차원 벡터 → 토큰 ID 점수 | 768 × 50,257 |
+
+      **서로 전치 관계다.** 같은 사전을 양방향으로 쓰는 것이라고 볼 수 있다. 3,860만 파라미터를
+      아끼고 성능도 비슷하거나 낫다는 것이 경험적으로 알려져 있다.
+      OpenAI 의 GPT-2 공식 가중치도 tying 을 쓴다(W10 에서 이식할 때 다시 만난다).
+
+      ## 💡 메모리 손계산
+      > `163,009,536 × 4 바이트 ÷ 1024² = ` **621.83 MB** (float32), bf16 이면 절반
+
+      ## 🔴 "모델 적재"와 "훈련"의 메모리는 전혀 다르다
+      훈련에는 가중치 + 기울기(같은 크기) + AdamW 모멘텀 2벌(같은 크기 × 2) + 활성값이 필요하다.
+      대략 **가중치의 4배 이상**. 9주차에서 직접 계산하고 몸으로 확인한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M)
+      p = sum(q.numel() for q in m.parameters())
+      tied = p - m.out_head.weight.numel()
+      mem = p * 4 / 1024**2
+      print('TOTAL     ', f'{p:,}')
+      print('TIED      ', f'{tied:,}')
+      print('MEM_FP32  ', f'{mem:.2f} MB')
+      print('MEM_BF16  ', f'{mem/2:.2f} MB')
+      ok = tied == 124412160 and abs(mem - 621.83) < 0.01
+      print('TYING_MEM_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `TIED 124,412,160`, `MEM_FP32 621.83 MB`, `TYING_MEM_OK`.
+      그리고 **tied 값이 2단계 분해표의 '최종LN' 행 누적값과 같은지** 눈으로 확인하라.
+    hint: '621.83 을 직접 계산해 보라 — 163009536 × 4 ÷ 1024 ÷ 1024'
+    answer: |
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M)
+      p = sum(q.numel() for q in m.parameters())
+      tied = p - m.out_head.weight.numel()
+      mem = p * 4 / 1024**2
+      print('TOTAL     ', f'{p:,}')
+      print('TIED      ', f'{tied:,}')
+      print('MEM_FP32  ', f'{mem:.2f} MB')
+      print('MEM_BF16  ', f'{mem/2:.2f} MB')
+      ok = tied == 124412160 and abs(mem - 621.83) < 0.01
+      print('TYING_MEM_OK' if ok else 'NG')"
+    answer_detail: "모델 이름의 숫자(124M)는 tying 적용 후 값이다. 분해표의 누적 합계 열이 있어야 이 사실이 '뺄셈'이 아니라 '읽기'로 보인다 — 그래서 분해표에 누적 열을 넣었다."
+    verify:
+      type: output_contains
+      expect: TYING_MEM_OK
+      field: stdout
+      semantic:
+        intent: "weight tying 파라미터와 모델 메모리 손계산 대조"
+        success_criteria: ["124,412,160 확인", "누적값과 일치 인지", "621.83MB 계산"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — greedy 생성: 무작위 가중치의 목소리
+
+      ## 💡 생성 루프 4단계
+      ```
+      ① 컨텍스트 크롭  idx[:, -context_size:]
+      ② 로짓 계산      with torch.no_grad()
+      ③ 마지막 위치만   logits[:, -1, :] → argmax
+      ④ 뒤에 이어붙임   torch.cat
+      ```
+
+      ## 💡 왜 **마지막 위치만** 쓰는가
+      인과 마스크 때문에 **마지막 위치만이 전체 시퀀스를 다 본 유일한 위치**다(W05 인과성).
+      앞쪽 위치들은 아직 뒷부분을 못 봤으니 다음 토큰 예측에 쓸 수 없다.
+      이 논리는 11주차 "왜 마지막 토큰의 로짓으로 분류하는가"에서 그대로 회수된다.
+
+      ## 💡 정답지
+      ```
+      시작 토큰 : [15496, 11, 314, 716]  (4개)
+      생성 후   : 10개
+      디코딩    : "Hello, I am Featureiman Byeswickattribute argue"
+      ```
+      뜻 없는 단어들이다 — **가중치가 전부 무작위**이므로 당연하다. 중요한 것은
+      **이 문자열이 정확히 재현된다는 사실**이다. 같은 시드로 같은 구조를 만들면 같은 무작위
+      가중치가 나오고 greedy 는 결정적이므로 같은 출력이 나온다.
+      **재현되지 않는다면 구조나 시드 위치가 교재와 다른 것이다.**
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      from generate import generate_text_simple
+      enc = tiktoken.get_encoding('gpt2')
+      start = enc.encode('Hello, I am')
+      print('START', start, len(start))
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M); m.eval()
+      out = generate_text_simple(m, torch.tensor([start]), 6, GPT_CONFIG_124M['context_length'])
+      txt = enc.decode(out[0].tolist())
+      print('TOTAL_TOKENS', out.shape[1]); print('TEXT', repr(txt))
+      ok = (start == [15496,11,314,716] and out.shape[1] == 10
+            and txt == 'Hello, I am Featureiman Byeswickattribute argue')
+      print('GENERATE_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `START [15496, 11, 314, 716] 4`, `TOTAL_TOKENS 10`,
+      `TEXT 'Hello, I am Featureiman Byeswickattribute argue'`, `GENERATE_OK`.
+    hint: '시드 → 모델 생성 → eval() 순서가 지켜져야 한다. 다르면 시드 호출 위치부터 의심하라'
+    answer: |
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      from generate import generate_text_simple
+      enc = tiktoken.get_encoding('gpt2')
+      start = enc.encode('Hello, I am')
+      print('START', start, len(start))
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M); m.eval()
+      out = generate_text_simple(m, torch.tensor([start]), 6, GPT_CONFIG_124M['context_length'])
+      txt = enc.decode(out[0].tolist())
+      print('TOTAL_TOKENS', out.shape[1]); print('TEXT', repr(txt))
+      ok = (start == [15496,11,314,716] and out.shape[1] == 10
+            and txt == 'Hello, I am Featureiman Byeswickattribute argue')
+      print('GENERATE_OK' if ok else 'NG')"
+    answer_detail: "이 문자열은 매우 강력한 게이트다 — 시드 위치, 모듈 생성 순서, forward 구조, eval 모드가 모두 맞아야 재현된다. 교차 검증에서도 다른 에이전트가 이 토큰 ID 10개를 정확히 재현했다."
+    verify:
+      type: output_contains
+      expect: GENERATE_OK
+      field: stdout
+      semantic:
+        intent: "greedy 생성 루프 구현과 정답지 문자열 정확 재현"
+        success_criteria: ["시작 토큰 4개", "생성 후 10개", "디코딩 문자열 일치"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 훈련 전 모델의 "자신감"
+
+      마지막 위치 로짓에 softmax 를 적용해 최고 확률을 본다.
+
+      ## 💡 예상 결과 (실측)
+      | 항목 | 값 |
+      |---|---|
+      | 최고 확률 | **0.0205%** |
+      | 균등분포 (1/50257) | 0.00199% |
+      | 배율 | 약 **10.3배** |
+
+      **1%에 한참 못 미친다.** 훈련 전 모델은 사실상 아무것도 모른다.
+      다만 완전한 균등분포도 아니다 — 무작위 가중치도 우연히 어떤 토큰에 조금 더 큰 점수를
+      주기 때문이다. **이 "10배"는 지식이 아니라 잡음이다.**
+
+      ## 🔗 9주차에서 이 값이 어떻게 변하는지 본다
+      훈련이 진행되면 최고 확률이 수십 %까지 올라간다. 그것이 "학습"의 눈에 보이는 형태다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      enc = tiktoken.get_encoding('gpt2')
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M); m.eval()
+      x = torch.tensor([enc.encode('Hello, I am')])
+      with torch.no_grad(): lg = m(x)[:, -1, :]
+      p = torch.softmax(lg, dim=-1)
+      top = p.max().item(); uni = 1/50257
+      tid = p.argmax().item()
+      print(f'TOP_TOKEN  = {tid} {enc.decode([tid])!r}')
+      print(f'TOP_PROB   = {top*100:.4f}%')
+      print(f'UNIFORM    = {uni*100:.5f}%')
+      print(f'RATIO      = {top/uni:.1f}x')
+      print('CONFIDENCE_OK' if top < 0.01 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `TOP_PROB` 가 **1% 미만**이고 `CONFIDENCE_OK`.
+      수십 %가 나오면 이미 훈련된 가중치를 쓴 것이다.
+    hint: '균등분포 1/50257 = 0.00199% 와 비교해야 "10배"라는 감각이 생긴다'
+    answer: |
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      enc = tiktoken.get_encoding('gpt2')
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M); m.eval()
+      x = torch.tensor([enc.encode('Hello, I am')])
+      with torch.no_grad(): lg = m(x)[:, -1, :]
+      p = torch.softmax(lg, dim=-1)
+      top = p.max().item(); uni = 1/50257
+      tid = p.argmax().item()
+      print(f'TOP_TOKEN  = {tid} {enc.decode([tid])!r}')
+      print(f'TOP_PROB   = {top*100:.4f}%')
+      print(f'UNIFORM    = {uni*100:.5f}%')
+      print(f'RATIO      = {top/uni:.1f}x')
+      print('CONFIDENCE_OK' if top < 0.01 else 'NG')"
+    answer_detail: "훈련 전 자신감의 기준선을 재는 것이 목적이다. 9주차에서 훈련 후 같은 측정을 하면 학습이 무엇을 바꿨는지 숫자로 보인다."
+    verify:
+      type: output_contains
+      expect: CONFIDENCE_OK
+      field: stdout
+      semantic:
+        intent: "훈련 전 모델의 예측 확률을 균등분포와 비교"
+        success_criteria: ["최고 확률 1% 미만", "균등분포 대비 배율 계산"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 스케일 감각: GPT-2 4가지 크기 (연습문제 4.2)
+
+      설정만 바꿔 네 크기의 파라미터를 계산하고 통칭과 대조한다.
+
+      ## 💡 예상 결과 (실측)
+      | 설정 | emb/layers/heads | 전체 | tying 적용 | 통칭 |
+      |---|---|---|---|---|
+      | small | 768 / 12 / 12 | 163,009,536 | **124,412,160** | **124M** |
+      | medium | 1024 / 24 / 16 | 406,212,608 | **354,749,440** | **355M** |
+      | large | 1280 / 36 / 20 | 838,220,800 | **773,891,840** | **774M** |
+      | xl | 1600 / 48 / 25 | 1,637,792,000 | **1,557,380,800** | **1.5B** |
+
+      **모델 이름의 숫자는 tying 적용 후 값이다.** 이제 "GPT-2 355M" 을 들으면
+      `emb_dim=1024, n_layers=24, n_heads=16` 이 떠올라야 한다.
+
+      ## 💡 관찰
+      small → xl 은 파라미터가 12.5배인데 `emb_dim` 은 2배, `n_layers` 는 4배다.
+      파라미터는 대체로 `n_layers × emb_dim²` 에 비례하므로 `4 × 2² = 16`배 근처가 되고,
+      임베딩 항이 선형이라 조금 낮아진다.
+
+      ## ⚠️ 메모리 주의
+      xl 은 16억 파라미터라 float32 로 약 6GB 다. 계산 후 `del` 로 즉시 해제한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week07 llm-lab python3 -c "
+      from gpt_model import GPTModel
+      cfgs = {'small':(768,12,12), 'medium':(1024,24,16), 'large':(1280,36,20), 'xl':(1600,48,25)}
+      res = {}
+      for n, (d, l, h) in cfgs.items():
+          c = dict(vocab_size=50257, context_length=1024, emb_dim=d, n_heads=h,
+                   n_layers=l, drop_rate=0.1, qkv_bias=False)
+          m = GPTModel(c)
+          p = sum(q.numel() for q in m.parameters()); t = p - m.out_head.weight.numel()
+          print(f'{n:7s} total={p:>13,}  tied={t:>13,}  ({t/1e6:.0f}M)')
+          res[n] = t; del m
+      ok = res['small']==124412160 and res['medium']==354749440 and res['large']==773891840
+      print('CONFIG_SCALE_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      네 줄이 정답지와 일치하고 `CONFIG_SCALE_OK`.
+    hint: 'tying 값이 통칭과 부합하는지 확인하라 — 통칭은 전체 파라미터가 아니라 tying 후 값이다'
+    answer: |
+      docker exec -w /work/week07 llm-lab python3 -c "
+      from gpt_model import GPTModel
+      cfgs = {'small':(768,12,12), 'medium':(1024,24,16), 'large':(1280,36,20), 'xl':(1600,48,25)}
+      res = {}
+      for n, (d, l, h) in cfgs.items():
+          c = dict(vocab_size=50257, context_length=1024, emb_dim=d, n_heads=h,
+                   n_layers=l, drop_rate=0.1, qkv_bias=False)
+          m = GPTModel(c)
+          p = sum(q.numel() for q in m.parameters()); t = p - m.out_head.weight.numel()
+          print(f'{n:7s} total={p:>13,}  tied={t:>13,}  ({t/1e6:.0f}M)')
+          res[n] = t; del m
+      ok = res['small']==124412160 and res['medium']==354749440 and res['large']==773891840
+      print('CONFIG_SCALE_OK' if ok else 'NG')"
+    answer_detail: "10주차에서 124M 과 355M 의 공식 가중치를 실제로 내려받아 비교한다. 여기서 만든 스케일 감각이 그때 '왜 355M 이 더 좋은가'를 해석하는 기준이 된다."
+    verify:
+      type: output_contains
+      expect: CONFIG_SCALE_OK
+      field: stdout
+      semantic:
+        intent: "GPT-2 4가지 크기 파라미터 계산과 통칭 대조"
+        success_criteria: ["4개 설정 계산", "tying 값이 통칭과 부합", "메모리 해제"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — pytest 로 생성 성질 고정
+
+      생성 함수의 세 가지 성질을 테스트로 굳힌다.
+
+      ## 💡 세 테스트가 지키는 것
+      | 테스트 | 지키는 성질 |
+      |---|---|
+      | greedy 결정성 | 같은 입력·같은 모델이면 **항상 같은 출력** (샘플링 요소 없음) |
+      | context crop | 입력이 `context_length` 를 넘어도 오류 없이 동작 |
+      | 로짓 shape | 출력이 `[B, T, vocab_size]` |
+
+      ## 💡 왜 결정성을 테스트하나
+      greedy 는 argmax 라 난수가 없다. 그런데 dropout 이 켜져 있거나(`eval()` 누락)
+      비결정적 연산이 섞이면 출력이 달라진다. **이 테스트 하나가 `model.eval()` 누락을 잡는다.**
+
+      10주차에서 temperature·top-k 샘플링을 도입하면 이 성질이 **의도적으로 깨진다** —
+      그때 이 테스트가 "무엇이 바뀌었는지"를 정확히 알려준다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week07 llm-lab python3 -m pytest test_gpt.py -q
+      ```
+      ## ✅ 합격 기준
+      `3 passed`.
+    hint: 'eval() 을 빼고 돌려 보라 — 결정성 테스트가 깨지는 것을 직접 확인할 수 있다'
+    answer: |
+      docker exec -w /work/week07 llm-lab python3 -m pytest test_gpt.py -q
+    answer_detail: "greedy 결정성은 10주차에서 '의도적으로 깨질' 성질이다. 지금 고정해 두면 그때 temperature/top-k 가 무엇을 바꾸는지 정확히 대비할 수 있다."
+    verify:
+      type: output_contains
+      expect: 3 passed
+      field: stdout
+      semantic:
+        intent: "생성 함수의 결정성·크롭·shape 성질을 pytest 로 고정"
+        success_criteria: ["greedy 결정성", "context crop", "로짓 shape"]

@@ -35,6 +35,7 @@ TRACK_LABEL = {
     "physical-pentest": "물리 침투 테스트", "iot-security": "IoT 보안",
     "autonomous-systems": "자율 시스템", "autonomous-security": "자율 보안",
     "ai-service-pentest": "AI 서비스 모의해킹",
+    "llm-from-scratch": "LLM 밑바닥부터",
 }
 
 

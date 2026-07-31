@@ -1,0 +1,495 @@
+lab_id: llm-from-scratch-week11
+title: "W11 — 분류기가 된 GPT: 기준선·패딩·헤드 교체·선택적 동결·±1%p 재현 게이트"
+version: ai
+course: llm-from-scratch
+week: 11
+description: |
+  GPT-2 를 스팸 분류기로 개조한다. 불균형 데이터에서 바보 분류기(86.6%) 기준선을 먼저 세우고,
+  균형화·3분할 후 패딩으로 배치를 만든다. 출력 헤드를 50,257개에서 2개로 갈아 끼우고 대부분의 층을
+  얼려 파라미터의 5.70% 만 훈련한다. "왜 마지막 토큰의 로짓인가"는 W05 인과성이 답한다. 그리고
+  교재 정답지의 훈련 가능 파라미터 값이 틀렸다는 것을 손계산으로 직접 잡아낸다.
+difficulty: hard
+duration_minutes: 180
+audience: LLM 밑바닥 구현 (11주차)
+prerequisites:
+  - W10 완료 — OpenAI 가중치 이식(qkv_bias=True), openai_load.build
+  - "`/work/week11/` 에 SMS Spam Collection 데이터셋"
+  - W11 강의안 정독 — 기준선, 패딩, 선택적 동결, 마지막 토큰 로짓
+objectives:
+  - "원본 5,572건(ham 4,825 / spam 747)과 바보 분류기 86.59% 를 확인한다"
+  - "균형화 1,494건, 분할 1,045/149/300 을 확인한다"
+  - "train max_length 120 과 배치 130/19/38, shape [8,120] 을 확인한다"
+  - "패딩 토큰이 50256 임을 확인한다"
+  - "훈련 가능 파라미터 7,090,946(5.70%)을 손계산하고 교재 오류를 잡는다"
+  - "훈련 후 test 정확도 95.67% ±1%p 재현 게이트를 통과한다"
+  - "classify_review 가 결정적으로 spam/not spam 을 판정한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 실태 파악과 **기준선** 세우기 (86.59%)
+
+      ## 🔴 불균형 데이터에서 정확도만 보면 속는다
+      | 항목 | 값 |
+      |---|---|
+      | 총 건수 | **5,572** |
+      | ham (정상) | **4,825** (86.6%) |
+      | spam | **747** (13.4%) |
+
+      **항상 "ham" 이라고 답하는 바보 분류기의 정확도 = 4,825 / 5,572 = 86.59%.**
+      **86.6% 를 넘지 못하면 아무 의미가 없다.** 이 기준선을 먼저 세우는 것이 실무 습관이다.
+
+      ## 💡 그래서 균형화한다
+      spam 747건에 맞춰 ham 을 747건만 남긴다 → **1,494건**. 그러면 바보 분류기의 정확도가
+      **50%** 가 되고, 그 위로 얼마나 올라가는지가 순수한 실력이 된다.
+      분할은 70/10/20 → **1,045 / 149 / 300**.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import pandas as pd
+      from spam_data import create_balanced_dataset, random_split
+      df = pd.read_csv('sms_spam_collection/SMSSpamCollection.tsv', sep='\t',
+                       header=None, names=['Label','Text'])
+      print('TOTAL', len(df), df['Label'].value_counts().to_dict())
+      print('DUMMY_BASELINE', round(4825/5572*100, 2), '%')
+      bal = create_balanced_dataset(df); print('BALANCED', len(bal))
+      tr, va, te = random_split(bal); print('SPLIT', len(tr), len(va), len(te))
+      ok = len(df)==5572 and len(bal)==1494 and (len(tr),len(va),len(te))==(1045,149,300)
+      print('SPAM_DATA_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `TOTAL 5572 {'ham': 4825, 'spam': 747}`, `DUMMY_BASELINE 86.59 %`,
+      `BALANCED 1494`, `SPLIT 1045 149 300`, `SPAM_DATA_OK`.
+    hint: '균형화 후 기준선이 50% 가 되는 이유를 스스로 설명할 수 있어야 한다'
+    answer: |
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import pandas as pd
+      from spam_data import create_balanced_dataset, random_split
+      df = pd.read_csv('sms_spam_collection/SMSSpamCollection.tsv', sep='\t',
+                       header=None, names=['Label','Text'])
+      print('TOTAL', len(df), df['Label'].value_counts().to_dict())
+      print('DUMMY_BASELINE', round(4825/5572*100, 2), '%')
+      bal = create_balanced_dataset(df); print('BALANCED', len(bal))
+      tr, va, te = random_split(bal); print('SPLIT', len(tr), len(va), len(te))
+      ok = len(df)==5572 and len(bal)==1494 and (len(tr),len(va),len(te))==(1045,149,300)
+      print('SPAM_DATA_OK' if ok else 'NG')"
+    answer_detail: "기준선 없이 '정확도 95%'는 의미가 없다. 원본 분포에서는 아무것도 안 해도 86.6% 다. 균형화는 이 착시를 없애 순수 실력을 재게 한다."
+    verify:
+      type: output_contains
+      expect: SPAM_DATA_OK
+      field: stdout
+      semantic:
+        intent: "불균형 데이터의 기준선 설정과 균형화·분할"
+        success_criteria: ["5,572건 확인", "바보 분류기 86.59%", "1,494 → 1,045/149/300"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — SpamDataset과 로더: 패딩의 등장
+
+      ## 💡 왜 패딩이 필요한가
+      문자 메시지는 길이가 제각각인데 배치는 **직사각형 텐서**여야 한다. 가장 긴 것에 맞춰
+      나머지를 채운다. 채우는 값은 **50256** — GPT-2 의 `<|endoftext|>` 다(W02 에서 만든 그 토큰).
+      GPT-2 에는 전용 패딩 토큰이 없어서 이것을 빌려 쓴다.
+
+      ## ⚠️ train 의 max_length 를 val/test 에 **강제**한다
+      ```python
+      train_ds = SpamDataset('train.csv', tok, max_length=None)                  # 자동 결정 → 120
+      val_ds   = SpamDataset('validation.csv', tok, max_length=train_ds.max_length)
+      test_ds  = SpamDataset('test.csv', tok, max_length=train_ds.max_length)
+      ```
+      **val/test 가 자기 max_length 를 쓰면 데이터 누수(leakage)다.** 평가 데이터의 특성이
+      모델 입력 형태를 바꾸면 안 된다. 실전에서는 새 데이터가 얼마나 길지 모른다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from spam_data import build_loaders
+      trl, val, tel, trds, vds, tds = build_loaders()
+      print('TRAIN_MAX_LENGTH', trds.max_length)
+      print('BATCHES', len(trl), len(val), len(tel))
+      x, y = next(iter(trl)); print('SHAPE', tuple(x.shape))
+      print('PAD_TOKENS_IN_BATCH', (x == 50256).sum().item())
+      print('SAME_MAXLEN', trds.max_length == vds.max_length == tds.max_length)
+      ok = (trds.max_length == 120 and (len(trl),len(val),len(tel)) == (130,19,38)
+            and tuple(x.shape) == (8,120))
+      print('LOADER_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `TRAIN_MAX_LENGTH 120`, `BATCHES 130 19 38`, `SHAPE (8, 120)`,
+      패딩 토큰이 **50256**, `SAME_MAXLEN True`, `LOADER_OK`.
+    hint: '패딩 값이 0이면 GPT-2 어휘의 "!" 토큰이 들어간 것이다 — 50256 이어야 한다'
+    answer: |
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from spam_data import build_loaders
+      trl, val, tel, trds, vds, tds = build_loaders()
+      print('TRAIN_MAX_LENGTH', trds.max_length)
+      print('BATCHES', len(trl), len(val), len(tel))
+      x, y = next(iter(trl)); print('SHAPE', tuple(x.shape))
+      print('PAD_TOKENS_IN_BATCH', (x == 50256).sum().item())
+      print('SAME_MAXLEN', trds.max_length == vds.max_length == tds.max_length)
+      ok = (trds.max_length == 120 and (len(trl),len(val),len(tel)) == (130,19,38)
+            and tuple(x.shape) == (8,120))
+      print('LOADER_OK' if ok else 'NG')"
+    answer_detail: "패딩은 W12 에서 다시 나온다 — 그때는 패딩 구간을 손실에서 제외하는 -100 마스킹까지 배운다. 여기서는 '배치를 만들려면 길이를 맞춰야 한다'는 사실만 확인한다."
+    verify:
+      type: output_contains
+      expect: LOADER_OK
+      field: stdout
+      semantic:
+        intent: "패딩으로 배치 구성, train max_length 강제로 누수 방지"
+        success_criteria: ["max_length 120", "배치 130/19/38", "패딩 50256", "세 분할 동일 길이"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — 수술 **전** 실패 관찰: GPT-2 는 지시를 못 따른다
+
+      개조하기 전에, 그냥 프롬프트로 시켜 본다.
+
+      ## 💡 시켜 볼 것
+      ```
+      Is the following text 'spam'? Answer with 'yes' or 'no':
+      'You are a winner you have been specially selected to receive $1000 cash...'
+      ```
+
+      ## 🔴 예상 결과: **지시를 따르지 못한다**
+      GPT-2 는 사전훈련만 된 모델이라 **지시 추종 능력이 없다.** 그냥 다음 단어를 이어 쓸 뿐이다.
+      `yes` / `no` 로 답하지 않는다.
+
+      **이 실패가 이번 주 미션의 존재 이유다.** 그리고 13주차 지시 튜닝의 동기이기도 하다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, tiktoken
+      from common import device, text_to_token_ids, token_ids_to_text
+      from openai_load import build
+      from decoding import generate
+      enc = tiktoken.get_encoding('gpt2')
+      m, cfg, _ = build('gpt2-small (124M)')
+      prompt = (\"Is the following text 'spam'? Answer with 'yes' or 'no':\"
+                \" 'You are a winner you have been specially selected to receive \$1000 cash.'\")
+      out = generate(m, text_to_token_ids(prompt, enc).to(device), 15,
+                     cfg['context_length'], temperature=0.0)
+      resp = token_ids_to_text(out, enc)[len(prompt):]
+      print('RESPONSE:', repr(resp))
+      follows = resp.strip().lower().startswith(('yes', 'no'))
+      print('FOLLOWS_INSTRUCTION', follows)
+      print('NO_INSTRUCTION_FOLLOWING_CONFIRMED' if not follows else 'UNEXPECTED')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      `FOLLOWS_INSTRUCTION False` 와 `NO_INSTRUCTION_FOLLOWING_CONFIRMED`.
+      **지시를 따르면 오히려 이상한 것이다** — 사전훈련 모델은 그럴 능력이 없다.
+    hint: '이 실패를 고치려 들지 마라. 관찰이 목적이고, 해법은 개조(이번 주)와 지시 튜닝(W13)이다'
+    answer: |
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, tiktoken
+      from common import device, text_to_token_ids, token_ids_to_text
+      from openai_load import build
+      from decoding import generate
+      enc = tiktoken.get_encoding('gpt2')
+      m, cfg, _ = build('gpt2-small (124M)')
+      prompt = (\"Is the following text 'spam'? Answer with 'yes' or 'no':\"
+                \" 'You are a winner you have been specially selected to receive \$1000 cash.'\")
+      out = generate(m, text_to_token_ids(prompt, enc).to(device), 15,
+                     cfg['context_length'], temperature=0.0)
+      resp = token_ids_to_text(out, enc)[len(prompt):]
+      print('RESPONSE:', repr(resp))
+      follows = resp.strip().lower().startswith(('yes', 'no'))
+      print('FOLLOWS_INSTRUCTION', follows)
+      print('NO_INSTRUCTION_FOLLOWING_CONFIRMED' if not follows else 'UNEXPECTED')" 2>/dev/null
+    answer_detail: "사전훈련 모델은 '다음 토큰 예측기'일 뿐이다. 지시를 따르게 하려면 (a) 구조를 바꾸거나(이번 주 분류 헤드) (b) 지시 데이터로 튜닝해야 한다(W13). 두 경로를 모두 배우는 것이 이 교재의 후반부다."
+    verify:
+      type: output_contains
+      expect: NO_INSTRUCTION_FOLLOWING_CONFIRMED
+      field: stdout
+      semantic:
+        intent: "개조 전 모델이 지시를 따르지 못함을 관찰"
+        success_criteria: ["yes/no 로 답하지 못함", "고치지 않고 관찰"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — 개조 수술 + **교재 정답지의 오류를 잡아라**
+
+      ## 💡 세 단계 수술
+      ```python
+      for p in model.parameters(): p.requires_grad = False       # ① 전부 동결
+      model.out_head = torch.nn.Linear(768, 2)                   # ② 헤드 교체
+      for p in model.trf_blocks[-1].parameters(): p.requires_grad = True   # ③ 선택적 해동
+      for p in model.final_norm.parameters():     p.requires_grad = True
+      ```
+
+      ## 🔴 손계산 — 그리고 교재가 틀렸다
+      | 구성 | 계산 | 값 |
+      |---|---|---|
+      | 마지막 TransformerBlock | 7,085,568 + **2,304**(QKV bias) | **7,087,872** |
+      | 최종 LayerNorm | 768 × 2 | 1,536 |
+      | 새 출력 헤드 | 768 × 2 + 2 | 1,538 |
+      | **합계** | | **7,090,946** |
+
+      **교재는 7,088,642 라고 적었다. 차이는 2,304 = 3 × 768 이다.**
+      W10 에서 OpenAI 가중치를 이식하려고 `qkv_bias=True` 로 바꿨는데, W11 산식이 그 변경을
+      반영하지 않았다. 그리고 교재의 "약 4.3%" 도 **수술 전 분모**로 나눈 값이다 —
+      수술 후 전체는 **124,441,346** 이므로 실제 비율은 **5.70%** 다.
+
+      **"정답지도 틀릴 수 있다" — W02 `" It' s"` 이후 두 번째 사례다.**
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from spam_finetune import load_and_modify
+      m, cfg = load_and_modify(strategy='b', verbose=False)
+      tot = sum(p.numel() for p in m.parameters())
+      tr  = sum(p.numel() for p in m.parameters() if p.requires_grad)
+      print(f'TOTAL_AFTER_SURGERY {tot:,}')
+      print(f'TRAINABLE           {tr:,}')
+      print(f'PCT                 {tr/tot*100:.2f}%')
+      print(f'TEXTBOOK_CLAIM      7,088,642  (차이 {tr-7088642})')
+      print('TRAINABLE_OK' if tr == 7090946 else f'NG (got {tr})')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      `TRAINABLE 7,090,946`, `PCT 5.70%`, 교재 값과의 차이가 **2,304**, `TRAINABLE_OK`.
+    hint: '2,304 = 3 × 768 이다. Q/K/V 각각의 bias 가 마지막 블록에 들어 있다'
+    answer: |
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from spam_finetune import load_and_modify
+      m, cfg = load_and_modify(strategy='b', verbose=False)
+      tot = sum(p.numel() for p in m.parameters())
+      tr  = sum(p.numel() for p in m.parameters() if p.requires_grad)
+      print(f'TOTAL_AFTER_SURGERY {tot:,}')
+      print(f'TRAINABLE           {tr:,}')
+      print(f'PCT                 {tr/tot*100:.2f}%')
+      print(f'TEXTBOOK_CLAIM      7,088,642  (차이 {tr-7088642})')
+      print('TRAINABLE_OK' if tr == 7090946 else f'NG (got {tr})')" 2>/dev/null
+    answer_detail: "주차 간 설정 변경(qkv_bias=False → True)이 정답지에 전파되는지 확인하는 절차가 없으면 이런 일이 생긴다. 학생이 손계산으로 이것을 잡아내는 것이 이 단계의 진짜 목표다."
+    verify:
+      type: output_contains
+      expect: TRAINABLE_OK
+      field: stdout
+      semantic:
+        intent: "헤드 교체·선택적 동결 후 훈련 가능 파라미터 손계산과 정답지 검증"
+        success_criteria: ["7,090,946 확인", "5.70% 계산", "교재 오류 2,304 특정"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 왜 **마지막 토큰**의 로짓인가 (W05 인과성의 회수)
+
+      모델 출력은 `[batch, num_tokens, 2]` 다. 여기서 **`logits[:, -1, :]`** 만 쓴다.
+
+      ## 💡 답: 인과 마스크 때문이다
+      > **마지막 위치만이 전체 문장을 다 본 유일한 위치이기 때문이다.**
+
+      앞쪽 위치들은 아직 뒷부분을 못 봤다. 문장 전체를 판단해야 하는 분류에서 앞쪽 위치의
+      로짓을 쓰는 것은 **문장을 끝까지 읽지 않고 판단하는 것**과 같다.
+      **W07 생성에서 `logits[:, -1, :]` 를 쓴 이유와 정확히 같다.**
+
+      ## 💻 실행 명령 (성질로 확인)
+      ```bash
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from common import device
+      from spam_finetune import load_and_modify
+      m, cfg = load_and_modify(strategy='b', verbose=False); m.to(device).eval()
+      x1 = torch.randint(0, 50000, (1, 20)).to(device)
+      x2 = x1.clone(); x2[0, -1] = (x1[0, -1] + 7) % 50000   # 마지막 토큰만 변경
+      with torch.no_grad(): o1, o2 = m(x1), m(x2)
+      print('SHAPE', tuple(o1.shape), '(batch, tokens, 2)')
+      past_same = torch.allclose(o1[:, :-1], o2[:, :-1], atol=1e-4)
+      last_diff = not torch.allclose(o1[:, -1], o2[:, -1], atol=1e-4)
+      print('PAST_UNCHANGED', past_same, '| LAST_CHANGED', last_diff)
+      print('앞쪽 위치는 마지막 토큰을 보지 못한다 → 분류에 쓸 수 없다')
+      print('LAST_TOKEN_LOGIC_OK' if past_same and last_diff else 'NG')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      `SHAPE (1, 20, 2)`, `PAST_UNCHANGED True | LAST_CHANGED True`, `LAST_TOKEN_LOGIC_OK`.
+      **앞쪽 출력이 마지막 토큰 변경에 반응하지 않는다는 것이 곧 "전체를 못 봤다"는 증거다.**
+    hint: 'W05 의 test_causal_invariance 를 분류 모델에 그대로 적용한 것이다'
+    answer: |
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from common import device
+      from spam_finetune import load_and_modify
+      m, cfg = load_and_modify(strategy='b', verbose=False); m.to(device).eval()
+      x1 = torch.randint(0, 50000, (1, 20)).to(device)
+      x2 = x1.clone(); x2[0, -1] = (x1[0, -1] + 7) % 50000
+      with torch.no_grad(): o1, o2 = m(x1), m(x2)
+      print('SHAPE', tuple(o1.shape), '(batch, tokens, 2)')
+      past_same = torch.allclose(o1[:, :-1], o2[:, :-1], atol=1e-4)
+      last_diff = not torch.allclose(o1[:, -1], o2[:, -1], atol=1e-4)
+      print('PAST_UNCHANGED', past_same, '| LAST_CHANGED', last_diff)
+      print('LAST_TOKEN_LOGIC_OK' if past_same and last_diff else 'NG')" 2>/dev/null
+    answer_detail: "W05 성질 테스트가 세 번째로 재사용된다(W05 어텐션 → W06 블록 → W11 분류기). 좋은 성질 테스트는 구조가 바뀌어도 그대로 쓸 수 있다."
+    verify:
+      type: output_contains
+      expect: LAST_TOKEN_LOGIC_OK
+      field: stdout
+      semantic:
+        intent: "마지막 토큰 로짓을 쓰는 이유를 인과성으로 확인"
+        success_criteria: ["출력 shape [B,T,2]", "앞쪽 위치 불변", "마지막만 반응"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 파인튜닝 결과와 **±1%p 재현 게이트**
+
+      ## 💡 정답지
+      | 분할 | 정확도 |
+      |---|---|
+      | train | **97.21%** |
+      | val | **97.32%** |
+      | test | **95.67%** |
+
+      ## 💡 재현 게이트: test 정확도 **±1%p**
+      시드·설정을 그대로 두고 재실행했을 때 이 범위를 벗어나면 **어딘가 비결정적 요소가 있는
+      것**이다. 이 교재에서 가장 엄격한 정량 기준이며, 다른 하드웨어에서도 이 정밀도가 나온다는
+      것은 교재의 명세가 그만큼 빈틈없다는 뜻이다.
+
+      ## ⚠️ 훈련 전 정확도는 50% 안팎이어야 한다
+      균형화했으므로 무작위 추측 수준이다. 새 헤드는 무작위 초기화라 당연하다.
+      **86% 가 나오면 균형화를 안 한 것이다.**
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from common import device
+      from spam_data import build_loaders
+      from spam_finetune import load_and_modify, calc_accuracy_loader
+      trl, val, tel, *_ = build_loaders()
+      m, cfg = load_and_modify(strategy='b', verbose=False)
+      m.load_state_dict(torch.load('spam_classifier.pth', map_location='cpu', weights_only=True))
+      m.to(device).eval()
+      tra = calc_accuracy_loader(trl, m, device)
+      va  = calc_accuracy_loader(val, m, device)
+      te  = calc_accuracy_loader(tel, m, device)
+      print(f'TRAIN {tra*100:.2f}%  VAL {va*100:.2f}%  TEST {te*100:.2f}%')
+      print(f'BASELINE(균형화 후) 50%  |  BASELINE(원본) 86.59%')
+      print('REPRO_GATE_OK' if abs(te*100 - 95.67) <= 1.0 else f'NG (test={te*100:.2f})')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      `TEST` 가 **95.67% ± 1%p** 안에 들고 `REPRO_GATE_OK`.
+    hint: '±1%p 를 벗어나면 shuffle 시드, drop_last, eval 모드를 순서대로 의심하라'
+    answer: |
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from common import device
+      from spam_data import build_loaders
+      from spam_finetune import load_and_modify, calc_accuracy_loader
+      trl, val, tel, *_ = build_loaders()
+      m, cfg = load_and_modify(strategy='b', verbose=False)
+      m.load_state_dict(torch.load('spam_classifier.pth', map_location='cpu', weights_only=True))
+      m.to(device).eval()
+      tra = calc_accuracy_loader(trl, m, device)
+      va  = calc_accuracy_loader(val, m, device)
+      te  = calc_accuracy_loader(tel, m, device)
+      print(f'TRAIN {tra*100:.2f}%  VAL {va*100:.2f}%  TEST {te*100:.2f}%')
+      print(f'BASELINE(균형화 후) 50%  |  BASELINE(원본) 86.59%')
+      print('REPRO_GATE_OK' if abs(te*100 - 95.67) <= 1.0 else f'NG (test={te*100:.2f})')" 2>/dev/null
+    answer_detail: "파라미터의 5.70% 만 훈련해서 95.67% 를 얻었다. 기준선(균형화 후 50%) 대비 크게 올라간 값이며, 이것이 사전훈련 모델을 재사용하는 이유다."
+    verify:
+      type: output_contains
+      expect: REPRO_GATE_OK
+      field: stdout
+      semantic:
+        intent: "파인튜닝 정확도를 ±1%p 재현 게이트로 검증"
+        success_criteria: ["세 분할 정확도", "test 95.67% ±1%p", "기준선 대비 해석"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — 실사용 API 와 결정성 + 매트릭스 실험 해석
+
+      ## 💡 (a) classify_review 는 **결정적**이어야 한다
+      같은 문장은 항상 같은 답. 샘플링이 없으니 당연하지만 **`model.eval()` 을 빼먹으면
+      dropout 때문에 흔들린다.**
+
+      | 예문 | 기대 |
+      |---|---|
+      | `You are a winner you have been specially selected to receive $1000 cash...` | **spam** |
+      | `Hey, just wanted to check if we are still on for dinner tonight? Let me know!` | **not spam** |
+
+      ## 🔴 (b) 매트릭스 실험 — "큰 모델이 항상 낫다"는 거짓이었다
+      | 전략 | 훈련 대상 | 124M | 355M |
+      |---|---|---|---|
+      | (a) | 출력 헤드만 | — | — |
+      | **(b)** | 헤드 + 마지막 블록 + 최종 LN | **96.33%** | **85.00%** |
+      | (c) | 헤드 + 마지막 **두** 블록 + 최종 LN | — | — |
+
+      20 에폭으로 늘려 재측정해도 **94.33%** 로 124M 에 못 미쳤다. 훈련 부족이 아니라
+      **전략의 문제**다.
+
+      **원인:** 전략 (b)는 "마지막 블록 1개"를 푼다. 124M 은 12층이라 **1/12** 를 풀지만
+      355M 은 24층이라 **1/24** 만 푼다. **모델이 클수록 같은 전략이 더 적은 비율을 푼다.**
+      큰 모델을 쓰려면 동결 전략도 함께 조정해야 한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, tiktoken
+      from common import device
+      from spam_finetune import load_and_modify, classify_review
+      m, cfg = load_and_modify(strategy='b', verbose=False)
+      m.load_state_dict(torch.load('spam_classifier.pth', map_location='cpu', weights_only=True))
+      m.to(device).eval()
+      enc = tiktoken.get_encoding('gpt2')
+      a = 'You are a winner you have been specially selected to receive \$1000 cash or a \$2000 award.'
+      b = 'Hey, just wanted to check if we are still on for dinner tonight? Let me know!'
+      ra1, ra2 = classify_review(a, m, enc, device), classify_review(a, m, enc, device)
+      rb = classify_review(b, m, enc, device)
+      print('A ->', ra1, '(재실행:', ra2, ')')
+      print('B ->', rb)
+      print('DETERMINISTIC', ra1 == ra2)
+      ok = ra1 == 'spam' and rb == 'not spam' and ra1 == ra2
+      print('CLASSIFY_OK' if ok else 'NG')" 2>/dev/null
+      ```
+      ## ✅ 합격 기준
+      `A -> spam`, `B -> not spam`, `DETERMINISTIC True`, `CLASSIFY_OK`.
+
+      ## 📝 해석 과제 (report.md 에 **직접** 작성)
+      매트릭스 실험에서 355M 이 124M 보다 낮게 나온 이유를 **층 수 대비 해동 비율**로
+      설명하고, 355M 을 제대로 쓰려면 전략을 어떻게 바꿔야 할지 제안하라.
+    hint: 'eval() 을 빼고 두 번 돌려 보라 — 답이 달라지는 것을 직접 확인할 수 있다'
+    answer: |
+      docker exec -w /work/week11 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch, tiktoken
+      from common import device
+      from spam_finetune import load_and_modify, classify_review
+      m, cfg = load_and_modify(strategy='b', verbose=False)
+      m.load_state_dict(torch.load('spam_classifier.pth', map_location='cpu', weights_only=True))
+      m.to(device).eval()
+      enc = tiktoken.get_encoding('gpt2')
+      a = 'You are a winner you have been specially selected to receive \$1000 cash or a \$2000 award.'
+      b = 'Hey, just wanted to check if we are still on for dinner tonight? Let me know!'
+      ra1, ra2 = classify_review(a, m, enc, device), classify_review(a, m, enc, device)
+      rb = classify_review(b, m, enc, device)
+      print('A ->', ra1, '(재실행:', ra2, ')')
+      print('B ->', rb)
+      print('DETERMINISTIC', ra1 == ra2)
+      ok = ra1 == 'spam' and rb == 'not spam' and ra1 == ra2
+      print('CLASSIFY_OK' if ok else 'NG')" 2>/dev/null
+    answer_detail: "매트릭스 실험의 결론은 '큰 모델이 항상 낫다'는 통념이 조건부라는 것이다. 동결 전략을 층 수에 비례해 조정하지 않으면 큰 모델이 오히려 손해다 — W13 LoRA 가 이 문제의 다른 해법이다."
+    verify:
+      type: output_contains
+      expect: CLASSIFY_OK
+      field: stdout
+      semantic:
+        intent: "실사용 분류 API 의 정확성과 결정성 확인"
+        success_criteria: ["spam/not spam 정확", "재실행 동일", "eval 모드"]

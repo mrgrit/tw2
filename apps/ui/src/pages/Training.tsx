@@ -37,6 +37,7 @@ const TRACK_META: Record<string, TrackMeta> = {
   'agent-ir': { icon: '🚨', blurb: 'AI 에이전트 사고대응 — 행위 로그·탐지·격리', group: 'AI·보안' },
   'agent-ir-adv': { icon: '🛰️', blurb: 'AI 에이전트 사고대응 심화 — 자율 위협 헌팅·포렌식', group: 'AI·보안', adv: true },
   'autonomous-security': { icon: '🔁', blurb: '자율보안 — 자율 루프·자율성 수준·가드레일·Purple Team 순환', group: 'AI·보안' },
+  'llm-from-scratch': { icon: '🧱', blurb: 'GPT-2급 LLM 밑바닥 구현 — 토크나이저·어텐션·사전훈련·파인튜닝·LoRA (DGX Spark)', group: 'AI·모델개발' },
 }
 const FALLBACK_META: TrackMeta = { icon: '📚', blurb: 'el34 인프라 기반 보안 트레이닝', group: '기타' }
 const metaOf = (slug: string): TrackMeta => TRACK_META[slug] ?? FALLBACK_META
@@ -47,6 +48,7 @@ const GROUP_ORDER: { name: string; color: string }[] = [
   { name: '웹·애플리케이션', color: 'var(--yellow)' },
   { name: '인프라·거버넌스', color: 'var(--accent)' },
   { name: 'AI·보안', color: 'var(--primary)' },
+  { name: 'AI·모델개발', color: 'var(--purple, var(--primary))' },
   { name: '기타', color: 'var(--fg-dim)' },
 ]
 

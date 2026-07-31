@@ -1,0 +1,398 @@
+lab_id: llm-from-scratch-week12
+title: "W12 — 데이터가 절반이다: Alpaca 포맷·collate 3단계 진화·-100 마스킹 실증·품질 점검"
+version: ai
+course: llm-from-scratch
+week: 12
+description: |
+  지시 튜닝의 재료를 만든다. Alpaca 프롬프트 포맷터를 구현하고(input 이 빈 항목에서 블록이 통째로
+  빠지는지 확인), collate 함수를 패딩 → 타깃 시프트 → -100 마스킹 3단계로 진화시킨다. 특히
+  -100(ignore_index)이 손실에서 정말로 제외되는지 2토큰 vs 3토큰 손실 비교로 소수점 6자리까지
+  실증한다. 마지막으로 "데이터를 의심하라" — 길이 분포와 완전 중복을 정량 점검한다.
+difficulty: medium
+duration_minutes: 150
+audience: LLM 밑바닥 구현 (12주차)
+prerequisites:
+  - W11 완료 — 패딩 개념, 사전훈련 모델 로드
+  - "`/work/week12/` 에 instruction-data.json (1,100건)"
+  - W12 강의안 정독 — Alpaca 포맷, 3단계 진화, EOS 하나 남기기
+objectives:
+  - "instruction-data.json 1,100건과 분할 935/110/55 를 확인한다"
+  - "input 이 빈 항목에서 ### Input: 블록이 통째로 빠지는지 확인한다"
+  - "장난감 배치로 collate 정답지 3행을 재현한다"
+  - "각 행에 50256 이 정확히 한 번만 남는 이유를 확인한다"
+  - "-100 이 손실에서 제외됨을 2토큰 vs 3토큰 비교로 실증한다"
+  - "실제 데이터에서 -100 이 응답 종료 후에만 있는지 확인한다"
+  - "최장 토큰 길이와 완전 중복 그룹 수를 정량 보고한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 데이터 확보와 Alpaca 프롬프트 포맷터
+
+      ## 💡 왜 "포맷"이 필요한가
+      모델은 `### Instruction:` 같은 **고정된 신호**를 보고 "여기서부터 지시" / "여기서부터
+      응답"을 구분하는 법을 배운다. 포맷이 흔들리면 그 신호가 사라진다.
+
+      ```
+      Below is an instruction that describes a task. Write a response that appropriately completes the request.
+
+      ### Instruction:
+      Convert 45 kilometers to meters.
+
+      ### Response:
+      45 kilometers is 45000 meters.
+      ```
+
+      ## ⚠️ 고정 서두를 정확히 쓸 것
+      `"Below is an instruction that describes a task. Write a response that appropriately
+      completes the request."` — 이 문장 **전체**가 포맷의 일부다. 생략하고 `"..."` 로 대충 쓰면
+      결과가 맞아 보여도 그건 **모델의 사전 지식이 채운 것**이지 여러분의 명세가 유도한 것이
+      아니다. 소형 오픈 모델로 바꾸면 재현되지 않는다.
+
+      ## 💡 `input` 이 빈 항목
+      **`### Input:` 블록이 통째로 빠진다.** 빈 블록을 남기면 모델이 "빈 Input" 이라는 잘못된
+      패턴을 배운다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      from instr_data import load_data, format_input
+      data = load_data(); print('TOTAL', len(data))
+      with_input = [d for d in data if d.get('input')][0]
+      no_input   = [d for d in data if not d.get('input')][0]
+      print('--- input 있는 항목'); print(format_input(with_input))
+      print('--- input 없는 항목'); print(format_input(no_input))
+      has = '### Input:' in format_input(no_input)
+      print('NO_INPUT_HAS_BLOCK', has, '(False 여야 정상)')
+      print('FORMAT_OK' if len(data) == 1100 and not has else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `TOTAL 1100`, `input` 없는 항목에 `### Input:` 이 **없음**, `FORMAT_OK`.
+    hint: '교재 ch07 노트북 출력과 문자 단위로 비교해 보라 — 공백 하나도 달라선 안 된다'
+    answer: |
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      from instr_data import load_data, format_input
+      data = load_data(); print('TOTAL', len(data))
+      with_input = [d for d in data if d.get('input')][0]
+      no_input   = [d for d in data if not d.get('input')][0]
+      print('--- input 있는 항목'); print(format_input(with_input))
+      print('--- input 없는 항목'); print(format_input(no_input))
+      has = '### Input:' in format_input(no_input)
+      print('NO_INPUT_HAS_BLOCK', has, '(False 여야 정상)')
+      print('FORMAT_OK' if len(data) == 1100 and not has else 'NG')"
+    answer_detail: "프롬프트 포맷은 모델에게 주는 구조 신호다. 조건부 블록(input 유무)을 정확히 처리하지 않으면 모델이 잘못된 패턴을 배운다."
+    verify:
+      type: output_contains
+      expect: FORMAT_OK
+      field: stdout
+      semantic:
+        intent: "Alpaca 프롬프트 포맷 구현과 조건부 Input 블록 확인"
+        success_criteria: ["1,100건 확인", "고정 서두 전문 사용", "빈 input 시 블록 제거"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 3분할 (935 / 110 / 55)
+
+      ## 💡 비율이 W11 과 다른 이유
+      | 주차 | 비율 | 이유 |
+      |---|---|---|
+      | W11 분류 | 70 / 10 / 20 | 정확도를 재려면 test 가 커야 한다 |
+      | **W12 지시** | **85 / 10 / 5** | 훈련 데이터가 많을수록 좋고, 평가는 LLM-as-judge 로 한다 |
+
+      test 110개는 W13 에서 저지가 채점할 분량이다. 300개면 채점에 시간이 너무 오래 걸린다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      from instr_data import load_data, split_data
+      data = load_data()
+      tr, te, va = split_data(data)
+      print('TRAIN', len(tr), 'TEST', len(te), 'VAL', len(va), 'SUM', len(tr)+len(te)+len(va))
+      ok = (len(tr), len(te), len(va)) == (935, 110, 55) and len(tr)+len(te)+len(va) == 1100
+      print('SPLIT_OK' if ok else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `TRAIN 935 TEST 110 VAL 55 SUM 1100` 과 `SPLIT_OK`.
+    hint: '합이 1,100 인지 반드시 확인하라 — 반올림으로 한두 개가 새는 일이 흔하다'
+    answer: |
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      from instr_data import load_data, split_data
+      data = load_data()
+      tr, te, va = split_data(data)
+      print('TRAIN', len(tr), 'TEST', len(te), 'VAL', len(va), 'SUM', len(tr)+len(te)+len(va))
+      ok = (len(tr), len(te), len(va)) == (935, 110, 55) and len(tr)+len(te)+len(va) == 1100
+      print('SPLIT_OK' if ok else 'NG')"
+    answer_detail: "test 110개가 W13 저지 채점의 분량이 된다. 평가 방식이 분할 비율을 결정한다는 것이 이 단계의 관찰 포인트다."
+    verify:
+      type: output_contains
+      expect: SPLIT_OK
+      field: stdout
+      semantic:
+        intent: "지시 데이터 3분할과 합계 검증"
+        success_criteria: ["935/110/55", "합 1,100", "비율 선택 이유 이해"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — collate 3단계 진화: 장난감 배치로 정답지 확인
+
+      ## 💡 왜 3단계로 나누는가
+      **한 번에 완성된 코드를 받으면 각 부분이 왜 필요한지 모른다.** 단계마다 "이 상태의 문제가
+      무엇인가"를 확인하고 다음으로 간다.
+
+      | 단계 | 하는 일 | 남은 문제 |
+      |---|---|---|
+      | 1 | 패딩만 (50256으로 길이 맞춤) | 정답 라벨이 없다 |
+      | 2 | 타깃 시프트 (`inputs[:-1]` / `targets[1:]`) | **패딩 자리도 학습한다** |
+      | 3 | `-100` 마스킹 (EOS 하나는 남김) | 완성 |
+
+      ## 🔴 2단계의 문제가 왜 심각한가
+      패딩 자리를 그대로 학습하면 모델은 **"응답이 끝나면 `<|endoftext|>` 를 계속 뱉어라"** 를
+      배운다. 짧은 응답이 많은 배치에서는 패딩이 대부분이라 모델이 **패딩 생성기**가 된다.
+
+      ## 💡 정답지 (입력 `[[0,1,2,3,4], [5,6], [7,8,9]]`)
+      | 행 | targets |
+      |---|---|
+      | 1 | `[1, 2, 3, 4, 50256]` |
+      | 2 | `[6, 50256, -100, -100, -100]` |
+      | 3 | `[8, 9, 50256, -100, -100]` |
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from instr_data import custom_collate_fn
+      batch = [[0,1,2,3,4], [5,6], [7,8,9]]
+      inp, tgt = custom_collate_fn(batch, device='cpu')
+      print('INPUTS '); print(inp.tolist())
+      print('TARGETS'); print(tgt.tolist())
+      exp = [[1,2,3,4,50256], [6,50256,-100,-100,-100], [8,9,50256,-100,-100]]
+      print('COLLATE_OK' if tgt.tolist() == exp else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      targets 세 행이 정답지와 **완전히 일치**하고 `COLLATE_OK`.
+    hint: '1단계·2단계만 구현한 버전도 만들어 출력을 비교해 보라 — 무엇이 달라지는지 보인다'
+    answer: |
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from instr_data import custom_collate_fn
+      batch = [[0,1,2,3,4], [5,6], [7,8,9]]
+      inp, tgt = custom_collate_fn(batch, device='cpu')
+      print('INPUTS '); print(inp.tolist())
+      print('TARGETS'); print(tgt.tolist())
+      exp = [[1,2,3,4,50256], [6,50256,-100,-100,-100], [8,9,50256,-100,-100]]
+      print('COLLATE_OK' if tgt.tolist() == exp else 'NG')"
+    answer_detail: "장난감 배치는 정답지를 눈으로 확인할 수 있는 최소 크기다. 실제 데이터로 바로 가면 무엇이 맞는지 알 수 없다 — 작게 시작해 정답지와 대조하는 것이 이 교재의 일관된 방식이다."
+    verify:
+      type: output_contains
+      expect: COLLATE_OK
+      field: stdout
+      semantic:
+        intent: "collate 3단계 진화 결과를 장난감 배치 정답지와 대조"
+        success_criteria: ["3행 targets 일치", "패딩 50256", "-100 마스킹"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — 왜 각 행에 EOS 가 **정확히 하나**인가
+
+      ## 💡 관찰
+      정답지 세 행 모두 `50256` 이 **정확히 한 번씩** 있다.
+
+      ## 💡 이유
+      **모델은 "언제 멈출지"를 배워야 한다.** EOS 를 전부 `-100` 으로 지우면 종료 신호를 학습할
+      기회가 사라진다. 그래서 **첫 번째 패딩(= 실제 종료 지점)은 남기고 그 뒤만 지운다.**
+
+      | 지운 경우 | 결과 |
+      |---|---|
+      | EOS 전부 남김 (마스킹 없음) | 모델이 패딩 생성기가 된다 |
+      | **EOS 하나만 남김** | **정상 — 종료를 배운다** |
+      | EOS 전부 지움 | 모델이 멈추는 법을 못 배운다 |
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from instr_data import custom_collate_fn
+      batch = [[0,1,2,3,4], [5,6], [7,8,9]]
+      inp, tgt = custom_collate_fn(batch, device='cpu')
+      for i, row in enumerate(tgt.tolist()):
+          eos = row.count(50256); ign = row.count(-100)
+          print(f'row{i}: EOS={eos}  -100={ign}  {row}')
+      eos_counts = [row.count(50256) for row in tgt.tolist()]
+      print('EOS_COUNTS', eos_counts)
+      print('EOS_ONCE_OK' if all(c == 1 for c in eos_counts) else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      세 행 모두 `EOS=1` 이고 `EOS_ONCE_OK`.
+    hint: '패딩 위치 중 첫 번째만 남기고 나머지를 -100 으로 바꾸는 구현인지 확인하라'
+    answer: |
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import torch
+      from instr_data import custom_collate_fn
+      batch = [[0,1,2,3,4], [5,6], [7,8,9]]
+      inp, tgt = custom_collate_fn(batch, device='cpu')
+      for i, row in enumerate(tgt.tolist()):
+          eos = row.count(50256); ign = row.count(-100)
+          print(f'row{i}: EOS={eos}  -100={ign}  {row}')
+      eos_counts = [row.count(50256) for row in tgt.tolist()]
+      print('EOS_COUNTS', eos_counts)
+      print('EOS_ONCE_OK' if all(c == 1 for c in eos_counts) else 'NG')"
+    answer_detail: "종료 토큰 학습은 생성 모델의 필수 요소다. EOS 를 못 배운 모델은 max_new_tokens 까지 계속 떠든다 — W13 응답 생성에서 이 차이가 바로 보인다."
+    verify:
+      type: output_contains
+      expect: EOS_ONCE_OK
+      field: stdout
+      semantic:
+        intent: "EOS 를 하나만 남기는 마스킹 규칙 확인"
+        success_criteria: ["각 행 EOS 1개", "종료 학습 이유 설명"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — `-100` 이 정말 손실에서 빠지는가 (**실증**)
+
+      **말로 믿지 말고 숫자로 확인한다.**
+
+      ## 💡 실험 설계
+      로짓 2개와 타깃 `[0, 1]` 로 손실을 계산한다. 그다음 로짓을 하나 **추가**하고 타깃에
+      `-100` 을 붙여 다시 계산한다. **손실이 완전히 같으면** `-100` 위치가 계산에서 빠진 것이다
+      (평균의 분모에서도 빠진다).
+
+      ```
+      로짓 2개 / 타깃 [0, 1]         → 손실 1.126928
+      로짓 3개 / 타깃 [0, 1, -100]   → 손실 1.126928   ← 소수점 6자리까지 동일
+      ```
+
+      ## 💡 `-100` 은 마법의 숫자가 아니다
+      `F.cross_entropy(..., ignore_index=-100)` 의 **기본값**일 뿐이다. 다른 값으로 바꾸려면
+      `ignore_index` 를 명시하면 된다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec llm-lab python3 -c "
+      import torch, torch.nn.functional as F
+      logits2 = torch.tensor([[-1.0, 1.0], [-0.5, 1.5]])
+      t2 = torch.tensor([0, 1])
+      l2 = F.cross_entropy(logits2, t2)
+      logits3 = torch.cat((logits2, torch.tensor([[-0.5, 1.5]])))
+      t3 = torch.tensor([0, 1, -100])
+      l3 = F.cross_entropy(logits3, t3)
+      print('LOSS_2TOKEN          ', round(l2.item(), 6))
+      print('LOSS_3TOKEN_WITH_-100', round(l3.item(), 6))
+      print('DIFF                 ', abs(l2.item()-l3.item()))
+      print('IGNORE_INDEX_OK' if abs(l2.item()-l3.item()) < 1e-6 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      두 손실이 **소수점 6자리까지 동일**하고 `IGNORE_INDEX_OK`.
+
+      ## 💡 그리고 pytest 로 고정
+      ```bash
+      docker exec -w /work/week12 llm-lab python3 -m pytest test_collate.py -q
+      ```
+      → `3 passed` (정답지 일치 / 각 행 EOS 1개 / `-100` 손실 제외)
+    hint: '-100 대신 0 을 넣어 보라 — 손실이 달라지는 것을 직접 확인할 수 있다'
+    answer: |
+      docker exec llm-lab python3 -c "
+      import torch, torch.nn.functional as F
+      logits2 = torch.tensor([[-1.0, 1.0], [-0.5, 1.5]])
+      t2 = torch.tensor([0, 1])
+      l2 = F.cross_entropy(logits2, t2)
+      logits3 = torch.cat((logits2, torch.tensor([[-0.5, 1.5]])))
+      t3 = torch.tensor([0, 1, -100])
+      l3 = F.cross_entropy(logits3, t3)
+      print('LOSS_2TOKEN          ', round(l2.item(), 6))
+      print('LOSS_3TOKEN_WITH_-100', round(l3.item(), 6))
+      print('DIFF                 ', abs(l2.item()-l3.item()))
+      print('IGNORE_INDEX_OK' if abs(l2.item()-l3.item()) < 1e-6 else 'NG')"
+      docker exec -w /work/week12 llm-lab python3 -m pytest test_collate.py -q
+    answer_detail: "-100 마스킹은 틀려도 오류가 안 나서 조용히 모델을 망친다. 그래서 '정말 빠지는가'를 숫자로 확인하는 이 단계가 필요하다. 이것이 이 교재가 말하는 '증거로 검증하기'의 전형이다."
+    verify:
+      type: output_contains
+      expect: IGNORE_INDEX_OK
+      field: stdout
+      semantic:
+        intent: "-100 이 손실 계산에서 제외됨을 수치로 실증"
+        success_criteria: ["두 손실 동일", "소수점 6자리 비교", "pytest 고정"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 데이터를 의심하라: 길이 분포와 중복
+
+      ## 🔴 교재는 "심각한 문제는 적을 것"이라고 했지만
+      실측하면 **완전 중복이 20 그룹(45건)** 있다. 이 문구가 학생의 탐색을 **조기 종료**시킨다 —
+      "문제가 적을 것"이라고 들으면 대충 보고 넘어간다.
+
+      **다만 중복 45건의 output 은 전부 서로 달랐다** — 같은 질문에 다른 답이 달린 것이다.
+      이것이 "제거해야 할 중복"인지 "다양성 데이터"인지는 **판단이 필요하다. 그 판단이 여러분의
+      몫이다.**
+
+      ## 💡 길이 분포의 의미
+      | 항목 | 실측 |
+      |---|---|
+      | 최장 토큰 길이 | **91** |
+      | 평균 | 56.4 |
+      | 컨텍스트 | 1,024 (여유 **933**) |
+
+      컨텍스트 1024 중 91 만 쓴다 — **패딩이 대부분이다.** 이것이 `-100` 마스킹이 없으면 안 되는
+      이유이고, 동시에 "배치 안에서 가장 긴 것에만 맞추는" **동적 패딩**이 효율적인 이유다
+      (고정 1024로 채우면 90%가 낭비다).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import tiktoken
+      from collections import Counter
+      from instr_data import load_data, format_input
+      enc = tiktoken.get_encoding('gpt2')
+      data = load_data()
+      lens = [len(enc.encode(format_input(d) + chr(10)*2 + '### Response:' + chr(10) + d['output']))
+              for d in data]
+      print('MAX_TOKENS', max(lens), 'MEAN', round(sum(lens)/len(lens), 1))
+      print('CONTEXT 1024  HEADROOM', 1024 - max(lens))
+      key = [(d['instruction'], d.get('input','')) for d in data]
+      dup = [k for k, c in Counter(key).items() if c > 1]
+      dup_items = sum(c for k, c in Counter(key).items() if c > 1)
+      print('DUPLICATE_GROUPS', len(dup), 'DUPLICATE_ITEMS', dup_items)
+      print('QUALITY_CHECK_OK' if max(lens) < 1024 and len(dup) > 0 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `MAX_TOKENS 91`, `DUPLICATE_GROUPS 20`, `QUALITY_CHECK_OK`.
+
+      ## 📝 판단 과제 (report.md 에 **직접** 작성)
+      중복 20그룹을 제거할 것인가, 남길 것인가? 각 그룹의 output 이 서로 다르다는 사실을
+      근거로 판단하고 이유를 3문장으로 쓰라.
+    hint: '예상 결과가 "문제가 적을 것"이라고 해도 직접 세어 보라 — 교재가 탐색을 좁히게 두지 마라'
+    answer: |
+      docker exec -w /work/week12 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '.')
+      import tiktoken
+      from collections import Counter
+      from instr_data import load_data, format_input
+      enc = tiktoken.get_encoding('gpt2')
+      data = load_data()
+      lens = [len(enc.encode(format_input(d) + chr(10)*2 + '### Response:' + chr(10) + d['output']))
+              for d in data]
+      print('MAX_TOKENS', max(lens), 'MEAN', round(sum(lens)/len(lens), 1))
+      print('CONTEXT 1024  HEADROOM', 1024 - max(lens))
+      key = [(d['instruction'], d.get('input','')) for d in data]
+      dup = [k for k, c in Counter(key).items() if c > 1]
+      dup_items = sum(c for k, c in Counter(key).items() if c > 1)
+      print('DUPLICATE_GROUPS', len(dup), 'DUPLICATE_ITEMS', dup_items)
+      print('QUALITY_CHECK_OK' if max(lens) < 1024 and len(dup) > 0 else 'NG')"
+    answer_detail: "'모델을 고치는 것보다 데이터를 고치는 것이 거의 항상 효과적'이라는 실무 격언의 근거를 직접 만드는 단계다. 그리고 예상 결과가 탐색을 좁히는 위험을 몸으로 겪는 자리이기도 하다."
+    verify:
+      type: output_contains
+      expect: QUALITY_CHECK_OK
+      field: stdout
+      semantic:
+        intent: "데이터 품질(길이·중복)을 정량 점검하고 판단하기"
+        success_criteria: ["최장 91 확인", "중복 20그룹 발견", "동적 패딩 필요성 이해"]

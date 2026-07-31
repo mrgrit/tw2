@@ -1,0 +1,529 @@
+lab_id: llm-from-scratch-week02
+title: "W02 — 토크나이저 해부: 정규식 분리·어휘사전·OOV·특수토큰·BPE·한국어 토큰 효율"
+version: ai
+course: llm-from-scratch
+week: 2
+description: |
+  텍스트를 토큰 ID 로 바꾸는 변환기를 두 번 만든다. 먼저 정규식 기반 SimpleTokenizerV1/V2 로
+  원리를 보고(그 과정에서 왕복 손실과 OOV KeyError 를 일부러 겪는다), 다음으로 GPT-2 가 실제로
+  쓰는 tiktoken BPE 로 넘어가 OOV 가 원리적으로 사라지는 것을 확인한다. 마지막으로 같은 의미의
+  한국어/영어 문장 쌍으로 토큰 효율 격차를 실측한다. 모든 코드는 llm-lab 컨테이너에서 실행한다.
+difficulty: easy
+duration_minutes: 150
+audience: LLM 밑바닥 구현 (2주차)
+prerequisites:
+  - W01 완료 — llm-lab 컨테이너 기동, torch.cuda.is_available() == True
+  - 교재 저장소 clone 및 `the-verdict.txt` 를 `/work/week02/` 에 확보
+  - W02 강의안 정독 — 손실 변환, OOV, BPE 어휘 구성(256+50000+1)
+objectives:
+  - "the-verdict.txt 무결성을 두 가지 방법으로 교차 확인한다(20,479자)"
+  - "정규식 분리로 4,690 토큰을 재현하고 구두점이 독립 토큰임을 확인한다"
+  - "어휘사전 1,130 을 만들고 정렬이 재현성의 조건임을 이해한다"
+  - "V1 왕복이 원문을 복원하지 못하는 두 지점을 특정한다"
+  - "OOV KeyError 를 재현하고 고치지 않는다"
+  - "V2 어휘 1,132 와 <|unk|> 치환 2건을 확인한다"
+  - "pytest 3개로 검증을 코드로 격상한다"
+  - "tiktoken BPE 어휘 50,257 과 무손실 왕복을 확인한다"
+  - "특수 토큰 가드(ValueError)를 재현하고 allowed_special 로 해결한다"
+  - "한국어/영어 토큰 비율을 실측하고 바이트 조각 분해를 관찰한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 실습 텍스트 무결성 확인 (20,479자)
+
+      이 수업의 모든 예상 수치는 **정답지**다. 파일이 다르면 이후 모든 숫자가 어긋난다.
+      그래서 시작 전에 파일부터 검증한다.
+
+      ## 💡 왜 두 가지 방법으로 세는가
+      한 가지 방법만 쓰면 그 방법 자체의 버그를 못 잡는다. 파이썬 `len()` 은 **문자** 수를,
+      `wc -m` 도 로케일 기준 **문자** 수를 센다(`wc -c` 는 바이트 수라 다르다). 둘이 일치해야
+      인코딩(UTF-8)까지 정상이라는 뜻이다. 이것이 **교차 검증**의 최소형이다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week02 llm-lab bash -c '
+      PY=$(python3 -c "print(len(open(\"the-verdict.txt\",encoding=\"utf-8\").read()))")
+      WC=$(wc -m < the-verdict.txt)
+      echo "PY_LEN=$PY WC_M=$WC"
+      [ "$PY" = "20479" ] && [ "$PY" = "$WC" ] && echo "VERDICT_20479_OK"'
+      ```
+      ## ✅ 합격 기준
+      `PY_LEN=20479 WC_M=20479` 과 `VERDICT_20479_OK`. **다르면 다음으로 넘어가지 말 것.**
+    hint: 'wc -c(바이트)와 wc -m(문자)은 다르다. UTF-8 텍스트에서 둘이 다르면 정상이다'
+    answer: |
+      docker exec -w /work/week02 llm-lab bash -c '
+      PY=$(python3 -c "print(len(open(\"the-verdict.txt\",encoding=\"utf-8\").read()))")
+      WC=$(wc -m < the-verdict.txt)
+      echo "PY_LEN=$PY WC_M=$WC"
+      [ "$PY" = "20479" ] && [ "$PY" = "$WC" ] && echo "VERDICT_20479_OK"'
+    answer_detail: "정답지 대조의 첫 연습이다. 20,479 가 아니면 파일이 다르거나 인코딩이 깨진 것이므로 즉시 중단하고 원본을 다시 받아야 한다. 서로 다른 두 도구가 같은 값을 내야 신뢰할 수 있다."
+    verify:
+      type: output_contains
+      expect: VERDICT_20479_OK
+      field: stdout
+      semantic:
+        intent: "실습 데이터 무결성을 두 경로로 교차 확인 — 정답지 체계의 출발점"
+        success_criteria: ["python len 확인", "wc -m 확인", "20479 일치"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 정규식으로 쪼개기 (4,690 토큰)
+
+      토큰화의 가장 원시적인 형태다. 정규식 한 줄이 텍스트를 단어와 구두점으로 나눈다.
+
+      ## 💡 이 정규식이 하는 일
+      ```python
+      r'([,.:;?_!"()\']|--|\s)'
+      ```
+      `re.split()` 에서 패턴을 **괄호로 감싸면 구분자도 결과에 남는다**. 그래서 구두점이
+      버려지지 않고 독립 토큰이 된다. 세 갈래를 `|` 로 이었다 — 구두점 문자 하나 /
+      `--`(em-dash) / 공백류(`\s`). 분리 후 `strip()` 으로 양끝 공백을 지우고 빈 문자열을 거른다.
+
+      ⚠️ **이 `strip()` 이 공백 정보를 버린다.** 지금은 문제없어 보이지만 4단계에서 원문
+      복원을 막는 원인이 된다.
+
+      ## 💻 실행 명령
+      먼저 `week02/step1_split.py` 에 `split_tokens(text)` 함수를 만들고(P2-1), 아래로 검증한다.
+      ```bash
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      t = split_tokens(open('the-verdict.txt', encoding='utf-8').read())
+      print('TOKENS', len(t)); print('FIRST3', t[:3])
+      print('SPLIT_4690_OK' if len(t)==4690 and t[:3]==['I','HAD','always'] else 'SPLIT_NG')"
+      ```
+      ## ✅ 합격 기준
+      `TOKENS 4690`, `FIRST3 ['I', 'HAD', 'always']`, `SPLIT_4690_OK`.
+      처음 30개 안에서 `,` 가 **독립 토큰**으로 보이는지도 눈으로 확인한다(29번째).
+    hint: '괄호로 감싸지 않으면 구두점이 사라진다 — 직접 빼고 돌려 보면 차이가 보인다'
+    answer: |
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      t = split_tokens(open('the-verdict.txt', encoding='utf-8').read())
+      print('TOKENS', len(t)); print('FIRST3', t[:3])
+      print('SPLIT_4690_OK' if len(t)==4690 and t[:3]==['I','HAD','always'] else 'SPLIT_NG')"
+    answer_detail: "4,690 은 교재 정답지 값이다. 개수만 맞고 첫 토큰이 다르면 분리 순서나 strip 처리가 다른 것이므로 둘 다 검사한다."
+    verify:
+      type: output_contains
+      expect: SPLIT_4690_OK
+      field: stdout
+      semantic:
+        intent: "정규식 기반 토큰 분리 재현 — 구두점 독립 분리 확인"
+        success_criteria: ["토큰 수 4690", "첫 토큰 I/HAD/always", "구두점 독립"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — 어휘사전 구축 (1,130)
+
+      토큰 리스트에서 중복을 제거하고 **정렬**해 (토큰 → 정수 ID) 사전을 만든다.
+
+      ## 💡 왜 `sorted()` 가 필수인가
+      `set()` 은 순서를 보장하지 않는다. 정렬하지 않으면 같은 텍스트로 만들어도 실행할 때마다
+      ID가 달라진다. 그러면 어제 저장한 모델을 오늘 못 쓴다. **정렬은 재현성의 조건이다.**
+      이 수업에서 "재현"은 계속 나오는 주제다(9주차 손실 재현, 11주차 ±1%p 게이트).
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      from tokenizer_v1 import build_vocab
+      v = build_vocab(split_tokens(open('the-verdict.txt', encoding='utf-8').read()))
+      print('VOCAB', len(v))
+      print('VOCAB_1130_OK' if len(v)==1130 else 'VOCAB_NG')"
+      ```
+      ## ✅ 합격 기준
+      `VOCAB 1130` 과 `VOCAB_1130_OK`.
+    hint: '4,690 토큰에서 중복을 제거하면 1,130 종류가 남는다 — 같은 단어가 평균 4번쯤 나온다는 뜻이다'
+    answer: |
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      from tokenizer_v1 import build_vocab
+      v = build_vocab(split_tokens(open('the-verdict.txt', encoding='utf-8').read()))
+      print('VOCAB', len(v))
+      print('VOCAB_1130_OK' if len(v)==1130 else 'VOCAB_NG')"
+    answer_detail: "1,130 종류의 고유 토큰. 이 사전에 없는 단어는 다음 단계에서 KeyError 를 낸다 — OOV 문제의 원인이 바로 이 '고정된 목록'이다."
+    verify:
+      type: output_contains
+      expect: VOCAB_1130_OK
+      field: stdout
+      semantic:
+        intent: "어휘사전 구축과 재현성 확보(정렬)"
+        success_criteria: ["중복 제거", "정렬", "크기 1130"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — V1 왕복 테스트: **불일치가 정답이다**
+
+      encode → decode 를 돌려 원문이 복원되는지 본다. **복원되지 않는 것이 정상이다.**
+
+      ## 🔴 여기가 이번 주의 핵심
+      ```
+      원문   : "It's the last he painted, you know," Mrs. Gisburn said with pardonable pride.
+      decode : " It' s the last he painted, you know," Mrs. Gisburn said with pardonable pride.
+      ```
+      두 군데가 다르다. ① 문장 앞에 **공백 하나**가 붙었고 ② `It's` 가 **`It' s`** 로 벌어졌다.
+
+      **원인:** V1의 decode 는 토큰을 `" ".join()` 으로 이은 뒤 구두점 **앞**의 공백만 지운다.
+      `'` 는 그 대상이라 `It '` → `It'` 로 붙지만, 그 **뒤 `s` 앞의 공백을 지울 규칙은 없다**.
+      토크나이저가 `It` / `'` / `s` 로 쪼개는 순간 원문의 띄어쓰기 정보는 이미 사라졌다.
+
+      ## ⚠️ 절대 고치지 말 것
+      교재 저장소의 공식 노트북 `ch02.ipynb` 의 저장된 출력에도 `" It' s"` 가 그대로 있다.
+      **정답지가 틀린 자리다.** 이 과목에서 여러분이 할 일이 바로 이것 — 실행 결과와 정답지를
+      대조해 어느 쪽이 틀렸는지 판정하는 일이다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      from tokenizer_v1 import build_vocab, SimpleTokenizerV1
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      tk = SimpleTokenizerV1(build_vocab(split_tokens(raw)))
+      s = '\"It\'s the last he painted, you know,\" Mrs. Gisburn said with pardonable pride.'
+      d = tk.decode(tk.encode(s))
+      print('ORIG  :', repr(s)); print('DECODE:', repr(d))
+      print('LOSSY_CONFIRMED' if d != s and \" It' s\" in d else 'UNEXPECTED')"
+      ```
+      ## ✅ 합격 기준
+      `LOSSY_CONFIRMED`. 불일치 지점을 **정확히 두 곳**으로 특정하고 원인을 설명할 수 있어야 한다.
+    hint: '고치고 싶은 충동을 참는 것이 이 단계의 목표다. BPE 는 이 문제를 어떻게 푸는지 8단계에서 본다'
+    answer: |
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      from tokenizer_v1 import build_vocab, SimpleTokenizerV1
+      raw = open('the-verdict.txt', encoding='utf-8').read()
+      tk = SimpleTokenizerV1(build_vocab(split_tokens(raw)))
+      s = '\"It\'s the last he painted, you know,\" Mrs. Gisburn said with pardonable pride.'
+      d = tk.decode(tk.encode(s))
+      print('ORIG  :', repr(s)); print('DECODE:', repr(d))
+      print('LOSSY_CONFIRMED' if d != s and \" It' s\" in d else 'UNEXPECTED')"
+    answer_detail: "토큰화는 손실 변환이다. 이 실패가 BPE 설계의 이유 — GPT-2 BPE 는 공백을 토큰 안에 넣어(' the' 처럼) 완전 복원을 보장한다. 그리고 이 단계는 '정답지도 틀릴 수 있다'는 것을 학생이 직접 확인하는 자리다."
+    verify:
+      type: output_contains
+      expect: LOSSY_CONFIRMED
+      field: stdout
+      semantic:
+        intent: "토큰화의 손실 변환 성질을 왕복 실패로 확인 — 고치지 않고 관찰"
+        success_criteria: ["decode 불일치 확인", "두 지점 특정", "코드 수정 없음"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — OOV 재현: 의도된 KeyError
+
+      사전에 없는 단어를 넣어 본다. **오류가 나는 것이 정답이다.**
+
+      ## 💡 왜 이 오류가 나는가
+      어휘사전은 `the-verdict.txt`(19세기 단편소설)에 나온 1,130개 토큰의 **고정된 목록**이다.
+      `Hello` 는 그 소설에 한 번도 안 나온다. 단어 단위 어휘의 필연적 결과이며, 이것이
+      **OOV(Out-Of-Vocabulary)** 문제다.
+
+      ## ⚠️ 프롬프트에 반드시 넣을 문장
+      에이전트에게 시킬 때는 **"아직 코드를 고치지는 마"** 를 넣는다. 에이전트는 시키지 않으면
+      오류를 즉시 고쳐버리고, 그러면 학생은 "왜 실패하는가"를 생각할 기회를 잃는다.
+      1주차 스모크 테스트의 "의도된 오류 1개"와 같은 원리다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      from tokenizer_v1 import build_vocab, SimpleTokenizerV1
+      tk = SimpleTokenizerV1(build_vocab(split_tokens(open('the-verdict.txt', encoding='utf-8').read())))
+      try:
+          tk.encode('Hello, do you like tea?'); print('NO_ERROR_UNEXPECTED')
+      except KeyError as e:
+          print('KeyError:', e); print('OOV_KEYERROR_CONFIRMED')"
+      ```
+      ## ✅ 합격 기준
+      `KeyError: 'Hello'` 와 `OOV_KEYERROR_CONFIRMED`.
+      오류가 **안 나면** 에이전트가 몰래 고친 것이니 되돌린다.
+    hint: '1주차 스모크 테스트에서 ch02.ipynb 가 멈춘 그 셀이 바로 이 오류다'
+    answer: |
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      from tokenizer_v1 import build_vocab, SimpleTokenizerV1
+      tk = SimpleTokenizerV1(build_vocab(split_tokens(open('the-verdict.txt', encoding='utf-8').read())))
+      try:
+          tk.encode('Hello, do you like tea?'); print('NO_ERROR_UNEXPECTED')
+      except KeyError as e:
+          print('KeyError:', e); print('OOV_KEYERROR_CONFIRMED')"
+    answer_detail: "OOV 는 버그가 아니라 설계의 귀결이다. 이 실패를 관찰 대상으로 고정해야 다음 두 해법(<|unk|> 치환 / 서브워드 분해)의 차이를 이해할 수 있다."
+    verify:
+      type: output_contains
+      expect: OOV_KEYERROR_CONFIRMED
+      field: stdout
+      semantic:
+        intent: "OOV 문제를 재현하고 고치지 않고 관찰"
+        success_criteria: ["KeyError 발생", "원인을 어휘사전과 연결", "코드 수정 없음"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 특수 토큰과 V2 (1,132 / `<|unk|>` 2건)
+
+      어휘사전에 `<|endoftext|>` 와 `<|unk|>` 를 추가하고, 미등록 토큰을 `<|unk|>` ID 로
+      치환하는 V2 를 만든다.
+
+      ## 💡 두 특수 토큰의 역할이 다르다
+      | 토큰 | 역할 | 없으면 |
+      |---|---|---|
+      | `<\|unk\|>` | 모르는 단어의 대타 | KeyError 로 죽는다 |
+      | `<\|endoftext\|>` | 서로 무관한 문서의 **경계** | 앞 문서 끝과 뒷 문서 시작을 한 문맥으로 착각 |
+
+      GPT-2 는 실제로 `<|endoftext|>` 만 쓴다(ID 50256). `<|unk|>` 는 **쓰지 않는다** —
+      BPE 에는 OOV 가 없어서 필요가 없기 때문이다.
+
+      ⚠️ `<|unk|>` 는 해결이 아니라 미봉책이다. 모든 미지어가 같은 ID 로 뭉개지면 모델 입장에서
+      `Hello` 와 `palace` 와 `quantum` 이 전부 같은 단어가 된다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      from tokenizer_v2 import build_vocab_v2, SimpleTokenizerV2
+      v = build_vocab_v2(split_tokens(open('the-verdict.txt', encoding='utf-8').read()))
+      tk = SimpleTokenizerV2(v)
+      s = 'Hello, do you like tea? <|endoftext|> In the sunlit terraces of the palace.'
+      d = tk.decode(tk.encode(s))
+      print('VOCAB_V2', len(v)); print('DECODE:', d)
+      print('V2_1132_UNK_OK' if len(v)==1132 and d.count('<|unk|>')==2 else 'V2_NG')"
+      ```
+      ## ✅ 합격 기준
+      `VOCAB_V2 1132`, decode 에 `<|unk|>` 가 **정확히 2개**(`Hello`, `palace`), `V2_1132_UNK_OK`.
+    hint: '특수 토큰을 사전 맨 뒤에 붙여야 기존 ID 가 흔들리지 않는다'
+    answer: |
+      docker exec -w /work/week02 llm-lab python3 -c "
+      from step1_split import split_tokens
+      from tokenizer_v2 import build_vocab_v2, SimpleTokenizerV2
+      v = build_vocab_v2(split_tokens(open('the-verdict.txt', encoding='utf-8').read()))
+      tk = SimpleTokenizerV2(v)
+      s = 'Hello, do you like tea? <|endoftext|> In the sunlit terraces of the palace.'
+      d = tk.decode(tk.encode(s))
+      print('VOCAB_V2', len(v)); print('DECODE:', d)
+      print('V2_1132_UNK_OK' if len(v)==1132 and d.count('<|unk|>')==2 else 'V2_NG')"
+    answer_detail: "1130 + 2 = 1132. Hello 와 palace 둘 다 소설에 없어 <|unk|> 로 치환된다. 정보가 파괴되는 것을 눈으로 보는 것이 목적 — 다음 단계 BPE 와의 대비가 이 실습의 절정이다."
+    verify:
+      type: output_contains
+      expect: V2_1132_UNK_OK
+      field: stdout
+      semantic:
+        intent: "특수 토큰으로 OOV 를 막되 정보가 파괴되는 것을 확인"
+        success_criteria: ["어휘 1132", "<|unk|> 2건 치환", "endoftext 보존"]
+
+  - order: 7
+    instruction: |
+      ## 🎯 미션 — 검증을 사람 눈에서 테스트 코드로 격상 (pytest 3 passed)
+
+      지금까지는 출력을 눈으로 봤다. 이제 **pytest** 가 대신 확인하게 한다. 앞으로
+      "만들면 테스트도 만든다"가 기본값이다.
+
+      ## 💡 세 테스트가 각각 무엇을 지키는가
+      | 테스트 | 지키는 성질 |
+      |---|---|
+      | `test_roundtrip` | 사전에 있는 단어만이면 encode→decode 가 원문 복원 |
+      | `test_unknown` | 미등록 단어가 `<\|unk\|>` 로 치환됨 |
+      | `test_vocab_size` | V2 어휘가 1132 |
+
+      ## ⚠️ 프롬프트 제약 — 테스트를 약화시키는 수정 금지
+      에이전트가 "테스트 통과"를 목표로 잡으면 가끔 **테스트 쪽을 느슨하게** 고치는 잘못된
+      지름길을 택한다. 이를 명시적으로 봉쇄하는 것도 명세력이다.
+      (6주차에서 이 제약만으로는 부족하다는 것을 실제 사례로 보게 된다.)
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week02 llm-lab python3 -m pytest test_tokenizer.py -q
+      ```
+      ## ✅ 합격 기준
+      `3 passed`.
+    hint: 'pytest 는 test_ 로 시작하는 함수를 자동으로 찾는다. 픽스처(fixture)로 사전 구축을 한 번만 하면 빠르다'
+    answer: |
+      docker exec -w /work/week02 llm-lab python3 -m pytest test_tokenizer.py -q
+    answer_detail: "3 passed 는 세 가지 성질이 코드로 고정됐다는 뜻이다. 이후 리팩터링을 해도 이 세 줄이 깨지면 즉시 알 수 있다 — 검증을 사람 기억에서 코드로 옮기는 것이 이 단계의 목적."
+    verify:
+      type: output_contains
+      expect: 3 passed
+      field: stdout
+      semantic:
+        intent: "토크나이저 성질을 pytest 로 고정 — 검증의 코드화"
+        success_criteria: ["3개 테스트 작성", "전부 통과", "테스트 약화 없음"]
+
+  - order: 8
+    instruction: |
+      ## 🎯 미션 — 진짜 토크나이저: tiktoken BPE (50,257 / 무손실)
+
+      GPT-2 가 실제로 쓰는 BPE 를 로드해 V2 와 비교한다. OOV 가 어떻게 사라지는지 본다.
+
+      ## 💡 GPT-2 어휘 50,257의 구성
+      | 구성 | 개수 | 역할 |
+      |---|---|---|
+      | 바이트 | **256** | 모든 바이트값 0~255. **이것이 OOV 를 없앤다** |
+      | 병합 토큰 | **50,000** | 자주 붙어 나온 쌍을 반복 병합한 결과 |
+      | 특수 토큰 | **1** | `<\|endoftext\|>` (ID 50256) |
+
+      어떤 텍스트든 UTF-8 로 쓰면 결국 바이트의 나열이고, 그 바이트가 전부 어휘에 있으므로
+      **최악의 경우에도 바이트 단위로는 반드시 표현된다.** 그래서 BPE 에는 원리적으로 OOV 가 없다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec llm-lab python3 -c "
+      import tiktoken
+      enc = tiktoken.get_encoding('gpt2')
+      print('VOCAB', enc.n_vocab)
+      s = 'Hello, do you like tea? <|endoftext|> In the sunlit terraces of the palace.'
+      ids = enc.encode(s, allowed_special={'<|endoftext|>'})
+      d = enc.decode(ids)
+      print('TOKENS', len(ids)); print('DECODE:', d)
+      print('BPE_50257_NOUNK_OK' if enc.n_vocab==50257 and d==s and '<|unk|>' not in d else 'BPE_NG')"
+      ```
+      ## ✅ 합격 기준
+      `VOCAB 50257`, decode 가 원문과 **완전 일치**, `<|unk|>` 없음, `BPE_50257_NOUNK_OK`.
+      4단계에서 V1 이 복원 못 했던 것과 대비해서 볼 것.
+    hint: 'BPE 는 공백을 토큰 안에 넣는다(" the"). 그래서 복원이 가능하다'
+    answer: |
+      docker exec llm-lab python3 -c "
+      import tiktoken
+      enc = tiktoken.get_encoding('gpt2')
+      print('VOCAB', enc.n_vocab)
+      s = 'Hello, do you like tea? <|endoftext|> In the sunlit terraces of the palace.'
+      ids = enc.encode(s, allowed_special={'<|endoftext|>'})
+      d = enc.decode(ids)
+      print('TOKENS', len(ids)); print('DECODE:', d)
+      print('BPE_50257_NOUNK_OK' if enc.n_vocab==50257 and d==s and '<|unk|>' not in d else 'BPE_NG')"
+    answer_detail: "V2 는 Hello/palace 를 <|unk|> 로 뭉갰지만 BPE 는 그대로 복원한다. 어휘 50,257 이 다음 주 임베딩 행렬(50257×768 = 38,597,376 파라미터)의 크기를 결정한다는 점도 기억해 둘 것."
+    verify:
+      type: output_contains
+      expect: BPE_50257_NOUNK_OK
+      field: stdout
+      semantic:
+        intent: "BPE 어휘 크기와 무손실 왕복 확인 — OOV 소멸"
+        success_criteria: ["50257 확인", "완전 복원", "unk 없음"]
+
+  - order: 9
+    instruction: |
+      ## 🎯 미션 — 두 가지 관찰: 특수 토큰 가드 + 미지의 단어 분해
+
+      ## 💡 (a) 예고된 함정 — 특수 토큰 가드
+      tiktoken 은 입력에 `<|endoftext|>` 문자열이 섞여 있으면 **기본적으로 오류를 낸다.**
+      ```
+      ValueError: Encountered text corresponding to disallowed special token '<|endoftext|>'.
+      ```
+      버그가 아니라 **보안 장치**다. 사용자 입력에 특수 토큰이 섞여 들어오면 모델의 문서 경계
+      인식을 조작할 수 있다(프롬프트 인젝션의 한 형태). 해결은 명시적 허용:
+      `enc.encode(text, allowed_special={"<|endoftext|>"})`.
+
+      ## 💡 (b) 연습문제 2.1 — 세상에 없는 단어 분해
+      `"Akwirw ier"` 는 무의미한 문자열이다. BPE 는 이것을 아는 조각으로 쪼갠다:
+      `Ak`(33901) / `w`(86) / `ir`(343) / `w`(86) / `' '`(220) / `ier`(959).
+      그리고 전체를 다시 decode 하면 **원문이 정확히 복원된다.** 공백이 독립 토큰 220 으로
+      살아 있는 것도 보라 — V1 이 잃어버린 그 정보다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec llm-lab python3 -c "
+      import tiktoken
+      enc = tiktoken.get_encoding('gpt2')
+      try:
+          enc.encode('a <|endoftext|> b'); print('NO_ERROR')
+      except ValueError as e:
+          print('ValueError:', str(e)[:90]); print('SPECIAL_TOKEN_GUARD_OK')
+      ids = enc.encode('Akwirw ier')
+      for i in ids: print(' ', i, '|', repr(enc.decode([i])))
+      print('AKWIRW_ROUNDTRIP_OK' if enc.decode(ids)=='Akwirw ier' else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `SPECIAL_TOKEN_GUARD_OK` 와 `AKWIRW_ROUNDTRIP_OK` 가 모두 출력된다.
+    hint: '조각 6개 중 하나가 공백(220)이다 — 이것이 BPE 가 복원 가능한 이유다'
+    answer: |
+      docker exec llm-lab python3 -c "
+      import tiktoken
+      enc = tiktoken.get_encoding('gpt2')
+      try:
+          enc.encode('a <|endoftext|> b'); print('NO_ERROR')
+      except ValueError as e:
+          print('ValueError:', str(e)[:90]); print('SPECIAL_TOKEN_GUARD_OK')
+      ids = enc.encode('Akwirw ier')
+      for i in ids: print(' ', i, '|', repr(enc.decode([i])))
+      print('AKWIRW_ROUNDTRIP_OK' if enc.decode(ids)=='Akwirw ier' else 'NG')"
+    answer_detail: "처음 보는 단어도 아는 조각의 조합으로 표현한다 — 이것이 BPE 의 답이다. 그리고 특수 토큰 ValueError 는 의도된 안전장치이므로 allowed_special 로 푸는 것이 정답이지, 예외를 억지로 잡아 넘기는 것이 아니다."
+    verify:
+      type: output_contains
+      expect: AKWIRW_ROUNDTRIP_OK
+      field: stdout
+      semantic:
+        intent: "특수 토큰 가드 이해 + 미지 단어의 서브워드 분해 관찰"
+        success_criteria: ["ValueError 재현", "allowed_special 이해", "조각 분해 후 완전 복원"]
+
+  - order: 10
+    instruction: |
+      ## 🎯 미션 — 한국어 토큰 효율 실험 (이 수업의 오리지널)
+
+      같은 의미를 한국어와 영어로 쓰면 토큰 수가 얼마나 다른가. 이 숫자는 **비용**과
+      **컨텍스트 창 소모량**에 직결된다.
+
+      ## 💡 예상 결과 (실측 기준)
+      | 문장 쌍 | ko | en | 비율 |
+      |---|---|---|---|
+      | 방화벽이 비정상 트래픽을 차단했다. / The firewall blocked abnormal traffic. | 43 | 6 | **7.17배** |
+      | 이 식당의 김치찌개가... / The kimchi stew at this restaurant... | 56 | 15 | **3.73배** |
+
+      10쌍 기준 대략 **4~7배**(실측 최소 3.73 / 최대 7.17 / 평균 4.94). **문장이 짧을수록
+      배율이 커진다** — 영어는 짧은 단어 하나가 토큰 하나인데, 한국어는 짧아도 글자마다 바이트
+      조각으로 쪼개지기 때문이다.
+
+      ## 💡 왜 그런가
+      GPT-2 의 병합 규칙은 **영어 중심 코퍼스**에서 학습됐다. `" the"` 같은 영어 조합은 통짜
+      토큰으로 병합됐지만, 한국어 바이트 조합은 병합 학습이 거의 안 되어 있다. 그래서 병합되지
+      못한 바이트가 낱개 토큰으로 남는다. `"방화벽이 비정상 트래픽을 차단했다."` 는 UTF-8 로
+      49바이트인데 43토큰이고, 개별 토큰을 decode 하면 대부분 `�`(깨진 문자)로 나온다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec llm-lab python3 -c "
+      import tiktoken
+      enc = tiktoken.get_encoding('gpt2')
+      pairs = [('방화벽이 비정상 트래픽을 차단했다.','The firewall blocked abnormal traffic.'),
+               ('공격자가 SQL 삽입 취약점을 이용해 인증을 우회했다.','The attacker bypassed authentication using an SQL injection vulnerability.'),
+               ('이 식당의 김치찌개가 이 동네에서 가장 맛있다.','The kimchi stew at this restaurant is the best in this neighborhood.')]
+      rs = []
+      for ko, en in pairs:
+          k, e = len(enc.encode(ko)), len(enc.encode(en)); rs.append(k/e)
+          print(f'ko={k:3d} en={e:3d} ratio={k/e:.2f}  {ko}')
+      avg = sum(rs)/len(rs); print(f'AVG_RATIO={avg:.2f}')
+      print('KO_RATIO_OK' if avg >= 3.0 else 'KO_RATIO_LOW')
+      s = '방화벽이 비정상 트래픽을 차단했다.'
+      ids = enc.encode(s); frag = [enc.decode([i]) for i in ids]
+      broken = sum(1 for f in frag if '�' in f)
+      print('BYTES', len(s.encode('utf-8')), 'TOKENS', len(ids), 'BROKEN_FRAGMENTS', broken)"
+      ```
+      ## ✅ 합격 기준
+      `AVG_RATIO` 가 3.0 이상이고 `KO_RATIO_OK` 가 출력된다. 바이트 조각이 다수 관찰된다.
+
+      ## 📝 해석 과제 (report.md 에 **직접** 작성 — 에이전트 사용 금지)
+      1. 왜 한국어가 더 많은 토큰으로 쪼개지는가?
+      2. 이 비율이 실제 LLM 서비스에서 갖는 의미 2가지 (비용 관점 / 컨텍스트 창 관점)
+    hint: '비율이 1배 근처면 한국어 문장이 로마자로 들어간 것이다 — 실제 한글인지 확인하라'
+    answer: |
+      docker exec llm-lab python3 -c "
+      import tiktoken
+      enc = tiktoken.get_encoding('gpt2')
+      pairs = [('방화벽이 비정상 트래픽을 차단했다.','The firewall blocked abnormal traffic.'),
+               ('공격자가 SQL 삽입 취약점을 이용해 인증을 우회했다.','The attacker bypassed authentication using an SQL injection vulnerability.'),
+               ('이 식당의 김치찌개가 이 동네에서 가장 맛있다.','The kimchi stew at this restaurant is the best in this neighborhood.')]
+      rs = []
+      for ko, en in pairs:
+          k, e = len(enc.encode(ko)), len(enc.encode(en)); rs.append(k/e)
+          print(f'ko={k:3d} en={e:3d} ratio={k/e:.2f}  {ko}')
+      avg = sum(rs)/len(rs); print(f'AVG_RATIO={avg:.2f}')
+      print('KO_RATIO_OK' if avg >= 3.0 else 'KO_RATIO_LOW')
+      s = '방화벽이 비정상 트래픽을 차단했다.'
+      ids = enc.encode(s); frag = [enc.decode([i]) for i in ids]
+      broken = sum(1 for f in frag if '�' in f)
+      print('BYTES', len(s.encode('utf-8')), 'TOKENS', len(ids), 'BROKEN_FRAGMENTS', broken)"
+    answer_detail: "한국어가 영어의 4~7배 토큰을 쓴다는 실측. 토큰 수는 곧 비용이고 컨텍스트 창 소모량이다. 최신 모델들이 한국어 토크나이저를 따로 개선하는 이유가 이 실험 하나로 설명된다."
+    verify:
+      type: output_contains
+      expect: KO_RATIO_OK
+      field: stdout
+      semantic:
+        intent: "한국어/영어 토큰 효율 격차 실측과 바이트 조각 분해 관찰"
+        success_criteria: ["문장 쌍별 비율 계산", "평균 3배 이상", "바이트 조각 확인"]

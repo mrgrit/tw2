@@ -1,0 +1,482 @@
+lab_id: llm-from-scratch-week08
+title: "W08 — 중간고사 모의 실기: 버그 은행 진단·학기 자산 재사용·뮤테이션 테스팅"
+version: ai
+course: llm-from-scratch
+week: 8
+description: |
+  중간고사 실기의 모의 훈련이다. 2~7주차 코드에 버그를 심고, 학기 동안 쌓은 자산(인과성 성질
+  테스트·정답지 수치·분해표·초기 손실 게이트)이 그 버그를 실제로 잡는지 확인한다. 특히 8번(잔차
+  누락)과 10번(argmax 위치)은 소박하게 구현하면 검출되지 않는다는 사실을 실측으로 확인하고,
+  검출 가능한 형태로 바꾸는 법을 배운다. "버그를 심었다"와 "버그가 검출된다"는 다른 문제다.
+difficulty: hard
+duration_minutes: 150
+audience: LLM 밑바닥 구현 (8주차 중간고사)
+prerequisites:
+  - W02~W07 완료 — 모든 주차 코드와 테스트가 저장소에 있어야 한다
+  - "`/work/week08/` 생성, week03~week07 모듈 import 가능"
+  - W08 강의안 정독 — 답안 4요소, 시간 배분, 버그 은행 10종
+objectives:
+  - "인과성 성질 테스트가 마스크 반전 버그를 잡는지 확인한다"
+  - "√d 스케일링 생략이 W04 정답지 수치로 잡히는지 확인한다"
+  - "위치 임베딩 누락이 W03 실험으로 잡히는지 확인한다"
+  - "잔차 누락은 12층을 쌓아야 드러남을 층별 비교로 확인한다"
+  - "9주차 초기 손실 게이트로 잔차 누락을 검출한다"
+  - "평탄화 argmax 가 IndexError 를 내는 것을 확인한다"
+  - "모의 함정(mock_trap)을 직접 정독 후 차등 테스트로 진단한다"
+pass_threshold: 0.7
+
+steps:
+
+  - order: 1
+    instruction: |
+      ## 🎯 미션 — 버그 #6: 인과성 성질 테스트가 마스크 반전을 잡는가
+
+      W05 에서 만든 **인과성 불변 테스트**가 실전에서 쓸모 있는지 확인한다.
+
+      ## 💡 심는 버그
+      `tril`/`triu` 를 뒤바꿔 **미래만 보는 모델**을 만든다. 출력 shape 도 맞고 오류도 안 난다.
+      오직 **"미래를 바꿔도 과거 출력이 안 변한다"** 는 성질만 깨진다.
+
+      ## 💡 이것이 뮤테이션 테스팅이다
+      코드에 의도적으로 결함을 심어 **테스트 스위트의 실효성**을 측정하는 기법이다.
+      테스트 커버리지 100%인데 아무 버그도 못 잡는 경우가 실무에서 흔하다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week08 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '/work/week05')
+      import torch
+      from multihead import MultiHeadAttention
+      class Bug6(MultiHeadAttention):
+          def __init__(self, *a, **k):
+              super().__init__(*a, **k)
+              ctx = self.mask.shape[0]
+              self.mask.copy_(torch.tril(torch.ones(ctx, ctx), diagonal=-1))
+      def causal_ok(m):
+          m.eval()
+          x1 = torch.rand(1, 5, 3); x2 = x1.clone(); x2[0, -1] = torch.rand(3)
+          with torch.no_grad(): o1, o2 = m(x1), m(x2)
+          return torch.allclose(o1[:, :-1], o2[:, :-1], atol=1e-5)
+      torch.manual_seed(123); good = MultiHeadAttention(3, 4, 6, 0.0, 2)
+      torch.manual_seed(123); bad  = Bug6(3, 4, 6, 0.0, 2)
+      print('GOOD_CAUSAL_PASS', causal_ok(good))
+      print('BUG6_CAUSAL_PASS', causal_ok(bad))
+      print('BUG6_DETECTED_OK' if causal_ok(good) and not causal_ok(bad) else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `GOOD_CAUSAL_PASS True`, `BUG6_CAUSAL_PASS False`, `BUG6_DETECTED_OK`.
+      **버그 버전이 테스트를 통과하면 그 테스트는 쓸모가 없는 것이다.**
+    hint: '성질 테스트는 값이 아니라 규칙을 검사하므로 구현이 바뀌어도 살아남는다'
+    answer: |
+      docker exec -w /work/week08 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '/work/week05')
+      import torch
+      from multihead import MultiHeadAttention
+      class Bug6(MultiHeadAttention):
+          def __init__(self, *a, **k):
+              super().__init__(*a, **k)
+              ctx = self.mask.shape[0]
+              self.mask.copy_(torch.tril(torch.ones(ctx, ctx), diagonal=-1))
+      def causal_ok(m):
+          m.eval()
+          x1 = torch.rand(1, 5, 3); x2 = x1.clone(); x2[0, -1] = torch.rand(3)
+          with torch.no_grad(): o1, o2 = m(x1), m(x2)
+          return torch.allclose(o1[:, :-1], o2[:, :-1], atol=1e-5)
+      torch.manual_seed(123); good = MultiHeadAttention(3, 4, 6, 0.0, 2)
+      torch.manual_seed(123); bad  = Bug6(3, 4, 6, 0.0, 2)
+      print('GOOD_CAUSAL_PASS', causal_ok(good))
+      print('BUG6_CAUSAL_PASS', causal_ok(bad))
+      print('BUG6_DETECTED_OK' if causal_ok(good) and not causal_ok(bad) else 'NG')"
+    answer_detail: "W05 인과성 테스트가 실제 진단 도구로 쓰인다. 실기 답안의 '검증 증거' 항목(4점)이 바로 이런 것이다 — 수정 전후를 구분하는 테스트를 제시하는 것."
+    verify:
+      type: output_contains
+      expect: BUG6_DETECTED_OK
+      field: stdout
+      semantic:
+        intent: "인과성 성질 테스트의 버그 검출력 확인 (뮤테이션 테스팅)"
+        success_criteria: ["정상은 통과", "버그는 실패", "shape 오류 없이 값만 틀림"]
+
+  - order: 2
+    instruction: |
+      ## 🎯 미션 — 버그 #3: √d 스케일링 생략을 정답지 수치로 잡기
+
+      W04 에서 확인한 정답지 수치가 진단 도구가 된다.
+
+      ## 💡 심는 버그
+      `scores / d_k**0.5` 에서 나눗셈을 뺀다. 오류는 안 나고, 출력 shape 도 같다.
+      그런데 **W04 정답지 `[0.3061, 0.8210]` 이 재현되지 않는다.**
+
+      ## 💡 왜 이것이 좋은 진단인가
+      정답지 수치는 **구조·시드·연산 순서가 모두 맞아야** 나온다. 하나라도 어긋나면 값이
+      달라진다. 그래서 "숫자 하나"가 여러 가능성을 동시에 배제한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week08 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '/work/week04')
+      import torch
+      from inputs import inputs
+      from attention_v1v2 import SelfAttention_v1
+      class Bug3(SelfAttention_v1):
+          def forward(self, x):
+              q = x @ self.W_query; k = x @ self.W_key; v = x @ self.W_value
+              w = torch.softmax(q @ k.T, dim=-1)   # ← √d 나눗셈 생략
+              return w @ v
+      torch.manual_seed(123); good = SelfAttention_v1(3, 2)
+      torch.manual_seed(123); bad  = Bug3(3, 2)
+      g = [round(t,4) for t in good(inputs)[1].tolist()]
+      b = [round(t,4) for t in bad(inputs)[1].tolist()]
+      print('GOOD_ROW2', g, '(정답지 [0.3061, 0.821])')
+      print('BUG3_ROW2', b)
+      print('BUG3_DETECTED_OK' if g == [0.3061, 0.821] and b != g else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      정상은 `[0.3061, 0.821]`, 버그는 **다른 값**, `BUG3_DETECTED_OK`.
+    hint: '정답지 수치 하나가 구조·시드·연산 순서를 동시에 검사한다'
+    answer: |
+      docker exec -w /work/week08 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '/work/week04')
+      import torch
+      from inputs import inputs
+      from attention_v1v2 import SelfAttention_v1
+      class Bug3(SelfAttention_v1):
+          def forward(self, x):
+              q = x @ self.W_query; k = x @ self.W_key; v = x @ self.W_value
+              w = torch.softmax(q @ k.T, dim=-1)
+              return w @ v
+      torch.manual_seed(123); good = SelfAttention_v1(3, 2)
+      torch.manual_seed(123); bad  = Bug3(3, 2)
+      g = [round(t,4) for t in good(inputs)[1].tolist()]
+      b = [round(t,4) for t in bad(inputs)[1].tolist()]
+      print('GOOD_ROW2', g, '(정답지 [0.3061, 0.821])')
+      print('BUG3_ROW2', b)
+      print('BUG3_DETECTED_OK' if g == [0.3061, 0.821] and b != g else 'NG')"
+    answer_detail: "정답지 수치는 '값 대조' 계열 자산이다. 성질 테스트가 규칙을 검사한다면 정답지 수치는 한 지점을 정밀하게 검사한다 — 둘을 함께 써야 커버리지가 넓어진다."
+    verify:
+      type: output_contains
+      expect: BUG3_DETECTED_OK
+      field: stdout
+      semantic:
+        intent: "정답지 수치를 진단 도구로 재사용해 스케일링 생략 검출"
+        success_criteria: ["정상 값 재현", "버그 값 불일치", "오류 없이 값만 다름"]
+
+  - order: 3
+    instruction: |
+      ## 🎯 미션 — 버그 #9: 위치 임베딩 누락을 W03 실험으로 잡기
+
+      ## 💡 심는 버그
+      `x = tok_emb + pos_emb` 에서 `pos_emb` 를 빼먹는다. 여전히 오류 없이 돌고 shape 도 같다.
+
+      ## 💡 잡는 방법
+      W03 위치 임베딩 실험을 그대로 쓴다 — **같은 토큰 ID 가 두 번 나오는 시퀀스**를 넣고,
+      두 위치의 최종 로짓이 같은지 본다.
+      - 정상: 위치가 다르므로 **로짓이 다르다**
+      - 버그: 위치 정보가 없으므로... 그런데 **어텐션 때문에 여전히 다를 수 있다**(앞 문맥이 다름)
+
+      그래서 더 확실한 검사는 **모델 임베딩 단계 직후**를 비교하는 것이다.
+      W03 에서 쓴 `I saw the cat and the dog`(` the` = 262 가 두 번)를 재사용한다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week08 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '/work/week07')
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      enc = tiktoken.get_encoding('gpt2')
+      ids = enc.encode('I saw the cat and the dog')
+      pos_idx = [i for i, v in enumerate(ids) if v == 262]
+      print('DUP_POSITIONS', pos_idx)
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M).eval()
+      x = torch.tensor([ids])
+      te = m.tok_emb(x)
+      pe = m.pos_emb(torch.arange(len(ids)))
+      i, j = pos_idx
+      d_bug  = (te[0, i] - te[0, j]).norm().item()          # 위치 임베딩 누락
+      d_good = ((te+pe)[0, i] - (te+pe)[0, j]).norm().item() # 정상
+      print(f'BUG9_DIFF ={d_bug:.6f}  (위치 임베딩 없음)')
+      print(f'GOOD_DIFF ={d_good:.6f}  (정상)')
+      print('BUG9_DETECTED_OK' if d_bug == 0.0 and d_good > 0 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      `BUG9_DIFF = 0.000000`, `GOOD_DIFF > 0`, `BUG9_DETECTED_OK`.
+    hint: 'W03 6단계의 선행 공백 함정을 기억하라 — 중복 토큰이 실재하는 문장을 써야 한다'
+    answer: |
+      docker exec -w /work/week08 llm-lab python3 -c "
+      import sys; sys.path.insert(0, '/work/week07')
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      enc = tiktoken.get_encoding('gpt2')
+      ids = enc.encode('I saw the cat and the dog')
+      pos_idx = [i for i, v in enumerate(ids) if v == 262]
+      print('DUP_POSITIONS', pos_idx)
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M).eval()
+      x = torch.tensor([ids])
+      te = m.tok_emb(x)
+      pe = m.pos_emb(torch.arange(len(ids)))
+      i, j = pos_idx
+      d_bug  = (te[0, i] - te[0, j]).norm().item()
+      d_good = ((te+pe)[0, i] - (te+pe)[0, j]).norm().item()
+      print(f'BUG9_DIFF ={d_bug:.6f}  (위치 임베딩 없음)')
+      print(f'GOOD_DIFF ={d_good:.6f}  (정상)')
+      print('BUG9_DETECTED_OK' if d_bug == 0.0 and d_good > 0 else 'NG')"
+    answer_detail: "W03 위치 실험이 그대로 진단 도구가 된다. 학기 자산은 버리는 것이 아니라 쌓이는 것이다 — 실기 시험에서 이 파일들을 자유롭게 쓸 수 있는 이유다."
+    verify:
+      type: output_contains
+      expect: BUG9_DETECTED_OK
+      field: stdout
+      semantic:
+        intent: "위치 임베딩 누락을 W03 중복 토큰 실험으로 검출"
+        success_criteria: ["중복 토큰 위치 특정", "누락 시 차이 0", "정상 시 차이 > 0"]
+
+  - order: 4
+    instruction: |
+      ## 🎯 미션 — 버그 #8: **소박하게 심으면 안 잡힌다** (출제 검증)
+
+      ## 🔴 출제 검증에서 드러난 사실
+      "잔차 덧셈 누락"을 **1층에만** 심으면 기울기가 절반쯤 줄어들 뿐이라 잡기 어렵다.
+      **12층을 쌓아야** 6.5배 차이가 나서 드러난다.
+
+      | 블록 수 | 정상 (입력 기울기) | 잔차 누락 | 비율 |
+      |---|---|---|---|
+      | 1 | 1.581876 | 0.802745 | 0.5075배 |
+      | 4 | 3.098750 | 0.971331 | 0.3135배 |
+      | **12** | **5.586712** | **0.863204** | **0.1545배** |
+
+      ## 💡 출제 시 주의
+      **전 층에 심으면** 손실이 눈에 띄게 발산해 누구나 "뭔가 크게 잘못됐다"고 알아채지만
+      **어느 층인지 특정하지 못한다.** 그래서 **12개 블록 중 하나에만** 심고,
+      문제에 "12개 블록 중 하나에 심었다"를 명시해야 탐색 공간이 적절해진다.
+
+      ## 💡 배울 것
+      **"버그를 심었다"와 "버그가 검출된다"는 다른 문제다.** 검출되지 않는 버그는 출제하면 안 된다.
+      이것을 확인하는 절차가 곧 **테스트 스위트의 실효성 검증**이다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week08 llm-lab python3 -c "
+      import sys
+      for w in ('week05', 'week06'): sys.path.insert(0, '/work/' + w)
+      import torch, torch.nn as nn
+      from layers import LayerNorm, FeedForward
+      from multihead import MultiHeadAttention
+      from transformer_block import GPT_CONFIG_124M
+      class Blk(nn.Module):
+          def __init__(self, cfg, res):
+              super().__init__(); self.res = res
+              self.att = MultiHeadAttention(cfg['emb_dim'], cfg['emb_dim'], cfg['context_length'],
+                                            0.0, cfg['n_heads'], cfg['qkv_bias'])
+              self.ff = FeedForward(cfg)
+              self.n1 = LayerNorm(cfg['emb_dim']); self.n2 = LayerNorm(cfg['emb_dim'])
+          def forward(self, x):
+              s = x; x = self.att(self.n1(x)); x = x + s if self.res else x
+              s = x; x = self.ff(self.n2(x));  x = x + s if self.res else x
+              return x
+      cfg = dict(GPT_CONFIG_124M, drop_rate=0.0)
+      for n in [1, 4, 12]:
+          rows = []
+          for res in [True, False]:
+              torch.manual_seed(123)
+              net = nn.Sequential(*[Blk(cfg, res) for _ in range(n)])
+              x = torch.rand(1, 4, 768, requires_grad=True)
+              net(x).sum().backward()
+              rows.append(x.grad.abs().mean().item())
+          print(f'blocks={n:2d}  normal={rows[0]:.6f}  no_residual={rows[1]:.6f}  ratio={rows[1]/rows[0]:.4f}')
+          if n == 12: ratio12 = rows[1]/rows[0]
+      print('BUG8_DEPTH_OK' if ratio12 < 0.25 else 'NG')"
+      ```
+      ## ✅ 합격 기준
+      블록 수가 늘수록 비율이 **작아지고**, 12층에서 0.25 미만, `BUG8_DEPTH_OK`.
+    hint: '1층 결과만 보고 "검출 가능"이라고 판단하면 안 된다 — 깊이를 바꿔 가며 확인하라'
+    answer: |
+      docker exec -w /work/week08 llm-lab python3 -c "
+      import sys
+      for w in ('week05', 'week06'): sys.path.insert(0, '/work/' + w)
+      import torch, torch.nn as nn
+      from layers import LayerNorm, FeedForward
+      from multihead import MultiHeadAttention
+      from transformer_block import GPT_CONFIG_124M
+      class Blk(nn.Module):
+          def __init__(self, cfg, res):
+              super().__init__(); self.res = res
+              self.att = MultiHeadAttention(cfg['emb_dim'], cfg['emb_dim'], cfg['context_length'],
+                                            0.0, cfg['n_heads'], cfg['qkv_bias'])
+              self.ff = FeedForward(cfg)
+              self.n1 = LayerNorm(cfg['emb_dim']); self.n2 = LayerNorm(cfg['emb_dim'])
+          def forward(self, x):
+              s = x; x = self.att(self.n1(x)); x = x + s if self.res else x
+              s = x; x = self.ff(self.n2(x));  x = x + s if self.res else x
+              return x
+      cfg = dict(GPT_CONFIG_124M, drop_rate=0.0)
+      for n in [1, 4, 12]:
+          rows = []
+          for res in [True, False]:
+              torch.manual_seed(123)
+              net = nn.Sequential(*[Blk(cfg, res) for _ in range(n)])
+              x = torch.rand(1, 4, 768, requires_grad=True)
+              net(x).sum().backward()
+              rows.append(x.grad.abs().mean().item())
+          print(f'blocks={n:2d}  normal={rows[0]:.6f}  no_residual={rows[1]:.6f}  ratio={rows[1]/rows[0]:.4f}')
+          if n == 12: ratio12 = rows[1]/rows[0]
+      print('BUG8_DEPTH_OK' if ratio12 < 0.25 else 'NG')"
+    answer_detail: "이 실측이 교재의 출제 메모를 수정하게 만든 근거다. 원래 서술('잔차 덧셈 누락')만으로는 검출되지 않아 '12개 블록 중 하나에 심고 그 사실을 명시하라'로 바뀌었다."
+    verify:
+      type: output_contains
+      expect: BUG8_DEPTH_OK
+      field: stdout
+      semantic:
+        intent: "잔차 누락 버그가 깊이에 따라 검출 가능해짐을 확인"
+        success_criteria: ["1/4/12층 비교", "깊을수록 비율 감소", "12층에서 명확"]
+
+  - order: 5
+    instruction: |
+      ## 🎯 미션 — 버그 #10: 평탄화 argmax 는 즉시 드러난다
+
+      ## 🔴 소박한 구현은 버그가 아니다
+      ```python
+      torch.argmax(logits, dim=-1)[:, -1:]   # ← 버그가 아니다! 정답과 출력이 완전히 일치
+      ```
+      마지막 시점의 argmax 를 **먼저 슬라이스하나 나중에 슬라이스하나 수학적으로 같기** 때문이다.
+      출제 검증에서 3개 시작점 모두 정답 구현과 **완전히 동일한 출력**이 나왔다.
+
+      ## 💡 진짜 버그가 되려면
+      **차원을 평탄화해 시점 정보를 뭉개야** 한다:
+      ```python
+      idx_next = torch.argmax(logits.flatten(1), dim=-1, keepdim=True)   # ← 진짜 버그
+      ```
+      `[B, T, 50257]` 이 `[B, T×50257]` 로 평탄화되어 argmax 가 **50,257을 넘는 값**을 내고,
+      다음 스텝의 임베딩 조회에서 `IndexError: index out of range in self` 가 난다.
+
+      ## 📌 이 문항의 노림수
+      학생이 오류 메시지에서 **"인덱스가 어휘 크기를 넘었다 → 그럼 argmax 가 무엇 위에서
+      돌았나"** 를 역추적하게 하는 것이다.
+
+      ## 💻 실행 명령
+      ```bash
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      enc = tiktoken.get_encoding('gpt2')
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M); m.eval()
+      idx = torch.tensor([enc.encode('Hello, I am')])
+      with torch.no_grad(): lg = m(idx)
+      good = torch.argmax(lg[:, -1, :], dim=-1, keepdim=True)
+      bad  = torch.argmax(lg.flatten(1), dim=-1, keepdim=True)
+      print('GOOD_NEXT_ID', good.item(), '(어휘 범위 내)')
+      print('BAD_NEXT_ID ', bad.item(), '(어휘 50257 초과)')
+      try:
+          m(torch.cat((idx, bad), dim=1)); print('NO_ERROR_UNEXPECTED')
+      except IndexError as e:
+          print('IndexError:', str(e)[:60]); print('BUG10_DETECTED_OK')"
+      ```
+      ## ✅ 합격 기준
+      `BAD_NEXT_ID` 가 **50,257 초과**, `IndexError` 발생, `BUG10_DETECTED_OK`.
+    hint: 'logits.flatten(1) 의 shape 를 직접 찍어 보라 — [B, T*50257] 이다'
+    answer: |
+      docker exec -w /work/week07 llm-lab python3 -c "
+      import torch, tiktoken
+      from gpt_model import GPTModel, GPT_CONFIG_124M
+      enc = tiktoken.get_encoding('gpt2')
+      torch.manual_seed(123); m = GPTModel(GPT_CONFIG_124M); m.eval()
+      idx = torch.tensor([enc.encode('Hello, I am')])
+      with torch.no_grad(): lg = m(idx)
+      good = torch.argmax(lg[:, -1, :], dim=-1, keepdim=True)
+      bad  = torch.argmax(lg.flatten(1), dim=-1, keepdim=True)
+      print('GOOD_NEXT_ID', good.item(), '(어휘 범위 내)')
+      print('BAD_NEXT_ID ', bad.item(), '(어휘 50257 초과)')
+      try:
+          m(torch.cat((idx, bad), dim=1)); print('NO_ERROR_UNEXPECTED')
+      except IndexError as e:
+          print('IndexError:', str(e)[:60]); print('BUG10_DETECTED_OK')"
+    answer_detail: "교재의 원래 출제 서술('마지막 위치가 아닌 전체에 적용')은 소박하게 구현하면 버그가 되지 않았다. 실측으로 이를 확인하고 '평탄화'로 명시하도록 수정했다 — 출제도 검증이 필요하다는 사례다."
+    verify:
+      type: output_contains
+      expect: BUG10_DETECTED_OK
+      field: stdout
+      semantic:
+        intent: "평탄화 argmax 가 어휘 범위를 벗어나 IndexError 를 내는 것 확인"
+        success_criteria: ["범위 초과 인덱스", "IndexError 발생", "소박한 구현과의 차이 이해"]
+
+  - order: 6
+    instruction: |
+      ## 🎯 미션 — 모의 실기: 셀프 함정 진단 (절차가 전부)
+
+      에이전트에게 버그를 심게 하고, **시험과 동일한 절차**로 진단한다.
+
+      ## ⏱️ 시간 배분 (문항당 20분)
+      | 구간 | 할 일 |
+      |---|---|
+      | 0~10분 | **[에이전트 금지]** 직접 정독. 의심 지점 1~3곳을 **줄 번호와 함께** 메모 |
+      | 10~20분 | **[에이전트]** 차등 테스트로 분기 지점 특정 |
+      | 이후 | 답안 작성 — **원인 서술은 본인 문장** |
+
+      **처음부터 에이전트에게 던지면 로그는 길어지고 서술은 얕아진다. 채점자는 그 차이를
+      로그에서 본다.**
+
+      ## 📋 준비 프롬프트 P8-3 (셀프 함정 생성)
+      ```text
+      [목표] 실기 시험 모의 문제 생성
+      [할 일]
+       1. 내 week05/multihead.py 를 week08_prep/mock_trap.py 로 복사한 뒤,
+          미묘한 버그 1개를 심어라. 어디에 무엇을 심었는지 절대 알려주지 말 것
+       2. 정답(버그 위치·내용)은 week08_prep/answer.md 에 저장하되
+          내가 "정답 공개"라고 말하기 전에는 내용을 출력하지 말 것
+       3. 원본 파일은 절대 수정 금지
+      [이후] 내가 버그를 찾아 보고하면 answer.md와 대조해 채점해줘
+      ```
+
+      ## 💻 실행 명령 (차등 테스트 — 10분 정독 **후에** 실행)
+      ```bash
+      docker exec -w /work/week08_prep llm-lab bash -c '
+      test -f mock_trap.py && test -f answer.md && echo "MOCK_TRAP_READY"
+      python3 - <<EOF
+      import sys
+      sys.path.insert(0, "/work/week05"); sys.path.insert(0, ".")
+      import torch
+      from multihead import MultiHeadAttention as Ref
+      from mock_trap import MultiHeadAttention as Sus
+      torch.manual_seed(123); ref = Ref(3, 4, 6, 0.0, 2).eval()
+      torch.manual_seed(123); sus = Sus(3, 4, 6, 0.0, 2).eval()
+      x = torch.rand(2, 6, 3)
+      with torch.no_grad(): a, b = ref(x), sus(x)
+      print("SHAPE_SAME", a.shape == b.shape)
+      print("VALUE_SAME", torch.allclose(a, b, atol=1e-6))
+      print("MAX_ABS_DIFF", (a-b).abs().max().item())
+      print("DIFFERENTIAL_TEST_OK")
+      EOF'
+      ```
+      ## ✅ 합격 기준
+      `MOCK_TRAP_READY` 와 `DIFFERENTIAL_TEST_OK` 가 출력된다.
+      `SHAPE_SAME True` 이면서 `VALUE_SAME False` 라면 **조용한 버그**다 — 가장 어려운 유형이다.
+
+      ## 📝 답안 4요소로 정리하라
+      1. 버그 위치 (파일명 + 줄 번호)
+      2. 원인 서술 (**본인 문장 4~6줄**, 수학·구조와 연결)
+      3. 수정 코드
+      4. 검증 증거 (1~5단계에서 쓴 자산 중 무엇이 이 버그를 잡는가)
+    hint: '먼저 읽고 메모한 뒤에 에이전트를 쓰라 — 순서가 채점에 반영된다'
+    answer: |
+      docker exec -w /work/week08_prep llm-lab bash -c '
+      test -f mock_trap.py && test -f answer.md && echo "MOCK_TRAP_READY"
+      python3 - <<EOF
+      import sys
+      sys.path.insert(0, "/work/week05"); sys.path.insert(0, ".")
+      import torch
+      from multihead import MultiHeadAttention as Ref
+      from mock_trap import MultiHeadAttention as Sus
+      torch.manual_seed(123); ref = Ref(3, 4, 6, 0.0, 2).eval()
+      torch.manual_seed(123); sus = Sus(3, 4, 6, 0.0, 2).eval()
+      x = torch.rand(2, 6, 3)
+      with torch.no_grad(): a, b = ref(x), sus(x)
+      print("SHAPE_SAME", a.shape == b.shape)
+      print("VALUE_SAME", torch.allclose(a, b, atol=1e-6))
+      print("MAX_ABS_DIFF", (a-b).abs().max().item())
+      print("DIFFERENTIAL_TEST_OK")
+      EOF'
+    answer_detail: "실기 답안 4요소 중 3·4번은 에이전트를 써도 되지만 2번(원인 서술)은 본인 문장이어야 한다. 로그에서 대필 정황이 확인되면 해당 문항 0점 — 진단에 쓰는 것과 서술을 대필시키는 것은 다르다."
+    verify:
+      type: output_contains
+      expect: DIFFERENTIAL_TEST_OK
+      field: stdout
+      semantic:
+        intent: "시험과 동일한 절차(정독 후 차등 테스트)로 모의 함정 진단"
+        success_criteria: ["정독 후 메모", "기준 구현 대조", "분기 지점 특정", "본인 문장 서술"]
