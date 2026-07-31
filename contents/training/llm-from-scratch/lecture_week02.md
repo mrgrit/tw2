@@ -55,7 +55,7 @@ LLM은 세 번째를 씁니다. `"unbelievable"` 을 `un` + `bel` + `iev` + `abl
 ```mermaid
 graph TD
     T["원문 텍스트<br/>'It's the last he painted'"] --> S["① 분리<br/>정규식 또는 BPE 병합 규칙"]
-    S --> L["② 토큰 리스트<br/>['It', \"'\", 's', 'the', ...]"]
+    S --> L["② 토큰 리스트<br/>['It', #quot;'#quot;, 's', 'the', ...]"]
     L --> V["③ 어휘사전 조회<br/>토큰 → 정수 ID"]
     V --> I["④ ID 리스트<br/>[1, 56, 2, 988, ...]"]
     I --> E["⑤ 임베딩 (3주차)<br/>ID → 768차원 벡터"]
@@ -173,7 +173,7 @@ decode : " It' s the last he painted, you know," Mrs. Gisburn said with pardonab
 
 ```mermaid
 graph TD
-    O["원문<br/>It's"] --> SP["정규식 분리<br/>['It', \"'\", 's']"]
+    O["원문<br/>It's"] --> SP["정규식 분리<br/>['It', #quot;'#quot;, 's']"]
     SP --> X["공백 정보 소실<br/>strip() 이 지운다"]
     X --> J["decode: ' '.join<br/>It ' s"]
     J --> R["구두점 앞 공백만 제거<br/>It' s"]
