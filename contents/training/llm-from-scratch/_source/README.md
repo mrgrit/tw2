@@ -23,7 +23,7 @@
 | `ANSWERKEY.md` | 검증 가능한 주장 **157개** (`W01-G1` … `W15-G2`) |
 | `STATE.md` | 루프의 durable memory — 주차별 판정 ledger, 확정 결함 16건, 보정 권고 10건 |
 | `FINAL_REPORT.md` | 전수 검증 최종 리포트 (결함 분석, 권고, 교차 검증 결과) |
-| `Dockerfile.llm-course-v1` | 골든 이미지 — CUDA 13 + torch 2.9.1+cu130 + 한글 폰트 |
+| `Dockerfile.llm-course-v1` | 골든 이미지 — CUDA 13 + torch 2.9.1+cu130 + 한글 폰트. **검증 당시의 사본(기록물)** — 수정은 정본 `../_golden-image/Dockerfile.llm-course-v1` 에만 한다. 제작 절차는 `../_GOLDEN-IMAGE.md` |
 
 ### 하네스의 핵심 원칙
 

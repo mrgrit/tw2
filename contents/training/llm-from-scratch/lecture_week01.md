@@ -339,6 +339,10 @@ PyTorch 빌드가 **전부** 맞아야 합니다.
 > 곡선에 한글 라벨을 씁니다. 폰트가 없으면 두부(`□□□`)만 나옵니다. "실습을 돌려보고 나서야
 > 알게 되는 환경 결함"의 전형입니다. 그래서 골든 이미지는 **전원이 같은 것**을 씁니다.
 
+> 🔧 **이 이미지를 만드는 방법은 감추지 않습니다** — Dockerfile 전문, 빌드 명령, 수락 시험까지
+> **부록 A**에 그대로 공개합니다. 여러분이 나중에 다른 팀에 같은 환경을 세워 줘야 할 때 필요한
+> 것이 정확히 이 절차입니다.
+
 ### 4.2 컨테이너 실행 옵션의 의미
 
 ```bash
@@ -496,6 +500,155 @@ graph TD
   전부 사라집니다.
 - ❌ **"호스트에 pip로 torch 깔면 더 편하다"** → aarch64 + CUDA 13 조합에서 깨집니다. 그리고
   전원이 다른 환경이 되어 "제 환경에선 되는데요"가 시작됩니다.
+
+---
+
+## 부록 A — 골든 이미지 `llm-course:v1` 을 만드는 법 (실제 절차 전문)
+
+미션 3은 **이미 만들어진** 이미지를 확인하는 것으로 끝났습니다. 여기서는 그 이미지를 **처음부터
+만드는 절차**를 그대로 공개합니다. 지금 당장 필요하진 않지만, 실무에서 "새 GPU 장비를 받았고
+팀 전원이 같은 환경에서 일해야 한다"가 되면 이 절차가 그대로 답입니다.
+(조교용 상세판 — 배포·버전 올리기·트러블슈팅 포함 — 은 트랙 폴더의 `_GOLDEN-IMAGE.md`,
+정본 파일은 `_golden-image/` 에 있습니다.)
+
+### A.1 왜 손으로 설치하지 않고 이미지로 굽는가
+
+이 장비에는 함정이 둘 있습니다.
+
+1. **aarch64(ARM64)** — 인터넷 설치 가이드 대부분이 x86_64 기준입니다. 휠이 안 맞습니다.
+2. **GB10 = Blackwell 세대(CUDA 13)** — PyPI 기본 `pip install torch` 휠에는 **이 GPU 커널이
+   없습니다.** 반드시 `download.pytorch.org/whl/cu130` 인덱스에서 받아야 CUDA가 켜집니다.
+
+각자 설치하면 30명이 이 둘을 각자 밟고, 그 뒤로는 "제 환경에선 되는데요"가 시작됩니다. 이 수업은
+15주 내내 **숫자가 판정 기준**입니다(2주차 토큰 4,690 / 9주차 파라미터 163,009,536 …). 환경이
+다르면 같은 코드가 다른 숫자를 뱉고 채점이 성립하지 않습니다. **이미지 하나로 그 변수를 없앱니다.**
+
+### A.2 사전 조건 — 이미지를 굽기 전에 확인할 것
+
+| 항목 | 기대값 | 확인 명령 |
+|------|--------|-----------|
+| 아키텍처 | `aarch64` | `LC_ALL=C uname -m` |
+| GPU / 드라이버 | `NVIDIA GB10` / `580.x` | `nvidia-smi --query-gpu=name,driver_version --format=csv,noheader` |
+| **컨테이너 GPU 패스스루** | 컨테이너 안에서 GPU가 보일 것 | `docker run --rm --gpus all nvidia/cuda:13.0.1-runtime-ubuntu24.04 nvidia-smi -L` |
+| 디스크 | 20GB 이상 여유 | `LC_ALL=C df -h /` |
+
+**마지막 줄이 핵심입니다.** 여기서 실패하면 `nvidia-container-toolkit` 이 없는 것이고, 이미지를
+아무리 잘 만들어도 **빌드는 성공하고 실행만 실패**합니다. 순서를 지키세요.
+
+### A.3 Dockerfile 전문
+
+```dockerfile
+FROM nvidia/cuda:13.0.1-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-dev \
+        git curl wget ca-certificates \
+        build-essential pkg-config \
+        vim less procps \
+        fonts-nanum fonts-nanum-coding fontconfig \
+    && fc-cache -fv \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1) torch — CUDA 13.0 전용 인덱스 (aarch64 + GB10)
+RUN pip install --index-url https://download.pytorch.org/whl/cu130 \
+        torch==2.9.1+cu130
+
+# 2) 교재 실습 의존성
+RUN pip install \
+        tiktoken matplotlib pandas pytest numpy requests tqdm \
+        jupyter nbconvert ipykernel
+
+# 3) matplotlib 한글 라벨이 □ 로 깨지지 않게 기본 폰트 고정
+RUN mkdir -p /opt/mplconfig && printf '%s\n' \
+        'backend: Agg' \
+        'font.family: NanumGothic' \
+        'axes.unicode_minus: False' \
+        'figure.dpi: 110' \
+    > /opt/mplconfig/matplotlibrc
+ENV MATPLOTLIBRC=/opt/mplconfig/matplotlibrc \
+    MPLCONFIGDIR=/tmp/mplcache
+
+WORKDIR /work
+CMD ["/bin/bash"]
+```
+
+### A.4 한 줄씩, 왜 그렇게 썼는가
+
+| 선택 | 이유 | 어기면 |
+|------|------|--------|
+| 베이스 `nvidia/cuda:13.0.1-**runtime**-ubuntu24.04` | 호스트 드라이버 580.x / CUDA 13.0 과 정합. 교재는 커스텀 CUDA 커널을 컴파일하지 않으므로 `runtime` 으로 충분 | `devel` 을 쓰면 이미지가 배 이상 커진다 |
+| Ubuntu **24.04** (= python 3.12) | torch cu130 의 **cp312 aarch64** 휠과 정확히 일치 | 22.04(py3.10)에는 맞는 휠이 없어 `No matching distribution` |
+| `--index-url .../whl/cu130` | **이 이미지의 존재 이유.** PyPI 기본 휠에는 GB10 커널이 없다 | `torch.version.cuda` 가 `None` → `is_available()` 이 `False` |
+| `torch==2.9.1+cu130` (버전 고정) | 15주 전 주차의 기대 숫자가 이 조합에서 나왔다 | 학생마다 다른 숫자 → 채점 불가 |
+| `fonts-nanum` + `fc-cache -fv` | 4·6·9·10·11·13주차 그래프의 한글 라벨 | 라벨이 전부 `□` |
+| **별도** `matplotlibrc` + `MATPLOTLIBRC` 환경변수 | 폰트만 깔면 matplotlib 이 자동으로 쓰지 않는다. 패키지 기본 matplotlibrc 를 직접 고치면 `Duplicate key` 경고가 난다 | 경고 또는 여전히 `□` |
+| `axes.unicode_minus: False` | 나눔폰트에 유니코드 마이너스 글리프가 없다 | 음수 축 라벨이 깨진다 |
+| `--ipc=host` (실행 옵션) | DataLoader 워커 공유메모리 | 3주차 이후 `Bus error` |
+
+> 🔴 **일부러 넣지 않은 것이 있습니다 — `tensorflow`.**
+> 10주차에 OpenAI GPT-2 가중치를 가져올 때 교재 저장소의 1차 경로가 `import tensorflow` 로
+> 시작합니다. 이 환경에 TF가 없어 **반드시 실패합니다. 그게 의도된 설계입니다.** 그 실패를 겪고
+> safetensors 경로로 갈아타면서 QKV 분할과 전치를 배우는 것이 그 주의 미션입니다. 편의를 위해
+> 패키지를 하나 더 넣는 결정이 학습 하나를 통째로 지울 수 있다 — 환경 설계도 교육 설계입니다.
+
+### A.5 빌드와 수락 시험
+
+```bash
+# 빌드 (DGX Spark 에서, 캐시 없이 약 3분 / 결과 8.06GB)
+docker build -t llm-course:v1 -f Dockerfile.llm-course-v1 .
+
+# 수락 시험 — 이게 통과해야 배포한다
+docker run --rm --gpus all --ipc=host \
+  -v "$PWD/smoke_test.py:/work/smoke_test.py:ro" \
+  llm-course:v1 python3 /work/smoke_test.py
+```
+
+`_golden-image/build.sh` 는 위 사전조건 검사 → 빌드 → 수락 시험을 한 번에 합니다.
+
+**수락 시험이 검사하는 것** — "설치가 됐다"가 아니라 **"교재가 쓰는 연산이 실제로 도는가"** 입니다.
+
+| 구획 | 내용 |
+|------|------|
+| ① 런타임 신원 | `aarch64` / `2.9.1+cu130` / `is_available()==True` / `NVIDIA GB10` |
+| ② GPU 12연산 | matmul · embedding · layernorm · softmax · gelu(tanh) · dropout · cross_entropy · backward · adamw · bf16 autocast · multinomial · topk — 15주가 실제로 쓰는 연산 전수 |
+| ③ 한글 렌더 | `font.family` 가 NanumGothic 으로 **해석되는지** + 한글 라벨 `savefig` |
+| ④ 실습 패키지 | tiktoken/pandas/numpy/pytest/requests/tqdm/nbconvert |
+| ⑤ **의도적 부재** | `tensorflow` 가 **없어야** 통과 |
+
+마지막에 `SMOKE_OK` 가 나오면 합격입니다. **이 표 자체가 좋은 인수 기준의 예시입니다** —
+"돌아간다"가 아니라 "무엇이 통과하면 받는다"를 미리 적어 두는 것.
+
+### A.6 이미 만난 그 경고 — sm_121 PTX JIT
+
+```
+UserWarning: Found GPU0 NVIDIA GB10 which is of cuda capability 12.1.
+    Minimum and Maximum cuda capability supported by this version of PyTorch is (8.0) - (12.0)
+```
+
+GB10의 compute capability 는 **12.1(sm_121)** 인데, torch 2.9.1+cu130 바이너리의 arch 목록은
+`['sm_80','sm_90','sm_100','sm_110','sm_120','compute_120']` — sm_120 까지입니다. 마지막
+`compute_120` 은 **PTX 중간표현**이라 실행 시 드라이버가 sm_121용으로 JIT 컴파일합니다.
+결과도 성능도 정상이고, 첫 커널이 조금 느린 것이 유일한 대가입니다.
+
+> torch 2.13.0+cu130 도 확인했지만 arch 목록은 같았습니다(네이티브 sm_121 없음). 그래서
+> **검증이 끝난 2.9.1 을 유지**합니다. **경고를 보고 버전을 올리기 시작하는 것**이 1주차의
+> 대표적 사고입니다. 경고와 오류를 구분하세요.
+
+### A.7 배포
+
+```bash
+# 같은 호스트를 여럿이 쓰면 빌드 한 번으로 끝 (이미지는 Docker 데몬 전역)
+docker images llm-course:v1
+
+# 장비가 여러 대라면
+docker save llm-course:v1 | gzip -1 > llm-course-v1.tar.gz   # 8.06GB → 5.08GB
+gunzip -c llm-course-v1.tar.gz | docker load                 # 받는 쪽
+```
 
 ---
 
