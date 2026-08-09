@@ -162,7 +162,7 @@ CPU/GPU가 같은 128GB 풀을 씁니다(`free -g` 상으로는 119GiB 내외로
 ```mermaid
 graph TD
     H["호스트 (컨테이너 밖)<br/>Ubuntu 24.04 · aarch64<br/>NVIDIA 드라이버 580.126.09"] --> HD["여기서 하는 일<br/>하드닝 · Docker 관리 · 포트 점검"]
-    H --> C["llm-lab 컨테이너<br/>llm-course:v1<br/>CUDA 13.0 · torch 2.9.1+cu130"]
+    H --> C["llm-lab 컨테이너<br/>llm-course:v2<br/>CUDA 13.0 · torch 2.9.1+cu130"]
     C --> CD["여기서 하는 일<br/>모든 교재 실습 코드 실행<br/>pip 설치도 여기서만"]
     C --> V["볼륨 마운트<br/>호스트 ~/work ↔ 컨테이너 /work<br/>컨테이너를 지워도 코드는 남는다"]
     style H fill:#d29922,color:#fff
@@ -312,19 +312,25 @@ PyTorch 빌드가 **전부** 맞아야 합니다.
 **📋 실행 프롬프트 P1-4**
 
 ```text
-[목표] 수업용 골든 이미지 llm-course:v1 로 실습 컨테이너를 준비하고 GPU 동작을 증명
+[목표] 수업용 골든 이미지 llm-course:v2 로 실습 컨테이너를 준비하고 GPU 동작을 증명
 [할 일]
  1. docker images에서 해당 이미지 존재 확인
  2. GPU를 사용하는 옵션으로 컨테이너를 실행하되, 홈의 work 디렉토리를
     컨테이너에 마운트해서 작업 파일이 유지되게 할 것. 컨테이너 이름은 llm-lab
+    호스트가 재부팅돼도 컨테이너가 자동으로 다시 뜨게 할 것
  3. 컨테이너 안에서 차례로 실행해 출력 첨부:
     a. nvidia-smi
     b. python3 -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+    c. verify-env
  4. 이후에도 같은 컨테이너에 다시 들어가는 명령을 알려줄 것
 [산출물] 위 출력 전체와, 컨테이너 재진입 방법 한 줄
 ```
 
-**예상 결과:** `nvidia-smi` 에 GB10 표시, `2.9.1+cu130 True NVIDIA GB10`.
+**예상 결과:** `nvidia-smi` 에 GB10 표시, `2.9.1+cu130 True NVIDIA GB10`,
+`verify-env` 가 **전 11항목 통과**.
+
+> ⚠️ 2번의 "재부팅돼도 자동으로 다시 뜨게" 를 그냥 넘기지 마세요. 이 한 줄이 빠져서 실제로
+> 컨테이너가 6일간 죽어 있던 사고가 있었습니다. 4.2절에서 다룹니다.
 
 ### 4.1 골든 이미지에 무엇이 들어있나
 
@@ -332,8 +338,20 @@ PyTorch 빌드가 **전부** 맞아야 합니다.
 |------|------|-----|
 | 베이스 | `nvidia/cuda:13.0.1-runtime-ubuntu24.04` | GB10(CUDA 13)을 인식하는 최소 런타임 |
 | PyTorch | `torch 2.9.1+cu130` | cu130 빌드여야 GB10에서 CUDA가 켜진다 |
-| 실습 패키지 | `tiktoken`, `matplotlib`, `pandas`, `pytest` | 2·4·6·9주차에서 필요 |
-| 한글 폰트 | `fonts-nanum` + `MATPLOTLIBRC` | 없으면 그래프 한글 라벨이 전부 `□` 로 깨진다 |
+| 실습 패키지 | `tiktoken`, `matplotlib`, `pandas`, `pytest`, `numpy`, `requests`, `tqdm`, `jupyter` | 2·4·6·9주차에서 필요 |
+| 가중치 이식 | `safetensors`, `huggingface_hub` | 10주차 OpenAI GPT-2 공식 가중치 이식의 **필수** 경로 |
+| 한글 폰트 | `fonts-nanum` + `MATPLOTLIBRC` + 폰트 캐시 | 없으면 그래프 한글 라벨이 전부 `□` 로 깨진다 |
+| BPE 사전 | `tiktoken` gpt2 캐시를 이미지에 구움 | 폐쇄망이면 2주차 미션 1이 첫 줄에서 멈춘다 |
+| 자체 검증 | `verify-env` 명령 | 새 장비에 배포한 직후 한 줄로 확인 |
+
+**모든 패키지는 버전이 고정돼 있습니다**(`requirements.txt`). 이 수업의 통과 기준은
+수치입니다 — 2주차 4,690 토큰, 7주차 163,009,536 파라미터, 11주차 test 95.67% **±1%p**.
+라이브러리 버전이 흔들리면 정답지가 통째로 무너집니다. 그래서 "최신 버전"이 아니라
+**"검증이 끝난 버전"** 을 못 박습니다.
+
+> 💡 **왜 `transformers` 는 일부러 안 넣었나** — 있으면 `AutoModel.from_pretrained()` 한 줄로
+> 7~10주차가 전부 무력화됩니다. 10주차 §4가 `.pth` 지름길을 금지하는 것과 같은 이유입니다.
+> **편의 패키지 하나가 학습 목표 네 주를 지울 수 있습니다.**
 
 > 💡 **폰트 한 줄이 왜 이미지에 들어갔나** — 4주차 어텐션 히트맵, 6주차 GELU 그래프, 9주차 손실
 > 곡선에 한글 라벨을 씁니다. 폰트가 없으면 두부(`□□□`)만 나옵니다. "실습을 돌려보고 나서야
@@ -348,16 +366,52 @@ PyTorch 빌드가 **전부** 맞아야 합니다.
 ```bash
 docker run -d --name llm-lab \
   --gpus all \                       # GPU 전부 컨테이너에 노출
-  --ipc=host \                       # DataLoader 워커의 공유메모리 부족 방지
+  --restart unless-stopped \         # 호스트 재부팅 후 자동 복귀
+  --shm-size=8g \                    # DataLoader 워커의 공유메모리 부족 방지
   -v ~/work:/work \                  # 호스트 ~/work ↔ 컨테이너 /work
   -v ~/textbook:/textbook \          # 교재 저장소 읽기용
-  llm-course:v1 sleep infinity
+  llm-course:v2 sleep infinity
 ```
 
 - `--gpus all` 이 빠지면 컨테이너 안 `nvidia-smi` 부터 실패합니다.
-- `--ipc=host` 가 빠지면 3주차 이후 `num_workers>0` 인 DataLoader에서 `Bus error` 가 납니다.
+- `--shm-size=8g` 가 빠지면 3주차 이후 `num_workers>0` 인 DataLoader에서 `Bus error` 가 납니다.
+  (`--ipc=host` 로도 해결되지만, 그건 호스트 IPC 네임스페이스를 통째로 여는 것이라 범위가 넓습니다.
+  필요한 만큼만 여는 `--shm-size` 가 낫습니다.)
 - **볼륨 마운트가 핵심입니다.** 컨테이너를 지워도 `/work` 의 코드는 호스트에 남습니다.
   반대로 마운트를 안 하면 한 학기 산출물이 `docker rm` 한 번에 사라집니다.
+
+> 🔴 **`--restart unless-stopped` 를 빠뜨린 대가 — 실제로 겪은 일입니다.**
+>
+> 이 옵션 없이 띄운 컨테이너가 호스트 재부팅 때 `Exited (255)` 로 죽었고, **6일 동안 아무도
+> 몰랐습니다.** 재부팅은 드라이버 업데이트·정전·커널 패치로 학기 중에 반드시 일어납니다.
+> `docker ps` 에 안 보이는데 `docker ps -a` 에는 있는 상태가 되고, 학생은 "어제까지 되던
+> `docker exec` 가 안 된다"만 겪습니다.
+>
+> **컨테이너의 수명 정책은 만들 때 정하는 것이지, 죽고 나서 정하는 것이 아닙니다.**
+
+### 4.3 배포한 뒤 한 줄로 확인하기
+
+```bash
+docker exec llm-lab verify-env
+```
+
+이미지에 검증 스크립트를 넣어 뒀습니다. 11개 항목을 검사하고 하나라도 실패하면 종료 코드가
+1 입니다. 새 장비를 받았을 때, 이미지를 다시 구웠을 때, "어제까지 되던 게 안 될 때" 제일 먼저
+칠 명령입니다.
+
+```
+PASS  B. 패키지 고정 버전     18개 전부 고정 버전과 일치
+PASS  D2. GPU fp32 matmul  CPU 대조 allclose, maxdiff 8.39e-05
+PASS  D4. GPU 학습 스텝      loss 2.3252 -> 0.0046, peak 18.6MB
+PASS  E. tiktoken 오프라인   오프라인 로드 0.09s, n_vocab 50257, 왕복 일치
+...
+✅ 전 11항목 통과
+```
+
+> 💡 **왜 `import torch` 성공만으로는 부족한가** — `torch.cuda.is_available()` 이 `True` 라는
+> 것은 "드라이버가 보인다"까지만 증명합니다. **커널이 실제로 도는지는 계산을 시켜 봐야
+> 압니다.** 그래서 `verify-env` 는 GPU 결과를 CPU 결과와 대조하고, AdamW 50스텝을 돌려
+> 손실이 실제로 줄어드는지까지 봅니다. 0.3절의 "자기보고를 믿지 마라"를 도구에 적용한 것입니다.
 
 **✅ 검증 프롬프트 V1-3** (문제가 있을 때만)
 
@@ -503,7 +557,7 @@ graph TD
 
 ---
 
-## 부록 A — 골든 이미지 `llm-course:v1` 을 만드는 법 (실제 절차 전문)
+## 부록 A — 골든 이미지 `llm-course:v2` 을 만드는 법 (실제 절차 전문)
 
 미션 3은 **이미 만들어진** 이미지를 확인하는 것으로 끝났습니다. 여기서는 그 이미지를 **처음부터
 만드는 절차**를 그대로 공개합니다. 지금 당장 필요하진 않지만, 실무에서 "새 GPU 장비를 받았고
@@ -558,10 +612,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --index-url https://download.pytorch.org/whl/cu130 \
         torch==2.9.1+cu130
 
-# 2) 교재 실습 의존성
-RUN pip install \
-        tiktoken matplotlib pandas pytest numpy requests tqdm \
-        jupyter nbconvert ipykernel
+# 2) 실습 의존성 — 전량 버전 고정 (requirements.txt)
+#    safetensors/huggingface_hub 가 10주차 가중치 이식의 필수 경로다.
+COPY requirements.txt /opt/llm-course/requirements.txt
+RUN pip install -r /opt/llm-course/requirements.txt
 
 # 3) matplotlib 한글 라벨이 □ 로 깨지지 않게 기본 폰트 고정
 RUN mkdir -p /opt/mplconfig && printf '%s\n' \
@@ -571,11 +625,37 @@ RUN mkdir -p /opt/mplconfig && printf '%s\n' \
         'figure.dpi: 110' \
     > /opt/mplconfig/matplotlibrc
 ENV MATPLOTLIBRC=/opt/mplconfig/matplotlibrc \
-    MPLCONFIGDIR=/tmp/mplcache
+    MPLCONFIGDIR=/opt/mplcache
+# 폰트 캐시를 빌드 때 구워 둔다 — 안 그러면 학생마다 첫 그래프에서 수십 초를 버린다
+RUN mkdir -p /opt/mplcache && python3 -c "import matplotlib; matplotlib.use('Agg'); \
+import matplotlib.pyplot as plt; f,a=plt.subplots(); a.set_title('훈련 손실'); f.savefig('/tmp/_w.png')" \
+    && rm -f /tmp/_w.png && chmod -R 777 /opt/mplcache
+
+# 4) tiktoken gpt2 사전을 이미지에 굽는다 — 폐쇄망에서 2주차가 첫 줄에서 멈추지 않게
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken_cache
+RUN mkdir -p /opt/tiktoken_cache \
+    && python3 -c "import tiktoken; e=tiktoken.get_encoding('gpt2'); assert e.n_vocab==50257" \
+    && chmod -R a+rX /opt/tiktoken_cache
+
+# 5) HF 캐시를 마운트 볼륨 아래로 — 컨테이너를 다시 만들어도 10주차 가중치를 재다운로드하지 않음
+ENV HF_HOME=/work/.hf-cache
+
+# 6) 검증 스크립트 내장 + 빌드타임 자체검사
+#    여기서 실패하면 이미지에 태그가 붙지 않는다. 깨진 이미지의 배포 경로를 막는다.
+COPY verify-env.py /opt/llm-course/verify-env.py
+RUN printf '#!/bin/sh\nexec python3 /opt/llm-course/verify-env.py "$@"\n' \
+        > /usr/local/bin/verify-env && chmod +x /usr/local/bin/verify-env
+RUN mkdir -p /work && python3 /opt/llm-course/verify-env.py --no-gpu
+RUN pip freeze > /opt/llm-course/requirements.lock
 
 WORKDIR /work
 CMD ["/bin/bash"]
 ```
+
+> 📌 **`RUN pip install tiktoken matplotlib ...` 이 `COPY requirements.txt` 로 바뀐 이유.**
+> v1 은 버전을 안 적었습니다. 그러면 다음 학기에 같은 Dockerfile 로 다시 구웠을 때
+> **다른 라이브러리 버전이 들어오고, 교재의 정답 수치가 안 맞기 시작합니다.**
+> 재현 가능한 이미지의 조건은 "같은 명령"이 아니라 **"같은 결과"** 입니다.
 
 ### A.4 한 줄씩, 왜 그렇게 썼는가
 
@@ -588,27 +668,41 @@ CMD ["/bin/bash"]
 | `fonts-nanum` + `fc-cache -fv` | 4·6·9·10·11·13주차 그래프의 한글 라벨 | 라벨이 전부 `□` |
 | **별도** `matplotlibrc` + `MATPLOTLIBRC` 환경변수 | 폰트만 깔면 matplotlib 이 자동으로 쓰지 않는다. 패키지 기본 matplotlibrc 를 직접 고치면 `Duplicate key` 경고가 난다 | 경고 또는 여전히 `□` |
 | `axes.unicode_minus: False` | 나눔폰트에 유니코드 마이너스 글리프가 없다 | 음수 축 라벨이 깨진다 |
-| `--ipc=host` (실행 옵션) | DataLoader 워커 공유메모리 | 3주차 이후 `Bus error` |
+| `--shm-size=8g` (실행 옵션) | DataLoader 워커 공유메모리 | 3주차 이후 `Bus error` |
+| `--restart unless-stopped` (실행 옵션) | 호스트 재부팅 후 컨테이너 자동 복귀 | 재부팅 다음날 `docker exec` 가 `No such container` |
+| `safetensors` + `huggingface_hub` | 10주차 가중치 이식의 **유일한 경로** | 미션 자체가 실행 불가 |
+| `requirements.txt` 전량 버전 고정 | 통과 기준이 수치라 버전이 흔들리면 정답지가 무너진다 | 다음 학기에 다시 구우면 다른 숫자가 나온다 |
+| `TIKTOKEN_CACHE_DIR` 에 gpt2 사전 프리로드 | 폐쇄망 실습실 | 2주차 미션 1이 첫 줄에서 멈춘다 |
+| `HF_HOME=/work/.hf-cache` | 10주차 548MB/1520MB 를 마운트 볼륨에 둔다 | 컨테이너 다시 만들 때마다 재다운로드 |
 
-> 🔴 **일부러 넣지 않은 것이 있습니다 — `tensorflow`.**
-> 10주차에 OpenAI GPT-2 가중치를 가져올 때 교재 저장소의 1차 경로가 `import tensorflow` 로
-> 시작합니다. 이 환경에 TF가 없어 **반드시 실패합니다. 그게 의도된 설계입니다.** 그 실패를 겪고
-> safetensors 경로로 갈아타면서 QKV 분할과 전치를 배우는 것이 그 주의 미션입니다. 편의를 위해
-> 패키지를 하나 더 넣는 결정이 학습 하나를 통째로 지울 수 있다 — 환경 설계도 교육 설계입니다.
+> 🔴 **일부러 넣지 않은 것이 둘 있습니다 — `tensorflow` 와 `transformers`.**
+>
+> **`tensorflow`** — 10주차에 OpenAI GPT-2 가중치를 가져올 때 교재 저장소의 1차 경로가
+> `import tensorflow` 로 시작합니다. 이 환경에 TF가 없어 **반드시 실패합니다. 그게 의도된
+> 설계입니다.** 그 실패를 겪고 safetensors 경로로 갈아타면서 QKV 분할과 전치를 배우는 것이
+> 그 주의 미션입니다.
+>
+> **`transformers`** — 있으면 `AutoModel.from_pretrained()` 한 줄로 7~10주차가 통째로
+> 무력화됩니다. 14주차 트랙 B 의 최신 모델 토크나이저는 `tokenizers`/`sentencepiece`/`tiktoken`
+> 으로 충분합니다. 정말 필요한 학생은 컨테이너 안에서 직접 설치하면 됩니다.
+>
+> **편의를 위해 패키지를 하나 더 넣는 결정이 학습 하나를 통째로 지울 수 있다 — 환경 설계도
+> 교육 설계입니다.** 반대로 `safetensors` 처럼 **미션의 정답 경로에 놓인 패키지를 빠뜨리면
+> 미션이 아예 성립하지 않습니다.** 무엇을 넣고 무엇을 뺄지는 둘 다 의도적이어야 합니다.
 
 ### A.5 빌드와 수락 시험
 
 ```bash
-# 빌드 (DGX Spark 에서, 캐시 없이 약 3분 / 결과 8.06GB)
-docker build -t llm-course:v1 -f Dockerfile.llm-course-v1 .
+# 빌드 (DGX Spark 에서, 캐시 없이 약 3분 / 결과 8.11GB)
+docker build -t llm-course:v2 -f Dockerfile.llm-course-v2 .
 
 # 수락 시험 — 이게 통과해야 배포한다
-docker run --rm --gpus all --ipc=host \
+docker run --rm --gpus all --shm-size=8g \
   -v "$PWD/smoke_test.py:/work/smoke_test.py:ro" \
-  llm-course:v1 python3 /work/smoke_test.py
+  llm-course:v2 python3 /work/smoke_test.py
 ```
 
-`_golden-image/build.sh` 는 위 사전조건 검사 → 빌드 → 수락 시험을 한 번에 합니다.
+`_golden-image/build.sh` 는 위 사전조건 검사 → 빌드 → 런타임 검증 → 수락 시험을 한 번에 합니다.
 
 **수락 시험이 검사하는 것** — "설치가 됐다"가 아니라 **"교재가 쓰는 연산이 실제로 도는가"** 입니다.
 
@@ -617,11 +711,22 @@ docker run --rm --gpus all --ipc=host \
 | ① 런타임 신원 | `aarch64` / `2.9.1+cu130` / `is_available()==True` / `NVIDIA GB10` |
 | ② GPU 12연산 | matmul · embedding · layernorm · softmax · gelu(tanh) · dropout · cross_entropy · backward · adamw · bf16 autocast · multinomial · topk — 15주가 실제로 쓰는 연산 전수 |
 | ③ 한글 렌더 | `font.family` 가 NanumGothic 으로 **해석되는지** + 한글 라벨 `savefig` |
-| ④ 실습 패키지 | tiktoken/pandas/numpy/pytest/requests/tqdm/nbconvert |
+| ④ 실습 패키지 | tiktoken/pandas/numpy/pytest/requests/tqdm/nbconvert + **safetensors 실제 왕복**(10주 QKV 텐서) |
 | ⑤ **의도적 부재** | `tensorflow` 가 **없어야** 통과 |
+| ⑥ **오프라인 동작** | 네트워크를 막고 tiktoken gpt2 사전이 로드되는가 (폐쇄망 대비) |
 
 마지막에 `SMOKE_OK` 가 나오면 합격입니다. **이 표 자체가 좋은 인수 기준의 예시입니다** —
 "돌아간다"가 아니라 "무엇이 통과하면 받는다"를 미리 적어 두는 것.
+
+**두 검증의 역할이 다릅니다.**
+
+| 도구 | 언제 | 무엇을 |
+|---|---|---|
+| `smoke_test.py` (이미지 밖) | **배포 전** — 이 이미지를 받아도 되는가 | 15주 연산 전수 + 의도적 부재 + 오프라인 |
+| `verify-env` (이미지 안) | **배포 후** — 이 장비에서 도는가 | 고정 버전 대조 + GPU 실연산 + 마운트 |
+
+빌드 마지막 단계에도 `verify-env --no-gpu` 가 들어 있어, 패키지가 하나라도 고정 버전과
+어긋나면 **이미지에 태그조차 붙지 않습니다.** 깨진 이미지가 배포될 경로를 막아 둔 것입니다.
 
 ### A.6 이미 만난 그 경고 — sm_121 PTX JIT
 
@@ -639,16 +744,45 @@ GB10의 compute capability 는 **12.1(sm_121)** 인데, torch 2.9.1+cu130 바이
 > **검증이 끝난 2.9.1 을 유지**합니다. **경고를 보고 버전을 올리기 시작하는 것**이 1주차의
 > 대표적 사고입니다. 경고와 오류를 구분하세요.
 
+**말로만 "정상"이라고 하지 않습니다 — 숫자로 확인했습니다.** PTX JIT 경로가 실제로 맞는
+값을 내는지 `verify-env` 가 매번 검사합니다.
+
+| 검사 | 결과 |
+|---|---|
+| GPU fp32 matmul vs CPU | `allclose` True, maxdiff **8.39e-05** |
+| bf16 matmul | 전부 유한 (inf/nan 없음) |
+| AdamW 50스텝 | loss **2.3252 → 0.0046** |
+
+경고가 뜨는데 결과가 맞다 — 이것이 "경고와 오류의 구분"의 구체적 모습입니다.
+
 ### A.7 배포
 
 ```bash
 # 같은 호스트를 여럿이 쓰면 빌드 한 번으로 끝 (이미지는 Docker 데몬 전역)
-docker images llm-course:v1
+docker images llm-course:v2
 
 # 장비가 여러 대라면
-docker save llm-course:v1 | gzip -1 > llm-course-v1.tar.gz   # 8.06GB → 5.08GB
-gunzip -c llm-course-v1.tar.gz | docker load                 # 받는 쪽
+docker save llm-course:v2 | gzip -1 > llm-course-v2.tar.gz   # 8.11GB → 5.10GB (실측)
+gunzip -c llm-course-v2.tar.gz | docker load                 # 받는 쪽
 ```
+
+**새 장비를 받았을 때 순서** — 이 4줄이면 끝납니다.
+
+```bash
+docker load < llm-course-v2.tar.gz          # 또는 build.sh 로 직접 빌드
+docker run --rm --gpus all llm-course:v2 verify-env    # ① 이 장비에서 도는가
+bash run-llm-lab.sh                                    # ② 컨테이너 생성(마운트·재시작정책·shm)
+docker exec llm-lab verify-env                         # ③ 마운트까지 포함해 재확인
+```
+
+①과 ③을 **둘 다** 하는 이유가 있습니다. ①은 이미지와 GPU 를, ③은 거기에 **마운트와 HF 캐시
+경로**를 더해 봅니다. `/work` 가 안 붙어 있으면 ①은 통과하고 ③만 실패합니다 — 한 학기 산출물이
+컨테이너와 함께 사라지는 사고를 여기서 잡습니다.
+
+> 💡 **x86 장비여도 됩니다.** 베이스 이미지도 torch cu130 휠도 arm64/amd64 양쪽에 있어서
+> 같은 Dockerfile 이 일반 x86 + RTX(Blackwell) 장비에서 그대로 빌드됩니다. 단 **교재의 실측치
+> (tokens/sec, 훈련 시간, peak 메모리)는 GB10 기준**이라 그대로 비교하면 안 됩니다.
+> `smoke_test.py` 가 x86 에서 그 경고를 띄웁니다.
 
 ---
 
