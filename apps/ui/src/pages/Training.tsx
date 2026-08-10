@@ -156,8 +156,20 @@ export default function Training(): React.ReactElement {
               </button>
             </div>
             <div style={accessBanner}>
-              💻 모든 명령은 el34 호스트에서: <code>ssh ccc@192.168.0.151</code> (비밀번호 <code>1</code>) → <code>docker exec …</code>.
-              아래 명령 블록은 우상단 <b>복사</b> 버튼으로 그대로 붙여넣어 실행하고, <b>✅ 이렇게 나오면 정상</b>과 비교하세요.
+              {track.track === 'llm-from-scratch' ? (
+                <>
+                  🤖 이 트랙은 <b>명령을 직접 치지 않습니다.</b> 각 단계의 <b>🤖 에이전트 프롬프트</b>를
+                  코딩 에이전트에 그대로 붙여넣어 실행하고(<code>hermes</code> 또는 <code>hermes --yolo -z "프롬프트"</code>),
+                  <b>✅ 합격 기준</b>과 대조해 직접 판정하세요.
+                  실습 코드는 본인 장비의 <code>llm-lab</code> 컨테이너에서 돕니다 (<code>docker exec -it llm-lab bash</code>).
+                  <b>📎 참고 명령</b> 블록은 막혔을 때 대조용이며, <b>🔍 에이전트 판정 포인트</b>는 그 단계에서 에이전트가 실제로 저지른 실수입니다.
+                </>
+              ) : (
+                <>
+                  💻 모든 명령은 el34 호스트에서: <code>ssh ccc@192.168.0.151</code> (비밀번호 <code>1</code>) → <code>docker exec …</code>.
+                  아래 명령 블록은 우상단 <b>복사</b> 버튼으로 그대로 붙여넣어 실행하고, <b>✅ 이렇게 나오면 정상</b>과 비교하세요.
+                </>
+              )}
             </div>
             {lab.description && <Markdown text={lab.description} />}
             {lab.objectives && lab.objectives.length > 0 && (
