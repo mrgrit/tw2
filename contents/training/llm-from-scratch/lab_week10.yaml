@@ -9,6 +9,29 @@ description: |
   체크포인트로 훈련을 매끄럽게 재개한 뒤, OpenAI GPT-2 공식 가중치(safetensors)를 내 GPTModel 에
   이식한다 — QKV chunk 분할과 전치가 W04 연습문제 3.1 그대로 회수된다. 마지막으로 4모델 val 손실
   비교표로 "차이는 데이터의 양"을 확인한다.
+
+  ---
+
+  ## ⚠️ 이 트랙의 실습 방식 — 명령을 직접 치지 않는다
+
+  각 단계에서 여러분이 하는 일은 둘이다. **🤖 에이전트 프롬프트를 그대로 복사해 붙여넣고**,
+  **✅ 합격 기준과 대조해 직접 판정한다.**
+
+  ```bash
+  hermes                      # 대화형
+  hermes --yolo -z "프롬프트"   # 한 번만 실행
+  ```
+
+  📎 **참고 명령** 블록은 "에이전트가 결국 실행하게 될 명령"을 미리 보여 주는 것이다.
+  막혔을 때 대조용으로 보되, **먼저 프롬프트로 시도하는 것이 이 수업의 실습**이다.
+  🔍 **에이전트 판정 포인트**는 그 단계에서 에이전트가 실제로 저지른 실수와 잡는 법이다.
+
+  ## 📁 `common.py` 를 먼저 만든다 (P10-0)
+
+  W09 와 같은 방식으로 `/work/week10/common.py` 에 경로 등록과 공통 상수를 모은다.
+  `week03`·`week07`·`week09` 경로 등록, `device`, `text_to_token_ids` / `token_ids_to_text`,
+  그리고 `MODEL_10EP`(week09 체크포인트 경로)와 `VERDICT`(the-verdict.txt 경로) 상수를 둔다.
+  **이후 모든 단계의 스크립트는 `common` 을 먼저 import 한다.**
 difficulty: hard
 duration_minutes: 190
 audience: LLM 밑바닥 구현 (10주차)
@@ -58,7 +81,36 @@ steps:
       ## ⚠️ 어휘 순서 주의
       장난감 어휘는 **알파벳순이 아니다**(`every` < `effort` 가 아님). 인덱스를 눈으로 확인하라.
 
-      ## 💻 실행 명령
+      ## 🤖 에이전트 프롬프트
+      ```text
+      [목표] /work/week10/decoding.py 를 만들고 temperature 의 효과를 샘플링으로 측정한다
+
+      [할 일]
+       1. decoding.py 에 다음을 정의한다
+          - VOCAB: 장난감 어휘 9개의 {단어: 인덱스} 딕셔너리
+            (closer, every, effort, forward, inches, moves, pizza, toward, you)
+          - NEXT_TOKEN_LOGITS: 9개 로짓 텐서.
+            forward 가 최댓값 6.75, toward 6.28, closer 4.51, pizza 는 -1.89 로 최하위권
+          - softmax_with_temperature(logits, temperature): 로짓을 temperature 로 나눈 뒤 softmax
+       2. argmax 단어와 그 로짓을 출력한다: ARGMAX_WORD <단어> LOGIT <값>
+       3. torch.manual_seed(123) 뒤 T = 0.01, 0.1, 1.0, 5.0 각각에 대해
+          - 확률 분포를 만들고 1000회 복원추출 샘플링한다
+          - forward 와 pizza 가 각각 몇 번 뽑혔는지 센다
+          - 분포의 엔트로피를 계산한다
+          - 한 줄 출력: T=<값> forward=<수> pizza=<수> entropy=<소수 4자리>
+       4. argmax 가 forward 이고 엔트로피가 T 증가에 단조 증가하면 TEMPERATURE_OK
+
+      [제약]
+       - 어휘 순서는 알파벳순이 아니다. 인덱스를 임의로 재배열하지 말 것
+       - 엔트로피 계산에서 log(0) 이 나지 않도록 작은 값을 더할 것
+       - 샘플링은 반드시 replacement=True 로 할 것
+       - 시드를 루프 안에서 다시 고정하지 말 것 (한 번만)
+
+      [검증] 네 줄을 모두 출력하고, T=5.0 에서 pizza 가 뽑히는 비율을 계산해
+             "temperature 를 올린다"가 무엇을 뜻하는지 한 문장으로 답할 것
+      ```
+
+      ## 📎 참고 — 에이전트가 실행하게 될 명령
       ```bash
       docker exec -w /work/week10 llm-lab python3 -c "
       import sys; sys.path.insert(0, '.')
@@ -79,6 +131,33 @@ steps:
       ```
       ## ✅ 합격 기준
       `ARGMAX_WORD forward LOGIT 6.75`, 엔트로피가 T 증가에 **단조 증가**, `TEMPERATURE_OK`.
+      실측 출력:
+      ```
+      ARGMAX_WORD forward LOGIT 6.75
+      T= 0.01 forward=1000 pizza=   0 entropy=0.0000
+      T= 0.10 forward= 995 pizza=   0 entropy=0.0514
+      T= 1.00 forward= 576 pizza=   0 entropy=0.9127
+      T= 5.00 forward= 237 pizza=  41 entropy=1.9990
+      ```
+
+      ## 🔍 에이전트 판정 포인트
+      **어휘를 알파벳순으로 정렬해 오는 실수가 잦다.** 에이전트는 딕셔너리를 만들 때 정리하는
+      습관이 있어서 `closer:0, effort:1, every:2, ...` 로 만들기 쉽다. 교재 어휘는
+      **알파벳순이 아니다**(`every` 가 `effort` 보다 앞). 순서가 바뀌면 로짓과 단어의 대응이
+      틀어져 `ARGMAX_WORD` 가 다른 단어로 나온다. **인덱스를 눈으로 확인하라.**
+
+      **`T=0.01` 에서 1000/1000 이 나오는 것이 정상이다.** 에이전트가 "샘플링인데 분산이 0이라
+      이상합니다"라고 보고하면 오해다. 온도를 극단적으로 낮추면 **사실상 greedy 와 같아진다** —
+      그것이 이 행이 보여주려는 것이다.
+
+      **엔트로피를 안 내면 이 실험은 정성적 관찰에 그친다.** "분포가 평평해진다"를 눈으로만
+      보면 판정이 애매하다. 엔트로피 단조 증가(0.0000 → 0.0514 → 0.9127 → 1.9990)가 그
+      **정량 표현**이다.
+
+      **T=5.0 의 `pizza=41` 이 이 단계의 결론이다.** `pizza` 는 로짓이 **−1.89** 로 최하위권인데
+      T=1 에서는 0회, T=5 에서는 **약 4%** 나온다.
+      **temperature 를 올린다는 것은 "말도 안 되는 후보에게도 기회를 준다"는 뜻이다** —
+      창의성의 대가가 헛소리 확률이다.
     hint: 'T=0.01 에서 1000/1000 forward 가 나오면 사실상 greedy 와 같아진 것이다'
     answer: |
       docker exec -w /work/week10 llm-lab python3 -c "
@@ -127,7 +206,33 @@ steps:
       **먼저 top-k 마스킹 → temperature 나눗셈 → softmax.** 순서를 바꾸면 `-inf / T` 가 되어
       (여전히 `-inf` 라 결과는 같지만) 의도가 흐려진다.
 
-      ## 💻 실행 명령
+      ## 🤖 에이전트 프롬프트
+      ```text
+      [목표] decoding.py 에 top-k 마스킹을 추가하고 확률이 어떻게 재분배되는지 확인한다
+
+      [할 일]
+       1. topk_mask(logits, k) 를 만든다
+          - 상위 k 개 로짓을 찾는다
+          - 그 중 최솟값보다 작은 로짓을 전부 -inf 로 바꾼다
+          - 마스킹된 로짓 텐서를 반환한다
+       2. k=3 으로 적용한 뒤, -inf 가 아닌 원소를 (단어, 값) 쌍으로 출력한다
+          TOPK3_KEPT <리스트>
+       3. 마스킹된 로짓에 softmax 를 적용하고
+          - 정확히 0인 원소의 개수를 출력한다: ZERO_COUNT <수> (9 - 3 = 6 이어야 한다)
+          - 확률의 합을 출력한다: PROB_SUM <소수 6자리>
+       4. ZERO_COUNT 가 6 이고 합이 1.0 이면 TOPK_OK, 아니면 NG
+
+      [제약]
+       - 마스킹 값은 반드시 -inf 다. 0 이나 아주 작은 음수로 대체하지 말 것
+       - 잘라낸 확률을 수동으로 재분배하지 말 것. softmax 가 알아서 한다
+       - 상위 k 를 정렬해서 앞에서 자르지 말고, 임계값 비교로 마스킹할 것
+         (동점 처리가 달라진다)
+
+      [검증] 세 줄을 모두 출력하고, 잘라냈는데도 확률 합이 1인 이유를 설명할 것.
+             그리고 이 -inf 트릭이 이 수업에서 몇 번째로 나오는 것인지 답할 것
+      ```
+
+      ## 📎 참고 — 에이전트가 실행하게 될 명령
       ```bash
       docker exec -w /work/week10 llm-lab python3 -c "
       import sys; sys.path.insert(0, '.')
@@ -144,8 +249,32 @@ steps:
       print('TOPK_OK' if ok else 'NG')"
       ```
       ## ✅ 합격 기준
-      `ZERO_COUNT 6`, `PROB_SUM 1.0`, `TOPK_OK`.
+      `ZERO_COUNT 6`, `PROB_SUM 1.0`, `TOPK_OK`. 실측 출력:
+      ```
+      TOPK3_KEPT [('closer', 4.51), ('forward', 6.75), ('toward', 6.28)]
+      ZERO_COUNT 6 (9 - 3 = 6 이어야 한다)
+      PROB_SUM   1.0
+      ```
       **0이 아닌 작은 값이 남으면 `-inf` 대신 0 마스킹을 한 것이다.**
+
+      ## 🔍 에이전트 판정 포인트
+      **W05 1단계의 함정이 그대로 재현된다.** 에이전트가 마스킹을 `logits * mask` 나
+      `logits.masked_fill(..., 0)` 으로 구현하면 `e⁰ = 1` 이라 잘라낸 6개에 **작지만 0이 아닌
+      확률**이 남는다. `ZERO_COUNT` 가 6 이 아니라 0 으로 나온다. 5주차에서 이미 겪은 실수이고,
+      **같은 실수가 다른 옷을 입고 돌아온 것**이다.
+
+      **`TOPK3_KEPT` 의 순서에 놀라지 마라.** `closer` 가 먼저 나오는 것은 어휘 인덱스 순서로
+      출력했기 때문이지 로짓 크기 순서가 아니다. 값을 보면 6.75 > 6.28 > 4.51 이다.
+
+      **확률 합이 1인 이유를 설명하게 하라.** 잘라낸 뒤 **다시 softmax** 하므로 남은 3개끼리
+      정규화가 일어난다. "확률을 버렸는데 합이 1"이라는 것이 이상하지 않아야 한다.
+
+      **top-k 와 temperature 를 함께 쓸 때 순서:** **먼저 top-k 마스킹 → temperature 나눗셈
+      → softmax.** 순서를 바꾸면 `-inf / T` 가 되어 (여전히 `-inf` 라 결과는 같지만) 의도가
+      흐려진다.
+
+      **-inf 트릭은 이번이 세 번째다** — W05 인과 마스크, W08 argmax 진단, 그리고 여기.
+      "후보에서 완전히 제외한다"를 수학적으로 표현하는 표준 방법이다.
     hint: '나머지를 -inf 로 만든 뒤 다시 softmax 하므로 확률이 재분배된다 — 그래서 합이 1이다'
     answer: |
       docker exec -w /work/week10 llm-lab python3 -c "
@@ -195,12 +324,61 @@ steps:
       **첫 번째 테스트가 중요하다.** W07 의 결정성이 여기서 "특수한 경우"로 보존된다 —
       새 기능을 추가해도 기존 동작이 깨지지 않는지 확인하는 **회귀 테스트**다.
 
-      ## 💻 실행 명령
+      ## 🤖 에이전트 프롬프트
+      ```text
+      [목표] decoding.py 에 통합 generate 를 만들고 성질을 pytest 로 고정한다
+
+      [할 일]
+       1. generate(model, idx, max_new_tokens, context_size, temperature=0.0, top_k=None) 을 만든다
+          매 스텝마다:
+           - 컨텍스트를 잘라 로짓을 구하고 마지막 위치만 남긴다
+           - top_k 가 주어졌으면 topk_mask 를 적용한다
+           - temperature > 0 이면 (로짓 / temperature) 에 softmax 후 multinomial 샘플링
+           - temperature == 0 이면 argmax (greedy 폴백)
+           - 고른 토큰을 이어 붙인다
+
+       2. /work/week10/test_decoding.py 에 다음 테스트를 쓴다
+          - greedy 폴백: temperature=0 일 때 W07 generate_text_simple 과 출력이 동일함을 assert
+          - 시드 재현: 같은 시드·같은 temperature 면 두 호출 결과가 동일함을 assert
+          - top-k 제약: 생성된 각 토큰이 그 시점 상위 k 안에 있었음을 assert
+
+       3. pytest 로 실행해 결과를 보인다
+
+      [제약]
+       - temperature=0 에서 나눗셈을 하지 말 것. 0으로 나누면 NaN 이 된다.
+         반드시 argmax 분기로 빠질 것
+       - top_k 는 None 이 기본값이다. 항상 적용하지 말 것
+       - greedy 폴백 테스트를 "비슷하다"로 쓰지 말 것. 완전히 같아야 한다
+       - 테스트를 약화시키지 말 것
+
+      [검증] generate 전문과 pytest 출력을 함께 보일 것.
+             그리고 greedy 폴백 테스트가 왜 필요한지 한 문장으로 답할 것
+      ```
+
+      ## 📎 참고 — 에이전트가 실행하게 될 명령
       ```bash
       docker exec -w /work/week10 llm-lab python3 -m pytest test_decoding.py -q
       ```
       ## ✅ 합격 기준
-      `passed` 가 출력되고 실패 0.
+      `passed` 가 출력되고 실패 0. 실측 출력:
+      ```
+      6 passed, 1 warning in 5.77s
+      ```
+
+      ## 🔍 에이전트 판정 포인트
+      **`temperature=0` 을 처리하지 않으면 NaN 이 난다.** `logits / 0` 은 `inf` 가 되고
+      softmax 를 거치면 NaN, `multinomial` 은 거기서 죽는다. 에이전트가 이를 피하려고
+      `temperature = max(temperature, 1e-8)` 같은 하한을 넣는 경우가 있는데, **그러면 greedy 와
+      "거의 같지만 완전히 같지는 않은" 결과가 나와 첫 번째 테스트가 실패한다.**
+      정답은 분기다.
+
+      **greedy 폴백 테스트가 이 단계의 핵심이다.** 새 기능(temperature/top-k)을 넣어도 기존
+      동작(greedy)이 **특수 케이스로 보존되는지** 확인하는 회귀 테스트다. W07 에서 고정한
+      결정성이 여기서 회수된다. 에이전트에게 "새 generate 를 만들라"고만 하면 기존 함수와의
+      호환성은 신경 쓰지 않는다.
+
+      **top-k 제약 테스트를 사후 검사로 쓰면 약해진다.** "생성된 토큰이 전체 어휘 안에 있다"는
+      항상 참이다. **그 시점의 상위 k 안에 있었는지**를 확인해야 의미가 있다.
     hint: 'temperature=0 일 때 argmax 로 폴백하지 않으면 0으로 나누게 되어 NaN 이 난다'
     answer: |
       docker exec -w /work/week10 llm-lab python3 -m pytest test_decoding.py -q
@@ -229,7 +407,29 @@ steps:
       온도가 낮으면 확률이 최상위 몇 개에 몰려서, k를 5로 하든 25로 하든 뽑히는 토큰이 같아진다.
       **버그로 오인하지 마라.** k가 의미를 갖는 것은 분포가 평평할 때(높은 T)다.
 
-      ## 💻 실행 명령
+      ## 🤖 에이전트 프롬프트
+      ```text
+      [목표] W09 에서 훈련한 모델로 (temperature × top_k) 조합별 생성문을 만들어 비교한다
+
+      [할 일]
+       1. week09 의 model_10ep.pth 를 불러온다 (context_length=256, device 로 이동, eval)
+       2. "Every effort moves you" 로 시작해 20토큰씩 생성한다
+       3. T = 0.5, 1.0, 2.0 × k = 5, 25 의 6개 조합을 모두 돈다
+          조합마다 생성 "직전에" torch.manual_seed(123) 을 호출한다
+       4. 한 줄씩 출력한다: T=<값> k=<값> | <생성문 앞 90자, 줄바꿈은 공백으로>
+       5. 마지막에 SAMPLING_GRID_OK 를 출력한다
+
+      [제약]
+       - 조합마다 시드를 다시 고정할 것. 안 하면 앞 조합의 난수 소비가 뒤에 영향을 준다
+       - 생성문을 요약하거나 다듬지 말 것. 원문 그대로 자를 것
+       - 결과가 이상해 보여도 하이퍼파라미터를 조정하지 말 것.
+         T=2.0 에서 문장이 무너지는 것이 관찰 대상이다
+
+      [검증] 6줄을 모두 출력하고, T 가 커질수록 무엇이 달라지는지 서술할 것.
+             그리고 T=0.5 행에서 k=5 와 k=25 의 출력을 비교해 답할 것
+      ```
+
+      ## 📎 참고 — 에이전트가 실행하게 될 명령
       ```bash
       docker exec -w /work/week10 llm-lab python3 -c "
       import sys; sys.path.insert(0, '.')
@@ -252,7 +452,34 @@ steps:
       ```
       ## ✅ 합격 기준
       6개 조합의 생성문이 출력되고 `SAMPLING_GRID_OK`.
-      T가 커질수록 문장이 무너지는 경향을 눈으로 확인한다.
+      T가 커질수록 문장이 무너지는 경향을 눈으로 확인한다. 실측 출력:
+      ```
+      T=0.5 k= 5 | Every effort moves you know terrace.  I glanced after him, with a single one in the house.
+      T=0.5 k=25 | Every effort moves you as terrace.  I glanced after him, with a single one in the house."
+      T=1.0 k= 5 | Every effort moves you of Hermia's tears I felt able to face the fact with equanimity. Vic
+      T=1.0 k=25 | Every effort moves you as terrace. I turned--and told that lifted the of such a laugh: "Ye
+      T=2.0 k= 5 | Every effort moves you of Hermia, with the ax--and by that lifted the tips of a discrimina
+      T=2.0 k=25 | Every effort moves you as terr what one his hand through ins a smile that he remained of t
+      ```
+      T=0.5 는 문장이 온전하고, T=2.0 k=25 에서는 `terr what one his hand through ins` 처럼
+      **단어 조각까지 무너진다.**
+
+      ## 🔍 에이전트 판정 포인트
+      **T=0.5 두 행이 거의 같은 것은 정상이다.** 온도가 낮으면 확률이 최상위 몇 개에 몰려서
+      k를 5로 하든 25로 하든 뽑히는 토큰이 거의 같아진다. **버그로 오인하지 마라.**
+      k가 의미를 갖는 것은 분포가 평평할 때(높은 T)다. 위 실측에서도 T=0.5 두 행은 두 번째
+      단어(`know` vs `as`)만 다르고 나머지가 동일하다.
+
+      **이 사실을 미리 알려주지 않으면 학생이 버그를 찾느라 시간을 쓴다.**
+      검증 설계에서 **"정상인데 이상해 보이는 것"을 미리 표시하는 것**도 중요한 기술이다.
+
+      **에이전트가 "생성 품질이 낮으니 개선하겠다"고 나오면 멈춰라.** 이 모델은 5,145 토큰만
+      본 과적합 모델이다. 낮은 T 에서 **W09 에서 외운 문장으로 수렴**하고 높은 T 에서
+      **문장이 붕괴**하는 것이 이 실습의 관찰 대상이다.
+
+      **조합마다 시드를 다시 고정하지 않으면 비교가 무의미해진다.** 앞 조합에서 소비한
+      난수가 뒤 조합의 시작점을 바꾸기 때문이다. 그러면 "T 때문에 달라진 것"과 "난수 위치
+      때문에 달라진 것"을 구분할 수 없다.
     hint: '같은 시드를 쓰면 같은 설정에서 항상 같은 문장이 나온다 — 비교의 전제다'
     answer: |
       docker exec -w /work/week10 llm-lab python3 -c "
@@ -297,7 +524,51 @@ steps:
                   'optimizer_state_dict': optimizer.state_dict()}, path)
       ```
 
-      ## 💻 실행 명령
+      ## 🤖 에이전트 프롬프트 ① — 저장과 재개
+      ```text
+      [목표] 5 에폭 훈련 후 체크포인트를 저장하고, 거기서 이어 훈련해 손실이 매끄럽게
+             이어지는지 확인한다
+
+      [할 일]
+       1. W09 와 같은 설정으로 5 에폭을 훈련한다
+       2. 체크포인트를 저장한다. 반드시 두 가지를 함께 담을 것
+          - model_state_dict
+          - optimizer_state_dict
+          그리고 별도 메타 파일에 epochs_done, 손실 곡선, tokens_seen 을 남긴다
+       3. 새 프로세스에서 체크포인트를 불러와 val 손실을 잰다
+       4. 저장 직전 val 손실과 로드 직후 val 손실을 나란히 출력한다
+       5. 이어서 5 에폭을 더 훈련하고, 손실 곡선에 튐(spike)이 없는지 확인한다
+
+      [제약]
+       - 모델만 저장하지 말 것. 옵티마이저 상태가 없으면 재개 시 관성이 사라진다
+       - 로드 후 모델을 eval 로 두고 no_grad 로 손실을 잴 것
+       - 재개 시 옵티마이저를 새로 만들고 state_dict 를 불러올 것.
+         옵티마이저를 만들지 않고 state 만 들고 있으면 안 된다
+
+      [검증] 저장 직전과 로드 직후의 val 손실이 소수 3~4자리까지 같은지 보일 것
+      ```
+
+      ## 🤖 에이전트 프롬프트 ② — 체크포인트 구조 확인
+      ```text
+      [목표] 저장된 체크포인트가 올바른 구조인지 검사한다
+
+      [할 일]
+       1. checkpoint_5ep.pth 를 불러와 최상위 키를 정렬해 출력한다: CHECKPOINT_KEYS <리스트>
+       2. model_state_dict 와 optimizer_state_dict 가 있는지 각각 출력한다
+          HAS_MODEL <True/False> HAS_OPTIMIZER <True/False>
+       3. model_state_dict 로 GPTModel 을 실제로 복원해 본다 (context_length=256)
+       4. 메타 파일이 있으면 그 내용도 출력한다
+       5. 둘 다 있으면 CHECKPOINT_OK, 아니면 NG
+
+      [제약]
+       - torch.load 에 weights_only=True 를 줄 것
+       - 키가 있는지만 보지 말고 실제로 load_state_dict 까지 해 볼 것.
+         키만 맞고 shape 가 다르면 여기서 걸린다
+
+      [검증] 세 줄을 모두 출력할 것
+      ```
+
+      ## 📎 참고 — 에이전트가 실행하게 될 명령
       ```bash
       docker exec -w /work/week10 llm-lab python3 -c "
       import sys, json, os; sys.path.insert(0, '.')
@@ -316,6 +587,33 @@ steps:
       ## ✅ 합격 기준
       `HAS_MODEL True HAS_OPTIMIZER True` 와 `CHECKPOINT_OK`.
       그리고 로드 직후 val 손실이 저장 직전 값과 **소수 3~4자리까지** 일치하는지 확인한다.
+      실측 출력:
+      ```
+      CHECKPOINT_KEYS ['model_state_dict', 'optimizer_state_dict']
+      HAS_MODEL True HAS_OPTIMIZER True
+      META {'epochs_done': 5, 'train_loss_tracked': 4.3738, 'val_loss_tracked': 6.2411,
+            'train_loss_full': 4.0834, 'val_loss_full': 6.2453, 'tokens_seen': 20992, ...}
+      ```
+
+      ## 🔍 에이전트 판정 포인트
+      **에이전트에게 "체크포인트를 저장하라"고 하면 `torch.save(model.state_dict(), path)` 를
+      쓴다.** 그게 가장 흔한 관용구이기 때문이다. 그러면 재개할 때 **옵티마이저가 처음부터
+      시작해 몇 스텝 동안 손실이 튄다.** AdamW 는 파라미터마다 **1차·2차 모멘텀 2개**를 들고
+      있다(W09 메모리 계산의 그것) — 그 관성이 사라지는 것이다.
+
+      **"매끄럽게 이어지는가"가 통과 기준인 이유가 이것이다.** 키가 두 개 있는지만 보지 말고,
+      재개 후 손실 곡선에 튐이 없는지 눈으로 확인하라. `optimizer_state_dict` 를 빼고 한 번
+      돌려 보면 차이가 바로 보인다.
+
+      **키만 확인하고 `load_state_dict` 를 안 해 보면 놓치는 것이 있다.** 키 이름이 맞아도
+      shape 가 다르면(예: context_length 를 256 으로 안 바꿨을 때) 로드에서 죽는다.
+      **실제로 복원해 봐야 검증이다.**
+
+      **메타 파일을 따로 두는 이유.** `epochs_done` 과 손실 곡선을 체크포인트 안에 넣으면
+      `weights_only=True` 로 안전하게 못 읽는다. 훈련 상태(가중치)와 기록(메타)을 분리하면
+      기록만 가볍게 확인할 수 있다.
+
+      실무에서 긴 훈련이 중단되는 일은 흔하다. **긴 훈련일수록 재개 손해가 크다.**
     hint: 'optimizer_state_dict 없이 재개하면 손실 곡선에 튐(spike)이 생긴다 — 직접 해 보라'
     answer: |
       docker exec -w /work/week10 llm-lab python3 -c "
@@ -363,7 +661,40 @@ steps:
       **(b) 전치** — TF 규약은 `(입력, 출력)`, PyTorch `nn.Linear` 는 `(출력, 입력)` 이다.
       **W04 연습문제 3.1 그 자체다.** 6주 전의 연습이 오늘 회수된다.
 
-      ## 💻 실행 명령
+      ## 🤖 에이전트 프롬프트
+      ```text
+      [목표] OpenAI 의 GPT-2 124M 공식 가중치를 내가 만든 GPTModel 에 이식한다
+
+      [할 일]
+       1. /work/week10/openai_load.py 를 만든다
+       2. HuggingFace 에서 gpt2 의 model.safetensors 를 내려받아
+          /work/week10/gpt2_weights/ 에 캐시한다 (이미 있으면 재사용)
+       3. 내 GPTModel 을 GPT-2 124M 설정으로 만든다
+          vocab_size 50257, context_length 1024, emb_dim 768,
+          n_heads 12, n_layers 12, drop_rate 0.0, qkv_bias True
+       4. safetensors 의 키를 내 모델의 파라미터에 하나씩 옮겨 심는다.
+          두 가지 변환이 필요하다 — 어떻게 해야 하는지는 shape 를 보고 직접 판단할 것
+          (a) OpenAI 는 Q/K/V 를 한 텐서에 붙여 저장한다. h.<i>.attn.c_attn.weight 의
+              shape 를 찍어 보고 무엇을 해야 할지 결정하라
+          (b) 저장 규약이 PyTorch nn.Linear 와 다르다. shape 가 안 맞으면 무엇을 해야 하는지
+              W04 5단계를 떠올려라
+       5. 옮겨 심을 때 shape 가 안 맞으면 즉시 예외를 내는 assign 헬퍼를 쓸 것
+       6. build(model_name) 함수로 감싸 (model, cfg, params) 를 반환하게 한다
+       7. 이식한 모델로 "Every effort moves you" 뒤 25토큰을 greedy 생성해 출력한다
+
+      [제약]
+       - TensorFlow 체크포인트를 쓰지 말 것. 이 환경에는 TF 가 없다
+       - 이미 변환된 .pth 파일을 받아 load_state_dict 로 끝내지 말 것.
+         그러면 chunk 분할도 전치도 배우지 못한다. 반드시 safetensors 에서 직접 변환할 것
+       - shape 불일치를 조용히 넘기지 말 것 (reshape 나 view 로 억지로 맞추기 금지).
+         즉시 예외를 내고 어느 키에서 틀렸는지 알려야 한다
+       - 가중치를 무작위로 초기화하고 "이식했다"고 하지 말 것
+
+      [검증] 생성된 문장을 그대로 보이고, (a)와 (b) 두 변환이 각각 무엇이었는지
+             shape 를 근거로 설명할 것
+      ```
+
+      ## 📎 참고 — 에이전트가 실행하게 될 명령
       ```bash
       docker exec -w /work/week10 llm-lab python3 -c "
       import sys; sys.path.insert(0, '.')
@@ -380,8 +711,44 @@ steps:
       print('OPENAI_LOAD_OK' if len(txt) > 30 else 'NG')" 2>/dev/null
       ```
       ## ✅ 합격 기준
-      **유창한 영어 문장**이 생성되고 `OPENAI_LOAD_OK`.
+      **유창한 영어 문장**이 생성되고 `OPENAI_LOAD_OK`. 실측 출력:
+      ```
+        [캐시] gpt2_weights/model-gpt2.safetensors (548 MB)
+      GEN: Every effort moves you forward.
+
+      The first step is to understand the importance of your work.
+
+      The second step is to understand the
+      ```
       (W09 의 10에폭 모델은 소설 문장을 외워 뱉었지만, 이 모델은 처음 보는 주제로도 말한다.)
+
+      ## 🔍 에이전트 판정 포인트
+      **에이전트는 이 미션을 무력화하는 경로를 먼저 찾는다.** "GPT-2 가중치를 불러오라"고 하면
+      가장 쉬운 방법을 고르는데, 그게 하필 배울 게 없는 경로다.
+
+      | 경로 | 결과 |
+      |---|---|
+      | `transformers` 의 `GPT2LMHeadModel.from_pretrained` | 내 GPTModel 을 안 쓴다 — 미션 소멸 |
+      | 변환된 `.pth` 를 받아 `load_state_dict` | **한 줄로 성공** — chunk 도 전치도 안 배운다 |
+      | 교재의 TensorFlow 체크포인트 | 이 환경에 **TF 가 없다** (aarch64 + CUDA 13) |
+      | **`.safetensors` 에서 직접 변환** | ✅ 이 경로만 두 변환을 겪는다 |
+
+      실제로 확인해 봤다 — 702MB `.pth` 를 받아 `load_state_dict(..., strict=True)` 를 돌리니
+      **한 줄로 성공**했다. **safetensors 를 필수로 쓴다**고 제약에 못 박은 이유다.
+
+      **두 변환이 이 단계의 전부다.**
+      **(a) QKV chunk 분할** — OpenAI 는 `h.<i>.attn.c_attn.weight` 하나에 Q/K/V 를 붙여
+      저장한다. shape 가 `[768, 2304]` 이고 `2304 = 3 × 768` 이다.
+      `torch.chunk(w, 3, dim=-1)` 로 셋으로 나눈다.
+      **(b) 전치** — TF 규약은 `(입력, 출력)`, PyTorch `nn.Linear` 는 `(출력, 입력)` 이다.
+      **W04 5단계 그 자체다.** 6주 전의 연습이 오늘 회수된다.
+
+      **shape 를 억지로 맞추는 것이 가장 위험한 실패다.** `reshape` 나 `view` 로 크기만 맞추면
+      **에러 없이 로드되고 값은 뒤죽박죽**이 된다. 생성문이 헛소리로 나오는데 원인이 안 보인다.
+      `assign` 헬퍼가 shape 불일치 시 즉시 예외를 내게 하면 **어느 키에서 틀렸는지 바로 안다.**
+
+      **아키텍처는 우리가 만든 것과 똑같다.** 클래스도 층 수도 파라미터 분해표도 동일하다.
+      다른 것은 오직 훈련 데이터의 양이다 — 이것이 다음 단계 비교표의 결론이다.
     hint: 'assign() 에서 shape 불일치 시 즉시 ValueError 를 내게 하면 어느 키에서 틀렸는지 바로 안다'
     answer: |
       docker exec -w /work/week10 llm-lab python3 -c "
@@ -426,7 +793,37 @@ steps:
       그리고 124M → 355M 은 파라미터가 **2.85배**인데 손실은 3.56 → 3.36 (**0.2 감소**)뿐이다 —
       **모델을 키우는 것보다 데이터를 늘리는 것이 압도적으로 효과적**이다.
 
-      ## 💻 실행 명령
+      ## 🤖 에이전트 프롬프트
+      ```text
+      [목표] qkv_bias 가 왜 필요한지 확인하고, 4모델의 val 손실을 한 표로 비교한다
+
+      [할 일]
+       (a) qkv_bias 게이트
+        1. 같은 이식 코드를 qkv_bias=False 로 실행해 본다
+        2. 예외가 나면 타입과 메시지 앞부분을 출력하고 QKV_BIAS_GATE_OK 를 찍는다
+           예외가 안 나면 NO_ERROR_UNEXPECTED 를 출력한다
+
+       (b) 4모델 비교
+        3. W09 와 같은 방식으로 the-verdict.txt 의 val 로더를 만든다
+        4. gpt2-small (124M) 과 gpt2-medium (355M) 을 각각 이식해
+           val 손실과 퍼플렉시티를 출력한다
+           <모델명> val_loss=<소수 4자리>  perplexity=<소수 1자리>
+        5. 한 모델을 다 쓰면 del + empty_cache 로 즉시 반납한다
+        6. 마지막에 FOUR_MODEL_TABLE_OK 를 출력한다
+        7. W07 의 무작위 초기화 모델(10.98)과 W09 의 10에폭 모델(6.31)을 더해
+           4행 표를 완성하고, 무엇이 손실 차이를 만들었는지 답한다
+
+      [제약]
+       - (a)에서 예외가 나는 것이 정상이다. 예외를 없애려고 코드를 고치지 말 것
+       - 355M 은 1.5GB 다운로드가 필요하다. 두 모델을 동시에 메모리에 올리지 말 것
+       - val 로더는 두 모델에 대해 동일해야 한다. 매번 새로 만들더라도 설정을 바꾸지 말 것
+       - 손실을 잴 때 eval + no_grad 를 쓸 것
+
+      [검증] (a)의 예외 메시지와 (b)의 두 줄을 모두 보이고,
+             124M → 355M 에서 파라미터는 2.85배인데 손실은 얼마나 줄었는지 계산해 답할 것
+      ```
+
+      ## 📎 참고 — 에이전트가 실행하게 될 명령
       ```bash
       docker exec -w /work/week10 llm-lab python3 -c "
       import sys; sys.path.insert(0, '.')
@@ -456,7 +853,43 @@ steps:
       ```
       ## ✅ 합격 기준
       `QKV_BIAS_GATE_OK`(오류가 나야 정상), 124M **3점대 중반**, 355M 이 124M 보다 낮음,
-      `FOUR_MODEL_TABLE_OK`.
+      `FOUR_MODEL_TABLE_OK`. 실측 출력:
+      ```
+      --- (a) qkv_bias=False 로 로드 시도 (실패해야 정상)
+      AttributeError: 'NoneType' object has no attribute 'shape'
+      QKV_BIAS_GATE_OK
+      --- (b) 4모델 비교
+      gpt2-small (124M)      val_loss=3.5596  perplexity=35.2
+      gpt2-medium (355M)     val_loss=3.3585  perplexity=28.7
+      ```
+
+      ## 🔍 에이전트 판정 포인트
+      **(a)의 에러 메시지가 불친절하다는 것도 관찰 대상이다.**
+      `AttributeError: 'NoneType' object has no attribute 'shape'` 는
+      "bias 자리가 없다"는 사실을 전혀 알려주지 않는다. `qkv_bias=False` 면 `q_proj.bias` 가
+      `None` 이고, 거기에 shape 를 물어봤기 때문에 나는 에러다.
+      **더 나은 에러 메시지를 내도록 assign 헬퍼를 고쳐 보는 것이 좋은 연습이다** —
+      예: `f"{key}: 대상 파라미터가 없습니다 (qkv_bias 설정 확인)"`.
+
+      **에이전트가 (a)를 "고쳐야 할 버그"로 보고 `qkv_bias=True` 로 되돌리면 실습이 사라진다.**
+      여기서 실패는 결론이다. W05 에서 계산한 `2,360,064` vs `2,362,368` 의
+      **2,304 = 3 × 768** 차이가 바로 이 bias 자리다.
+
+      **두 모델을 동시에 올리면 메모리를 낭비한다.** 355M 은 float32 로 약 1.4GB 다.
+      에이전트는 리스트에 모아 두고 마지막에 순회하는 코드를 즐겨 쓴다 — W07 6단계와 같은
+      실수다.
+
+      **4모델 표가 10주차의 백미다.**
+      | 모델 | val 손실 | 퍼플렉시티 | 무엇이 다른가 |
+      |---|---|---|---|
+      | 무작위 초기화 | **10.98** | 58,900 | 아무것도 모름 |
+      | 내 10에폭 모델 | **6.31** | 551 | 5,145 토큰을 외움 |
+      | **OpenAI 124M** | **3.56** | 35 | 수백억 토큰 학습 |
+      | **OpenAI 355M** | **3.36** | 29 | 같은 데이터, 더 큰 모델 |
+
+      **아키텍처는 우리가 만든 것과 똑같다. 다른 것은 오직 데이터의 양이다.**
+      그리고 124M → 355M 은 파라미터가 **2.85배**인데 손실은 3.56 → 3.36 (**0.2 감소**)뿐이다 —
+      **모델을 키우는 것보다 데이터를 늘리는 것이 압도적으로 효과적**이다.
     hint: '355M 은 1.5GB 다운로드가 필요하다. 측정 후 del + empty_cache 를 잊지 마라'
     answer: |
       docker exec -w /work/week10 llm-lab python3 -c "
