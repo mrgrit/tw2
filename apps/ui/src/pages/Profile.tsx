@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { api } from '../api.ts'
 import { getToken, getUser, login as saveAuth } from '../auth.ts'
+import { useAuthProviders } from '../authProviders.ts'
 
 interface UserOut {
   id: number
@@ -13,6 +14,8 @@ interface UserOut {
 
 export default function Profile() {
   const me = getUser()!
+  // 구글 전용 모드에서는 비밀번호 자체가 없다 → 변경 카드 숨김.
+  const passwordAuth = useAuthProviders()?.password.enabled ?? false
   const [name, setName] = useState(me.name)
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
   const [profileMsg, setProfileMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -91,7 +94,7 @@ export default function Profile() {
 
       <LlmSettingsCard />
 
-      <form onSubmit={changePw} className="card col">
+      {passwordAuth && <form onSubmit={changePw} className="card col">
         <h3 style={{ marginTop: 0 }}>비밀번호 변경</h3>
         <label style={{ fontSize: 12, color: 'var(--fg-dim)' }}>현재 비밀번호</label>
         <input type="password" autoComplete="current-password" required
@@ -111,7 +114,7 @@ export default function Profile() {
           </div>
         )}
         <button type="submit" disabled={busy !== null}>비밀번호 변경</button>
-      </form>
+      </form>}
     </>
   )
 }

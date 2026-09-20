@@ -116,6 +116,84 @@ async def test_google_domain_restriction_blocks(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_google_domain_restriction_allows_org_account(monkeypatch):
+    s = get_settings()
+    monkeypatch.setattr(s, "google_client_id", "test-client")
+    monkeypatch.setattr(s, "google_allowed_domain", "ync.ac.kr")
+    claims = dict(FAKE, email="dave@ync.ac.kr", hd="ync.ac.kr")
+    monkeypatch.setattr(google_auth, "_verify", lambda cred, cid: dict(claims))
+    async with _client() as c:
+        r = await c.post("/auth/google", json={"credential": "tok" * 10})
+    assert r.status_code == 200, r.text
+    assert r.json()["user"]["email"] == "dave@ync.ac.kr"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claims", [
+    # 조직 메일 주소로 만든 '개인' 구글 계정 — hd 없음
+    dict(FAKE, email="eve@ync.ac.kr"),
+    # 타 조직 Workspace 계정
+    dict(FAKE, email="eve@other.ac.kr", hd="other.ac.kr"),
+    # hd 는 맞지만 이메일이 다른 도메인(보조 도메인/별칭)
+    dict(FAKE, email="eve@other.ac.kr", hd="ync.ac.kr"),
+])
+async def test_google_domain_restriction_requires_hd_and_email(monkeypatch, claims):
+    s = get_settings()
+    monkeypatch.setattr(s, "google_client_id", "test-client")
+    monkeypatch.setattr(s, "google_allowed_domain", "ync.ac.kr")
+    monkeypatch.setattr(google_auth, "_verify", lambda cred, cid: dict(claims))
+    async with _client() as c:
+        r = await c.post("/auth/google", json={"credential": "tok" * 10})
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_google_unverified_email_rejected(monkeypatch):
+    monkeypatch.setattr(get_settings(), "google_client_id", "test-client")
+    claims = {k: v for k, v in FAKE.items() if k != "email_verified"}
+    monkeypatch.setattr(google_auth, "_verify", lambda cred, cid: dict(claims))
+    async with _client() as c:
+        r = await c.post("/auth/google", json={"credential": "tok" * 10})
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_password_auth_disabled_closes_password_endpoints(monkeypatch):
+    """구글 전용 모드 — 가입/로그인/비밀번호 변경은 403, 구글 로그인은 그대로."""
+    s = get_settings()
+    monkeypatch.setattr(s, "google_client_id", "test-client")
+    monkeypatch.setattr(google_auth, "_verify", lambda cred, cid: dict(FAKE))
+    async with _client() as c:
+        # 전환 전에 만들어진 로컬 계정
+        su = await c.post("/auth/signup", json={
+            "email": "frank@example.com", "password": "frankpass123", "name": "Frank",
+        })
+        assert su.status_code == 200
+
+        monkeypatch.setattr(s, "password_auth", False)
+        p = await c.get("/auth/providers")
+        assert p.json()["password"]["enabled"] is False
+
+        r = await c.post("/auth/signup", json={
+            "email": "grace@example.com", "password": "gracepass123", "name": "Grace",
+        })
+        assert r.status_code == 403
+        r = await c.post("/auth/login", json={
+            "email": "frank@example.com", "password": "frankpass123",
+        })
+        assert r.status_code == 403
+
+        g = await c.post("/auth/google", json={"credential": "tok" * 10})
+        assert g.status_code == 200, g.text
+        r = await c.post(
+            "/auth/me/password",
+            headers={"authorization": f"Bearer {g.json()['access_token']}"},
+            json={"current_password": "whatever1", "new_password": "whatever2"},
+        )
+        assert r.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_google_no_provision_rejects_unknown(monkeypatch):
     s = get_settings()
     monkeypatch.setattr(s, "google_client_id", "test-client")

@@ -59,14 +59,17 @@ def verify_credential(credential: str) -> dict:
     email = (claims.get("email") or "").lower()
     if not email:
         raise GoogleAuthError("token has no email")
-    if claims.get("email_verified") is False:
+    if claims.get("email_verified") is not True:
         raise GoogleAuthError("google email not verified")
 
     allowed = settings.google_allowed_domain.strip().lower()
     if allowed:
-        domain = (claims.get("hd") or email.rsplit("@", 1)[-1]).lower()
-        if domain != allowed:
-            raise GoogleAuthError(f"domain not allowed: {domain}")
+        # hd 는 Google Workspace 조직 계정에만 실린다. 이메일 도메인만 보면 조직 메일 주소로
+        # 만든 '개인' 구글 계정(hd 없음)이 조직 계정으로 통과하므로, hd 와 이메일 도메인을 둘 다 요구.
+        hd = (claims.get("hd") or "").lower()
+        email_domain = email.rsplit("@", 1)[-1]
+        if hd != allowed or email_domain != allowed:
+            raise GoogleAuthError(f"domain not allowed: {hd or email_domain}")
     return claims
 
 

@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     google_allowed_domain: str = Field("", alias="GOOGLE_ALLOWED_DOMAIN")
     # 첫 로그인 시 학생 계정 자동 생성 여부.
     google_auto_provision: bool = Field(True, alias="GOOGLE_AUTO_PROVISION")
+    # 비밀번호 인증(회원가입/로그인/비밀번호 변경). 0 이면 구글 로그인 전용 —
+    # 누구나 가입 가능한 /auth/signup 이 닫혀 GOOGLE_ALLOWED_DOMAIN 제한이 유일한 입구가 된다.
+    # ⚠ 0 으로 내리기 전에 GOOGLE_CLIENT_ID 설정 + 구글 계정 admin 확보 필수(아니면 전원 잠김).
+    password_auth: bool = Field(True, alias="TUBEWAR_PASSWORD_AUTH")
 
 
 @lru_cache

@@ -19,6 +19,14 @@ os.environ["DATABASE_URL"] = os.environ.get(
 # 테스트는 운영 .env 파일도 읽지 않도록(pydantic-settings env_file) 우회 — 환경변수 우선.
 os.environ.setdefault("TUBEWAR_JWT_SECRET", "test-secret-32-chars-please-not-shorter")
 
+# 인증 정책도 운영값과 무관하게 기본값으로 강제 고정(setdefault 아님 — `dev.sh test` 는 .env 를
+# source 하고, pydantic-settings 는 env_file 도 읽는다). 운영이 구글 전용(TUBEWAR_PASSWORD_AUTH=0)
+# + 도메인 제한이면 signup/login 을 쓰는 테스트 전체가 403 으로 깨진다. 개별 테스트가 monkeypatch 로 opt-in.
+os.environ["TUBEWAR_PASSWORD_AUTH"] = "1"
+os.environ["GOOGLE_CLIENT_ID"] = ""
+os.environ["GOOGLE_ALLOWED_DOMAIN"] = ""
+os.environ["GOOGLE_AUTO_PROVISION"] = "1"
+
 # pytest 가 어떤 test module 을 먼저 import 해도 limiter 가 꺼진 상태로 기동.
 os.environ.setdefault("TUBEWAR_RATE_LIMIT_DISABLE", "1")
 

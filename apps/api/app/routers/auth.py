@@ -22,8 +22,18 @@ async def providers() -> dict:
         "google": {
             "enabled": bool(settings.google_client_id),
             "client_id": settings.google_client_id or None,
-        }
+            "allowed_domain": settings.google_allowed_domain.strip().lower() or None,
+        },
+        "password": {"enabled": settings.password_auth},
     }
+
+
+def _require_password_auth() -> None:
+    """TUBEWAR_PASSWORD_AUTH=0(구글 전용)이면 비밀번호 계열 엔드포인트를 닫는다."""
+    if not get_settings().password_auth:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "password auth disabled — use google sign-in"
+        )
 
 
 @router.post("/google", response_model=TokenOut)
@@ -75,6 +85,7 @@ async def signup(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> TokenOut:
+    _require_password_auth()
     rate_limit.enforce_signup(request)
     existing = await session.scalar(select(User).where(User.email == body.email))
     if existing:
@@ -103,6 +114,7 @@ async def login(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> TokenOut:
+    _require_password_auth()
     email = str(body.email).lower()
     rate_limit.enforce_login(request, email=email)
     user = await session.scalar(select(User).where(User.email == email))
@@ -174,6 +186,7 @@ async def change_password(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    _require_password_auth()
     if not verify_password(body.current_password, user.password_hash):
         await audit.record(
             session, actor=user, action="user.change_password_fail",

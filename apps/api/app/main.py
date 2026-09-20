@@ -31,6 +31,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    if not settings.password_auth and not settings.google_client_id:
+        log.error("TUBEWAR_PASSWORD_AUTH=0 인데 GOOGLE_CLIENT_ID 가 비어 있음 — 로그인 수단이 없다(전원 잠김)")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # 기존 DB 호환: create_all 이 못 만드는 '기존 테이블의 신규 컬럼' 보강.

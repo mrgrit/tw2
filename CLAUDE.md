@@ -59,6 +59,15 @@ bash scripts/dev.sh test    # pytest
 .venv/bin/python scripts/gen_workbooks.py   # 학생 워크북(.docx) 생성
 ```
 
+## 외부 공개·로그인
+
+- 공개 주소 `https://tubewar.dawnofagi.cloud` — Cloudflare Named Tunnel `tubewar` → UI `:5173`(API 는 same-origin 프록시).
+  설정 `~/.cloudflared/tubewar.yml`, 유닛 `systemctl --user status tubewar-tunnel`. vite Host 허용은
+  `sudo bash scripts/allow_ui_host.sh`(systemd drop-in). ⚠ 이 서버는 `~/.cloudflared/config.yml` 이 다른
+  터널(classroom)이라 `cloudflared tunnel route dns/info` 는 **반드시 `--config` 지정**(안 하면 엉뚱한 터널에 걸림).
+- 로그인은 **구글 전용 + `@ync.ac.kr` 조직 계정만**: `.env` 의 `GOOGLE_CLIENT_ID` / `GOOGLE_ALLOWED_DOMAIN=ync.ac.kr` /
+  `TUBEWAR_PASSWORD_AUTH=0`. 아래 signup/login 검증 명령과 e2e 스크립트는 `TUBEWAR_PASSWORD_AUTH=1`(로컬 dev)에서만 동작.
+
 ## 검증 명령
 
 ```bash

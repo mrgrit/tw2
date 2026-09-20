@@ -1,10 +1,12 @@
 import React, { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { api } from '../api.ts'
 import { login } from '../auth.ts'
+import { useAuthProviders } from '../authProviders.ts'
 
 export default function Signup() {
   const nav = useNavigate()
+  const providers = useAuthProviders()
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
@@ -27,6 +29,9 @@ export default function Signup() {
       setBusy(false)
     }
   }
+
+  // 구글 전용 모드 — 가입은 첫 구글 로그인 때 자동으로 된다.
+  if (providers && !providers.password.enabled) return <Navigate to="/login" replace />
 
   return (
     <div style={{ maxWidth: 400, margin: '60px auto' }}>
