@@ -154,17 +154,32 @@ async def llm_ask(
     messages.append({"role": "user", "content": body.question})
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=180.0) as client:
             r = await client.post(f"{url}/api/chat", json={
                 "model": model,
                 "messages": messages,
                 "stream": False,
-                "options": {"temperature": 0.4, "num_predict": 900},
+                # thinking 계열(qwen3/gpt-oss/gemma4/deepseek-r1…)은 추론 토큰이 num_predict 를
+                # 통째로 먹어 message.content 가 빈 채 done_reason=length 로 끝난다(= 답변 없음).
+                # 튜터는 짧은 답이 목표라 추론이 이득도 없으니 끈다. 비-thinking 모델은 이 필드를 무시.
+                "think": False,
+                "options": {"temperature": 0.4, "num_predict": 2048},
             })
         if r.status_code >= 400:
             raise HTTPException(status.HTTP_502_BAD_GATEWAY,
                                 f"Ollama 오류 {r.status_code}: {r.text[:200]}")
-        reply = (r.json().get("message") or {}).get("content") or "응답을 생성하지 못했습니다."
+        data = r.json()
+        msg = data.get("message") or {}
+        reply = (msg.get("content") or "").strip()
+        if not reply:
+            # gpt-oss 처럼 think:False 로도 추론을 끌 수 없는 모델의 잔여 케이스 — 버리지 말고 살린다.
+            reply = (msg.get("thinking") or "").strip()
+        if not reply:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"모델 '{model}' 이 빈 응답을 반환했습니다(done_reason={data.get('done_reason')}). "
+                "질문을 짧게 하거나 프로필에서 다른 모델을 선택해 보세요.",
+            )
         return {"reply": reply, "model": model}
     except HTTPException:
         raise
