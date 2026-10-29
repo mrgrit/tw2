@@ -41,6 +41,15 @@ FAKE = {
 }
 
 
+def test_google_verify_transport_importable():
+    """_verify 는 아래 테스트들에서 monkeypatch 되므로, 실제 검증 경로의 의존성 누락을 여기서 잡는다.
+    (google-auth 만 설치되고 requests 가 없으면 진짜 토큰이 전부 401 로 거부된다.)"""
+    from google.auth.transport import requests as g_requests
+    from google.oauth2 import id_token  # noqa: F401
+
+    assert callable(g_requests.Request())
+
+
 @pytest.mark.asyncio
 async def test_providers_reflects_config(monkeypatch):
     monkeypatch.setattr(get_settings(), "google_client_id", "")
