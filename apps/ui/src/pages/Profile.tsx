@@ -14,8 +14,8 @@ interface UserOut {
 
 export default function Profile() {
   const me = getUser()!
-  // 구글 전용 모드에서는 비밀번호 자체가 없다 → 변경 카드 숨김.
-  const passwordAuth = useAuthProviders()?.password.enabled ?? false
+  // 구글 전용 모드에서는 비밀번호 자체가 없다 → 변경 카드 숨김. 단 게스트(관리자 등록 ID/비번)는 예외.
+  const passwordAuth = (useAuthProviders()?.password.enabled ?? false) || me.auth_provider === 'guest'
   const [name, setName] = useState(me.name)
   const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' })
   const [profileMsg, setProfileMsg] = useState<{ ok: boolean; text: string } | null>(null)

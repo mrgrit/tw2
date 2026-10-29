@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,7 @@ from ..models import (
     AuditLog, Battle, BattleEvent, BattleParticipant, Infra, Scenario, ScrapPost, User,
 )
 from ..schemas import ScenarioOut, SmokeResult
-from ..security import require_admin
+from ..security import hash_password, require_admin
 from ..services import audit, auto_monitor, battle_service as bs, lab_monitor, scenario_jobs
 from ..services import cohort_service as cs
 from ..services import assessor_client
@@ -563,12 +563,41 @@ class AdminUserOut(BaseModel):
     name: str
     role: str
     is_active: bool
+    auth_provider: str  # local | google | guest
     created_at: str
+
+
+def _user_out(u: User) -> AdminUserOut:
+    return AdminUserOut(
+        id=u.id, email=u.email, name=u.name, role=u.role, is_active=u.is_active,
+        auth_provider=u.auth_provider,
+        created_at=u.created_at.isoformat() if u.created_at else "",
+    )
 
 
 class UserPatchIn(BaseModel):
     role: str | None = Field(default=None, pattern=r"^(student|admin)$")
     is_active: bool | None = None
+
+
+# 게스트 ID — 소문자/숫자/._- 3~64자, '@' 불가(구글 이메일과 시각적으로 구분 + 구글 로그인의 기존 계정 연결과 충돌 방지).
+GUEST_ID_RE = r"^[a-z0-9][a-z0-9._-]{2,63}$"
+
+
+class GuestCreateIn(BaseModel):
+    login_id: str = Field(min_length=3, max_length=64, pattern=GUEST_ID_RE)
+    name: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("login_id", mode="before")
+    @classmethod
+    def _normalize_login_id(cls, v: object) -> object:
+        # 대소문자 혼용 입력(Guest01)을 소문자로 정규화한 뒤 패턴 검사 — 로그인 조회도 lower() 로 한다.
+        return v.strip().lower() if isinstance(v, str) else v
+
+
+class GuestPasswordIn(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
 
 
 @router.get("/users", response_model=list[AdminUserOut])
@@ -577,13 +606,59 @@ async def admin_list_users(
     session: AsyncSession = Depends(get_session),
 ) -> list[AdminUserOut]:
     rows = (await session.scalars(select(User).order_by(User.id.asc()))).all()
-    return [
-        AdminUserOut(
-            id=u.id, email=u.email, name=u.name, role=u.role, is_active=u.is_active,
-            created_at=u.created_at.isoformat() if u.created_at else "",
-        )
-        for u in rows
-    ]
+    return [_user_out(u) for u in rows]
+
+
+@router.post("/users/guests", response_model=AdminUserOut, status_code=201)
+async def admin_create_guest(
+    body: GuestCreateIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> AdminUserOut:
+    """게스트 계정 등록 — 구글 조직 계정이 없는 외부인(강사 초청·시연)용 ID/비밀번호.
+    구글 전용 모드(TUBEWAR_PASSWORD_AUTH=0)에서도 auth_provider=guest 만 비밀번호 로그인이 허용된다."""
+    login_id = body.login_id.lower()
+    if await session.scalar(select(User).where(User.email == login_id)):
+        raise HTTPException(status.HTTP_409_CONFLICT, "login id already taken")
+    u = User(
+        email=login_id, name=body.name, role="student", is_active=True,
+        auth_provider="guest", password_hash=hash_password(body.password),
+    )
+    session.add(u)
+    await session.commit()
+    await session.refresh(u)
+    await audit.record(
+        session, actor=admin, action="user.guest_create",
+        target_type="user", target_id=u.id,
+        detail={"login_id": login_id, "name": u.name}, request=request,
+    )
+    return _user_out(u)
+
+
+@router.post("/users/{user_id}/password", response_model=AdminUserOut)
+async def admin_set_guest_password(
+    user_id: int,
+    body: GuestPasswordIn,
+    request: Request,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> AdminUserOut:
+    """게스트 비밀번호 재설정(관리자). 게스트 외 계정은 거부 — 구글 계정의 비밀번호를 만들어 우회 입구가 생기는 것 방지."""
+    u = await session.get(User, user_id)
+    if not u:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+    if u.auth_provider != "guest":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "password reset is for guest accounts only")
+    u.password_hash = hash_password(body.password)
+    await session.commit()
+    await session.refresh(u)
+    await audit.record(
+        session, actor=admin, action="user.guest_password_reset",
+        target_type="user", target_id=u.id,
+        detail={"login_id": u.email}, request=request,
+    )
+    return _user_out(u)
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserOut)
@@ -600,6 +675,9 @@ async def admin_patch_user(
     if u.id == admin.id and (body.role == "student" or body.is_active is False):
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "cannot demote / deactivate yourself")
+    # 게스트(비밀번호 계정)를 admin 으로 올리면 '관리자는 조직 구글 계정만' 정책이 무너진다.
+    if body.role == "admin" and u.auth_provider == "guest":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "guest accounts cannot be admin")
     prev = {"role": u.role, "is_active": u.is_active}
     if body.role is not None:
         u.role = body.role
@@ -614,10 +692,7 @@ async def admin_patch_user(
                 "target_email": u.email},
         request=request,
     )
-    return AdminUserOut(
-        id=u.id, email=u.email, name=u.name, role=u.role, is_active=u.is_active,
-        created_at=u.created_at.isoformat() if u.created_at else "",
-    )
+    return _user_out(u)
 
 
 # ── 시나리오 archive / delete ───────────────────────

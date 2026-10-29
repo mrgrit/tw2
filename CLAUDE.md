@@ -67,6 +67,9 @@ bash scripts/dev.sh test    # pytest
   터널(classroom)이라 `cloudflared tunnel route dns/info` 는 **반드시 `--config` 지정**(안 하면 엉뚱한 터널에 걸림).
 - 로그인은 **구글 전용 + `@ync.ac.kr` 조직 계정만**: `.env` 의 `GOOGLE_CLIENT_ID` / `GOOGLE_ALLOWED_DOMAIN=ync.ac.kr` /
   `TUBEWAR_PASSWORD_AUTH=0`. 아래 signup/login 검증 명령과 e2e 스크립트는 `TUBEWAR_PASSWORD_AUTH=1`(로컬 dev)에서만 동작.
+- **게스트 계정**(구글 조직 계정 없는 외부인): 관리자 화면 "사용자 관리 → 게스트 등록"(`POST /admin/users/guests`,
+  ID `guest01` 형식·`@` 불가). `auth_provider=guest` 만 구글 전용 모드에서도 ID/비번 로그인(`/auth/login`) 허용,
+  admin 승격 불가, 비번 재설정 `POST /admin/users/{id}/password`. 로그인 화면의 "게스트 계정으로 로그인" 접이식 폼.
 
 ## 검증 명령
 

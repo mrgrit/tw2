@@ -4,6 +4,7 @@ export interface User {
   name: string
   role: 'student' | 'admin'
   is_active: boolean
+  auth_provider?: 'local' | 'google' | 'guest'   // 구버전 토큰 저장분엔 없을 수 있음
   created_at: string
 }
 

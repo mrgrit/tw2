@@ -27,7 +27,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(16), default="student", nullable=False)  # student | admin
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    # 인증 출처 — local(이메일/비번) | google. 구글 연결 시 google_sub 채움.
+    # 인증 출처 — local(이메일/비번) | google | guest(관리자 등록 ID/비번, 구글 전용 모드에서도 로그인 허용).
+    # 구글 연결 시 google_sub 채움.
     auth_provider: Mapped[str] = mapped_column(String(16), default="local", nullable=False)
     google_sub: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     # 개인 GPU(Ollama) 서버 — 드래그-질문 AI 튜터가 사용. url 예: http://1.2.3.4:11434

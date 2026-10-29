@@ -13,7 +13,8 @@ class SignupIn(BaseModel):
 
 
 class LoginIn(BaseModel):
-    email: EmailStr
+    # 로그인 식별자 — 이메일(로컬 계정) 또는 게스트 ID(관리자 등록, 예: guest01). 조회 전용이라 형식 검증 없음.
+    email: str = Field(min_length=1, max_length=255)
     password: str
 
 
@@ -34,6 +35,7 @@ class UserOut(BaseModel):
     name: str
     role: str
     is_active: bool
+    auth_provider: str  # local | google | guest
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}

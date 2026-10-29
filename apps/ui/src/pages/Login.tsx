@@ -12,6 +12,7 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [guestOpen, setGuestOpen] = useState(false)   // 구글 전용 모드의 게스트 폼 펼침
 
   const domain = providers?.google.allowed_domain
   // 백엔드의 도메인 거부("domain not allowed: gmail.com")를 학생이 알아볼 문구로.
@@ -46,7 +47,8 @@ export default function Login() {
   } else if (providers === null) {
     body = <div className="card" style={{ color: 'var(--red)', fontSize: 13 }}>서버에 연결할 수 없습니다. 잠시 후 다시 시도하세요.</div>
   } else if (!providers.password.enabled) {
-    // 구글 전용 모드 — 비밀번호 폼/회원가입 없음. 첫 구글 로그인 시 계정 자동 생성.
+    // 구글 전용 모드 — 회원가입 없음(첫 구글 로그인 시 계정 자동 생성).
+    // 비밀번호 로그인은 관리자가 등록한 게스트 계정만 가능 → 접이식 보조 폼으로.
     body = (
       <div className="card col" style={{ alignItems: 'center' }}>
         {providers.google.enabled ? (
@@ -58,8 +60,31 @@ export default function Login() {
           </>
         ) : (
           <div style={{ color: 'var(--red)', fontSize: 13 }}>
-            로그인 수단이 설정되지 않았습니다. 관리자에게 문의하세요.
+            구글 로그인이 설정되지 않았습니다. 관리자에게 문의하세요.
           </div>
+        )}
+        {!guestOpen ? (
+          <button type="button" className="ghost" style={{ fontSize: 12, marginTop: 8 }}
+            onClick={() => { setGuestOpen(true); setErr(null) }}>
+            게스트 계정으로 로그인
+          </button>
+        ) : (
+          <form onSubmit={submit} className="col" style={{ width: '100%', marginTop: 8, gap: 8 }}>
+            <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
+              게스트 계정은 관리자가 등록합니다. 받은 ID 와 비밀번호를 입력하세요.
+            </div>
+            <label>
+              게스트 ID
+              <input type="text" autoComplete="username" value={email}
+                onChange={e => setEmail(e.target.value)} required autoFocus />
+            </label>
+            <label>
+              비밀번호
+              <input type="password" autoComplete="current-password" value={password}
+                onChange={e => setPassword(e.target.value)} required />
+            </label>
+            <button type="submit" disabled={busy}>{busy ? '...' : '게스트 로그인'}</button>
+          </form>
         )}
         {errBox}
       </div>

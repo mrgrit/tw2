@@ -28,9 +28,13 @@ async def providers() -> dict:
     }
 
 
-def _require_password_auth() -> None:
-    """TUBEWAR_PASSWORD_AUTH=0(구글 전용)이면 비밀번호 계열 엔드포인트를 닫는다."""
-    if not get_settings().password_auth:
+def _password_auth_allowed(user: User | None) -> bool:
+    """TUBEWAR_PASSWORD_AUTH=0(구글 전용)이면 비밀번호 인증은 관리자가 등록한 게스트 계정에만 허용."""
+    return get_settings().password_auth or (user is not None and user.auth_provider == "guest")
+
+
+def _require_password_auth(user: User | None = None) -> None:
+    if not _password_auth_allowed(user):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, "password auth disabled — use google sign-in"
         )
@@ -114,10 +118,18 @@ async def login(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> TokenOut:
-    _require_password_auth()
-    email = str(body.email).lower()
+    email = body.email.strip().lower()
     rate_limit.enforce_login(request, email=email)
     user = await session.scalar(select(User).where(User.email == email))
+    # 구글 전용 모드: 존재하는 비(非)게스트 계정은 403(구글로 안내), 미존재 ID 는 아래 401 과 동일 처리.
+    if user and not _password_auth_allowed(user):
+        await audit.record(
+            session, actor=None, actor_email=email, action="auth.login_fail",
+            target_type="user", target_id=user.id,
+            detail={"reason": "password_auth_disabled"},
+            request=request,
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "password auth disabled — use google sign-in")
     if not user or not verify_password(body.password, user.password_hash):
         await audit.record(
             session, actor=None, actor_email=email, action="auth.login_fail",
@@ -186,7 +198,7 @@ async def change_password(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    _require_password_auth()
+    _require_password_auth(user)
     if not verify_password(body.current_password, user.password_hash):
         await audit.record(
             session, actor=user, action="user.change_password_fail",

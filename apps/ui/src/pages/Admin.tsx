@@ -61,7 +61,7 @@ interface AdminBattle {
 }
 interface AdminUser {
   id: number; email: string; name: string; role: string;
-  is_active: boolean; created_at: string;
+  is_active: boolean; auth_provider: 'local' | 'google' | 'guest'; created_at: string;
 }
 interface Stats {
   user_count: number; student_count: number; admin_count: number;
@@ -435,23 +435,88 @@ function BattlesTab({ onChange }: { onChange: () => void }) {
 
 function UsersTab() {
   const [users, setUsers] = useState<AdminUser[]>([])
+  const [guest, setGuest] = useState({ login_id: '', name: '', password: '' })
+  const [guestMsg, setGuestMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [guestBusy, setGuestBusy] = useState(false)
   const refresh = async () => setUsers(await api<AdminUser[]>('/admin/users'))
   useEffect(() => { refresh() }, [])
 
   async function patch(id: number, body: any) {
-    await api(`/admin/users/${id}`, { method: 'PATCH', json: body })
+    try {
+      await api(`/admin/users/${id}`, { method: 'PATCH', json: body })
+    } catch (e: any) {
+      alert(e.message)
+    }
     refresh()
   }
+
+  // 게스트 등록 — 구글 조직 계정이 없는 외부인용 ID/비밀번호. 구글 전용 모드에서도 로그인 가능.
+  async function createGuest(e: React.FormEvent) {
+    e.preventDefault()
+    setGuestBusy(true); setGuestMsg(null)
+    try {
+      const u = await api<AdminUser>('/admin/users/guests', { method: 'POST', json: guest })
+      setGuestMsg({ ok: true, text: `게스트 등록 완료 — ID: ${u.email}. 비밀번호를 본인에게 전달하세요.` })
+      setGuest({ login_id: '', name: '', password: '' })
+      refresh()
+    } catch (err: any) {
+      setGuestMsg({ ok: false, text: err.message })
+    } finally {
+      setGuestBusy(false)
+    }
+  }
+
+  async function resetGuestPassword(u: AdminUser) {
+    const pw = prompt(`게스트 "${u.email}" 의 새 비밀번호 (8자 이상):`)
+    if (pw === null) return
+    try {
+      await api(`/admin/users/${u.id}/password`, { method: 'POST', json: { password: pw } })
+      alert(`비밀번호 재설정 완료 — ${u.email}`)
+    } catch (e: any) {
+      alert(e.message)
+    }
+  }
+
+  const PROVIDER_BADGE: Record<AdminUser['auth_provider'], string> = { google: 'blue', guest: 'yellow', local: '' }  // local = 기본(무채색) 뱃지
+
   return (
     <>
       <h3>사용자 관리</h3>
+
+      <form onSubmit={createGuest} className="card col" style={{ gap: 8 }}>
+        <h4 style={{ margin: 0 }}>게스트 등록</h4>
+        <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
+          구글 조직 계정이 없는 외부인(초청 강사·시연)용. ID 는 소문자/숫자/<code>._-</code> 3~64자(<code>@</code> 불가),
+          비밀번호 8자 이상. 게스트는 학생 권한이며 admin 승격 불가.
+        </div>
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <label style={{ flex: 1, minWidth: 140 }}>게스트 ID
+            <input value={guest.login_id} onChange={e => setGuest({ ...guest, login_id: e.target.value })}
+              placeholder="guest01" required minLength={3} maxLength={64} autoComplete="off" />
+          </label>
+          <label style={{ flex: 1, minWidth: 140 }}>이름
+            <input value={guest.name} onChange={e => setGuest({ ...guest, name: e.target.value })}
+              required maxLength={120} autoComplete="off" />
+          </label>
+          <label style={{ flex: 1, minWidth: 140 }}>비밀번호
+            <input type="text" value={guest.password} onChange={e => setGuest({ ...guest, password: e.target.value })}
+              required minLength={8} maxLength={128} autoComplete="off" />
+          </label>
+          <button type="submit" disabled={guestBusy}>{guestBusy ? '...' : '등록'}</button>
+        </div>
+        {guestMsg && (
+          <div style={{ color: guestMsg.ok ? 'var(--green)' : 'var(--red)', fontSize: 13 }}>{guestMsg.text}</div>
+        )}
+      </form>
+
       <div className="card" style={{ padding: 0 }}>
         <table style={{ width: '100%', fontSize: 14, borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
               <th align="left" style={{ padding: 12 }}>id</th>
-              <th align="left" style={{ padding: 12 }}>email</th>
+              <th align="left" style={{ padding: 12 }}>email / ID</th>
               <th align="left" style={{ padding: 12 }}>name</th>
+              <th align="left" style={{ padding: 12 }}>auth</th>
               <th align="left" style={{ padding: 12 }}>role</th>
               <th align="left" style={{ padding: 12 }}>active</th>
               <th align="left" style={{ padding: 12 }}>actions</th>
@@ -464,13 +529,19 @@ function UsersTab() {
                 <td style={{ padding: 12 }}>{u.email}</td>
                 <td style={{ padding: 12 }}>{u.name}</td>
                 <td style={{ padding: 12 }}>
+                  <span className={`badge ${PROVIDER_BADGE[u.auth_provider] ?? ''}`}>{u.auth_provider}</span>
+                </td>
+                <td style={{ padding: 12 }}>
                   <span className={`badge ${u.role === 'admin' ? 'blue' : 'yellow'}`}>{u.role}</span>
                 </td>
                 <td style={{ padding: 12 }}>
                   <span className={`badge ${u.is_active ? 'green' : 'red'}`}>{u.is_active ? 'on' : 'off'}</span>
                 </td>
                 <td style={{ padding: 12 }}>
-                  {u.role === 'student' ? (
+                  {u.auth_provider === 'guest' ? (
+                    <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }}
+                      onClick={() => resetGuestPassword(u)}>비밀번호 재설정</button>
+                  ) : u.role === 'student' ? (
                     <button className="ghost" style={{ fontSize: 12, padding: '2px 8px' }}
                       onClick={() => patch(u.id, { role: 'admin' })}>→ admin</button>
                   ) : (
